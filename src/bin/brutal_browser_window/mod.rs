@@ -790,6 +790,7 @@ mod native {
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
+            Key::Backspace if modifiers.shift => Some(BrowserAppAction::Forward),
             Key::Backspace => Some(BrowserAppAction::Back),
             Key::Enter | Key::NumPadEnter if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::SubmitFocused)
@@ -1603,6 +1604,62 @@ mod native {
                 handle_browser_window_key(&mut app, &mut mode, Key::RightBracket, modifiers)
                     .await
                     .unwrap();
+            assert!(forward.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_shift_backspace_navigates_forward() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(second.to_str().unwrap().to_owned()))
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::Back).await.unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+            let mut mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers {
+                command: false,
+                shift: true,
+                alt: false,
+            };
+
+            let forward = handle_browser_window_key(&mut app, &mut mode, Key::Backspace, modifiers)
+                .await
+                .unwrap();
+
             assert!(forward.dirty);
             assert_eq!(mode, BrowserWindowMode::Page);
             assert_eq!(
