@@ -576,7 +576,7 @@ mod native {
                         close: false,
                     });
                 }
-                Key::L => {
+                Key::K | Key::L => {
                     let source = current_browser_window_source(app)?;
                     begin_browser_window_location_input(mode, &source);
                     return Ok(BrowserWindowKeyResult {
@@ -3206,6 +3206,48 @@ mod native {
                     command: false,
                     shift: false,
                     alt: true,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(
+                browser_window_location_text(&mode),
+                Some("bench/browser-fixtures/static-text.html")
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_k_focuses_location_from_any_mode() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::K,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
                 },
             )
             .await
