@@ -766,6 +766,7 @@ impl BrowserApp {
         let active = self.active_tab_ref()?;
         let mut tab = active.clone();
         let before_source = tab.session.current().map(|render| render.source.clone());
+        let before_history = tab.session.snapshot();
         let document_x = tab.viewport.x.saturating_add(x);
         let document_y = tab.viewport.y.saturating_add(y);
         if tab
@@ -777,7 +778,11 @@ impl BrowserApp {
             return Ok(());
         }
         let after_source = tab.session.current().map(|render| render.source.clone());
-        if before_source == after_source {
+        let after_history = tab.session.snapshot();
+        if before_source == after_source
+            && before_history.current_index == after_history.current_index
+            && before_history.entries.len() == after_history.entries.len()
+        {
             return Ok(());
         }
 
@@ -1691,6 +1696,42 @@ mod tests {
         assert_eq!(
             app.active_session().unwrap().current().unwrap().title,
             "Second"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_app_opens_same_url_clicks_in_background_tab() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("self.html");
+        fs::write(
+            &page,
+            r#"<html><head><title>Self</title></head><body><a href="self.html">Again</a></body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&page.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        app.present_frame().unwrap();
+        app.apply_action(BrowserAppAction::OpenClickInBackgroundTab { x: 0, y: 0 })
+            .await
+            .unwrap();
+
+        assert_eq!(app.tab_count(), 2);
+        assert_eq!(app.active_tab(), 0);
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Self"
+        );
+        app.apply_action(BrowserAppAction::SwitchTab(1))
+            .await
+            .unwrap();
+        let history = app.active_session().unwrap().snapshot();
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.current_index, Some(1));
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Self"
         );
     }
 
