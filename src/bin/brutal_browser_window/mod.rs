@@ -1245,6 +1245,7 @@ mod native {
                 })
             }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
+                let was_page_mode = matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
                 let action = if modifiers.shift {
@@ -1254,7 +1255,7 @@ mod native {
                 };
                 app.apply_action(action).await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: app.tab_count() != before_tabs,
+                    dirty: app.tab_count() != before_tabs || !was_page_mode,
                     close: false,
                 })
             }
@@ -2364,6 +2365,53 @@ mod native {
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "First"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_click_empty_page_dismisses_prompt_dirty() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.present_frame().unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Static Text Fixture"
             );
         }
 
