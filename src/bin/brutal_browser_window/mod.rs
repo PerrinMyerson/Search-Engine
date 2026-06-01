@@ -669,6 +669,14 @@ mod native {
                     }
                     return Ok(BrowserWindowKeyResult::default());
                 }
+                Key::N => {
+                    app.apply_action(BrowserAppAction::NewBlankTab).await?;
+                    begin_browser_window_blank_location_input(mode);
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::T => {
                     app.apply_action(BrowserAppAction::NewBlankTab).await?;
                     begin_browser_window_blank_location_input(mode);
@@ -1831,6 +1839,62 @@ mod native {
                 0,
                 BrowserAppWindowHit::NewTabButton,
                 BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                "about:blank"
+            );
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: String::new(),
+                    replace_on_input: false,
+                }
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_n_opens_blank_tab_and_focuses_location() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "old prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::N,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
             )
             .await
             .unwrap();
