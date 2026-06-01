@@ -661,6 +661,7 @@ mod native {
                 }
                 Key::T if modifiers.shift => {
                     if app.closed_tab_count() > 0 {
+                        *mode = BrowserWindowMode::Page;
                         app.apply_action(BrowserAppAction::RestoreClosedTab).await?;
                         return Ok(BrowserWindowKeyResult {
                             dirty: true,
@@ -2483,6 +2484,56 @@ mod native {
             .await
             .unwrap();
             assert!(restored.dirty);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.closed_tab_count(), 0);
+            assert_eq!(app.active_tab(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_shift_t_dismisses_prompt_when_restoring_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::CloseTab(None))
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.closed_tab_count(), 1);
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+
+            let restored = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::T,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(restored.dirty);
+            assert!(!restored.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
             assert_eq!(app.tab_count(), 2);
             assert_eq!(app.closed_tab_count(), 0);
             assert_eq!(app.active_tab(), 1);
