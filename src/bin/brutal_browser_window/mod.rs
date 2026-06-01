@@ -434,6 +434,7 @@ mod native {
         }));
         let mut previous_left_down = false;
         let mut previous_middle_down = false;
+        let mut previous_right_down = false;
         let mut previous_window_size = window.get_size();
         let mut close_requested = false;
 
@@ -509,6 +510,20 @@ mod native {
                 close_requested |= result.close;
             }
             previous_middle_down = middle_down;
+
+            let right_down = window.get_mouse_down(MouseButton::Right);
+            if right_down
+                && !previous_right_down
+                && let Some((x, y)) = window.get_unscaled_mouse_pos(MouseMode::Discard)
+            {
+                let x = x.max(0.0).round() as usize;
+                let y = y.max(0.0).round() as usize;
+                let hit = app.hit_test_window(x, y)?;
+                let result = handle_browser_window_right_click(&mut app, &mut mode, hit).await?;
+                dirty |= result.dirty;
+                close_requested |= result.close;
+            }
+            previous_right_down = right_down;
 
             if dirty {
                 hover_status_text = browser_window_hover_status_for_window(&app, &mode, &window)?;
@@ -1297,6 +1312,27 @@ mod native {
                     .await?;
                 Ok(BrowserWindowKeyResult {
                     dirty: app.tab_count() != before_tabs,
+                    close: false,
+                })
+            }
+            _ => Ok(BrowserWindowKeyResult::default()),
+        }
+    }
+
+    async fn handle_browser_window_right_click(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        hit: BrowserAppWindowHit,
+    ) -> Result<BrowserWindowKeyResult> {
+        match hit {
+            BrowserAppWindowHit::PageViewport { x, y } => {
+                let was_page_mode = matches!(mode, BrowserWindowMode::Page);
+                *mode = BrowserWindowMode::Page;
+                let before_tabs = app.tab_count();
+                app.apply_action(BrowserAppAction::OpenClickInBackgroundTab { x, y })
+                    .await?;
+                Ok(BrowserWindowKeyResult {
+                    dirty: app.tab_count() != before_tabs || !was_page_mode,
                     close: false,
                 })
             }
@@ -2404,6 +2440,68 @@ mod native {
             };
 
             let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+            app.apply_action(BrowserAppAction::SwitchTab(1))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_right_click_opens_page_link_in_background_tab() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body><a href="second.html">Second</a></body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+            )
+            .unwrap();
+
+            let mut app = BrowserApp::open(
+                &first.to_string_lossy(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.present_frame().unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_right_click(
                 &mut app,
                 &mut mode,
                 BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
