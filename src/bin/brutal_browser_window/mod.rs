@@ -1244,6 +1244,22 @@ mod native {
                     close: false,
                 })
             }
+            BrowserAppWindowHit::Tab { index } => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
+                *mode = BrowserWindowMode::Page;
+                if index != app.active_tab() {
+                    app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
+                    Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    })
+                } else {
+                    Ok(BrowserWindowKeyResult {
+                        dirty: dismissed_prompt,
+                        close: false,
+                    })
+                }
+            }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
@@ -2169,6 +2185,72 @@ mod native {
                 .unwrap(),
                 None
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_left_click_tab_hit_switches_tabs_directly() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let switched = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::Tab { index: 0 },
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(switched.dirty);
+            assert!(!switched.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_tab(), 0);
+
+            mode = BrowserWindowMode::Location {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let active = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::Tab { index: 0 },
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(active.dirty);
+            assert!(!active.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_tab(), 0);
         }
 
         #[tokio::test]
