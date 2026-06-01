@@ -311,11 +311,11 @@ fn browser_window_frame_options_with_status(
         },
         BrowserWindowMode::Location { text, .. } => BrowserAppWindowFrameOptions {
             location_text: Some(format!("URL > {text}")),
-            status_text: Some("location: Enter=open Esc=cancel Backspace=delete".to_owned()),
+            status_text: Some("location: Enter=open Esc=cancel Backspace/Delete=delete".to_owned()),
         },
         BrowserWindowMode::Find { text, .. } => BrowserAppWindowFrameOptions {
             location_text: Some(format!("Find > {text}")),
-            status_text: Some("find: Enter=find Esc=cancel Backspace=delete".to_owned()),
+            status_text: Some("find: Enter=find Esc=cancel Backspace/Delete=delete".to_owned()),
         },
     }
 }
@@ -4591,7 +4591,16 @@ mod tests {
         );
         assert_eq!(
             options.status_text,
-            Some("location: Enter=open Esc=cancel Backspace=delete".to_owned())
+            Some("location: Enter=open Esc=cancel Backspace/Delete=delete".to_owned())
+        );
+
+        let find_mode = BrowserWindowMode::Find {
+            text: "needle".to_owned(),
+            replace_on_input: false,
+        };
+        assert_eq!(
+            browser_window_frame_options(&find_mode).status_text,
+            Some("find: Enter=find Esc=cancel Backspace/Delete=delete".to_owned())
         );
     }
 
