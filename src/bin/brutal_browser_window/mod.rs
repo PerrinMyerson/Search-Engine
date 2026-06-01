@@ -556,6 +556,18 @@ mod native {
                         close: false,
                     });
                 }
+                Key::Period
+                    if matches!(
+                        mode,
+                        BrowserWindowMode::Location { .. } | BrowserWindowMode::Find { .. }
+                    ) =>
+                {
+                    *mode = BrowserWindowMode::Page;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::Backspace | Key::Delete
                     if matches!(
                         mode,
@@ -3010,6 +3022,65 @@ mod native {
                     .unwrap()
             );
             assert_eq!(browser_window_find_text(&find_mode), Some("Hidden"));
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_period_cancels_transient_prompts() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+            let mut location_mode = BrowserWindowMode::Location {
+                text: "https://example.com".to_owned(),
+                replace_on_input: false,
+            };
+
+            let cancel_location =
+                handle_browser_window_key(&mut app, &mut location_mode, Key::Period, modifiers)
+                    .await
+                    .unwrap();
+
+            assert!(cancel_location.dirty);
+            assert!(!cancel_location.close);
+            assert_eq!(location_mode, BrowserWindowMode::Page);
+
+            let mut find_mode = BrowserWindowMode::Find {
+                text: "needle".to_owned(),
+                replace_on_input: false,
+            };
+            let cancel_find =
+                handle_browser_window_key(&mut app, &mut find_mode, Key::Period, modifiers)
+                    .await
+                    .unwrap();
+
+            assert!(cancel_find.dirty);
+            assert!(!cancel_find.close);
+            assert_eq!(find_mode, BrowserWindowMode::Page);
+
+            let mut page_mode = BrowserWindowMode::Page;
+            let page_noop =
+                handle_browser_window_key(&mut app, &mut page_mode, Key::Period, modifiers)
+                    .await
+                    .unwrap();
+
+            assert!(!page_noop.dirty);
+            assert!(!page_noop.close);
+            assert_eq!(page_mode, BrowserWindowMode::Page);
         }
 
         #[tokio::test]
