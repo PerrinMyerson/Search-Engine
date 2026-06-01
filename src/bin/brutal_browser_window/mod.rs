@@ -1000,15 +1000,15 @@ mod native {
             return None;
         }
         match key {
-            Key::Key1 => Some(0),
-            Key::Key2 if tab_count >= 2 => Some(1),
-            Key::Key3 if tab_count >= 3 => Some(2),
-            Key::Key4 if tab_count >= 4 => Some(3),
-            Key::Key5 if tab_count >= 5 => Some(4),
-            Key::Key6 if tab_count >= 6 => Some(5),
-            Key::Key7 if tab_count >= 7 => Some(6),
-            Key::Key8 if tab_count >= 8 => Some(7),
-            Key::Key9 => Some(tab_count - 1),
+            Key::Key1 | Key::NumPad1 => Some(0),
+            Key::Key2 | Key::NumPad2 if tab_count >= 2 => Some(1),
+            Key::Key3 | Key::NumPad3 if tab_count >= 3 => Some(2),
+            Key::Key4 | Key::NumPad4 if tab_count >= 4 => Some(3),
+            Key::Key5 | Key::NumPad5 if tab_count >= 5 => Some(4),
+            Key::Key6 | Key::NumPad6 if tab_count >= 6 => Some(5),
+            Key::Key7 | Key::NumPad7 if tab_count >= 7 => Some(6),
+            Key::Key8 | Key::NumPad8 if tab_count >= 8 => Some(7),
+            Key::Key9 | Key::NumPad9 => Some(tab_count - 1),
             _ => None,
         }
     }
@@ -3762,6 +3762,66 @@ mod native {
             assert!(!missing_tab.dirty);
             assert_eq!(app.active_tab(), 2);
             assert_eq!(browser_window_location_text(&mode), Some(""));
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_numpad_shortcuts_switch_tabs() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewTab(
+                "list-marker-types.html".to_owned(),
+            ))
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewBlankTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
+            let mut mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let first_tab = handle_browser_window_key(&mut app, &mut mode, Key::NumPad1, modifiers)
+                .await
+                .unwrap();
+            assert!(first_tab.dirty);
+            assert_eq!(app.active_tab(), 0);
+
+            let second_tab =
+                handle_browser_window_key(&mut app, &mut mode, Key::NumPad2, modifiers)
+                    .await
+                    .unwrap();
+            assert!(second_tab.dirty);
+            assert_eq!(app.active_tab(), 1);
+
+            let last_tab = handle_browser_window_key(&mut app, &mut mode, Key::NumPad9, modifiers)
+                .await
+                .unwrap();
+            assert!(last_tab.dirty);
+            assert_eq!(app.active_tab(), 2);
+
+            let missing_tab =
+                handle_browser_window_key(&mut app, &mut mode, Key::NumPad8, modifiers)
+                    .await
+                    .unwrap();
+            assert!(!missing_tab.dirty);
+            assert_eq!(app.active_tab(), 2);
         }
 
         #[test]
