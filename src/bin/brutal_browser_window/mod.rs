@@ -3,14 +3,15 @@ use std::path::PathBuf;
 use anyhow::Result;
 #[cfg(any(test, feature = "native-window"))]
 use anyhow::ensure;
+#[cfg(any(test, feature = "native-window"))]
+use brutal_search::browser::{
+    BROWSER_ABOUT_BLANK_TARGET, BrowserAppWindowFrameOptions, BrowserRasterOptions,
+    BrowserRgbaRaster,
+};
 #[cfg(feature = "native-window")]
 use brutal_search::browser::{
     BrowserApp, BrowserAppAction, BrowserAppOptions, BrowserAppWindowHit, BrowserCookieJar,
     BrowserLocalStorage, BrowserRenderOptions,
-};
-#[cfg(any(test, feature = "native-window"))]
-use brutal_search::browser::{
-    BrowserAppWindowFrameOptions, BrowserRasterOptions, BrowserRgbaRaster,
 };
 use clap::Args;
 
@@ -142,9 +143,18 @@ fn browser_window_location_text(mode: &BrowserWindowMode) -> Option<&str> {
 #[cfg(any(test, feature = "native-window"))]
 fn begin_browser_window_location_input(mode: &mut BrowserWindowMode, current_source: &str) {
     *mode = BrowserWindowMode::Location {
-        text: current_source.to_owned(),
+        text: browser_window_location_prompt_text(current_source).to_owned(),
         replace_on_input: true,
     };
+}
+
+#[cfg(any(test, feature = "native-window"))]
+fn browser_window_location_prompt_text(source: &str) -> &str {
+    if source == BROWSER_ABOUT_BLANK_TARGET {
+        ""
+    } else {
+        source
+    }
 }
 
 #[cfg(any(test, feature = "native-window"))]
@@ -3157,6 +3167,78 @@ mod native {
                 browser_window_location_text(&mode),
                 Some("bench/browser-fixtures/static-text.html")
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_about_blank_focuses_empty_location_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewBlankTab)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                BROWSER_ABOUT_BLANK_TARGET
+            );
+
+            let mut mode = BrowserWindowMode::Page;
+            let command_l = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::L,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(command_l.dirty);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
+
+            mode = BrowserWindowMode::Page;
+            let f6 = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::F6,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(f6.dirty);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
+
+            mode = BrowserWindowMode::Page;
+            let click = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::LocationBar,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(click.dirty);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
         }
 
         #[tokio::test]
