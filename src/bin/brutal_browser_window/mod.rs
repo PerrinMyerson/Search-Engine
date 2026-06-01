@@ -701,6 +701,7 @@ mod native {
                 }
                 Key::W => {
                     if app.tab_count() > 1 {
+                        *mode = BrowserWindowMode::Page;
                         app.apply_action(BrowserAppAction::CloseTab(None)).await?;
                         return Ok(BrowserWindowKeyResult {
                             dirty: true,
@@ -2259,6 +2260,52 @@ mod native {
             assert!(!result.dirty);
             assert!(result.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_w_closes_tab_and_dismisses_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewBlankTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale closed tab prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::W,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(mode, BrowserWindowMode::Page);
         }
 
         #[tokio::test]
