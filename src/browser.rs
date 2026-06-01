@@ -2259,6 +2259,8 @@ impl BrowserSession {
         self.set_entry_render(current_index, profiled.render);
         if let Some(focused_control) = focused_control {
             self.set_focused_control(current_index, focused_control)?;
+        } else {
+            self.blur_focused_control()?;
         }
         if let Some(action) = default_action {
             let render = self.entries[current_index].render.clone();
@@ -2298,6 +2300,8 @@ impl BrowserSession {
         self.set_entry_render(current_index, profiled.render);
         if let Some(focused_control) = focused_control {
             self.set_focused_control(current_index, focused_control)?;
+        } else {
+            self.blur_focused_control()?;
         }
         if let Some(action) = default_action {
             let render = self.entries[current_index].render.clone();

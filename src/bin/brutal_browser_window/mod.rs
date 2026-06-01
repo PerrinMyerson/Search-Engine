@@ -2083,6 +2083,59 @@ mod native {
         }
 
         #[tokio::test]
+        async fn browser_window_page_click_blurs_focused_control() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><p>plain content</p><form><input name="q" value="focused"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
+            let window = app.present_window_frame().unwrap();
+            let page_x = window.report.page.padding_x + 1;
+            let page_y = window
+                .report
+                .content_y
+                .saturating_add(window.report.page.padding_y)
+                .saturating_add(2);
+            let hit = app.hit_test_window(page_x, page_y).unwrap();
+            assert_eq!(hit, BrowserAppWindowHit::PageViewport { x: 0, y: 0 });
+            let mut mode = BrowserWindowMode::Page;
+
+            let click = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                page_x,
+                page_y,
+                hit,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(click.dirty);
+            assert!(!click.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_session().unwrap().focused_control().is_none());
+        }
+
+        #[tokio::test]
         async fn browser_window_command_page_keys_cycle_tabs() {
             let mut app = BrowserApp::open(
                 "bench/browser-fixtures/static-text.html",
