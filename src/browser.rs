@@ -1141,6 +1141,7 @@ struct ComputedStyle {
     box_sizing: BoxSizing,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
+    outline: Option<BorderPaint>,
     padding: BoxSpacing,
     margin: BoxSpacing,
     width: Option<usize>,
@@ -1177,6 +1178,7 @@ struct CssDeclarations {
     box_sizing: Option<BoxSizing>,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
+    outline: Option<BorderPaint>,
     padding: Option<BoxSpacing>,
     margin: Option<BoxSpacing>,
     width: Option<usize>,
@@ -9299,6 +9301,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
     let mut border_width = None;
     let mut border_shade = None;
     let mut border_enabled = false;
+    let mut outline_width = None;
+    let mut outline_shade = None;
+    let mut outline_enabled = None;
     let mut padding = PartialBoxSpacing::default();
     let mut margin = PartialBoxSpacing::default();
     for declaration in style.split(';') {
@@ -9387,6 +9392,25 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "border-color" => {
                 border_shade = parse_css_color_shade(value).or(border_shade);
             }
+            "outline" => {
+                let outline = parse_css_outline(value);
+                if outline.enabled.is_some() {
+                    outline_enabled = outline.enabled;
+                }
+                outline_width = outline.width.or(outline_width);
+                outline_shade = outline.shade.or(outline_shade);
+            }
+            "outline-style" => {
+                if let Some(enabled) = parse_css_outline_style_enabled(value) {
+                    outline_enabled = Some(enabled);
+                }
+            }
+            "outline-width" => {
+                outline_width = parse_css_border_width(value).or(outline_width);
+            }
+            "outline-color" => {
+                outline_shade = parse_css_color_shade(value).or(outline_shade);
+            }
             "padding" => {
                 if let Some(parsed) = parse_css_padding(value) {
                     padding.set_all(parsed);
@@ -9470,6 +9494,12 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         declarations.border = Some(BorderPaint {
             width: border_width.unwrap_or(1).clamp(1, 4),
             shade: border_shade.unwrap_or(0),
+        });
+    }
+    if outline_enabled == Some(true) {
+        declarations.outline = Some(BorderPaint {
+            width: outline_width.unwrap_or(1).clamp(1, 4),
+            shade: outline_shade.unwrap_or(0),
         });
     }
     declarations.padding = padding.finish();
@@ -9676,6 +9706,13 @@ struct ParsedBorder {
     shade: Option<u8>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParsedOutline {
+    enabled: Option<bool>,
+    width: Option<usize>,
+    shade: Option<u8>,
+}
+
 fn parse_css_border(value: &str) -> ParsedBorder {
     let mut border = ParsedBorder::default();
     for token in value.split_ascii_whitespace() {
@@ -9696,6 +9733,37 @@ fn parse_css_border_style_enabled(value: &str) -> bool {
             "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset"
         )
     })
+}
+
+fn parse_css_outline(value: &str) -> ParsedOutline {
+    let mut outline = ParsedOutline::default();
+    for token in value.split_ascii_whitespace() {
+        if token.eq_ignore_ascii_case("none") || token.eq_ignore_ascii_case("hidden") {
+            return ParsedOutline {
+                enabled: Some(false),
+                ..ParsedOutline::default()
+            };
+        }
+        if parse_css_outline_style_enabled(token) == Some(true) {
+            outline.enabled = Some(true);
+        }
+        outline.width = parse_css_border_width(token).or(outline.width);
+        outline.shade = parse_css_color_shade(token).or(outline.shade);
+    }
+    outline
+}
+
+fn parse_css_outline_style_enabled(value: &str) -> Option<bool> {
+    let mut enabled = None;
+    for token in value.split_ascii_whitespace() {
+        match token.to_ascii_lowercase().as_str() {
+            "none" | "hidden" => return Some(false),
+            "auto" | "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset"
+            | "outset" => enabled = Some(true),
+            _ => {}
+        }
+    }
+    enabled
 }
 
 fn parse_css_border_width(value: &str) -> Option<usize> {
@@ -10600,6 +10668,17 @@ fn render_node(
                 );
                 renderer.push_block_border_bottom(box_x, box_width, border, Some(node_id));
             }
+            if let (Some((box_x, box_width, start_y)), Some(outline)) = (block_box, style.outline) {
+                let outline_height = renderer.current_row().saturating_sub(start_y).max(1);
+                renderer.push_block_outline(
+                    box_x,
+                    box_width,
+                    start_y,
+                    outline_height,
+                    outline,
+                    Some(node_id),
+                );
+            }
             if let Some((box_x, box_width, start_y, shade)) = background_start {
                 renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
             }
@@ -10829,6 +10908,7 @@ fn computed_style(
             box_sizing: BoxSizing::ContentBox,
             list_style_type: None,
             border: None,
+            outline: None,
             padding: BoxSpacing::default(),
             margin: BoxSpacing::default(),
             width: None,
@@ -10857,6 +10937,7 @@ fn computed_style(
     let mut box_sizing = BoxSizing::ContentBox;
     let mut list_style_type = None;
     let mut border = None;
+    let mut outline = None;
     let mut padding = BoxSpacing::default();
     let mut margin = default_margin(&element.tag);
     let mut width = None;
@@ -10883,6 +10964,7 @@ fn computed_style(
     let mut box_sizing_specificity = 0u32;
     let mut list_style_type_specificity = 0u32;
     let mut border_specificity = 0u32;
+    let mut outline_specificity = 0u32;
     let mut padding_specificity = 0u32;
     let mut margin_specificity = 0u32;
     let mut width_specificity = 0u32;
@@ -10995,6 +11077,12 @@ fn computed_style(
                 border = Some(rule_border);
                 border_specificity = rule_specificity;
             }
+            if let Some(rule_outline) = rule.declarations.outline
+                && rule_specificity >= outline_specificity
+            {
+                outline = Some(rule_outline);
+                outline_specificity = rule_specificity;
+            }
             if let Some(rule_padding) = rule.declarations.padding
                 && rule_specificity >= padding_specificity
             {
@@ -11106,6 +11194,9 @@ fn computed_style(
         if let Some(inline_border) = inline.border {
             border = Some(inline_border);
         }
+        if let Some(inline_outline) = inline.outline {
+            outline = Some(inline_outline);
+        }
         if let Some(inline_padding) = inline.padding {
             padding = inline_padding;
         }
@@ -11154,6 +11245,7 @@ fn computed_style(
         box_sizing,
         list_style_type,
         border,
+        outline,
         padding,
         margin,
         width,
@@ -12527,6 +12619,69 @@ impl FlowRenderer {
                 .push(DisplayHitTarget::node(target_node));
         }
         self.next_y = self.next_y.saturating_add(border.width);
+    }
+
+    fn push_block_outline(
+        &mut self,
+        x: usize,
+        width: usize,
+        y: usize,
+        height: usize,
+        outline: BorderPaint,
+        target_node: Option<usize>,
+    ) {
+        if self.visibility != Visibility::Visible || width == 0 || height == 0 {
+            return;
+        }
+        let outline_width = outline.width.min(width).min(height).max(1);
+        self.border_list.push(DisplayCommand::Rect {
+            x,
+            y,
+            width,
+            height: outline_width,
+            shade: outline.shade,
+        });
+        self.border_targets
+            .push(DisplayHitTarget::node(target_node));
+
+        let remaining_height = height.saturating_sub(outline_width);
+        if remaining_height >= outline_width {
+            self.border_list.push(DisplayCommand::Rect {
+                x,
+                y: y.saturating_add(height.saturating_sub(outline_width)),
+                width,
+                height: outline_width,
+                shade: outline.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+
+        let side_height = height.saturating_sub(outline_width.saturating_mul(2));
+        if side_height == 0 {
+            return;
+        }
+        let side_y = y.saturating_add(outline_width);
+        self.border_list.push(DisplayCommand::Rect {
+            x,
+            y: side_y,
+            width: outline_width,
+            height: side_height,
+            shade: outline.shade,
+        });
+        self.border_targets
+            .push(DisplayHitTarget::node(target_node));
+        if width > outline_width {
+            self.border_list.push(DisplayCommand::Rect {
+                x: x.saturating_add(width.saturating_sub(outline_width)),
+                y: side_y,
+                width: outline_width,
+                height: side_height,
+                shade: outline.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
     }
 
     fn push_block_background(

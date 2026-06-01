@@ -1601,6 +1601,64 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn css_outline_paints_block_boxes_without_affecting_layout() {
+    let render = render_html(
+        "mem://css-outline-blocks",
+        br#"
+            <html><head><style>
+              .focus { outline: 2px solid blue; width: 80px }
+              .disabled { outline: 2px solid red; outline-style: none; width: 80px }
+            </style></head><body>
+              <div class="focus">Card</div>
+              <div class="disabled">Plain</div>
+              <div style="outline-style:auto; outline-width:16px; outline-color:red; width:40px; height:24px"></div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Card\nPlain\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 1,
+                shade: 28,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 2,
+                shade: 76,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Card".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Plain".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",
