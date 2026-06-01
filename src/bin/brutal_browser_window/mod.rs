@@ -810,6 +810,12 @@ mod native {
                 Some(BrowserAppAction::FocusNext)
             }
             Key::Tab => None,
+            Key::Up if browser_window_focused_control_is_select(app)? => {
+                browser_window_focused_select_step_action(app, -1)?
+            }
+            Key::Down if browser_window_focused_control_is_select(app)? => {
+                browser_window_focused_select_step_action(app, 1)?
+            }
             Key::Up => Some(BrowserAppAction::Scroll {
                 delta_x: 0,
                 delta_y: -3,
@@ -1080,6 +1086,65 @@ mod native {
                         | "textarea"
                 )
             }))
+    }
+
+    fn browser_window_focused_control_is_select(app: &BrowserApp) -> Result<bool> {
+        Ok(app
+            .active_session()?
+            .focused_control()
+            .is_some_and(|control| control.kind.eq_ignore_ascii_case("select")))
+    }
+
+    fn browser_window_focused_select_step_action(
+        app: &BrowserApp,
+        direction: isize,
+    ) -> Result<Option<BrowserAppAction>> {
+        let Some(focused) = app.active_session()?.focused_control() else {
+            return Ok(None);
+        };
+        if !focused.kind.eq_ignore_ascii_case("select") {
+            return Ok(None);
+        }
+        let Some(control) = app
+            .active_session()?
+            .current_forms()
+            .get(focused.form_index)
+            .and_then(|form| form.controls.get(focused.control_index))
+            .filter(|control| {
+                !control.disabled
+                    && control.name == focused.name
+                    && control.kind.eq_ignore_ascii_case("select")
+            })
+        else {
+            return Ok(None);
+        };
+
+        let enabled_options = control
+            .options
+            .iter()
+            .filter(|option| !option.disabled)
+            .collect::<Vec<_>>();
+        if enabled_options.is_empty() {
+            return Ok(None);
+        }
+        let current_position = enabled_options
+            .iter()
+            .position(|option| option.value == focused.value)
+            .or_else(|| enabled_options.iter().position(|option| option.selected))
+            .unwrap_or(0);
+        let target_position = if direction < 0 {
+            current_position.saturating_sub(1)
+        } else {
+            current_position
+                .saturating_add(1)
+                .min(enabled_options.len() - 1)
+        };
+        if target_position == current_position {
+            return Ok(None);
+        }
+        Ok(Some(BrowserAppAction::SelectFocused(
+            enabled_options[target_position].value.clone(),
+        )))
     }
 
     fn browser_window_has_focusable_controls(app: &BrowserApp) -> Result<bool> {
@@ -3137,6 +3202,116 @@ mod native {
 
             assert!(toggle.dirty);
             assert!(app.report().unwrap().text.contains("[x]"));
+        }
+
+        #[tokio::test]
+        async fn browser_window_arrows_step_focused_select_options() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("select.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Select</title></head><body><form><select name="kind"><option value="web" selected>Web</option><option value="docs">Docs</option><option value="hidden" disabled>Hidden</option><option value="news">News</option></select></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "web"
+            );
+            let mut mode = BrowserWindowMode::Page;
+
+            let down = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(down.dirty);
+            assert!(!down.close);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "docs"
+            );
+
+            let skip_disabled = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(skip_disabled.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "news"
+            );
+
+            let boundary = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!boundary.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "news"
+            );
+
+            let up = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Up,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(up.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "docs"
+            );
         }
 
         #[tokio::test]
