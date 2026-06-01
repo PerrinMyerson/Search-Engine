@@ -559,11 +559,13 @@ impl BrowserApp {
     }
 
     fn duplicate_active_tab(&mut self) -> Result<()> {
+        let active_index = self.active_tab;
         let mut tab = self.active_tab_ref()?.clone();
         tab.last_presented_viewport = None;
         tab.content_dirty = true;
-        self.tabs.push(tab);
-        self.active_tab = self.tabs.len() - 1;
+        let insert_index = active_index.saturating_add(1);
+        self.tabs.insert(insert_index, tab);
+        self.active_tab = insert_index;
         Ok(())
     }
 
@@ -1955,6 +1957,35 @@ mod tests {
         assert_eq!(report.tabs.len(), 2);
         assert!(report.tabs[0].active);
         assert_eq!(report.tabs[1].viewport.y, 1);
+    }
+
+    #[tokio::test]
+    async fn browser_app_duplicates_active_tab_next_to_source_tab() {
+        let mut app = BrowserApp::open("bench/browser-fixtures/static-text.html", app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::NewTab(
+            "list-marker-types.html".to_owned(),
+        ))
+        .await
+        .unwrap();
+        app.apply_action(BrowserAppAction::SwitchTab(0))
+            .await
+            .unwrap();
+
+        app.apply_action(BrowserAppAction::DuplicateTab)
+            .await
+            .unwrap();
+
+        let tabs = app.tab_summaries();
+        assert_eq!(tabs.len(), 3);
+        assert_eq!(app.active_tab(), 1);
+        assert_eq!(tabs[0].source, "bench/browser-fixtures/static-text.html");
+        assert_eq!(tabs[1].source, "bench/browser-fixtures/static-text.html");
+        assert_eq!(
+            tabs[2].source,
+            "bench/browser-fixtures/list-marker-types.html"
+        );
     }
 
     #[tokio::test]
