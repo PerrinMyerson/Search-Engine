@@ -1265,6 +1265,7 @@ mod native {
                 })
             }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
                 let action = if modifiers.shift {
@@ -1274,15 +1275,16 @@ mod native {
                 };
                 app.apply_action(action).await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: app.tab_count() != before_tabs,
+                    dirty: dismissed_prompt || app.tab_count() != before_tabs,
                     close: false,
                 })
             }
             _ => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let report = app.click_window(window_x, window_y).await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: report.applied,
+                    dirty: dismissed_prompt || report.applied,
                     close: false,
                 })
             }
@@ -1959,6 +1961,48 @@ mod native {
                     replace_on_input: false,
                 }
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_left_click_chrome_background_dismisses_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                app.hit_test_window(0, 0).unwrap(),
+                BrowserAppWindowHit::ChromeBackground
+            );
+            let mut mode = BrowserWindowMode::Find {
+                text: "visible prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let click = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::ChromeBackground,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(click.dirty);
+            assert!(!click.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
         }
 
         #[tokio::test]
