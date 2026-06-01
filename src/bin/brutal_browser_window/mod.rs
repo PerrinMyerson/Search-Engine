@@ -348,7 +348,8 @@ mod native {
     use anyhow::{Context, Result};
     use brutal_search::browser::BrowserAppWindowFrame;
     use minifb::{
-        InputCallback, Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions,
+        CursorStyle, InputCallback, Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window,
+        WindowOptions,
     };
 
     use super::*;
@@ -435,6 +436,7 @@ mod native {
         let mut previous_left_down = false;
         let mut previous_middle_down = false;
         let mut previous_window_size = window.get_size();
+        let mut cursor_style = CursorStyle::Arrow;
         let mut close_requested = false;
 
         while window.is_open() && !close_requested {
@@ -459,11 +461,22 @@ mod native {
             let typed_text = drain_browser_window_input_chars(&input_chars);
             dirty |= apply_browser_window_text_input(&mut app, &mut mode, &typed_text).await?;
             let modifiers = browser_window_modifiers(&window);
-            let next_hover_status_text =
-                browser_window_hover_status_for_window(&app, &mode, &window)?;
+            let hover_hit = browser_window_hover_hit_for_window(&app, &mode, &window)?;
+            let next_hover_status_text = match hover_hit.clone() {
+                Some(hit) => browser_window_hover_status_text(&app, hit)?,
+                None => None,
+            };
             if next_hover_status_text != hover_status_text {
                 hover_status_text = next_hover_status_text;
                 dirty = true;
+            }
+            let next_cursor_style = match hover_hit {
+                Some(hit) => browser_window_cursor_style_for_hit(&app, hit)?,
+                None => CursorStyle::Arrow,
+            };
+            if next_cursor_style != cursor_style {
+                cursor_style = next_cursor_style;
+                window.set_cursor_style(cursor_style);
             }
             for key in window.get_keys_pressed(KeyRepeat::No) {
                 let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers).await?;
@@ -511,7 +524,19 @@ mod native {
             previous_middle_down = middle_down;
 
             if dirty {
-                hover_status_text = browser_window_hover_status_for_window(&app, &mode, &window)?;
+                let hover_hit = browser_window_hover_hit_for_window(&app, &mode, &window)?;
+                hover_status_text = match hover_hit.clone() {
+                    Some(hit) => browser_window_hover_status_text(&app, hit)?,
+                    None => None,
+                };
+                let next_cursor_style = match hover_hit {
+                    Some(hit) => browser_window_cursor_style_for_hit(&app, hit)?,
+                    None => CursorStyle::Arrow,
+                };
+                if next_cursor_style != cursor_style {
+                    cursor_style = next_cursor_style;
+                    window.set_cursor_style(cursor_style);
+                }
                 frame = app.present_window_frame_with_options(
                     browser_window_frame_options_with_status(&mode, hover_status_text.as_deref()),
                 )?;
@@ -1114,11 +1139,11 @@ mod native {
         }))
     }
 
-    fn browser_window_hover_status_for_window(
+    fn browser_window_hover_hit_for_window(
         app: &BrowserApp,
         mode: &BrowserWindowMode,
         window: &Window,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<BrowserAppWindowHit>> {
         if !matches!(mode, BrowserWindowMode::Page) {
             return Ok(None);
         }
@@ -1127,8 +1152,23 @@ mod native {
         };
         let x = x.max(0.0).round() as usize;
         let y = y.max(0.0).round() as usize;
-        let hit = app.hit_test_window(x, y)?;
-        browser_window_hover_status_text(app, hit)
+        Ok(Some(app.hit_test_window(x, y)?))
+    }
+
+    fn browser_window_cursor_style_for_hit(
+        app: &BrowserApp,
+        hit: BrowserAppWindowHit,
+    ) -> Result<CursorStyle> {
+        let style = match hit {
+            BrowserAppWindowHit::LocationBar => CursorStyle::Ibeam,
+            BrowserAppWindowHit::PageViewport { x, y }
+                if app.active_link_target_at_viewport(x, y)?.is_some() =>
+            {
+                CursorStyle::OpenHand
+            }
+            _ => CursorStyle::Arrow,
+        };
+        Ok(style)
     }
 
     fn browser_window_hover_status_text(
@@ -2168,6 +2208,64 @@ mod native {
                 )
                 .unwrap(),
                 None
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_cursor_style_tracks_location_and_page_links() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body><a href="second.html">Second</a> plain</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+
+            let app = BrowserApp::open(
+                &first.to_string_lossy(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                browser_window_cursor_style_for_hit(&app, BrowserAppWindowHit::LocationBar)
+                    .unwrap(),
+                CursorStyle::Ibeam
+            );
+            assert_eq!(
+                browser_window_cursor_style_for_hit(
+                    &app,
+                    BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+                )
+                .unwrap(),
+                CursorStyle::OpenHand
+            );
+            assert_eq!(
+                browser_window_cursor_style_for_hit(
+                    &app,
+                    BrowserAppWindowHit::PageViewport { x: 20, y: 0 },
+                )
+                .unwrap(),
+                CursorStyle::Arrow
+            );
+            assert_eq!(
+                browser_window_cursor_style_for_hit(&app, BrowserAppWindowHit::StatusBar).unwrap(),
+                CursorStyle::Arrow
             );
         }
 
