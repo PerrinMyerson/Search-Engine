@@ -787,6 +787,13 @@ mod native {
                     close: true,
                 });
             }
+            Key::Slash if app.active_session()?.focused_control().is_none() => {
+                begin_browser_window_find_input(mode, None);
+                return Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                });
+            }
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
@@ -2571,6 +2578,102 @@ mod native {
                     delta_x: 6,
                     delta_y: 0,
                 })
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_slash_opens_find_without_stealing_text_input() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let open_find = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Slash,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(open_find.dirty);
+            assert!(!open_find.close);
+            assert_eq!(browser_window_find_text(&mode), Some(""));
+            assert_eq!(
+                browser_window_frame_options(&mode).location_text,
+                Some("Find > ".to_owned())
+            );
+            assert!(
+                apply_browser_window_text_input(&mut app, &mut mode, "Visible")
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(browser_window_find_text(&mode), Some("Visible"));
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value=""></form></body></html>"#,
+            )
+            .unwrap();
+            let mut form_app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            form_app
+                .apply_action(BrowserAppAction::FocusNext)
+                .await
+                .unwrap();
+            let mut form_mode = BrowserWindowMode::Page;
+            assert!(
+                apply_browser_window_text_input(&mut form_app, &mut form_mode, "/")
+                    .await
+                    .unwrap()
+            );
+
+            let ignored_find_shortcut = handle_browser_window_key(
+                &mut form_app,
+                &mut form_mode,
+                Key::Slash,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!ignored_find_shortcut.dirty);
+            assert!(!ignored_find_shortcut.close);
+            assert_eq!(form_mode, BrowserWindowMode::Page);
+            assert_eq!(
+                form_app
+                    .active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "/"
             );
         }
 
