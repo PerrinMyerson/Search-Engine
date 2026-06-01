@@ -1547,6 +1547,60 @@ fn css_height_controls_block_and_image_extent() {
 }
 
 #[test]
+fn css_max_height_limits_image_placeholder_extent() {
+    let render = render_html(
+        "mem://css-max-height-image",
+        br#"
+            <html><body>
+              <img alt="wide" width="80" height="48" style="max-height:24px">
+              <img alt="floor" width="80" height="12" style="max-height:24px; min-height:36px">
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("wide".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 10,
+                height: 3,
+                shade: 220,
+                alt: Some("floor".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",

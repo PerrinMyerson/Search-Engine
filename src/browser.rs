@@ -1147,6 +1147,7 @@ struct ComputedStyle {
     max_width: Option<usize>,
     min_width: usize,
     height: Option<usize>,
+    max_height: Option<usize>,
     margin_left_auto: bool,
     margin_right_auto: bool,
     min_height: usize,
@@ -1182,6 +1183,7 @@ struct CssDeclarations {
     max_width: Option<usize>,
     min_width: Option<usize>,
     height: Option<usize>,
+    max_height: Option<usize>,
     margin_left_auto: Option<bool>,
     margin_right_auto: Option<bool>,
     min_height: Option<usize>,
@@ -9453,6 +9455,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.height =
                     parse_css_dimension_length(value, CssAxis::Vertical).or(declarations.height);
             }
+            "max-height" | "max-block-size" => {
+                declarations.max_height = parse_css_dimension_length(value, CssAxis::Vertical)
+                    .or(declarations.max_height);
+            }
             "min-height" => {
                 declarations.min_height = parse_css_dimension_length(value, CssAxis::Vertical)
                     .or(declarations.min_height);
@@ -10704,7 +10710,7 @@ fn image_placeholder_extent(
         width = width.min(max_width);
     }
     width = width.max(style.min_width);
-    let height = style
+    let mut height = style
         .height
         .or_else(|| {
             element
@@ -10712,9 +10718,11 @@ fn image_placeholder_extent(
                 .get("height")
                 .and_then(|value| parse_pixel_dimension_cells(value, 12))
         })
-        .unwrap_or(4)
-        .max(style.min_height)
-        .clamp(1, 24);
+        .unwrap_or(4);
+    if let Some(max_height) = style.max_height {
+        height = height.min(max_height);
+    }
+    height = height.max(style.min_height).clamp(1, 24);
     (width.clamp(1, renderer.available_width()), height)
 }
 
@@ -10827,6 +10835,7 @@ fn computed_style(
             max_width: None,
             min_width: 0,
             height: None,
+            max_height: None,
             margin_left_auto: false,
             margin_right_auto: false,
             min_height: 0,
@@ -10854,6 +10863,7 @@ fn computed_style(
     let mut max_width = None;
     let mut min_width = 0usize;
     let mut height = None;
+    let mut max_height = None;
     let mut margin_left_auto = false;
     let mut margin_right_auto = false;
     let mut min_height = 0usize;
@@ -10879,6 +10889,7 @@ fn computed_style(
     let mut max_width_specificity = 0u32;
     let mut min_width_specificity = 0u32;
     let mut height_specificity = 0u32;
+    let mut max_height_specificity = 0u32;
     let mut margin_left_auto_specificity = 0u32;
     let mut margin_right_auto_specificity = 0u32;
     let mut min_height_specificity = 0u32;
@@ -11020,6 +11031,12 @@ fn computed_style(
                 height = Some(rule_height);
                 height_specificity = rule_specificity;
             }
+            if let Some(rule_max_height) = rule.declarations.max_height
+                && rule_specificity >= max_height_specificity
+            {
+                max_height = Some(rule_max_height);
+                max_height_specificity = rule_specificity;
+            }
             if let Some(rule_margin_left_auto) = rule.declarations.margin_left_auto
                 && rule_specificity >= margin_left_auto_specificity
             {
@@ -11107,6 +11124,9 @@ fn computed_style(
         if let Some(inline_height) = inline.height {
             height = Some(inline_height);
         }
+        if let Some(inline_max_height) = inline.max_height {
+            max_height = Some(inline_max_height);
+        }
         if let Some(inline_margin_left_auto) = inline.margin_left_auto {
             margin_left_auto = inline_margin_left_auto;
         }
@@ -11140,6 +11160,7 @@ fn computed_style(
         max_width,
         min_width,
         height,
+        max_height,
         margin_left_auto,
         margin_right_auto,
         min_height,
