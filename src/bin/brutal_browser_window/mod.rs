@@ -1612,6 +1612,73 @@ mod native {
         }
 
         #[tokio::test]
+        async fn browser_window_command_arrows_navigate_history_from_transient_mode() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(second.to_str().unwrap().to_owned()))
+                .await
+                .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let back = handle_browser_window_key(&mut app, &mut mode, Key::Left, modifiers)
+                .await
+                .unwrap();
+            assert!(back.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            mode = BrowserWindowMode::Location {
+                text: second.to_string_lossy().into_owned(),
+                replace_on_input: false,
+            };
+            let forward = handle_browser_window_key(&mut app, &mut mode, Key::Right, modifiers)
+                .await
+                .unwrap();
+            assert!(forward.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+        }
+
+        #[tokio::test]
         async fn browser_window_command_shift_brackets_cycle_tabs() {
             let mut app = BrowserApp::open(
                 "bench/browser-fixtures/static-text.html",
