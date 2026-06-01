@@ -11760,7 +11760,9 @@ impl FlowRenderer {
 
     fn push_wrapped_text(&mut self, text: &str, target_node: Option<usize>) {
         let available_width = self.available_width();
-        for word in text.split_whitespace() {
+        for raw_word in normal_flow_words(text) {
+            let word = normalize_non_breaking_spaces(raw_word);
+            let word = word.as_str();
             let word_width = self.letter_spaced_text_width(word);
             if self.current_width == 0 {
                 self.soft_break_opportunity = false;
@@ -11814,11 +11816,12 @@ impl FlowRenderer {
 
     fn push_nowrap_text(&mut self, text: &str, target_node: Option<usize>) {
         self.soft_break_opportunity = false;
-        for word in text.split_whitespace() {
+        for raw_word in normal_flow_words(text) {
+            let word = normalize_non_breaking_spaces(raw_word);
             if self.current_width > 0 {
                 self.push_inter_word_space(target_node);
             }
-            self.push_text_run_piece(word, target_node);
+            self.push_text_run_piece(&word, target_node);
         }
     }
 
@@ -12566,6 +12569,19 @@ impl FlowRenderer {
             decoded_images: self.decoded_images,
         }
     }
+}
+
+fn normal_flow_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(is_breakable_normal_whitespace)
+        .filter(|word| !word.is_empty())
+}
+
+fn is_breakable_normal_whitespace(ch: char) -> bool {
+    ch.is_whitespace() && ch != '\u{00a0}'
+}
+
+fn normalize_non_breaking_spaces(text: &str) -> String {
+    text.replace('\u{00a0}', " ")
 }
 
 #[derive(Debug)]

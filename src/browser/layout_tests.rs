@@ -649,6 +649,39 @@ fn css_white_space_nowrap_suppresses_soft_wrapping() {
 }
 
 #[test]
+fn normal_white_space_keeps_non_breaking_space_sequences_together() {
+    let render = render_html(
+        "mem://nbsp-wrapping",
+        br#"
+            <html><body>
+              <p>Alpha&nbsp;Beta&nbsp;Gamma&nbsp;Delta Tail</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Alpha Beta Gamma Delta\nTail");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Alpha Beta Gamma Delta".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Tail".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_white_space_pre_line_preserves_newlines_and_wraps() {
     let render = render_html(
         "mem://pre-line",
