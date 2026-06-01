@@ -748,6 +748,19 @@ mod native {
             }
         }
 
+        if key == Key::F6 && modifiers.shift {
+            if matches!(mode, BrowserWindowMode::Page) {
+                let source = current_browser_window_source(app)?;
+                begin_browser_window_location_input(mode, &source);
+            } else {
+                *mode = BrowserWindowMode::Page;
+            }
+            return Ok(BrowserWindowKeyResult {
+                dirty: true,
+                close: false,
+            });
+        }
+
         if key == Key::F6 {
             let source = current_browser_window_source(app)?;
             begin_browser_window_location_input(mode, &source);
@@ -3289,6 +3302,55 @@ mod native {
             .unwrap();
             assert!(click.dirty);
             assert_eq!(browser_window_location_text(&mode), Some(""));
+        }
+
+        #[tokio::test]
+        async fn browser_window_shift_f6_cycles_between_page_and_prompt_focus() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let modifiers = BrowserWindowModifiers {
+                command: false,
+                shift: true,
+                alt: false,
+            };
+
+            let mut mode = BrowserWindowMode::Page;
+            let focus_location = handle_browser_window_key(&mut app, &mut mode, Key::F6, modifiers)
+                .await
+                .unwrap();
+            assert!(focus_location.dirty);
+            assert_eq!(
+                browser_window_location_text(&mode),
+                Some("bench/browser-fixtures/static-text.html")
+            );
+
+            let focus_page = handle_browser_window_key(&mut app, &mut mode, Key::F6, modifiers)
+                .await
+                .unwrap();
+            assert!(focus_page.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+
+            mode = BrowserWindowMode::Find {
+                text: "Visible".to_owned(),
+                replace_on_input: false,
+            };
+            let find_to_page = handle_browser_window_key(&mut app, &mut mode, Key::F6, modifiers)
+                .await
+                .unwrap();
+            assert!(find_to_page.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
         }
 
         #[tokio::test]
