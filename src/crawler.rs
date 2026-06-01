@@ -300,7 +300,9 @@ async fn crawl_with_frontier(
     frontier.save()?;
 
     let mut docs = if let Some(path) = options.document_snapshot_path.as_deref() {
-        load_document_snapshot(path)?
+        let docs = load_document_snapshot(path)?;
+        compact_document_snapshot(path)?;
+        docs
     } else {
         Vec::new()
     };
@@ -516,11 +518,17 @@ fn load_document_snapshot(path: &Path) -> Result<Vec<FieldedDocument>> {
         return Ok(Vec::new());
     }
 
+    let (docs, _) = read_document_snapshot(path)?;
+    Ok(docs)
+}
+
+fn read_document_snapshot(path: &Path) -> Result<(Vec<FieldedDocument>, usize)> {
     let file = fs::File::open(path)
         .with_context(|| format!("open crawl document snapshot {}", path.display()))?;
     let reader = BufReader::new(file);
     let mut docs = Vec::new();
     let mut positions = FxHashMap::default();
+    let mut entries = 0;
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line.with_context(|| {
@@ -533,6 +541,7 @@ fn load_document_snapshot(path: &Path) -> Result<Vec<FieldedDocument>> {
         if line.trim().is_empty() {
             continue;
         }
+        entries += 1;
         let doc: FieldedDocument = serde_json::from_str(&line).with_context(|| {
             format!(
                 "decode line {} from crawl document snapshot {}",
@@ -548,7 +557,50 @@ fn load_document_snapshot(path: &Path) -> Result<Vec<FieldedDocument>> {
         }
     }
 
-    Ok(docs)
+    Ok((docs, entries))
+}
+
+fn compact_document_snapshot(path: &Path) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let (docs, entries) = read_document_snapshot(path)?;
+    let removed = entries.saturating_sub(docs.len());
+    if removed == 0 {
+        return Ok(0);
+    }
+
+    write_document_snapshot(path, &docs)?;
+    Ok(removed)
+}
+
+fn write_document_snapshot(path: &Path, docs: &[FieldedDocument]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create crawl snapshot parent {}", parent.display()))?;
+    }
+
+    let tmp_path = path.with_extension("tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&tmp_path)
+        .with_context(|| format!("open crawl document snapshot temp {}", tmp_path.display()))?;
+    for doc in docs {
+        serde_json::to_writer(&mut file, doc)?;
+        file.write_all(b"\n")?;
+    }
+    file.flush()?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "replace crawl document snapshot {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn append_document_snapshot(path: &Path, doc: &FieldedDocument) -> Result<()> {
@@ -647,6 +699,47 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].url, new_doc.url);
         assert_eq!(docs[0].body, new_doc.body);
+    }
+
+    #[test]
+    fn document_snapshot_compaction_rewrites_latest_unique_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crawl-docs.jsonl");
+        let old_doc = FieldedDocument::from_plain_text(
+            "https://example.com/a".to_owned(),
+            "A".to_owned(),
+            "alpha beta".to_owned(),
+            None,
+        );
+        let other_doc = FieldedDocument::from_plain_text(
+            "https://example.com/b".to_owned(),
+            "B".to_owned(),
+            "epsilon zeta".to_owned(),
+            None,
+        );
+        let new_doc = FieldedDocument::from_plain_text(
+            "https://example.com/a".to_owned(),
+            "A updated".to_owned(),
+            "gamma delta".to_owned(),
+            None,
+        );
+
+        append_document_snapshot(&path, &old_doc).unwrap();
+        append_document_snapshot(&path, &other_doc).unwrap();
+        append_document_snapshot(&path, &new_doc).unwrap();
+
+        assert_eq!(compact_document_snapshot(&path).unwrap(), 1);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 2);
+        assert!(!contents.contains("alpha beta"));
+        assert!(contents.contains("gamma delta"));
+        assert!(contents.contains("epsilon zeta"));
+
+        let docs = load_document_snapshot(&path).unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].url, new_doc.url);
+        assert_eq!(docs[0].body, new_doc.body);
+        assert_eq!(docs[1].url, other_doc.url);
     }
 
     #[test]
