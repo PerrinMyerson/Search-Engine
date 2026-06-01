@@ -12150,6 +12150,11 @@ fn default_display(tag: &str) -> Display {
 
 fn default_margin(tag: &str) -> BoxSpacing {
     match tag {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => BoxSpacing {
+            top: 1,
+            bottom: 1,
+            ..BoxSpacing::default()
+        },
         "blockquote" => BoxSpacing {
             left: 4,
             right: 4,
