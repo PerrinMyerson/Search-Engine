@@ -3617,7 +3617,7 @@ fn layout_box_kind(
     element: &ElementData,
     style: ComputedStyle,
 ) -> String {
-    if element.tag == "img" {
+    if element.tag == "img" || is_replaced_media_element(&element.tag) {
         "replaced".to_owned()
     } else if form_control_render_text(dom, node_id, element).is_some() {
         "form-control".to_owned()
@@ -10329,6 +10329,22 @@ fn render_node(
                 }
                 return;
             }
+            if is_replaced_media_element(&element.tag) {
+                let (media_width, media_height) =
+                    replaced_media_placeholder_extent(element, &style, renderer);
+                renderer.push_image_placeholder(
+                    media_width,
+                    media_height,
+                    replaced_media_alt(element),
+                    source,
+                    replaced_media_render_source(element),
+                    Some(node_id),
+                );
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
@@ -10724,6 +10740,40 @@ fn image_placeholder_extent(
     }
     height = height.max(style.min_height).clamp(1, 24);
     (width.clamp(1, renderer.available_width()), height)
+}
+
+fn is_replaced_media_element(tag: &str) -> bool {
+    matches!(tag, "audio" | "embed" | "iframe" | "object" | "video")
+}
+
+fn replaced_media_placeholder_extent(
+    element: &ElementData,
+    style: &ComputedStyle,
+    renderer: &FlowRenderer,
+) -> (usize, usize) {
+    let (width, height) = image_placeholder_extent(element, style, renderer);
+    let has_explicit_height = style.height.is_some() || element.attrs.contains_key("height");
+    if element.tag == "audio" && !has_explicit_height {
+        return (width, 1usize.max(style.min_height).clamp(1, 24));
+    }
+    (width, height)
+}
+
+fn replaced_media_render_source(element: &ElementData) -> Option<&str> {
+    match element.tag.as_str() {
+        "object" => element.data.as_deref(),
+        "video" => element.poster.as_deref().or(element.src.as_deref()),
+        _ => element.src.as_deref(),
+    }
+}
+
+fn replaced_media_alt(element: &ElementData) -> Option<String> {
+    element
+        .attrs
+        .get("title")
+        .or(element.alt.as_ref())
+        .cloned()
+        .or_else(|| Some(element.tag.clone()))
 }
 
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {

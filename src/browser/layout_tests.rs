@@ -1601,6 +1601,86 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn renders_replaced_media_elements_as_placeholders() {
+    let render = render_html(
+        "mem://replaced-media",
+        br#"
+            <html><body>
+              <iframe title="Map" src="https://example.test/map" width="80" height="24"></iframe>
+              <object data="chart.svg" width="40" height="12"></object>
+              <video poster="poster.png" width="64" height="24"></video>
+              <audio src="sound.mp3"></audio>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("Map".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 1,
+                shade: 220,
+                alt: Some("object".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 8,
+                height: 2,
+                shade: 220,
+                alt: Some("video".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 5,
+                width: 10,
+                height: 1,
+                shade: 220,
+                alt: Some("audio".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",
