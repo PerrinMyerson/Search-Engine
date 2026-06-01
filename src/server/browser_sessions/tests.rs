@@ -2496,6 +2496,87 @@ async fn browser_session_registry_edits_and_submits_forms() {
 }
 
 #[tokio::test]
+async fn browser_session_registry_submits_forms_in_new_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let form_page = dir.path().join("form.html");
+    let result_page = dir.path().join("result.html");
+    std::fs::write(
+        &form_page,
+        r#"<!doctype html>
+<title>Form</title>
+<form action="result.html" method="get">
+  <input name="q" value="old">
+  <button>Go</button>
+</form>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &result_page,
+        r#"<!doctype html><title>Result</title><p>new tab result</p>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), form_page.display().to_string()),
+            ("from".to_owned(), "/search?q=forms".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    let first_id = payload.id.clone();
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("action=submit-new-session"));
+
+    let fill = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), first_id.clone()),
+            ("action".to_owned(), "fill".to_owned()),
+            ("form".to_owned(), "0".to_owned()),
+            ("name".to_owned(), "q".to_owned()),
+            ("value".to_owned(), "rust browser".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&fill).await.unwrap();
+    assert_eq!(payload.forms[0].controls[0].value, "rust browser");
+    let submit_href = payload.forms[0].submit_new_session_url.clone();
+
+    let submit_new_session = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(submit_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    let (payload, _) = registry.apply_target(&submit_new_session).await.unwrap();
+    assert_eq!(payload.title, "Result");
+    assert_ne!(payload.id, first_id);
+    assert_eq!(payload.sessions.len(), 2);
+    assert!(payload.source.contains("result.html"));
+    assert!(payload.source.contains("q=rust+browser"));
+    assert!(payload.viewport.contains("new tab result"));
+    assert!(
+        payload
+            .sessions
+            .iter()
+            .any(|session| session.id == first_id && session.title == "Form")
+    );
+
+    let original = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), first_id),
+            ("action".to_owned(), "current".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&original).await.unwrap();
+    assert_eq!(payload.title, "Form");
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(payload.forms[0].controls[0].value, "rust browser");
+}
+
+#[tokio::test]
 async fn browser_session_registry_focuses_types_and_submits_forms() {
     let dir = tempfile::tempdir().unwrap();
     let form_page = dir.path().join("keyboard.html");
