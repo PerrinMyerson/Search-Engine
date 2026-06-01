@@ -216,6 +216,13 @@ struct BrowserAppTab {
     find: Option<BrowserAppFindState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserAppNavigationState {
+    source: Option<String>,
+    current_index: Option<usize>,
+    history_len: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowserAppFindDirection {
     Initial,
@@ -741,7 +748,7 @@ impl BrowserApp {
     }
 
     async fn click_active(&mut self, x: usize, y: usize) -> Result<()> {
-        let before = self.current_source();
+        let before = self.active_navigation_state()?;
         let (document_x, document_y) = {
             let viewport = self.active_tab_ref()?.viewport;
             (viewport.x.saturating_add(x), viewport.y.saturating_add(y))
@@ -796,7 +803,7 @@ impl BrowserApp {
     }
 
     async fn click_selector(&mut self, selector: &str) -> Result<()> {
-        let before = self.current_source();
+        let before = self.active_navigation_state()?;
         self.active_tab_mut()?
             .session
             .click_selector_with_default_action(selector)
@@ -805,7 +812,7 @@ impl BrowserApp {
     }
 
     async fn submit_focused(&mut self) -> Result<()> {
-        let before = self.current_source();
+        let before = self.active_navigation_state()?;
         self.active_tab_mut()?.session.submit_focused_form().await?;
         self.after_potential_navigation(before)
     }
@@ -843,13 +850,23 @@ impl BrowserApp {
         self.reset_active_viewport_to_page_start()
     }
 
-    fn after_potential_navigation(&mut self, before_source: Option<String>) -> Result<()> {
-        let after_source = self.current_source();
-        if before_source != after_source {
+    fn after_potential_navigation(&mut self, before: BrowserAppNavigationState) -> Result<()> {
+        let after = self.active_navigation_state()?;
+        if before != after {
             self.reset_active_viewport_to_page_start()
         } else {
             self.mark_active_content_dirty()
         }
+    }
+
+    fn active_navigation_state(&self) -> Result<BrowserAppNavigationState> {
+        let tab = self.active_tab_ref()?;
+        let snapshot = tab.session.snapshot();
+        Ok(BrowserAppNavigationState {
+            source: tab.session.current().map(|render| render.source.clone()),
+            current_index: snapshot.current_index,
+            history_len: snapshot.entries.len(),
+        })
     }
 
     fn reset_active_viewport_to_page_start(&mut self) -> Result<()> {
@@ -1653,6 +1670,40 @@ mod tests {
         assert_eq!(report.tabs[0].title, "Second");
         assert!(report.frame.viewport.full_repaint);
         assert!(report.frame.viewport.source.ends_with("second.html"));
+    }
+
+    #[tokio::test]
+    async fn browser_app_same_url_click_resets_find_state() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("self.html");
+        fs::write(
+            &page,
+            r#"<html><head><title>Self</title></head><body><a href="self.html">Again</a></body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&page.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::FindText {
+            query: "Again".to_owned(),
+            next: false,
+        })
+        .await
+        .unwrap();
+        assert!(app.active_find_state().unwrap().is_some());
+
+        app.present_frame().unwrap();
+        app.apply_action(BrowserAppAction::Click { x: 0, y: 0 })
+            .await
+            .unwrap();
+
+        let report = app.report().unwrap();
+        assert_eq!(report.history.entries.len(), 2);
+        assert_eq!(report.history.current_index, Some(1));
+        assert_eq!(report.tabs[0].title, "Self");
+        assert_eq!(report.find, None);
+        assert!(report.frame.viewport.full_repaint);
     }
 
     #[tokio::test]
