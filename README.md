@@ -1,12 +1,12 @@
-# Brutal Browser
+# Rowser
 
-Brutal Browser is an early independent Rust browser engine project. The target
+Rowser is an early independent Rust browser engine project. The target
 is a Rust-native browser engine and shell designed for performance, safety,
 inspectability, and automation. It must not use Chromium, WebKit, or Gecko as
 the page engine. Chromium is allowed only as a benchmark/comparison oracle for
 named corpora and fixtures.
 
-The current code is still an early scaffold. `brutal-browser` can load local or
+The current code is still an early scaffold. `rowser-browser` can load local or
 HTTP(S) HTML, build a DOM-like tree, apply a small CSS subset, render terminal
 text, emit deterministic display-list/raster artifacts, run a tiny JavaScript
 DOM mutation subset, and drive a narrow local CLI shell with links, forms,
@@ -53,19 +53,19 @@ day-to-day benchmark target while the browser is still becoming functional.
 
 ## Play With The Rust Browser Now
 
-`brutal-browser` is a Rust browser scaffold for local fixtures and small HTML
+`rowser-browser` is a Rust browser scaffold for local fixtures and small HTML
 experiments. It is not Chromium-compatible yet: there is no general JavaScript
 VM, full Web API surface, full CSS/layout engine, browser-grade raster/
 compositor, sandbox, native GUI chrome, devtools, platform accessibility tree,
 or modern site compatibility, profile-backed persistent storage, IndexedDB,
 Cache API, or quota/private mode. The engine now has a reusable `BrowserApp`
 state model for tabs, navigation, viewport scrolling, input actions, and
-presentable RGBA frames. `brutal-browser app` exposes that state model as a
+presentable RGBA frames. `rowser-browser app` exposes that state model as a
 scriptable and interactive/stdin app surface with JSON cookie/localStorage
 profile files, a JSON app profile for visit history/bookmarks, app-level
 find/find-next state, visible viewport text, page PNG frame output, and a
 deterministic browser-window PNG with tab/location/status chrome. A
-feature-gated `brutal-browser window` command can now present that same frame in
+feature-gated `rowser-browser window` command can now present that same frame in
 a native CPU-backed window and route mouse, wheel, and basic keyboard input
 through `BrowserApp`. It also has a narrow location-entry mode with live
 location-bar text, Enter-to-open, Escape cancel, Backspace edit, resize-aware
@@ -76,12 +76,12 @@ needs to be built.
 cargo build --release --bins
 
 # Browse a checked-in fixture in the terminal shell.
-./target/release/brutal-browser browse bench/browser-fixtures/static-text.html \
+./target/release/rowser-browser browse bench/browser-fixtures/static-text.html \
   --cmd "links" \
   --cmd "render"
 
 # Drive the browser-app state boundary and write the final viewport frame.
-./target/release/brutal-browser app bench/browser-fixtures/static-text.html \
+./target/release/rowser-browser app bench/browser-fixtures/static-text.html \
   --cmd "new-tab max-width-layout.html" \
   --cookie-jar ./profile/cookies.json \
   --local-storage ./profile/local-storage.json \
@@ -92,32 +92,32 @@ cargo build --release --bins
 
 # Keep the browser-app state alive while feeding commands from stdin.
 printf 'bookmark\nfind static\nbookmarks\nprofile-history\nquit\n' | \
-  ./target/release/brutal-browser app ./page.html --stdin --output ./app-frame.png
+  ./target/release/rowser-browser app ./page.html --stdin --output ./app-frame.png
 
 # Route a browser-window pixel click through simple chrome/page hit testing.
-./target/release/brutal-browser app ./page.html \
+./target/release/rowser-browser app ./page.html \
   --cmd "window-click 5 50" \
   --window-output ./app-window.png
 
 # Open the feature-gated native Rust window shell.
-cargo run --release --features native-window --bin brutal-browser -- \
+cargo run --release --features native-window --bin rowser-browser -- \
   window bench/browser-fixtures/static-text.html
 
 # Try the narrow form helpers against a local page containing a simple form.
-./target/release/brutal-browser form-url ./path/to/form.html --field q=rust
-./target/release/brutal-browser submit ./path/to/form.html --field q=rust --json
+./target/release/rowser-browser form-url ./path/to/form.html --field q=rust
+./target/release/rowser-browser submit ./path/to/form.html --field q=rust --json
 
 # Dispatch a supported click handler, then render the session view.
-./target/release/brutal-browser browse bench/browser-fixtures/click-event.html \
+./target/release/rowser-browser browse bench/browser-fixtures/click-event.html \
   --cmd "click #go" \
   --cmd "render"
 
 # Verify fixtures, run the local WPT-subset scaffold, and measure fixture perf.
-./target/release/brutal-browser verify bench/browser-fixtures/manifest.json --json
-./target/release/brutal-browser wpt bench/wpt-subsets/manifest.json \
+./target/release/rowser-browser verify bench/browser-fixtures/manifest.json --json
+./target/release/rowser-browser wpt bench/wpt-subsets/manifest.json \
   --expectations bench/wpt-subsets/expectations.jsonl \
   --json
-./target/release/brutal-bench browser-perf \
+./target/release/rowser-bench browser-perf \
   --manifest bench/browser-fixtures/manifest.json \
   --iterations 50 \
   --chromium-baseline \
@@ -140,46 +140,46 @@ The `index` command is only for a directory of already-saved `.html`, `.htm`,
 ```sh
 cargo build --release --bins
 
-./target/release/brutal-search crawl https://example.com \
-  --index .brutal-index \
+./target/release/rowser-search crawl https://example.com \
+  --index .rowser-index \
   --max-pages 1000 \
   --max-depth 4 \
   --concurrency 64 \
   --max-fetching-per-host 4
 
-./target/release/brutal-searchd --index .brutal-index --preload aggressive
+./target/release/rowser-searchd --index .rowser-index --preload aggressive
 ```
 
 In another terminal:
 
 ```sh
-./target/release/brutal-search search "your query" --index .brutal-index --limit 20
+./target/release/rowser-search search "your query" --index .rowser-index --limit 20
 ```
 
 The query parser supports a small first pass of Google-style operators on the
 same fast index path:
 
 ```sh
-./target/release/brutal-search search "rust site:example.com -deprecated" --index .brutal-index
-./target/release/brutal-search search "guide site:example.com/docs filetype:html" --index .brutal-index
-./target/release/brutal-search search '"exact phrase" site:example.com -"old phrase"' --index .brutal-index
-./target/release/brutal-search search "release notes lang:en after:2025-01-01 before:2025-12-31" --index .brutal-index
-./target/release/brutal-search search "+fast rust OR browser -slow" --index .brutal-index
-./target/release/brutal-search suggest "bru" --index .brutal-index --limit 10
-./target/release/brutal-search spell "exampel" --index .brutal-index --limit 5
+./target/release/rowser-search search "rust site:example.com -deprecated" --index .rowser-index
+./target/release/rowser-search search "guide site:example.com/docs filetype:html" --index .rowser-index
+./target/release/rowser-search search '"exact phrase" site:example.com -"old phrase"' --index .rowser-index
+./target/release/rowser-search search "release notes lang:en after:2025-01-01 before:2025-12-31" --index .rowser-index
+./target/release/rowser-search search "+fast rust OR browser -slow" --index .rowser-index
+./target/release/rowser-search suggest "bru" --index .rowser-index --limit 10
+./target/release/rowser-search spell "exampel" --index .rowser-index --limit 5
 ```
 
 Useful sanity checks after a crawl:
 
 ```sh
-./target/release/brutal-search stats --index .brutal-index
-./target/release/brutal-search render 0 --index .brutal-index
+./target/release/rowser-search stats --index .rowser-index
+./target/release/rowser-search render 0 --index .rowser-index
 ```
 
 Or start the local search UI/API:
 
 ```sh
-./target/release/brutal-search serve --index .brutal-index --addr 127.0.0.1:8765
+./target/release/rowser-search serve --index .rowser-index --addr 127.0.0.1:8765
 ```
 
 To enable full-web fallback with Brave Search, use the raw Search plan/API key
@@ -187,22 +187,22 @@ instead of the Answers product:
 
 ```sh
 BRAVE_SEARCH_API_KEY=... \
-./target/release/brutal-search serve --index .brutal-index --addr 127.0.0.1:8765
+./target/release/rowser-search serve --index .rowser-index --addr 127.0.0.1:8765
 ```
 
 Local results are returned first. If the local index has fewer than the
 requested result count, the Brave provider returns web results, stores them in
-`.brutal-index/web-cache.jsonl`, queues the top URLs for a polite background
-crawl, rebuilds the index from `.brutal-index/crawl-docs.jsonl`, and hot-reloads
+`.rowser-index/web-cache.jsonl`, queues the top URLs for a polite background
+crawl, rebuilds the index from `.rowser-index/crawl-docs.jsonl`, and hot-reloads
 the local provider without restarting the server. Useful controls:
 
-- `BRUTAL_WEB_FALLBACK=0` disables third-party search.
-- `BRUTAL_WEB_CACHE_PATH=/path/to/web-cache.jsonl` changes the provider cache.
-- `BRUTAL_WEB_FALLBACK_COUNT=20` caps third-party results per query.
-- `BRUTAL_BACKGROUND_CRAWL=0` disables background crawl/index.
-- `BRUTAL_BACKGROUND_CRAWL_TOP_N=5` controls how many web result URLs are queued.
-- `BRUTAL_BACKGROUND_CRAWL_MAX_PAGES=5` controls the per-batch crawl budget.
-- `BRUTAL_BACKGROUND_CRAWL_MAX_DEPTH=0` keeps the worker to returned result URLs.
+- `rowser_WEB_FALLBACK=0` disables third-party search.
+- `rowser_WEB_CACHE_PATH=/path/to/web-cache.jsonl` changes the provider cache.
+- `rowser_WEB_FALLBACK_COUNT=20` caps third-party results per query.
+- `rowser_BACKGROUND_CRAWL=0` disables background crawl/index.
+- `rowser_BACKGROUND_CRAWL_TOP_N=5` controls how many web result URLs are queued.
+- `rowser_BACKGROUND_CRAWL_MAX_PAGES=5` controls the per-batch crawl budget.
+- `rowser_BACKGROUND_CRAWL_MAX_DEPTH=0` keeps the worker to returned result URLs.
 
 Then open `http://127.0.0.1:8765`. The UI includes compact filters for
 `site:`, `filetype:`, `lang:`, `after:`, and `before:`; they compile to the
@@ -277,49 +277,49 @@ browse viewport as RGBA frame metadata, write the final visible browse viewport
 as a PNG, and render terminal text plus deterministic raster artifacts:
 
 ```sh
-./target/release/brutal-browser render ./page.html --width 100
-./target/release/brutal-browser render ./page.html --display-list
-./target/release/brutal-browser render-styled ./page.html --display-list
-./target/release/brutal-browser render-scripted ./page.html --display-list
-./target/release/brutal-browser render-images ./page.html --display-list
-./target/release/brutal-browser raster ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --output viewport.pgm
-./target/release/brutal-browser raster-file ./page.html --scroll-y 20 --viewport-width 80 --viewport-height 24 --json
-./target/release/brutal-browser screenshot-file ./page.html --output ./page.png --json
-./target/release/brutal-browser hit-test ./page.html --x 12 --y 4 --json
-./target/release/brutal-browser layer-tree ./page.html --json
-./target/release/brutal-browser layout-tree ./page.html --json
-./target/release/brutal-browser viewport ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --previous-x 0 --previous-y 0 --previous-width 80 --previous-height 24 --json
-./target/release/brutal-browser viewport-frame ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --previous-x 0 --previous-y 0 --previous-width 80 --previous-height 24 --output ./viewport.png --json
-./target/release/brutal-browser accessibility-tree ./page.html --json
-./target/release/brutal-browser click ./page.html "#go" --display-list
-./target/release/brutal-browser click-at ./page.html 0 0 --display-list
-./target/release/brutal-browser click-at ./page.html 0 0 --viewport-y 12 --json
-./target/release/brutal-browser browse ./page.html
-./target/release/brutal-browser browse ./page.html --cmd "links" --cmd "link 0" --cmd "render"
-./target/release/brutal-browser browse ./page.html --cmd "click #go" --cmd "scroll 12" --cmd "render"
-./target/release/brutal-browser browse ./page.html --cmd "focus input[name=q]" --cmd "type rust browser" --cmd "submit 0"
-./target/release/brutal-browser browse ./page.html --cmd "reload" --cmd "render"
-./target/release/brutal-browser browse ./page.html --cmd "new-tab ./other.html" --cmd "tabs"
-./target/release/brutal-browser browse ./page.html --cmd "down 20" --screenshot-output ./viewport.png --json
-./target/release/brutal-browser app ./page.html --cmd "click #go" --cmd "down 20" --output ./app-frame.png --json
-./target/release/brutal-browser render https://example.com --json
-./target/release/brutal-browser resources ./page.html
-./target/release/brutal-browser fetch-resources ./page.html
-./target/release/brutal-browser session ./first.html ./second.html --back 1
-./target/release/brutal-browser form-url ./path/to/form.html --field q=rust
-./target/release/brutal-browser submit ./path/to/form.html --field q=rust --json
-./target/release/brutal-browser verify bench/browser-fixtures/manifest.json
-./target/release/brutal-browser verify bench/document-pages/manifest.json --json
-./target/release/brutal-browser compare-chromium bench/browser-fixtures/manifest.json --json
-./target/release/brutal-browser wpt bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --json
-./target/release/brutal-browser capabilities
-./target/release/brutal-browser coverage --json --require static-html-parse --require display-list --require display-list-hit-testing --require layer-tree-snapshot --require retained-layout-tree --require viewport-raster-culling --require browser-viewport-layout-state --require browser-viewport-invalidation --require browser-viewport-frame-surface --require browser-app-state-surface --require browser-app-cli-surface --require browser-app-interactive-shell --require browser-app-visible-viewport --require browser-app-profile-history-bookmarks --require browser-app-find-text --require browser-app-window-frame --require browser-app-window-hit-testing --require browser-native-window-shell --require browser-native-window-location-input --require rgba-screenshot-artifact --require stage1-document-page-corpus --require static-accessibility-tree --require browser-shell-cli --require browser-shell-visual-frame --require browser-shell-tabs --require browser-shell-relative-open --require browser-shell-location-command --require browser-shell-cookie-inspection --require browser-shell-clear-cookies --require browser-shell-cookie-jar-file --require browser-shell-local-storage-file --require browser-shell-local-storage-inspection --require browser-shell-session-storage-inspection --require browser-shell-clear-local-storage --require browser-shell-clear-session-storage --require http-redirect-navigation --require browser-shell-link-activation --require browser-session-reload --require browser-shell-reload --require browser-shell-anchor-click-default --require browser-shell-fragment-navigation --require browser-shell-coordinate-click --require browser-cli-click-at-viewport-offset --require css-max-width-auto-margin-layout --require browser-shell-wheel-events --require browser-shell-find-text --require browser-shell-form-fill-state --require browser-session-select-form-state --require browser-shell-select-form-choice --require browser-session-checkable-form-state --require browser-shell-checkable-form-toggle --require browser-session-focused-form-control --require browser-session-focus-traversal --require browser-shell-focused-text-input --require browser-shell-focus-traversal --require browser-session-focused-text-edit --require browser-shell-focused-text-edit --require browser-session-focused-form-submit --require browser-shell-enter-submit --require browser-session-urlencoded-post-form-submit --require browser-session-form-submit-button-click-default --require browser-session-submitter-action-method-overrides --require browser-session-form-reset-click-default --require browser-session-pointer-events --require browser-session-mouse-events --require external-script-render --require dom-tree-mutation --require dom-node-traversal --require dom-insertion-methods --require document-fragment --require dom-selector-methods --require dom-inner-html-mutation --require dom-form-control-properties --require dom-location-readback --require dom-set-attribute --require dom-get-attribute --require dom-style-property-mutation --require dom-class-list-mutation --require dom-query-collections --require local-storage-api --require session-storage-api --require timer-task-queue --require document-lifecycle-events --require inline-onclick-event --require event-listener-click --require complex-query-selector --require complex-click-selector --require compound-css-selectors --require attribute-css-selectors --require hidden-attribute --require responsive-image-selection --require network-image-render --min-implemented-ratio 0.40
-./target/release/brutal-bench browser-perf --manifest bench/browser-fixtures/manifest.json --iterations 50 --chromium-baseline --json
-./target/release/brutal-bench browser-compat --manifest bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --min-pass-rate 1 --max-unexpected-failures 0 --max-flakes 0 --json
-./target/release/brutal-bench audit --claim combined --json
-./target/release/brutal-bench traceability --json
-./target/release/brutal-bench evidence --json
-./target/release/brutal-bench readiness
+./target/release/rowser-browser render ./page.html --width 100
+./target/release/rowser-browser render ./page.html --display-list
+./target/release/rowser-browser render-styled ./page.html --display-list
+./target/release/rowser-browser render-scripted ./page.html --display-list
+./target/release/rowser-browser render-images ./page.html --display-list
+./target/release/rowser-browser raster ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --output viewport.pgm
+./target/release/rowser-browser raster-file ./page.html --scroll-y 20 --viewport-width 80 --viewport-height 24 --json
+./target/release/rowser-browser screenshot-file ./page.html --output ./page.png --json
+./target/release/rowser-browser hit-test ./page.html --x 12 --y 4 --json
+./target/release/rowser-browser layer-tree ./page.html --json
+./target/release/rowser-browser layout-tree ./page.html --json
+./target/release/rowser-browser viewport ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --previous-x 0 --previous-y 0 --previous-width 80 --previous-height 24 --json
+./target/release/rowser-browser viewport-frame ./page.html --viewport-width 80 --viewport-height 24 --viewport-y 20 --previous-x 0 --previous-y 0 --previous-width 80 --previous-height 24 --output ./viewport.png --json
+./target/release/rowser-browser accessibility-tree ./page.html --json
+./target/release/rowser-browser click ./page.html "#go" --display-list
+./target/release/rowser-browser click-at ./page.html 0 0 --display-list
+./target/release/rowser-browser click-at ./page.html 0 0 --viewport-y 12 --json
+./target/release/rowser-browser browse ./page.html
+./target/release/rowser-browser browse ./page.html --cmd "links" --cmd "link 0" --cmd "render"
+./target/release/rowser-browser browse ./page.html --cmd "click #go" --cmd "scroll 12" --cmd "render"
+./target/release/rowser-browser browse ./page.html --cmd "focus input[name=q]" --cmd "type rust browser" --cmd "submit 0"
+./target/release/rowser-browser browse ./page.html --cmd "reload" --cmd "render"
+./target/release/rowser-browser browse ./page.html --cmd "new-tab ./other.html" --cmd "tabs"
+./target/release/rowser-browser browse ./page.html --cmd "down 20" --screenshot-output ./viewport.png --json
+./target/release/rowser-browser app ./page.html --cmd "click #go" --cmd "down 20" --output ./app-frame.png --json
+./target/release/rowser-browser render https://example.com --json
+./target/release/rowser-browser resources ./page.html
+./target/release/rowser-browser fetch-resources ./page.html
+./target/release/rowser-browser session ./first.html ./second.html --back 1
+./target/release/rowser-browser form-url ./path/to/form.html --field q=rust
+./target/release/rowser-browser submit ./path/to/form.html --field q=rust --json
+./target/release/rowser-browser verify bench/browser-fixtures/manifest.json
+./target/release/rowser-browser verify bench/document-pages/manifest.json --json
+./target/release/rowser-browser compare-chromium bench/browser-fixtures/manifest.json --json
+./target/release/rowser-browser wpt bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --json
+./target/release/rowser-browser capabilities
+./target/release/rowser-browser coverage --json --require static-html-parse --require display-list --require display-list-hit-testing --require layer-tree-snapshot --require retained-layout-tree --require viewport-raster-culling --require browser-viewport-layout-state --require browser-viewport-invalidation --require browser-viewport-frame-surface --require browser-app-state-surface --require browser-app-cli-surface --require browser-app-interactive-shell --require browser-app-visible-viewport --require browser-app-profile-history-bookmarks --require browser-app-find-text --require browser-app-window-frame --require browser-app-window-hit-testing --require browser-native-window-shell --require browser-native-window-location-input --require rgba-screenshot-artifact --require stage1-document-page-corpus --require static-accessibility-tree --require browser-shell-cli --require browser-shell-visual-frame --require browser-shell-tabs --require browser-shell-relative-open --require browser-shell-location-command --require browser-shell-cookie-inspection --require browser-shell-clear-cookies --require browser-shell-cookie-jar-file --require browser-shell-local-storage-file --require browser-shell-local-storage-inspection --require browser-shell-session-storage-inspection --require browser-shell-clear-local-storage --require browser-shell-clear-session-storage --require http-redirect-navigation --require browser-shell-link-activation --require browser-session-reload --require browser-shell-reload --require browser-shell-anchor-click-default --require browser-shell-fragment-navigation --require browser-shell-coordinate-click --require browser-cli-click-at-viewport-offset --require css-max-width-auto-margin-layout --require browser-shell-wheel-events --require browser-shell-find-text --require browser-shell-form-fill-state --require browser-session-select-form-state --require browser-shell-select-form-choice --require browser-session-checkable-form-state --require browser-shell-checkable-form-toggle --require browser-session-focused-form-control --require browser-session-focus-traversal --require browser-shell-focused-text-input --require browser-shell-focus-traversal --require browser-session-focused-text-edit --require browser-shell-focused-text-edit --require browser-session-focused-form-submit --require browser-shell-enter-submit --require browser-session-urlencoded-post-form-submit --require browser-session-form-submit-button-click-default --require browser-session-submitter-action-method-overrides --require browser-session-form-reset-click-default --require browser-session-pointer-events --require browser-session-mouse-events --require external-script-render --require dom-tree-mutation --require dom-node-traversal --require dom-insertion-methods --require document-fragment --require dom-selector-methods --require dom-inner-html-mutation --require dom-form-control-properties --require dom-location-readback --require dom-set-attribute --require dom-get-attribute --require dom-style-property-mutation --require dom-class-list-mutation --require dom-query-collections --require local-storage-api --require session-storage-api --require timer-task-queue --require document-lifecycle-events --require inline-onclick-event --require event-listener-click --require complex-query-selector --require complex-click-selector --require compound-css-selectors --require attribute-css-selectors --require hidden-attribute --require responsive-image-selection --require network-image-render --min-implemented-ratio 0.40
+./target/release/rowser-bench browser-perf --manifest bench/browser-fixtures/manifest.json --iterations 50 --chromium-baseline --json
+./target/release/rowser-bench browser-compat --manifest bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --min-pass-rate 1 --max-unexpected-failures 0 --max-flakes 0 --json
+./target/release/rowser-bench audit --claim combined --json
+./target/release/rowser-bench traceability --json
+./target/release/rowser-bench evidence --json
+./target/release/rowser-bench readiness
 ```
 
 Fixture manifests are JSON files whose paths are resolved relative to the
@@ -350,12 +350,12 @@ supported SVG/PNG/data-URL image subset, and rerenders with decoded image
 metadata and pixels available to the display-list/raster path:
 
 ```sh
-./target/release/brutal-browser render-images ./page.html \
+./target/release/rowser-browser render-images ./page.html \
   --width 100 \
   --resource-max-bytes 1048576 \
   --display-list
 
-./target/release/brutal-browser render-images ./page.html --json
+./target/release/rowser-browser render-images ./page.html --json
 ```
 
 That command is local image-rendering scaffold evidence for the current
@@ -385,7 +385,7 @@ not an OS window, GPU swapchain, or compositor.
 The reusable Rust `BrowserApp` API builds on the same frame-surface contract
 and owns browser-level state for tabs, navigation, scroll offsets, click/focus/
 typing actions, and full-versus-partial repaint decisions. It is the intended
-state boundary for the upcoming native window shell. The `brutal-browser app`
+state boundary for the upcoming native window shell. The `rowser-browser app`
 command now drives that boundary directly, can run `--cmd` scripts, can keep an
 interactive/stdin command stream alive across navigations and tabs, can
 load/save JSON cookie and localStorage files, can persist app-level visit
@@ -393,7 +393,7 @@ history/bookmarks through `--profile`, can track find/find-next match state,
 can refresh a viewport PNG while printing the visible text viewport, and can
 compose a deterministic browser-window PNG with simple tab/location/status
 chrome plus narrow window-coordinate hit testing for future native shell
-backends. The feature-gated `brutal-browser window` command presents the same
+backends. The feature-gated `rowser-browser window` command presents the same
 RGBA window frame through a native CPU framebuffer and routes mouse, wheel, and
 basic keyboard input through `BrowserApp`; it now includes narrow location entry
 and focused-control text routing, JSON app-profile visit-history/bookmark
@@ -406,7 +406,7 @@ downloads, settings, menus, or process isolation.
 supported layout/display-list subset:
 
 ```sh
-./target/release/brutal-browser hit-test ./page.html --x 12 --y 4 --json
+./target/release/rowser-browser hit-test ./page.html --x 12 --y 4 --json
 ```
 
 It reports the topmost supported display-list command at the given terminal-cell
@@ -432,7 +432,7 @@ full WheelEvent semantics, compositor scrolling, or platform device input.
 supported display-list/layout subset:
 
 ```sh
-./target/release/brutal-browser layer-tree ./page.html --json
+./target/release/rowser-browser layer-tree ./page.html --json
 ```
 
 This is scaffold evidence for layer snapshot shape, bounds, paint-source
@@ -446,7 +446,7 @@ parity.
 paint-backed element boxes:
 
 ```sh
-./target/release/brutal-browser layout-tree ./page.html --json
+./target/release/rowser-browser layout-tree ./page.html --json
 ```
 
 This is scaffold evidence for supported element bounds, parent/child layout-box
@@ -504,7 +504,7 @@ chrome. The `browser-shell-clear-cookies` gate clears that in-memory cookie jar
 without navigating or changing page state; it is not persistent profile
 clearing, storage partition clearing, settings UI, or browser chrome. The
 `browser-shell-cookie-jar-file` gate loads and saves that in-memory cookie state
-through a local JSON `--cookie-jar` file for `brutal-browser browse`; it is not
+through a local JSON `--cookie-jar` file for `rowser-browser browse`; it is not
 encrypted profile storage, expiration persistence, partitioning, cookie settings
 UI, or browser chrome. The `browser-shell-local-storage-file` gate loads and
 saves origin-scoped localStorage through a local JSON `--local-storage` file; it
@@ -652,23 +652,23 @@ Interactive use reads commands from stdin; scripted smoke runs can pass repeated
 `--cmd` arguments and then exit:
 
 ```sh
-./target/release/brutal-browser browse ./page.html
-./target/release/brutal-browser browse \
+./target/release/rowser-browser browse ./page.html
+./target/release/rowser-browser browse \
   ./page.html \
   --cmd "links" \
   --cmd "link 0" \
   --cmd "render"
-./target/release/brutal-browser browse \
+./target/release/rowser-browser browse \
   ./page.html \
   --cmd "click #go" \
   --cmd "click-at 0 0" \
   --cmd "scroll 12" \
   --cmd "render"
-./target/release/brutal-browser browse \
+./target/release/rowser-browser browse \
   ./page.html \
   --cmd "reload" \
   --cmd "render"
-./target/release/brutal-browser browse \
+./target/release/rowser-browser browse \
   ./page.html \
   --cmd "focus input[name=q]" \
   --cmd "type browser" \
@@ -678,7 +678,7 @@ Interactive use reads commands from stdin; scripted smoke runs can pass repeated
   --cmd "backspace 3" \
   --cmd "type ser" \
   --cmd "enter"
-./target/release/brutal-browser browse ./page.html --cmd "focus input[type=checkbox]" --cmd "space"
+./target/release/rowser-browser browse ./page.html --cmd "focus input[type=checkbox]" --cmd "space"
 ```
 
 This is a local CLI shell over the existing static renderer, not GUI browser
@@ -727,7 +727,7 @@ WebDriver/testdriver runner, a reftest harness, or proof of Chromium parity.
 Run the local scaffold directly with:
 
 ```sh
-./target/release/brutal-browser wpt bench/wpt-subsets/manifest.json \
+./target/release/rowser-browser wpt bench/wpt-subsets/manifest.json \
   --expectations bench/wpt-subsets/expectations.jsonl \
   --json
 ```
@@ -735,7 +735,7 @@ Run the local scaffold directly with:
 To use the same scaffold as a strict local fixture-compatibility gate:
 
 ```sh
-./target/release/brutal-bench browser-compat \
+./target/release/rowser-bench browser-compat \
   --manifest bench/wpt-subsets/manifest.json \
   --expectations bench/wpt-subsets/expectations.jsonl \
   --min-pass-rate 1 \
@@ -748,16 +748,16 @@ To surface that compatibility report in the local `/bench` status UI, save it
 beside the served index:
 
 ```sh
-./target/release/brutal-bench browser-compat \
+./target/release/rowser-bench browser-compat \
   --manifest bench/wpt-subsets/manifest.json \
   --expectations bench/wpt-subsets/expectations.jsonl \
   --min-pass-rate 1 \
   --max-unexpected-failures 0 \
   --max-flakes 0 \
-  --report-output .brutal-index/bench-status.json \
+  --report-output .rowser-index/bench-status.json \
   --json
 
-./target/release/brutal-search serve --index .brutal-index
+./target/release/rowser-search serve --index .rowser-index
 ```
 
 Those commands currently assert only the local subset entries in the manifest
@@ -779,19 +779,19 @@ By default `crawl` stays on the seed URL's exact host. To follow links across
 the wider web, use `--boundary any-domain` with a strict `--max-pages` cap:
 
 ```sh
-./target/release/brutal-search crawl https://example.com \
+./target/release/rowser-search crawl https://example.com \
   --boundary any-domain \
   --max-pages 10000 \
-  --index .brutal-index
+  --index .rowser-index
 ```
 
 For a larger crawl, put one seed URL per line in a file. Blank lines and lines
 starting with `#` are ignored:
 
 ```sh
-./target/release/brutal-search crawl \
+./target/release/rowser-search crawl \
   --seed-file seeds.txt \
-  --index .brutal-index \
+  --index .rowser-index \
   --max-pages 100000 \
   --max-depth 6
 ```
@@ -804,10 +804,10 @@ You can also start from domains instead of full URLs. Bare domains default to
 `https://` and are normalized to the root URL:
 
 ```sh
-./target/release/brutal-search crawl \
+./target/release/rowser-search crawl \
   --domain example.com \
   --domain-file domains.txt \
-  --index .brutal-index \
+  --index .rowser-index \
   --max-pages 100000
 ```
 
@@ -818,9 +818,9 @@ followed recursively up to `--max-sitemaps`, and page URLs are capped by
 `--max-sitemap-urls`:
 
 ```sh
-./target/release/brutal-search crawl \
+./target/release/rowser-search crawl \
   --sitemap https://example.com/sitemap.xml \
-  --index .brutal-index \
+  --index .rowser-index \
   --max-pages 100000 \
   --max-sitemap-urls 100000
 ```
@@ -830,9 +830,9 @@ file. To discover sitemap URLs advertised in seed-host `robots.txt` files, add
 `--discover-sitemaps`:
 
 ```sh
-./target/release/brutal-search crawl https://example.com \
+./target/release/rowser-search crawl https://example.com \
   --discover-sitemaps \
-  --index .brutal-index \
+  --index .rowser-index \
   --max-pages 100000
 ```
 
@@ -851,10 +851,10 @@ accepts RFC3339 timestamps or Unix seconds:
 ```
 
 ```sh
-./target/release/brutal-search crawl \
+./target/release/rowser-search crawl \
   --recrawl-manifest recrawl.jsonl \
   --discover-sitemaps \
-  --index .brutal-index
+  --index .rowser-index
 ```
 
 Future-dated recrawl records are skipped by default. Use
@@ -869,8 +869,8 @@ To generate a recrawl manifest from persisted frontier state, use
 with `--recrawl-manifest`:
 
 ```sh
-./target/release/brutal-search recrawl-plan \
-  --index .brutal-index \
+./target/release/rowser-search recrawl-plan \
+  --index .rowser-index \
   --interval-secs 604800 \
   --limit 10000 \
   --output recrawl.jsonl
@@ -881,8 +881,8 @@ due fetched URLs from the frontier, recrawls the batch, rebuilds from the latest
 crawl snapshot, and prints a JSON status row with changed/unchanged counts:
 
 ```sh
-./target/release/brutal-search recrawl-scheduler \
-  --index .brutal-index \
+./target/release/rowser-search recrawl-scheduler \
+  --index .rowser-index \
   --interval-secs 604800 \
   --batch-size 1000 \
   --poll-secs 300
@@ -892,12 +892,12 @@ For a bounded development run, add `--max-rounds 1`. The current scheduler is a
 single-machine freshness loop; distributed scheduling, per-site change-rate
 policy, and incremental segment writes remain roadmap items.
 
-During a crawl, `.brutal-index/frontier.bin` stores durable URL state and
-`.brutal-index/crawl-docs.jsonl` stores fetched documents before the final index
+During a crawl, `.rowser-index/frontier.bin` stores durable URL state and
+`.rowser-index/crawl-docs.jsonl` stores fetched documents before the final index
 is written. If a crawl is interrupted, run the same `crawl` command again and it
 will resume from those files.
 
-The built index also writes `.brutal-index/field_docs.bin`, which preserves
+The built index also writes `.rowser-index/field_docs.bin`, which preserves
 fielded metadata such as canonical URL, meta description, language, headings,
 anchor text, outbound links, content hash, extraction mode, and fetch time.
 Document metadata records canonical, exact-text, and shingled-simhash
@@ -914,19 +914,19 @@ corpus, set `--min-body-terms N`; skipped noindex/thin counts are shown in
 You can also index a saved local corpus:
 
 ```sh
-cargo run --release --bin brutal-search -- index ./corpus --index .brutal-index
-cargo run --release --bin brutal-searchd -- --index .brutal-index --preload aggressive
-cargo run --release --bin brutal-search -- search "query text" --index .brutal-index --limit 20
-cargo run --release --bin brutal-search -- render 0 --index .brutal-index
-cargo run --release --bin brutal-search -- serve --index .brutal-index
-cargo run --release --bin brutal-bench -- smoke --json --save-report
-cargo run --release --bin brutal-bench -- eval --index .brutal-index --judgments bench/judgments.jsonl --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --json --save-report
-cargo run --release --bin brutal-bench -- search --index .brutal-index --queries bench/queries.txt --save-report
-cargo run --release --bin brutal-bench -- search --index .brutal-index --queries bench/queries.txt --chromium-baseline --require-speedup 10 --json --save-report
-cargo run --release --bin brutal-bench -- browser-perf --manifest bench/browser-fixtures/manifest.json --iterations 50 --chromium-baseline --json --save-report
-cargo run --release --bin brutal-bench -- browser-compat --manifest bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --min-pass-rate 1 --max-unexpected-failures 0 --max-flakes 0 --json
-cargo run --release --bin brutal-bench -- gate --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --require-browser-feature static-html-parse --require-browser-feature display-list --require-browser-feature retained-layout-tree --require-browser-feature viewport-raster-culling --require-browser-feature browser-viewport-layout-state --require-browser-feature browser-viewport-invalidation --require-browser-feature browser-viewport-frame-surface --require-browser-feature browser-app-state-surface --require-browser-feature browser-app-cli-surface --require-browser-feature browser-app-interactive-shell --require-browser-feature browser-app-visible-viewport --require-browser-feature browser-app-profile-history-bookmarks --require-browser-feature browser-app-find-text --require-browser-feature browser-app-window-frame --require-browser-feature browser-app-window-hit-testing --require-browser-feature browser-native-window-shell --require-browser-feature browser-native-window-location-input --require-browser-feature static-accessibility-tree --require-browser-feature browser-shell-cli --require-browser-feature browser-shell-relative-open --require-browser-feature browser-shell-location-command --require-browser-feature browser-shell-cookie-inspection --require-browser-feature browser-shell-clear-cookies --require-browser-feature browser-shell-cookie-jar-file --require-browser-feature browser-shell-local-storage-file --require-browser-feature browser-shell-local-storage-inspection --require-browser-feature browser-shell-session-storage-inspection --require-browser-feature browser-shell-clear-local-storage --require-browser-feature browser-shell-clear-session-storage --require-browser-feature http-redirect-navigation --require-browser-feature browser-shell-link-activation --require-browser-feature browser-session-reload --require-browser-feature browser-shell-reload --require-browser-feature browser-shell-anchor-click-default --require-browser-feature browser-shell-fragment-navigation --require-browser-feature browser-shell-coordinate-click --require-browser-feature browser-cli-click-at-viewport-offset --require-browser-feature css-max-width-auto-margin-layout --require-browser-feature browser-shell-wheel-events --require-browser-feature browser-shell-find-text --require-browser-feature browser-shell-form-fill-state --require-browser-feature browser-session-select-form-state --require-browser-feature browser-shell-select-form-choice --require-browser-feature browser-session-checkable-form-state --require-browser-feature browser-shell-checkable-form-toggle --require-browser-feature browser-session-focused-form-control --require-browser-feature browser-session-focus-traversal --require-browser-feature browser-shell-focused-text-input --require-browser-feature browser-shell-focus-traversal --require-browser-feature browser-session-focused-text-edit --require-browser-feature browser-shell-focused-text-edit --require-browser-feature browser-session-focused-form-submit --require-browser-feature browser-shell-enter-submit --require-browser-feature browser-session-urlencoded-post-form-submit --require-browser-feature browser-session-form-submit-button-click-default --require-browser-feature browser-session-submitter-action-method-overrides --require-browser-feature browser-session-form-reset-click-default --require-browser-feature browser-session-pointer-events --require-browser-feature browser-session-mouse-events --require-browser-feature inline-script-dom-text --require-browser-feature inline-script-dom-create --require-browser-feature dom-tree-mutation --require-browser-feature dom-node-traversal --require-browser-feature dom-insertion-methods --require-browser-feature document-fragment --require-browser-feature dom-selector-methods --require-browser-feature dom-inner-html-mutation --require-browser-feature dom-form-control-properties --require-browser-feature dom-location-readback --require-browser-feature dom-set-attribute --require-browser-feature dom-get-attribute --require-browser-feature local-storage-api --require-browser-feature session-storage-api --require-browser-feature timer-task-queue --require-browser-feature document-lifecycle-events --require-browser-feature external-script-render --require-browser-feature inline-onclick-event --require-browser-feature event-listener-click --min-browser-implemented-ratio 0.4 --max-browser-missing 20 --browser-compat --browser-compat-min-pass-rate 1 --browser-compat-max-unexpected-failures 0 --browser-compat-max-flakes 0 --json --save-report
-cargo run --release --bin brutal-bench -- readiness --json
+cargo run --release --bin rowser-search -- index ./corpus --index .rowser-index
+cargo run --release --bin rowser-searchd -- --index .rowser-index --preload aggressive
+cargo run --release --bin rowser-search -- search "query text" --index .rowser-index --limit 20
+cargo run --release --bin rowser-search -- render 0 --index .rowser-index
+cargo run --release --bin rowser-search -- serve --index .rowser-index
+cargo run --release --bin rowser-bench -- smoke --json --save-report
+cargo run --release --bin rowser-bench -- eval --index .rowser-index --judgments bench/judgments.jsonl --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --json --save-report
+cargo run --release --bin rowser-bench -- search --index .rowser-index --queries bench/queries.txt --save-report
+cargo run --release --bin rowser-bench -- search --index .rowser-index --queries bench/queries.txt --chromium-baseline --require-speedup 10 --json --save-report
+cargo run --release --bin rowser-bench -- browser-perf --manifest bench/browser-fixtures/manifest.json --iterations 50 --chromium-baseline --json --save-report
+cargo run --release --bin rowser-bench -- browser-compat --manifest bench/wpt-subsets/manifest.json --expectations bench/wpt-subsets/expectations.jsonl --min-pass-rate 1 --max-unexpected-failures 0 --max-flakes 0 --json
+cargo run --release --bin rowser-bench -- gate --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --require-browser-feature static-html-parse --require-browser-feature display-list --require-browser-feature retained-layout-tree --require-browser-feature viewport-raster-culling --require-browser-feature browser-viewport-layout-state --require-browser-feature browser-viewport-invalidation --require-browser-feature browser-viewport-frame-surface --require-browser-feature browser-app-state-surface --require-browser-feature browser-app-cli-surface --require-browser-feature browser-app-interactive-shell --require-browser-feature browser-app-visible-viewport --require-browser-feature browser-app-profile-history-bookmarks --require-browser-feature browser-app-find-text --require-browser-feature browser-app-window-frame --require-browser-feature browser-app-window-hit-testing --require-browser-feature browser-native-window-shell --require-browser-feature browser-native-window-location-input --require-browser-feature static-accessibility-tree --require-browser-feature browser-shell-cli --require-browser-feature browser-shell-relative-open --require-browser-feature browser-shell-location-command --require-browser-feature browser-shell-cookie-inspection --require-browser-feature browser-shell-clear-cookies --require-browser-feature browser-shell-cookie-jar-file --require-browser-feature browser-shell-local-storage-file --require-browser-feature browser-shell-local-storage-inspection --require-browser-feature browser-shell-session-storage-inspection --require-browser-feature browser-shell-clear-local-storage --require-browser-feature browser-shell-clear-session-storage --require-browser-feature http-redirect-navigation --require-browser-feature browser-shell-link-activation --require-browser-feature browser-session-reload --require-browser-feature browser-shell-reload --require-browser-feature browser-shell-anchor-click-default --require-browser-feature browser-shell-fragment-navigation --require-browser-feature browser-shell-coordinate-click --require-browser-feature browser-cli-click-at-viewport-offset --require-browser-feature css-max-width-auto-margin-layout --require-browser-feature browser-shell-wheel-events --require-browser-feature browser-shell-find-text --require-browser-feature browser-shell-form-fill-state --require-browser-feature browser-session-select-form-state --require-browser-feature browser-shell-select-form-choice --require-browser-feature browser-session-checkable-form-state --require-browser-feature browser-shell-checkable-form-toggle --require-browser-feature browser-session-focused-form-control --require-browser-feature browser-session-focus-traversal --require-browser-feature browser-shell-focused-text-input --require-browser-feature browser-shell-focus-traversal --require-browser-feature browser-session-focused-text-edit --require-browser-feature browser-shell-focused-text-edit --require-browser-feature browser-session-focused-form-submit --require-browser-feature browser-shell-enter-submit --require-browser-feature browser-session-urlencoded-post-form-submit --require-browser-feature browser-session-form-submit-button-click-default --require-browser-feature browser-session-submitter-action-method-overrides --require-browser-feature browser-session-form-reset-click-default --require-browser-feature browser-session-pointer-events --require-browser-feature browser-session-mouse-events --require-browser-feature inline-script-dom-text --require-browser-feature inline-script-dom-create --require-browser-feature dom-tree-mutation --require-browser-feature dom-node-traversal --require-browser-feature dom-insertion-methods --require-browser-feature document-fragment --require-browser-feature dom-selector-methods --require-browser-feature dom-inner-html-mutation --require-browser-feature dom-form-control-properties --require-browser-feature dom-location-readback --require-browser-feature dom-set-attribute --require-browser-feature dom-get-attribute --require-browser-feature local-storage-api --require-browser-feature session-storage-api --require-browser-feature timer-task-queue --require-browser-feature document-lifecycle-events --require-browser-feature external-script-render --require-browser-feature inline-onclick-event --require-browser-feature event-listener-click --min-browser-implemented-ratio 0.4 --max-browser-missing 20 --browser-compat --browser-compat-min-pass-rate 1 --browser-compat-max-unexpected-failures 0 --browser-compat-max-flakes 0 --json --save-report
+cargo run --release --bin rowser-bench -- readiness --json
 ```
 
 The browser performance harness reports fixture render/raster latency plus
@@ -945,7 +945,7 @@ The headline path is the daemon: it keeps the lexicon, document metadata,
 selected postings, and text mmap hot so repeated searches avoid process startup
 and index-open costs.
 
-`brutal-bench smoke` builds the deterministic fixture corpus in
+`rowser-bench smoke` builds the deterministic fixture corpus in
 `bench/fixtures/corpus`, searches the first query in `bench/queries.txt`, renders
 the top result, and emits an in-process benchmark report. It is the quickest
 local proof that indexing, search, render, and benchmarking are wired together.
@@ -954,16 +954,16 @@ Search benchmark reports include p50/p95/p99 latency, throughput, Rust/Chrome/OS
 hardware metadata, corpus hash, and index hash. `--require-speedup 10` turns the
 Chromium comparison into an acceptance gate and exits non-zero if the Rust path
 does not beat the headless Chromium JavaScript baseline by at least 10x at p95.
-Add `--save-report` to persist `.brutal-index/bench-status.json`; the local
+Add `--save-report` to persist `.rowser-index/bench-status.json`; the local
 server exposes that report at `/bench` and `/api/bench-status`.
 
-`brutal-bench gate` is the one-command local development acceptance check. It
+`rowser-bench gate` is the one-command local development acceptance check. It
 builds the fixture corpus, searches and renders, runs relevance judgments,
 enforces browser feature-fixture coverage, and can optionally launch Chrome for
 the p95 search-speed gate and curated static browser fixture parity:
 
 ```sh
-cargo run --release --bin brutal-bench -- gate --chromium-search-baseline --require-speedup 10 --browser-chromium-parity --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --require-browser-feature static-html-parse --require-browser-feature display-list --require-browser-feature retained-layout-tree --require-browser-feature viewport-raster-culling --require-browser-feature browser-viewport-layout-state --require-browser-feature browser-viewport-invalidation --require-browser-feature browser-viewport-frame-surface --require-browser-feature browser-app-state-surface --require-browser-feature browser-app-cli-surface --require-browser-feature browser-app-interactive-shell --require-browser-feature browser-app-visible-viewport --require-browser-feature browser-app-profile-history-bookmarks --require-browser-feature browser-app-find-text --require-browser-feature browser-app-window-frame --require-browser-feature browser-app-window-hit-testing --require-browser-feature browser-native-window-shell --require-browser-feature browser-native-window-location-input --require-browser-feature static-accessibility-tree --require-browser-feature browser-shell-cli --require-browser-feature browser-shell-relative-open --require-browser-feature browser-shell-location-command --require-browser-feature browser-shell-cookie-inspection --require-browser-feature browser-shell-clear-cookies --require-browser-feature browser-shell-cookie-jar-file --require-browser-feature browser-shell-local-storage-file --require-browser-feature browser-shell-local-storage-inspection --require-browser-feature browser-shell-session-storage-inspection --require-browser-feature browser-shell-clear-local-storage --require-browser-feature browser-shell-clear-session-storage --require-browser-feature http-redirect-navigation --require-browser-feature browser-shell-link-activation --require-browser-feature browser-session-reload --require-browser-feature browser-shell-reload --require-browser-feature browser-shell-anchor-click-default --require-browser-feature browser-shell-fragment-navigation --require-browser-feature browser-shell-coordinate-click --require-browser-feature browser-cli-click-at-viewport-offset --require-browser-feature css-max-width-auto-margin-layout --require-browser-feature browser-shell-wheel-events --require-browser-feature browser-shell-find-text --require-browser-feature browser-shell-form-fill-state --require-browser-feature browser-session-select-form-state --require-browser-feature browser-shell-select-form-choice --require-browser-feature browser-session-checkable-form-state --require-browser-feature browser-shell-checkable-form-toggle --require-browser-feature browser-session-focused-form-control --require-browser-feature browser-session-focus-traversal --require-browser-feature browser-shell-focused-text-input --require-browser-feature browser-shell-focus-traversal --require-browser-feature browser-session-focused-text-edit --require-browser-feature browser-shell-focused-text-edit --require-browser-feature browser-session-focused-form-submit --require-browser-feature browser-shell-enter-submit --require-browser-feature browser-session-urlencoded-post-form-submit --require-browser-feature browser-session-form-submit-button-click-default --require-browser-feature browser-session-submitter-action-method-overrides --require-browser-feature browser-session-form-reset-click-default --require-browser-feature browser-session-pointer-events --require-browser-feature browser-session-mouse-events --require-browser-feature inline-script-dom-text --require-browser-feature inline-script-dom-create --require-browser-feature dom-tree-mutation --require-browser-feature dom-node-traversal --require-browser-feature dom-insertion-methods --require-browser-feature document-fragment --require-browser-feature dom-selector-methods --require-browser-feature dom-inner-html-mutation --require-browser-feature dom-form-control-properties --require-browser-feature dom-location-readback --require-browser-feature dom-set-attribute --require-browser-feature dom-get-attribute --require-browser-feature local-storage-api --require-browser-feature session-storage-api --require-browser-feature timer-task-queue --require-browser-feature document-lifecycle-events --require-browser-feature external-script-render --require-browser-feature inline-onclick-event --require-browser-feature event-listener-click --min-browser-implemented-ratio 0.4 --max-browser-missing 20 --json --save-report
+cargo run --release --bin rowser-bench -- gate --chromium-search-baseline --require-speedup 10 --browser-chromium-parity --require-ndcg 0.9 --require-recall 0.9 --max-unresolved 0 --require-browser-feature static-html-parse --require-browser-feature display-list --require-browser-feature retained-layout-tree --require-browser-feature viewport-raster-culling --require-browser-feature browser-viewport-layout-state --require-browser-feature browser-viewport-invalidation --require-browser-feature browser-viewport-frame-surface --require-browser-feature browser-app-state-surface --require-browser-feature browser-app-cli-surface --require-browser-feature browser-app-interactive-shell --require-browser-feature browser-app-visible-viewport --require-browser-feature browser-app-profile-history-bookmarks --require-browser-feature browser-app-find-text --require-browser-feature browser-app-window-frame --require-browser-feature browser-app-window-hit-testing --require-browser-feature browser-native-window-shell --require-browser-feature browser-native-window-location-input --require-browser-feature static-accessibility-tree --require-browser-feature browser-shell-cli --require-browser-feature browser-shell-relative-open --require-browser-feature browser-shell-location-command --require-browser-feature browser-shell-cookie-inspection --require-browser-feature browser-shell-clear-cookies --require-browser-feature browser-shell-cookie-jar-file --require-browser-feature browser-shell-local-storage-file --require-browser-feature browser-shell-local-storage-inspection --require-browser-feature browser-shell-session-storage-inspection --require-browser-feature browser-shell-clear-local-storage --require-browser-feature browser-shell-clear-session-storage --require-browser-feature http-redirect-navigation --require-browser-feature browser-shell-link-activation --require-browser-feature browser-session-reload --require-browser-feature browser-shell-reload --require-browser-feature browser-shell-anchor-click-default --require-browser-feature browser-shell-fragment-navigation --require-browser-feature browser-shell-coordinate-click --require-browser-feature browser-cli-click-at-viewport-offset --require-browser-feature css-max-width-auto-margin-layout --require-browser-feature browser-shell-wheel-events --require-browser-feature browser-shell-find-text --require-browser-feature browser-shell-form-fill-state --require-browser-feature browser-session-select-form-state --require-browser-feature browser-shell-select-form-choice --require-browser-feature browser-session-checkable-form-state --require-browser-feature browser-shell-checkable-form-toggle --require-browser-feature browser-session-focused-form-control --require-browser-feature browser-session-focus-traversal --require-browser-feature browser-shell-focused-text-input --require-browser-feature browser-shell-focus-traversal --require-browser-feature browser-session-focused-text-edit --require-browser-feature browser-shell-focused-text-edit --require-browser-feature browser-session-focused-form-submit --require-browser-feature browser-shell-enter-submit --require-browser-feature browser-session-urlencoded-post-form-submit --require-browser-feature browser-session-form-submit-button-click-default --require-browser-feature browser-session-submitter-action-method-overrides --require-browser-feature browser-session-form-reset-click-default --require-browser-feature browser-session-pointer-events --require-browser-feature browser-session-mouse-events --require-browser-feature inline-script-dom-text --require-browser-feature inline-script-dom-create --require-browser-feature dom-tree-mutation --require-browser-feature dom-node-traversal --require-browser-feature dom-insertion-methods --require-browser-feature document-fragment --require-browser-feature dom-selector-methods --require-browser-feature dom-inner-html-mutation --require-browser-feature dom-form-control-properties --require-browser-feature dom-location-readback --require-browser-feature dom-set-attribute --require-browser-feature dom-get-attribute --require-browser-feature local-storage-api --require-browser-feature session-storage-api --require-browser-feature timer-task-queue --require-browser-feature document-lifecycle-events --require-browser-feature external-script-render --require-browser-feature inline-onclick-event --require-browser-feature event-listener-click --min-browser-implemented-ratio 0.4 --max-browser-missing 20 --json --save-report
 ```
 
 That local gate is useful regression evidence, not a browser-product claim.
@@ -971,13 +971,13 @@ Browser or combined release claims still need the traceability,
 readiness, evidence-registry, WPT-subset, visual, platform, security/privacy,
 operations, and release-review gates for the exact claim being made.
 
-`brutal-bench audit` is the top-level claim gate. It composes
+`rowser-bench audit` is the top-level claim gate. It composes
 traceability, evidence-registry coverage, and readiness for `--claim search`,
 `--claim browser`, or `--claim combined`, and exits non-zero with
 `--require-complete` until that exact claim has no partial or missing
 requirements, no uncovered evidence, and no partial or missing readiness areas.
 
-`brutal-bench readiness` lists the required search-mode and browser-product
+`rowser-bench readiness` lists the required search-mode and browser-product
 areas, marks current status as implemented/partial/missing, verifies required
 plan-document and implementation evidence markers, and exits non-zero with
 `--require-complete` until every area has direct evidence. Use `--claim search`,
@@ -992,7 +992,7 @@ partial too: the subsystem plan exists, but fonts/text shaping, images/SVG,
 canvas/GPU, media, accessibility, input/editing, storage, devtools, extensions,
 packaging, updates, and platform QA remain unfinished.
 
-`brutal-bench traceability` validates
+`rowser-bench traceability` validates
 [`docs/REQUIREMENTS_TRACEABILITY.md`](docs/REQUIREMENTS_TRACEABILITY.md)
 directly. It fails if required `REQ-*` rows are missing, duplicated, unknown,
 malformed, assigned to unknown readiness areas or roadmap milestones, assigned
@@ -1004,12 +1004,12 @@ Use `--require-milestone-complete m0`
 through `m6` to require all traceability rows assigned up through that roadmap
 milestone to be implemented.
 
-`brutal-bench evidence` validates
+`rowser-bench evidence` validates
 [`docs/EVIDENCE_REGISTRY.md`](docs/EVIDENCE_REGISTRY.md). It fails if evidence
 rows are malformed, duplicated, contain unknown requirement IDs, or leave any
 required `REQ-*` row without at least one proof artifact mapped to it.
 
-`brutal-bench eval` reads JSON Lines relevance judgments and reports MRR,
+`rowser-bench eval` reads JSON Lines relevance judgments and reports MRR,
 NDCG@K, recall@K, precision@K, unresolved judgments, corpus hash, index hash,
 and per-query diagnostics. Add `--require-mrr`, `--require-ndcg`,
 `--require-recall`, `--require-precision`, or `--max-unresolved` to turn it
@@ -1017,5 +1017,5 @@ into a relevance gate that exits non-zero on regression. Judgment rows look like
 this:
 
 ```json
-{"query":"brutal search","relevant":[{"url":"https://fixtures.local/brutal-search","grade":3}]}
+{"query":"rowser search","relevant":[{"url":"https://fixtures.local/rowser-search","grade":3}]}
 ```
