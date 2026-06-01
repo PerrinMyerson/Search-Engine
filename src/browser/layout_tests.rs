@@ -607,6 +607,55 @@ C</p></body></html>"#,
 }
 
 #[test]
+fn css_rgb_and_rgba_colors_render_as_grayscale_shades() {
+    let render = render_html(
+        "mem://css-rgb-colors",
+        br#"
+            <html><body>
+              <p style="color: rgb(0, 0, 255)">Blue</p>
+              <p style="color: rgba(0, 0, 0, 0.5)">Alpha</p>
+              <div style="background-color: rgb(100% 0% 0%)">Fill</div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Blue\nAlpha\nFill");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 20,
+                height: 1,
+                shade: 76,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 0,
+                text: "Blue".to_owned(),
+                shade: 28,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 1,
+                text: "Alpha".to_owned(),
+                shade: 127,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Fill".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_white_space_nowrap_suppresses_soft_wrapping() {
     let render = render_html(
         "mem://nowrap",

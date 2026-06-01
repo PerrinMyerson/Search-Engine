@@ -9672,6 +9672,7 @@ struct ParsedBorder {
 
 fn parse_css_border(value: &str) -> ParsedBorder {
     let mut border = ParsedBorder::default();
+    border.shade = parse_css_color_shade(value).or(border.shade);
     for token in value.split_ascii_whitespace() {
         if token.eq_ignore_ascii_case("none") || token.eq_ignore_ascii_case("hidden") {
             return ParsedBorder::default();
@@ -9714,6 +9715,9 @@ fn parse_css_border_width(value: &str) -> Option<usize> {
 }
 
 fn parse_css_color_shade(value: &str) -> Option<u8> {
+    if let Some(shade) = parse_rgb_function_color_shade(value) {
+        return Some(shade);
+    }
     for token in value.split_ascii_whitespace() {
         let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
         if token.eq_ignore_ascii_case("transparent") {
@@ -9735,6 +9739,92 @@ fn parse_css_color_shade(value: &str) -> Option<u8> {
         }
     }
     None
+}
+
+fn parse_rgb_function_color_shade(value: &str) -> Option<u8> {
+    let value = value.trim().trim_end_matches(';');
+    let lower = value.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut search_start = 0usize;
+
+    while search_start < lower.len() {
+        let rgb_index = lower[search_start..]
+            .find("rgb(")
+            .map(|index| search_start.saturating_add(index));
+        let rgba_index = lower[search_start..]
+            .find("rgba(")
+            .map(|index| search_start.saturating_add(index));
+        let Some(function_start) = [rgb_index, rgba_index].into_iter().flatten().min() else {
+            break;
+        };
+        if function_start > 0 && !bytes[function_start - 1].is_ascii_whitespace() {
+            search_start = function_start.saturating_add(1);
+            continue;
+        }
+        let open = lower[function_start..]
+            .find('(')
+            .map(|index| function_start.saturating_add(index))?;
+        let close = lower[open + 1..]
+            .find(')')
+            .map(|index| open.saturating_add(1).saturating_add(index))?;
+        if let Some(shade) = parse_rgb_color_components(&value[open + 1..close]) {
+            return Some(shade);
+        }
+        search_start = close.saturating_add(1);
+    }
+
+    None
+}
+
+fn parse_rgb_color_components(components: &str) -> Option<u8> {
+    let normalized: String = components
+        .chars()
+        .map(|ch| if matches!(ch, ',' | '/') { ' ' } else { ch })
+        .collect();
+    let parts: Vec<&str> = normalized.split_ascii_whitespace().collect();
+    if !(3..=4).contains(&parts.len()) {
+        return None;
+    }
+
+    let red = parse_rgb_color_component(parts[0])?;
+    let green = parse_rgb_color_component(parts[1])?;
+    let blue = parse_rgb_color_component(parts[2])?;
+    let alpha = parts
+        .get(3)
+        .map_or(Some(255), |component| parse_rgb_alpha_component(component))?;
+    let luma = rgb_to_luma(red, green, blue);
+    Some(blend_luma_over_white(luma, alpha))
+}
+
+fn parse_rgb_color_component(component: &str) -> Option<u8> {
+    let component = component.trim();
+    if let Some(percent) = component.strip_suffix('%') {
+        return parse_css_f32(percent).map(|value| scale_to_u8(value, 100.0));
+    }
+    parse_css_f32(component).map(|value| scale_to_u8(value, 255.0))
+}
+
+fn parse_rgb_alpha_component(component: &str) -> Option<u8> {
+    let component = component.trim();
+    if let Some(percent) = component.strip_suffix('%') {
+        return parse_css_f32(percent).map(|value| scale_to_u8(value, 100.0));
+    }
+    parse_css_f32(component).map(|value| scale_to_u8(value, 1.0))
+}
+
+fn parse_css_f32(value: &str) -> Option<f32> {
+    let value = value.trim().parse::<f32>().ok()?;
+    value.is_finite().then_some(value)
+}
+
+fn scale_to_u8(value: f32, max: f32) -> u8 {
+    ((value.clamp(0.0, max) * 255.0) / max).round() as u8
+}
+
+fn blend_luma_over_white(luma: u8, alpha: u8) -> u8 {
+    let alpha = alpha as u16;
+    let transparent = 255u16.saturating_sub(alpha);
+    ((u16::from(luma) * alpha + 255 * transparent + 127) / 255) as u8
 }
 
 fn parse_css_text_align(value: &str) -> Option<TextAlign> {
