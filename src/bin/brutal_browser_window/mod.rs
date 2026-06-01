@@ -1324,10 +1324,14 @@ mod native {
                 })
             }
             BrowserAppWindowHit::BackButton | BrowserAppWindowHit::ForwardButton => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let backwards = matches!(hit, BrowserAppWindowHit::BackButton);
                 let Some(target) = browser_window_history_target(app, backwards)? else {
-                    return Ok(BrowserWindowKeyResult::default());
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: dismissed_prompt,
+                        close: false,
+                    });
                 };
                 let active_tab = app.active_tab();
                 app.apply_action(BrowserAppAction::NewTab(target.source))
@@ -2516,6 +2520,45 @@ mod native {
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_unavailable_history_dismisses_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "visible prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::BackButton,
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Static Text Fixture"
             );
         }
 
