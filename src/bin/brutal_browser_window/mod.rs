@@ -1300,6 +1300,17 @@ mod native {
                     close: false,
                 })
             }
+            BrowserAppWindowHit::ReloadButton => {
+                *mode = BrowserWindowMode::Page;
+                let active_tab = app.active_tab();
+                app.apply_action(BrowserAppAction::DuplicateTab).await?;
+                app.apply_action(BrowserAppAction::SwitchTab(active_tab))
+                    .await?;
+                Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                })
+            }
             _ => Ok(BrowserWindowKeyResult::default()),
         }
     }
@@ -2227,6 +2238,53 @@ mod native {
             assert!(!close_window.dirty);
             assert!(close_window.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_reload_opens_current_page_in_background_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::ReloadButton,
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().source,
+                "bench/browser-fixtures/static-text.html"
+            );
+            app.apply_action(BrowserAppAction::SwitchTab(1))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().source,
+                "bench/browser-fixtures/static-text.html"
+            );
         }
 
         #[tokio::test]
