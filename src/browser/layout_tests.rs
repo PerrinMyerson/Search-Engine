@@ -1601,6 +1601,93 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn svg_and_canvas_render_as_graphic_placeholders() {
+    let render = render_html(
+        "mem://svg-canvas-placeholders",
+        br#"
+            <html><body>
+              <p>Before</p>
+              <svg aria-label="Logo" width="80" height="24"><path d="M0 0h80v24"></path></svg>
+              <svg viewBox="0 0 24 24"><title>Search icon</title><path d="M0 0h24v24"></path></svg>
+              <canvas title="Chart" width="160" height="36"></canvas>
+              <canvas aria-label="Sparkline" style="width:24px; height:24px"></canvas>
+              <svg aria-label="Hidden icon" width="80" height="24" style="display:none"></svg>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("Logo".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("Search icon".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 5,
+                width: 20,
+                height: 3,
+                shade: 220,
+                alt: Some("Chart".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 8,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("Sparkline".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 10,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",

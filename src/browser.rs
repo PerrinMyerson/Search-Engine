@@ -3617,7 +3617,7 @@ fn layout_box_kind(
     element: &ElementData,
     style: ComputedStyle,
 ) -> String {
-    if element.tag == "img" {
+    if element.tag == "img" || is_graphic_placeholder_element(&element.tag) {
         "replaced".to_owned()
     } else if form_control_render_text(dom, node_id, element).is_some() {
         "form-control".to_owned()
@@ -10329,6 +10329,22 @@ fn render_node(
                 }
                 return;
             }
+            if is_graphic_placeholder_element(&element.tag) {
+                let (graphic_width, graphic_height) =
+                    graphic_placeholder_extent(element, &style, renderer);
+                renderer.push_image_placeholder(
+                    graphic_width,
+                    graphic_height,
+                    graphic_placeholder_alt(dom, node_id, element),
+                    source,
+                    None,
+                    Some(node_id),
+                );
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
@@ -10701,29 +10717,115 @@ fn image_placeholder_extent(
     style: &ComputedStyle,
     renderer: &FlowRenderer,
 ) -> (usize, usize) {
-    let attr_width = element
-        .attrs
-        .get("width")
-        .and_then(|value| parse_pixel_dimension_cells(value, 8));
-    let mut width = style.width.or(attr_width).unwrap_or(10);
+    placeholder_extent(
+        style,
+        renderer,
+        element
+            .attrs
+            .get("width")
+            .and_then(|value| parse_pixel_dimension_cells(value, 8)),
+        element
+            .attrs
+            .get("height")
+            .and_then(|value| parse_pixel_dimension_cells(value, 12)),
+        10,
+        4,
+    )
+}
+
+fn placeholder_extent(
+    style: &ComputedStyle,
+    renderer: &FlowRenderer,
+    attr_width: Option<usize>,
+    attr_height: Option<usize>,
+    default_width: usize,
+    default_height: usize,
+) -> (usize, usize) {
+    let mut width = style.width.or(attr_width).unwrap_or(default_width);
     if let Some(max_width) = style.max_width {
         width = width.min(max_width);
     }
     width = width.max(style.min_width);
-    let mut height = style
-        .height
-        .or_else(|| {
-            element
-                .attrs
-                .get("height")
-                .and_then(|value| parse_pixel_dimension_cells(value, 12))
-        })
-        .unwrap_or(4);
+    let mut height = style.height.or(attr_height).unwrap_or(default_height);
     if let Some(max_height) = style.max_height {
         height = height.min(max_height);
     }
     height = height.max(style.min_height).clamp(1, 24);
     (width.clamp(1, renderer.available_width()), height)
+}
+
+fn is_graphic_placeholder_element(tag: &str) -> bool {
+    matches!(tag, "canvas" | "svg")
+}
+
+fn graphic_placeholder_extent(
+    element: &ElementData,
+    style: &ComputedStyle,
+    renderer: &FlowRenderer,
+) -> (usize, usize) {
+    let attr_width = element
+        .attrs
+        .get("width")
+        .and_then(|value| parse_pixel_dimension_cells(value, 8));
+    let attr_height = element
+        .attrs
+        .get("height")
+        .and_then(|value| parse_pixel_dimension_cells(value, 12));
+    let (default_width, default_height) = match element.tag.as_str() {
+        "canvas" => (38, 13),
+        "svg" => svg_view_box_placeholder_extent(element).unwrap_or((10, 4)),
+        _ => (10, 4),
+    };
+    placeholder_extent(
+        style,
+        renderer,
+        attr_width,
+        attr_height,
+        default_width,
+        default_height,
+    )
+}
+
+fn svg_view_box_placeholder_extent(element: &ElementData) -> Option<(usize, usize)> {
+    let view_box = element.attrs.get("viewbox")?;
+    let mut values = view_box.split(|ch: char| ch.is_ascii_whitespace() || ch == ',');
+    let _min_x = values.next()?;
+    let _min_y = values.next()?;
+    let width = svg_dimension_to_cells(values.next()?, 8.0)?;
+    let height = svg_dimension_to_cells(values.next()?, 12.0)?;
+    Some((width, height))
+}
+
+fn svg_dimension_to_cells(value: &str, cell_px: f64) -> Option<usize> {
+    let pixels = value.parse::<f64>().ok()?;
+    if !pixels.is_finite() || pixels <= 0.0 {
+        return None;
+    }
+    Some((pixels / cell_px).ceil().clamp(1.0, 512.0) as usize)
+}
+
+fn graphic_placeholder_alt(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
+    element
+        .attrs
+        .get("aria-label")
+        .or_else(|| element.attrs.get("title"))
+        .cloned()
+        .or_else(|| svg_title_text(dom, node_id))
+        .or_else(|| Some(element.tag.clone()))
+}
+
+fn svg_title_text(dom: &Dom, node_id: usize) -> Option<String> {
+    let node = dom.nodes.get(node_id)?;
+    node.children.iter().find_map(|&child_id| {
+        let child = dom.nodes.get(child_id)?;
+        match &child.kind {
+            NodeKind::Element(element) if element.tag == "title" => {
+                let title = collapse_ascii_whitespace(&text_content(dom, child_id));
+                (!title.is_empty()).then_some(title)
+            }
+            _ => None,
+        }
+    })
 }
 
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
@@ -11169,7 +11271,7 @@ fn computed_style(
 
 fn default_display(tag: &str) -> Display {
     match tag {
-        "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
+        "head" | "script" | "style" | "template" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
         | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
         | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
