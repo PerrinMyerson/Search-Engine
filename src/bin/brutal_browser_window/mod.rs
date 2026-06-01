@@ -2032,6 +2032,59 @@ mod native {
         }
 
         #[tokio::test]
+        async fn browser_window_command_q_closes_window_without_changing_tabs() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Q,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.dirty);
+            assert!(result.close);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: "stale".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+        }
+
+        #[tokio::test]
         async fn browser_window_hover_status_text_describes_chrome_controls() {
             let dir = tempfile::tempdir().unwrap();
             let first = dir.path().join("first.html");
