@@ -677,6 +677,19 @@ mod native {
                         close: false,
                     });
                 }
+                Key::F4 if !modifiers.alt => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(BrowserAppAction::CloseTab(None)).await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: false,
+                        close: true,
+                    });
+                }
                 Key::W => {
                     if app.tab_count() > 1 {
                         app.apply_action(BrowserAppAction::CloseTab(None)).await?;
@@ -1799,6 +1812,63 @@ mod native {
                 .await
                 .unwrap();
             assert!(close_tab.dirty);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.active_tab(), 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_f4_closes_tab_or_window() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let close_tab = handle_browser_window_key(&mut app, &mut mode, Key::F4, modifiers)
+                .await
+                .unwrap();
+
+            assert!(close_tab.dirty);
+            assert!(!close_tab.close);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Find {
+                    text: "stale".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+
+            let close_window = handle_browser_window_key(&mut app, &mut mode, Key::F4, modifiers)
+                .await
+                .unwrap();
+
+            assert!(!close_window.dirty);
+            assert!(close_window.close);
             assert_eq!(app.tab_count(), 1);
             assert_eq!(app.active_tab(), 0);
         }
