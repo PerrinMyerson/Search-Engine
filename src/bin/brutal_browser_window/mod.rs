@@ -882,7 +882,7 @@ mod native {
                     .to_owned();
                 *mode = BrowserWindowMode::Page;
                 if !target.trim().is_empty() {
-                    if modifiers.alt {
+                    if modifiers.alt || modifiers.command {
                         app.apply_action(BrowserAppAction::NewTab(target)).await?;
                     } else {
                         app.apply_action(BrowserAppAction::Open(target)).await?;
@@ -1931,6 +1931,55 @@ mod native {
                     command: false,
                     shift: false,
                     alt: true,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                "bench/browser-fixtures/list-marker-types.html"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_location_command_enter_opens_new_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "list-marker-types.html".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
                 },
             )
             .await
