@@ -10737,7 +10737,17 @@ fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) ->
                 .clone()
                 .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)))
         )),
+        "button" => Some(button_render_text(dom, node_id, element)),
         _ => None,
+    }
+}
+
+fn button_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> String {
+    let label = collapse_ascii_whitespace(&text_content(dom, node_id));
+    if label.is_empty() {
+        format!("[{}]", element.value.as_deref().unwrap_or_default().trim())
+    } else {
+        format!("[{}]", label.trim())
     }
 }
 

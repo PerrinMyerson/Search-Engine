@@ -1726,6 +1726,7 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
                 </select>
                 <textarea name="note">ship it</textarea>
                 <input type="submit" value="Go">
+                <button type="button">Launch browser</button>
               </form>
             </body></html>
             "#,
@@ -1737,14 +1738,15 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
 
     assert_eq!(
         render.text,
-        "[rust browser] [x] ( ) [******] [News] [ship it] [Go]"
+        "[rust browser] [x] ( ) [******] [News] [ship it] [Go] [Launch browser]"
     );
     assert_eq!(
         render.display_list,
         vec![DisplayCommand::Text {
             x: 0,
             y: 0,
-            text: "[rust browser] [x] ( ) [******] [News] [ship it] [Go]".to_owned(),
+            text: "[rust browser] [x] ( ) [******] [News] [ship it] [Go] [Launch browser]"
+                .to_owned(),
         }]
     );
     assert!(hit_test_target_node(&render, 1, 0).is_some());
