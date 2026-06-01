@@ -1244,6 +1244,14 @@ mod native {
                     close: false,
                 })
             }
+            BrowserAppWindowHit::ReloadButton => {
+                *mode = BrowserWindowMode::Page;
+                app.apply_action(BrowserAppAction::Reload).await?;
+                Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                })
+            }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
@@ -3371,6 +3379,51 @@ mod native {
                     shift: false,
                     alt: false,
                 },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+            assert!(app.active_find_state().unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn browser_window_reload_button_hit_reloads_and_returns_to_page_mode() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FindText {
+                query: "Visible".to_owned(),
+                next: false,
+            })
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "Visible".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::ReloadButton,
+                BrowserWindowModifiers::default(),
             )
             .await
             .unwrap();
