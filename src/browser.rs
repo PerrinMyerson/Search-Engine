@@ -10705,25 +10705,70 @@ fn image_placeholder_extent(
         .attrs
         .get("width")
         .and_then(|value| parse_pixel_dimension_cells(value, 8));
-    let mut width = style.width.or(attr_width).unwrap_or(10);
-    if let Some(max_width) = style.max_width {
-        width = width.min(max_width);
-    }
-    width = width.max(style.min_width);
-    let mut height = style
-        .height
-        .or_else(|| {
-            element
-                .attrs
-                .get("height")
-                .and_then(|value| parse_pixel_dimension_cells(value, 12))
-        })
-        .unwrap_or(4);
-    if let Some(max_height) = style.max_height {
-        height = height.min(max_height);
-    }
-    height = height.max(style.min_height).clamp(1, 24);
+    let attr_height = element
+        .attrs
+        .get("height")
+        .and_then(|value| parse_pixel_dimension_cells(value, 12));
+    let (mut width, mut height) = match (style.width, style.height) {
+        (Some(width), Some(height)) => (width, height),
+        (Some(width), None) => {
+            let width = constrain_image_width(width, style);
+            let height = attr_width
+                .zip(attr_height)
+                .and_then(|(intrinsic_width, intrinsic_height)| {
+                    scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                })
+                .unwrap_or_else(|| attr_height.unwrap_or(4));
+            (width, height)
+        }
+        (None, Some(height)) => {
+            let height = constrain_image_height(height, style);
+            let width = attr_width
+                .zip(attr_height)
+                .and_then(|(intrinsic_width, intrinsic_height)| {
+                    scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                })
+                .unwrap_or_else(|| attr_width.unwrap_or(10));
+            (width, height)
+        }
+        (None, None) => (attr_width.unwrap_or(10), attr_height.unwrap_or(4)),
+    };
+    width = constrain_image_width(width, style);
+    height = constrain_image_height(height, style);
     (width.clamp(1, renderer.available_width()), height)
+}
+
+fn constrain_image_width(width: usize, style: &ComputedStyle) -> usize {
+    let width = if let Some(max_width) = style.max_width {
+        width.min(max_width)
+    } else {
+        width
+    };
+    width.max(style.min_width)
+}
+
+fn constrain_image_height(height: usize, style: &ComputedStyle) -> usize {
+    let height = if let Some(max_height) = style.max_height {
+        height.min(max_height)
+    } else {
+        height
+    };
+    height.max(style.min_height).clamp(1, 24)
+}
+
+fn scale_image_dimension(
+    source_dimension: usize,
+    target_intrinsic: usize,
+    source_intrinsic: usize,
+) -> Option<usize> {
+    if source_intrinsic == 0 {
+        return None;
+    }
+    let scaled = source_dimension
+        .saturating_mul(target_intrinsic)
+        .saturating_add(source_intrinsic.saturating_sub(1))
+        / source_intrinsic;
+    Some(scaled.max(1))
 }
 
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {

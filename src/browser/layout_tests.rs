@@ -1547,6 +1547,60 @@ fn css_height_controls_block_and_image_extent() {
 }
 
 #[test]
+fn css_image_single_axis_size_preserves_intrinsic_aspect_ratio() {
+    let render = render_html(
+        "mem://css-image-aspect-ratio",
+        br#"
+            <html><body>
+              <img alt="wide" width="80" height="48" style="width:24px">
+              <img alt="tall" width="80" height="48" style="height:24px">
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("wide".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 2,
+                shade: 220,
+                alt: Some("tall".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_max_height_limits_image_placeholder_extent() {
     let render = render_html(
         "mem://css-max-height-image",
