@@ -2630,6 +2630,52 @@ mod native {
         }
 
         #[tokio::test]
+        async fn browser_window_command_click_unavailable_history_dismisses_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "visible prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::BackButton,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Static Text Fixture"
+            );
+        }
+
+        #[tokio::test]
         async fn browser_window_middle_click_closes_tabs() {
             let mut app = BrowserApp::open(
                 "bench/browser-fixtures/static-text.html",
