@@ -1281,6 +1281,30 @@ mod native {
                     close: false,
                 })
             }
+            BrowserAppWindowHit::BackButton | BrowserAppWindowHit::ForwardButton
+                if modifiers.command =>
+            {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
+                *mode = BrowserWindowMode::Page;
+                let backwards = matches!(hit, BrowserAppWindowHit::BackButton);
+                let Some(target) = browser_window_history_target(app, backwards)? else {
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: dismissed_prompt,
+                        close: false,
+                    });
+                };
+                let active_tab = app.active_tab();
+                app.apply_action(BrowserAppAction::NewTab(target.source))
+                    .await?;
+                if !modifiers.shift {
+                    app.apply_action(BrowserAppAction::SwitchTab(active_tab))
+                        .await?;
+                }
+                Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                })
+            }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
                 let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
@@ -2489,6 +2513,110 @@ mod native {
                 )
                 .unwrap(),
                 None
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_click_history_buttons_open_tabs() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(
+                second.to_string_lossy().into_owned(),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let background = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::BackButton,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(background.dirty);
+            assert!(!background.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+            app.apply_action(BrowserAppAction::SwitchTab(1))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            app.apply_action(BrowserAppAction::SwitchTab(0))
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::Back).await.unwrap();
+            let foreground = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::ForwardButton,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(foreground.dirty);
+            assert!(!foreground.close);
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
             );
         }
 
