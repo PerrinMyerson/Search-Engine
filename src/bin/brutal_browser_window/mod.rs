@@ -791,6 +791,11 @@ mod native {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
             Key::Backspace => Some(BrowserAppAction::Back),
+            Key::Enter | Key::NumPadEnter
+                if browser_window_focused_control_accepts_newline(app)? =>
+            {
+                Some(BrowserAppAction::TypeText("\n".to_owned()))
+            }
             Key::Enter | Key::NumPadEnter if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::SubmitFocused)
             }
@@ -1055,6 +1060,13 @@ mod native {
                     "checkbox" | "radio"
                 )
             }))
+    }
+
+    fn browser_window_focused_control_accepts_newline(app: &BrowserApp) -> Result<bool> {
+        Ok(app
+            .active_session()?
+            .focused_control()
+            .is_some_and(|control| control.kind.eq_ignore_ascii_case("textarea")))
     }
 
     fn browser_window_focused_control_accepts_text_input(app: &BrowserApp) -> Result<bool> {
@@ -3082,6 +3094,73 @@ mod native {
                     .unwrap()
                     .value,
                 ""
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_enter_types_newline_in_focused_textarea() {
+            let dir = tempfile::tempdir().unwrap();
+            let form = dir.path().join("form.html");
+            let results = dir.path().join("results.html");
+            std::fs::write(
+                &form,
+                r#"<html><head><title>Form</title></head><body><form action="results.html" method="get"><textarea name="notes">before</textarea><button>Go</button></form></body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &results,
+                r#"<html><head><title>Results</title></head><body>Submitted</body></html>"#,
+            )
+            .unwrap();
+
+            let mut app = BrowserApp::open(
+                form.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "textarea"
+            );
+            let mut mode = BrowserWindowMode::Page;
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Form"
+            );
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "before\n"
             );
         }
 
