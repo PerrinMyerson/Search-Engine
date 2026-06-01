@@ -650,7 +650,25 @@ mod native {
                         close: false,
                     });
                 }
+                Key::Home => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_document_start_action(app)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::Down => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_document_end_action(app)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
+                Key::End => {
                     *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_document_end_action(app)?)
                         .await?;
@@ -1535,6 +1553,56 @@ mod native {
                 .await
                 .unwrap();
             assert!(up.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_home_end_jump_document_edges() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/list-marker-types.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let end = handle_browser_window_key(&mut app, &mut mode, Key::End, modifiers)
+                .await
+                .unwrap();
+
+            assert!(end.dirty);
+            assert!(!end.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            let bottom = app.active_viewport().unwrap().y;
+            assert!(bottom > 0);
+
+            mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+            let home = handle_browser_window_key(&mut app, &mut mode, Key::Home, modifiers)
+                .await
+                .unwrap();
+
+            assert!(home.dirty);
+            assert!(!home.close);
             assert_eq!(mode, BrowserWindowMode::Page);
             assert_eq!(app.active_viewport().unwrap().y, 0);
         }
