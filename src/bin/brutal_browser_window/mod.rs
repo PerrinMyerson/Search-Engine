@@ -545,6 +545,7 @@ mod native {
         if modifiers.command {
             if let Some(index) = browser_window_tab_shortcut_index(key, app.tab_count()) {
                 app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
+                refresh_browser_window_location_mode(app, mode)?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
                     close: false,
@@ -613,6 +614,7 @@ mod native {
                 Key::LeftBracket if modifiers.shift && app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -621,6 +623,7 @@ mod native {
                 Key::RightBracket if modifiers.shift && app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -629,6 +632,7 @@ mod native {
                 Key::Left if modifiers.alt && app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -637,6 +641,7 @@ mod native {
                 Key::Right if modifiers.alt && app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -718,6 +723,7 @@ mod native {
                 Key::Tab if app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -726,6 +732,7 @@ mod native {
                 Key::PageUp if app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -734,6 +741,7 @@ mod native {
                 Key::PageDown if app.tab_count() > 0 => {
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
+                    refresh_browser_window_location_mode(app, mode)?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
@@ -1023,6 +1031,17 @@ mod native {
             .current()
             .map(|render| render.source.clone())
             .unwrap_or_default())
+    }
+
+    fn refresh_browser_window_location_mode(
+        app: &BrowserApp,
+        mode: &mut BrowserWindowMode,
+    ) -> Result<()> {
+        if matches!(mode, BrowserWindowMode::Location { .. }) {
+            let source = current_browser_window_source(app)?;
+            begin_browser_window_location_input(mode, &source);
+        }
+        Ok(())
     }
 
     fn browser_window_page_scroll_action(
@@ -1940,6 +1959,10 @@ mod native {
                 .unwrap();
             assert!(forward_tab.dirty);
             assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                browser_window_location_text(&mode),
+                Some("bench/browser-fixtures/static-text.html")
+            );
 
             let backward_tab = handle_browser_window_key(
                 &mut app,
@@ -1955,6 +1978,7 @@ mod native {
             .unwrap();
             assert!(backward_tab.dirty);
             assert_eq!(app.active_tab(), 1);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
 
             let close_tab = handle_browser_window_key(&mut app, &mut mode, Key::W, modifiers)
                 .await
