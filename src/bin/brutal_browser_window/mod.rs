@@ -879,9 +879,10 @@ mod native {
             Key::Enter | Key::NumPadEnter => {
                 let target = browser_window_location_text(mode)
                     .unwrap_or_default()
+                    .trim()
                     .to_owned();
                 *mode = BrowserWindowMode::Page;
-                if !target.trim().is_empty() {
+                if !target.is_empty() {
                     if modifiers.alt {
                         app.apply_action(BrowserAppAction::NewTab(target)).await?;
                     } else {
@@ -1982,6 +1983,51 @@ mod native {
             .unwrap();
 
             assert!(result.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                "bench/browser-fixtures/list-marker-types.html"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_location_enter_trims_target_before_opening() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: " \tlist-marker-types.html\n ".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
             assert_eq!(mode, BrowserWindowMode::Page);
             assert_eq!(app.tab_count(), 1);
             assert_eq!(
