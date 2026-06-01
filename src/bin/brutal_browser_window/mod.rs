@@ -543,6 +543,7 @@ mod native {
     ) -> Result<BrowserWindowKeyResult> {
         if modifiers.command {
             if let Some(index) = browser_window_tab_shortcut_index(key, app.tab_count()) {
+                *mode = BrowserWindowMode::Page;
                 app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -610,6 +611,7 @@ mod native {
                     });
                 }
                 Key::LeftBracket if modifiers.shift && app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -618,6 +620,7 @@ mod native {
                     });
                 }
                 Key::RightBracket if modifiers.shift && app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -691,6 +694,7 @@ mod native {
                     });
                 }
                 Key::Tab if app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -699,6 +703,7 @@ mod native {
                     });
                 }
                 Key::PageUp if app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -707,6 +712,7 @@ mod native {
                     });
                 }
                 Key::PageDown if app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -2542,6 +2548,51 @@ mod native {
                 .unwrap();
             assert!(!missing_tab.dirty);
             assert_eq!(app.active_tab(), 2);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_number_tab_switch_dismisses_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Key1,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(mode, BrowserWindowMode::Page);
         }
 
         #[test]
