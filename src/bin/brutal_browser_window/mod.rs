@@ -720,6 +720,12 @@ mod native {
 
         if modifiers.alt {
             match key {
+                Key::F4 => {
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: false,
+                        close: true,
+                    });
+                }
                 Key::D => {
                     let source = current_browser_window_source(app)?;
                     begin_browser_window_location_input(mode, &source);
@@ -2029,6 +2035,58 @@ mod native {
             assert!(!result.dirty);
             assert!(result.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_alt_f4_closes_window_without_changing_tabs() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::F4,
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: false,
+                    alt: true,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.dirty);
+            assert!(result.close);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Find {
+                    text: "stale".to_owned(),
+                    replace_on_input: false,
+                }
+            );
         }
 
         #[tokio::test]
