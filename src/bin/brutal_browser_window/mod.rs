@@ -850,6 +850,9 @@ mod native {
         backwards: bool,
     ) -> Result<BrowserWindowKeyResult> {
         if let Some(find) = app.active_find_state()? {
+            if matches!(mode, BrowserWindowMode::Location { .. }) {
+                *mode = BrowserWindowMode::Page;
+            }
             if backwards {
                 app.apply_action(BrowserAppAction::FindTextPrevious { query: find.query })
                     .await?;
@@ -2756,6 +2759,73 @@ mod native {
             assert_eq!(previous_find.match_count, 2);
             assert_eq!(previous_find.active_match_index, 0);
             assert_eq!(app.active_viewport().unwrap().y, first_find.line);
+        }
+
+        #[tokio::test]
+        async fn browser_window_find_next_dismisses_location_prompt() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("find-next-location.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Find Next Location Fixture</title></head>
+<body>
+<p>needle first result</p>
+<p>middle line</p>
+<p>needle second result</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FindText {
+                query: "needle".to_owned(),
+                next: false,
+            })
+            .await
+            .unwrap();
+            let first_find = app.active_find_state().unwrap().unwrap();
+            assert_eq!(first_find.active_match_index, 0);
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+
+            let find_next = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::G,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(find_next.dirty);
+            assert!(!find_next.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            let second_find = app.active_find_state().unwrap().unwrap();
+            assert_eq!(second_find.query, "needle");
+            assert_eq!(second_find.active_match_index, 1);
+            assert!(second_find.line > first_find.line);
+            assert_eq!(app.active_viewport().unwrap().y, second_find.line);
         }
 
         #[tokio::test]
