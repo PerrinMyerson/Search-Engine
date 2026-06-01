@@ -202,7 +202,7 @@ pub struct BrowserAppWindowClickReport {
 #[derive(Debug, Clone)]
 pub struct BrowserApp {
     tabs: Vec<BrowserAppTab>,
-    closed_tabs: Vec<BrowserAppTab>,
+    closed_tabs: Vec<BrowserAppClosedTab>,
     active_tab: usize,
     options: BrowserAppOptions,
 }
@@ -214,6 +214,12 @@ struct BrowserAppTab {
     last_presented_viewport: Option<BrowserViewportState>,
     content_dirty: bool,
     find: Option<BrowserAppFindState>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserAppClosedTab {
+    tab: BrowserAppTab,
+    index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,10 +595,10 @@ impl BrowserApp {
                 self.tabs.len()
             );
         }
-        let mut closed_tab = self.tabs.remove(index);
-        closed_tab.last_presented_viewport = None;
-        closed_tab.content_dirty = true;
-        self.closed_tabs.push(closed_tab);
+        let mut tab = self.tabs.remove(index);
+        tab.last_presented_viewport = None;
+        tab.content_dirty = true;
+        self.closed_tabs.push(BrowserAppClosedTab { tab, index });
         if self.closed_tabs.len() > BROWSER_APP_CLOSED_TAB_LIMIT {
             self.closed_tabs.remove(0);
         }
@@ -605,13 +611,14 @@ impl BrowserApp {
     }
 
     fn restore_closed_tab(&mut self) -> Result<()> {
-        let Some(mut tab) = self.closed_tabs.pop() else {
+        let Some(mut closed_tab) = self.closed_tabs.pop() else {
             bail!("no closed tab to restore");
         };
-        tab.last_presented_viewport = None;
-        tab.content_dirty = true;
-        self.tabs.push(tab);
-        self.active_tab = self.tabs.len() - 1;
+        closed_tab.tab.last_presented_viewport = None;
+        closed_tab.tab.content_dirty = true;
+        let insert_index = closed_tab.index.min(self.tabs.len());
+        self.tabs.insert(insert_index, closed_tab.tab);
+        self.active_tab = insert_index;
         Ok(())
     }
 
@@ -2001,5 +2008,51 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(missing.contains("no closed tab"));
+    }
+
+    #[tokio::test]
+    async fn browser_app_restores_closed_tab_at_original_index() {
+        let mut app = BrowserApp::open("bench/browser-fixtures/static-text.html", app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::NewTab("max-width-layout.html".to_owned()))
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::NewTab(
+            "list-marker-types.html".to_owned(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.tab_count(), 3);
+        assert_eq!(app.active_tab(), 2);
+
+        app.apply_action(BrowserAppAction::CloseTab(Some(0)))
+            .await
+            .unwrap();
+        assert_eq!(app.tab_count(), 2);
+        assert_eq!(app.active_tab(), 1);
+        assert_eq!(app.closed_tab_count(), 1);
+
+        app.apply_action(BrowserAppAction::RestoreClosedTab)
+            .await
+            .unwrap();
+        assert_eq!(app.tab_count(), 3);
+        assert_eq!(app.closed_tab_count(), 0);
+        assert_eq!(app.active_tab(), 0);
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().source,
+            "bench/browser-fixtures/static-text.html"
+        );
+
+        let tabs = app.tab_summaries();
+        assert_eq!(tabs[0].source, "bench/browser-fixtures/static-text.html");
+        assert_eq!(
+            tabs[1].source,
+            "bench/browser-fixtures/max-width-layout.html"
+        );
+        assert_eq!(
+            tabs[2].source,
+            "bench/browser-fixtures/list-marker-types.html"
+        );
     }
 }
