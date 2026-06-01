@@ -1123,10 +1123,11 @@ pub(super) enum CssListStyleType {
     UpperRoman,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ComputedStyle {
     display: Display,
     background_shade: Option<u8>,
+    background_image_url: Option<String>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
@@ -1159,10 +1160,11 @@ struct CssRule {
     declarations: CssDeclarations,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CssDeclarations {
     display: Option<Display>,
     background_shade: Option<u8>,
+    background_image_url: Option<String>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
@@ -9025,7 +9027,7 @@ fn parse_css(css: &str) -> CssCascade {
             if let Some(selector) = parse_selector(selector) {
                 cascade.push(CssRule {
                     selector,
-                    declarations,
+                    declarations: declarations.clone(),
                 });
             }
         }
@@ -9318,6 +9320,12 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "background" | "background-color" => {
                 declarations.background_shade =
                     parse_css_color_shade(value).or(declarations.background_shade);
+                declarations.background_image_url =
+                    parse_css_image_url(value).or(declarations.background_image_url);
+            }
+            "background-image" => {
+                declarations.background_image_url =
+                    parse_css_image_url(value).or(declarations.background_image_url);
             }
             "color" => {
                 declarations.text_shade = parse_css_color_shade(value).or(declarations.text_shade);
@@ -9741,6 +9749,33 @@ fn parse_css_color_shade(value: &str) -> Option<u8> {
         }
     }
     None
+}
+
+fn parse_css_image_url(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches(';');
+    if value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let lower = value.to_ascii_lowercase();
+    let start = lower.find("url(")?;
+    let payload_start = start.saturating_add(4);
+    let payload_end = value[payload_start..]
+        .find(')')
+        .map(|offset| payload_start.saturating_add(offset))?;
+    let url = value[payload_start..payload_end].trim();
+    if url.is_empty() {
+        return None;
+    }
+    let bytes = url.as_bytes();
+    let url = if bytes.len() >= 2
+        && matches!(bytes[0], b'\'' | b'"')
+        && bytes.last() == Some(&bytes[0])
+    {
+        &url[1..url.len().saturating_sub(1)]
+    } else {
+        url
+    };
+    (!url.is_empty()).then(|| url.to_owned())
 }
 
 fn parse_css_text_align(value: &str) -> Option<TextAlign> {
@@ -10444,6 +10479,12 @@ fn render_node(
                     .background_shade
                     .map(|shade| (box_x, box_width, start_y, shade))
             });
+            let background_image_start = block_box.and_then(|(box_x, box_width, start_y)| {
+                style
+                    .background_image_url
+                    .clone()
+                    .map(|url| (box_x, box_width, start_y, url))
+            });
             if let Some(text_align) = text_align_entered {
                 renderer.enter_text_align(text_align);
             }
@@ -10602,6 +10643,16 @@ fn render_node(
             }
             if let Some((box_x, box_width, start_y, shade)) = background_start {
                 renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
+            }
+            if let Some((box_x, box_width, start_y, url)) = background_image_start {
+                renderer.push_block_background_image(
+                    box_x,
+                    box_width,
+                    start_y,
+                    source,
+                    &url,
+                    Some(node_id),
+                );
             }
             if style.display.is_block_flow() {
                 if width_inset.0 > 0 || width_inset.1 > 0 {
@@ -10815,6 +10866,7 @@ fn computed_style(
         return ComputedStyle {
             display: Display::None,
             background_shade: None,
+            background_image_url: None,
             text_shade: None,
             text_align: None,
             visibility: None,
@@ -10843,6 +10895,7 @@ fn computed_style(
     }
     let mut display = default_display(&element.tag);
     let mut background_shade = None;
+    let mut background_image_url = None;
     let mut text_shade = None;
     let mut text_align = None;
     let mut visibility = None;
@@ -10869,6 +10922,7 @@ fn computed_style(
     let mut min_height = 0usize;
     let mut display_specificity = 0u32;
     let mut background_specificity = 0u32;
+    let mut background_image_specificity = 0u32;
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
@@ -10910,6 +10964,12 @@ fn computed_style(
             {
                 background_shade = Some(rule_background);
                 background_specificity = rule_specificity;
+            }
+            if let Some(rule_background_image_url) = rule.declarations.background_image_url.as_ref()
+                && rule_specificity >= background_image_specificity
+            {
+                background_image_url = Some(rule_background_image_url.clone());
+                background_image_specificity = rule_specificity;
             }
             if let Some(rule_text) = rule.declarations.text_shade
                 && rule_specificity >= text_specificity
@@ -11064,6 +11124,9 @@ fn computed_style(
         if let Some(inline_background) = inline.background_shade {
             background_shade = Some(inline_background);
         }
+        if let Some(inline_background_image_url) = inline.background_image_url {
+            background_image_url = Some(inline_background_image_url);
+        }
         if let Some(inline_text) = inline.text_shade {
             text_shade = Some(inline_text);
         }
@@ -11140,6 +11203,7 @@ fn computed_style(
     ComputedStyle {
         display,
         background_shade,
+        background_image_url,
         text_shade,
         text_align,
         visibility,
@@ -12547,6 +12611,39 @@ impl FlowRenderer {
             width,
             height,
             shade,
+        });
+        self.underlay_targets
+            .push(DisplayHitTarget::node(target_node));
+    }
+
+    fn push_block_background_image(
+        &mut self,
+        x: usize,
+        width: usize,
+        start_y: usize,
+        source: &str,
+        url: &str,
+        target_node: Option<usize>,
+    ) {
+        if self.visibility != Visibility::Visible {
+            return;
+        }
+        let height = self.next_y.saturating_sub(start_y).max(1);
+        let decoded_info = self.cached_decoded_image_info(source, url);
+        self.underlay_list.push(DisplayCommand::Image {
+            x,
+            y: start_y,
+            width,
+            height,
+            shade: 220,
+            alt: None,
+            url: decoded_info
+                .as_ref()
+                .map(|image| image.url.clone())
+                .or_else(|| Some(resolve_browser_href(source, url))),
+            decoded_width: decoded_info.as_ref().map(|image| image.width),
+            decoded_height: decoded_info.as_ref().map(|image| image.height),
+            decoded_hash: decoded_info.map(|image| image.pixel_hash),
         });
         self.underlay_targets
             .push(DisplayHitTarget::node(target_node));

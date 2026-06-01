@@ -1505,6 +1505,59 @@ Tail"
 }
 
 #[test]
+fn css_background_image_paints_block_underlay() {
+    let render = render_html(
+        "mem://background-image",
+        br#"
+            <html><body>
+              <div style="width:80px; height:24px; background-color:white; background-image:url(https://example.test/hero.png)">Hero</div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Hero\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 255,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: None,
+                url: Some("https://example.test/hero.png".to_owned()),
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Hero".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",
