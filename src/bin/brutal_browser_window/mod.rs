@@ -787,7 +787,7 @@ mod native {
                     close: true,
                 });
             }
-            Key::Backspace if app.active_session()?.focused_control().is_some() => {
+            Key::Backspace | Key::Delete if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
             Key::Backspace => Some(BrowserAppAction::Back),
@@ -3082,6 +3082,66 @@ mod native {
                     .unwrap()
                     .value,
                 ""
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_delete_edits_focused_text_control_only() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value="filled"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let page_delete = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Delete,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!page_delete.dirty);
+            assert!(!page_delete.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            let focused_delete = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Delete,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(focused_delete.dirty);
+            assert!(!focused_delete.close);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "fille"
             );
         }
 
