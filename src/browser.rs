@@ -10835,7 +10835,7 @@ fn computed_style(
     let mut display = default_display(&element.tag);
     let mut background_shade = None;
     let mut text_shade = None;
-    let mut text_align = None;
+    let mut text_align = (element.tag == "center").then_some(TextAlign::Center);
     let mut visibility = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
@@ -11149,10 +11149,10 @@ fn computed_style(
 fn default_display(tag: &str) -> Display {
     match tag {
         "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
-        "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
-        | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
-        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
-        | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
+        "address" | "article" | "aside" | "blockquote" | "body" | "center" | "dd" | "details"
+        | "div" | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
+        | "h3" | "h4" | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p"
+        | "pre" | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
         "li" | "summary" => Display::ListItem,
         _ => Display::Inline,
     }

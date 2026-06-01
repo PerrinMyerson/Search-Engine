@@ -1023,6 +1023,47 @@ fn css_text_transform_capitalize_uses_word_boundaries() {
 }
 
 #[test]
+fn center_element_is_block_flow_and_centers_text_by_default() {
+    let render = render_html(
+        "mem://center-element",
+        br#"
+            <html><body>Before<center>Alpha</center><center style="text-align:left">Left</center>After</body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nAlpha\nLeft\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 7,
+                y: 1,
+                text: "Alpha".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Left".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_letter_spacing_expands_text_runs_and_wrap_width() {
     let render = render_html(
         "mem://letter-spacing",
