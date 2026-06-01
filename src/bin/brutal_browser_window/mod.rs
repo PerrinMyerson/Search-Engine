@@ -1202,6 +1202,42 @@ mod native {
         }))
     }
 
+    async fn handle_browser_window_history_button_click(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        backwards: bool,
+    ) -> Result<BrowserWindowKeyResult> {
+        let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
+        *mode = BrowserWindowMode::Page;
+        let Some(action) = browser_window_history_button_action(app, backwards)? else {
+            return Ok(BrowserWindowKeyResult {
+                dirty: dismissed_prompt,
+                close: false,
+            });
+        };
+        app.apply_action(action).await?;
+        Ok(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        })
+    }
+
+    fn browser_window_history_button_action(
+        app: &BrowserApp,
+        backwards: bool,
+    ) -> Result<Option<BrowserAppAction>> {
+        let history = app.active_session()?.snapshot();
+        let Some(current_index) = history.current_index else {
+            return Ok(None);
+        };
+        if backwards {
+            Ok((current_index > 0).then_some(BrowserAppAction::Back))
+        } else {
+            let next_index = current_index.saturating_add(1);
+            Ok((next_index < history.entries.len()).then_some(BrowserAppAction::Forward))
+        }
+    }
+
     fn browser_window_active_status_label(app: &BrowserApp) -> Result<String> {
         let current = app
             .active_session()?
@@ -1228,6 +1264,12 @@ mod native {
         modifiers: BrowserWindowModifiers,
     ) -> Result<BrowserWindowKeyResult> {
         match hit {
+            BrowserAppWindowHit::BackButton => {
+                handle_browser_window_history_button_click(app, mode, true).await
+            }
+            BrowserAppWindowHit::ForwardButton => {
+                handle_browser_window_history_button_click(app, mode, false).await
+            }
             BrowserAppWindowHit::LocationBar => {
                 let source = current_browser_window_source(app)?;
                 begin_browser_window_location_input(mode, &source);
@@ -2168,6 +2210,124 @@ mod native {
                 )
                 .unwrap(),
                 None
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_left_click_history_buttons_use_precomputed_hit() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let no_back = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::BackButton,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(no_back.dirty);
+            assert!(!no_back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            app.apply_action(BrowserAppAction::Open(second.to_str().unwrap().to_owned()))
+                .await
+                .unwrap();
+            mode = BrowserWindowMode::Location {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let back = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::BackButton,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(back.dirty);
+            assert!(!back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let forward = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::ForwardButton,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(forward.dirty);
+            assert!(!forward.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+
+            let no_forward = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                9999,
+                9999,
+                BrowserAppWindowHit::ForwardButton,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!no_forward.dirty);
+            assert!(!no_forward.close);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
             );
         }
 
