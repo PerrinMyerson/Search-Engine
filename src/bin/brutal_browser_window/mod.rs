@@ -926,15 +926,16 @@ mod native {
                 let query = browser_window_find_text(mode)
                     .unwrap_or_default()
                     .to_owned();
+                if query.trim().is_empty() {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 *mode = BrowserWindowMode::Page;
-                if !query.trim().is_empty() {
-                    if modifiers.shift {
-                        app.apply_action(BrowserAppAction::FindTextPrevious { query })
-                            .await?;
-                    } else {
-                        app.apply_action(BrowserAppAction::FindText { query, next: false })
-                            .await?;
-                    }
+                if modifiers.shift {
+                    app.apply_action(BrowserAppAction::FindTextPrevious { query })
+                        .await?;
+                } else {
+                    app.apply_action(BrowserAppAction::FindText { query, next: false })
+                        .await?;
                 }
                 Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -2723,6 +2724,42 @@ mod native {
             let find = app.active_find_state().unwrap().unwrap();
             assert_eq!(find.query, "Visible");
             assert_eq!(find.active_match_index, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_empty_find_enter_keeps_prompt_focused() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: String::new(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.dirty);
+            assert!(!result.close);
+            assert_eq!(browser_window_find_text(&mode), Some(""));
+            assert!(app.active_find_state().unwrap().is_none());
         }
 
         #[tokio::test]
