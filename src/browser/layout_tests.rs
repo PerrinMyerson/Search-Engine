@@ -1586,6 +1586,57 @@ fn css_box_sizing_content_box_keeps_width_as_content_width() {
 }
 
 #[test]
+fn css_logical_spacing_edges_map_to_physical_layout_edges() {
+    let render = render_html(
+        "mem://logical-spacing",
+        br#"
+            <html><body>
+              <div style="width:40px; padding-inline-start:16px; padding-inline-end:8px">AB CD EF</div>
+              <div style="margin-inline-start:16px; width:40px">GH IJ</div>
+              <div style="margin-block-start:24px; margin-block-end:12px; width:40px">KL</div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "AB CD\nEF\nGH IJ\nKL\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 2,
+                y: 0,
+                text: "AB CD".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 1,
+                text: "EF".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 2,
+                text: "GH IJ".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "KL".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn details_summary_hides_closed_content_and_marks_state() {
     let render = render_html(
         "mem://details-summary",

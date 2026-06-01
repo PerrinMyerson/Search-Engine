@@ -9390,16 +9390,16 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     padding.set_all(parsed);
                 }
             }
-            "padding-top" => {
+            "padding-top" | "padding-block-start" => {
                 padding.top = parse_css_padding_length(value, CssAxis::Vertical);
             }
-            "padding-right" => {
+            "padding-right" | "padding-inline-end" => {
                 padding.right = parse_css_padding_length(value, CssAxis::Horizontal);
             }
-            "padding-bottom" => {
+            "padding-bottom" | "padding-block-end" => {
                 padding.bottom = parse_css_padding_length(value, CssAxis::Vertical);
             }
-            "padding-left" => {
+            "padding-left" | "padding-inline-start" => {
                 padding.left = parse_css_padding_length(value, CssAxis::Horizontal);
             }
             "margin" => {
@@ -9411,10 +9411,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                         parsed.right_auto.or(declarations.margin_right_auto);
                 }
             }
-            "margin-top" => {
+            "margin-top" | "margin-block-start" => {
                 margin.top = parse_css_margin_length(value, CssAxis::Vertical);
             }
-            "margin-right" => {
+            "margin-right" | "margin-inline-end" => {
                 if css_value_is_auto(value) {
                     declarations.margin_right_auto = Some(true);
                 } else {
@@ -9424,10 +9424,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     }
                 }
             }
-            "margin-bottom" => {
+            "margin-bottom" | "margin-block-end" => {
                 margin.bottom = parse_css_margin_length(value, CssAxis::Vertical);
             }
-            "margin-left" => {
+            "margin-left" | "margin-inline-start" => {
                 if css_value_is_auto(value) {
                     declarations.margin_left_auto = Some(true);
                 } else {
