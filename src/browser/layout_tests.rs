@@ -1505,6 +1505,56 @@ Tail"
 }
 
 #[test]
+fn css_opacity_zero_reserves_layout_without_painting_descendants() {
+    let render = render_html(
+        "mem://opacity-zero",
+        br#"
+            <html><head><style>
+              .hidden { opacity: 0 }
+              .shown { opacity: 100% }
+            </style></head><body>
+              <p>Before <span class="hidden">Hidden <span style="opacity:1">Still hidden</span></span> After</p>
+              <p class="hidden">Ghost <span style="visibility:visible">Still ghost</span> Gone</p>
+              <p class="shown">Visible again</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        format!(
+            "Before{} After\n{}\nVisible again",
+            " ".repeat(20),
+            " ".repeat(22)
+        )
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 26,
+                y: 0,
+                text: " After".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Visible again".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",

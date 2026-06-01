@@ -1130,6 +1130,7 @@ struct ComputedStyle {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    opacity_visible: Option<bool>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -1166,6 +1167,7 @@ struct CssDeclarations {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    opacity_visible: Option<bool>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -9328,6 +9330,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "visibility" => {
                 declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
             }
+            "opacity" => {
+                declarations.opacity_visible =
+                    parse_css_opacity_visible(value).or(declarations.opacity_visible);
+            }
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
@@ -9768,6 +9774,21 @@ fn parse_css_visibility(value: &str) -> Option<Visibility> {
         "hidden" | "collapse" => Some(Visibility::Hidden),
         _ => None,
     }
+}
+
+fn parse_css_opacity_visible(value: &str) -> Option<bool> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if matches!(value.as_str(), "inherit" | "initial") {
+        return None;
+    }
+    if let Some(percent) = value.strip_suffix('%') {
+        return percent
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|opacity| opacity > 0.0);
+    }
+    value.parse::<f32>().ok().map(|opacity| opacity > 0.0)
 }
 
 fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
@@ -10290,9 +10311,16 @@ fn render_node(
             if let Some(visibility) = visibility_entered {
                 renderer.enter_visibility(visibility);
             }
+            let opacity_entered = style.opacity_visible;
+            if let Some(opacity_visible) = opacity_entered {
+                renderer.enter_opacity_visible(opacity_visible);
+            }
 
             if element.tag == "br" {
                 renderer.break_line();
+                if opacity_entered.is_some() {
+                    renderer.exit_opacity_visible();
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10300,6 +10328,9 @@ fn render_node(
             }
             if element.tag == "wbr" {
                 renderer.push_word_break_opportunity();
+                if opacity_entered.is_some() {
+                    renderer.exit_opacity_visible();
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10307,6 +10338,9 @@ fn render_node(
             }
             if element.tag == "hr" {
                 renderer.push_horizontal_rule(Some(node_id));
+                if opacity_entered.is_some() {
+                    renderer.exit_opacity_visible();
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10324,6 +10358,9 @@ fn render_node(
                     image_source.as_deref(),
                     Some(node_id),
                 );
+                if opacity_entered.is_some() {
+                    renderer.exit_opacity_visible();
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10332,6 +10369,9 @@ fn render_node(
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
+                }
+                if opacity_entered.is_some() {
+                    renderer.exit_opacity_visible();
                 }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
@@ -10617,6 +10657,9 @@ fn render_node(
             if text_shade_entered.is_some() {
                 renderer.exit_text_shade();
             }
+            if opacity_entered.is_some() {
+                renderer.exit_opacity_visible();
+            }
             if visibility_entered.is_some() {
                 renderer.exit_visibility();
             }
@@ -10818,6 +10861,7 @@ fn computed_style(
             text_shade: None,
             text_align: None,
             visibility: None,
+            opacity_visible: None,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -10846,6 +10890,7 @@ fn computed_style(
     let mut text_shade = None;
     let mut text_align = None;
     let mut visibility = None;
+    let mut opacity_visible = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -10872,6 +10917,7 @@ fn computed_style(
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
+    let mut opacity_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
@@ -10928,6 +10974,12 @@ fn computed_style(
             {
                 visibility = Some(rule_visibility);
                 visibility_specificity = rule_specificity;
+            }
+            if let Some(rule_opacity_visible) = rule.declarations.opacity_visible
+                && rule_specificity >= opacity_specificity
+            {
+                opacity_visible = Some(rule_opacity_visible);
+                opacity_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
                 && rule_specificity >= white_space_specificity
@@ -11073,6 +11125,9 @@ fn computed_style(
         if let Some(inline_visibility) = inline.visibility {
             visibility = Some(inline_visibility);
         }
+        if let Some(inline_opacity_visible) = inline.opacity_visible {
+            opacity_visible = Some(inline_opacity_visible);
+        }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
         }
@@ -11143,6 +11198,7 @@ fn computed_style(
         text_shade,
         text_align,
         visibility,
+        opacity_visible,
         white_space,
         text_transform,
         letter_spacing,
@@ -11658,6 +11714,8 @@ struct FlowRenderer {
     text_align_stack: Vec<TextAlign>,
     visibility: Visibility,
     visibility_stack: Vec<Visibility>,
+    opacity_visible: bool,
+    opacity_visible_stack: Vec<bool>,
     white_space: WhiteSpace,
     white_space_stack: Vec<WhiteSpace>,
     text_transform: TextTransform,
@@ -11706,6 +11764,8 @@ impl FlowRenderer {
             text_align_stack: Vec::new(),
             visibility: Visibility::Visible,
             visibility_stack: Vec::new(),
+            opacity_visible: true,
+            opacity_visible_stack: Vec::new(),
             white_space: WhiteSpace::Normal,
             white_space_stack: Vec::new(),
             text_transform: TextTransform::None,
@@ -12016,7 +12076,7 @@ impl FlowRenderer {
         };
         let piece = piece.as_str();
         self.current_width = self.current_width.saturating_add(piece.chars().count());
-        let visible = self.visibility == Visibility::Visible;
+        let visible = self.is_paint_visible();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
             && last.visible == visible
@@ -12131,6 +12191,19 @@ impl FlowRenderer {
 
     fn exit_visibility(&mut self) {
         self.visibility = self.visibility_stack.pop().unwrap_or(Visibility::Visible);
+    }
+
+    fn enter_opacity_visible(&mut self, opacity_visible: bool) {
+        self.opacity_visible_stack.push(self.opacity_visible);
+        self.opacity_visible = self.opacity_visible && opacity_visible;
+    }
+
+    fn exit_opacity_visible(&mut self) {
+        self.opacity_visible = self.opacity_visible_stack.pop().unwrap_or(true);
+    }
+
+    fn is_paint_visible(&self) -> bool {
+        self.visibility == Visibility::Visible && self.opacity_visible
     }
 
     fn enter_white_space(&mut self, white_space: WhiteSpace) {
@@ -12340,7 +12413,7 @@ impl FlowRenderer {
 
     fn push_horizontal_rule(&mut self, target_node: Option<usize>) {
         self.break_line();
-        if self.visibility == Visibility::Visible {
+        if self.is_paint_visible() {
             self.display_list.push(DisplayCommand::Rect {
                 x: 0,
                 y: self.next_y,
@@ -12365,7 +12438,7 @@ impl FlowRenderer {
     ) {
         self.break_line();
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
-        if self.visibility == Visibility::Visible {
+        if self.is_paint_visible() {
             self.display_list.push(DisplayCommand::Image {
                 x: self.left_inset,
                 y: self.next_y,
@@ -12456,7 +12529,7 @@ impl FlowRenderer {
         border: BorderPaint,
         target_node: Option<usize>,
     ) {
-        if self.visibility == Visibility::Visible {
+        if self.is_paint_visible() {
             self.border_list.push(DisplayCommand::Rect {
                 x,
                 y: self.next_y,
@@ -12482,7 +12555,7 @@ impl FlowRenderer {
         if height == 0 {
             return;
         }
-        if self.visibility != Visibility::Visible {
+        if !self.is_paint_visible() {
             return;
         }
         let border_width = border.width.min(width);
@@ -12515,7 +12588,7 @@ impl FlowRenderer {
         border: BorderPaint,
         target_node: Option<usize>,
     ) {
-        if self.visibility == Visibility::Visible {
+        if self.is_paint_visible() {
             self.border_list.push(DisplayCommand::Rect {
                 x,
                 y: self.next_y,
@@ -12537,7 +12610,7 @@ impl FlowRenderer {
         shade: u8,
         target_node: Option<usize>,
     ) {
-        if self.visibility != Visibility::Visible {
+        if !self.is_paint_visible() {
             return;
         }
         let height = self.next_y.saturating_sub(start_y).max(1);
