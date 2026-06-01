@@ -797,6 +797,9 @@ mod native {
             Key::Space if browser_window_focused_control_accepts_space_toggle(app)? => {
                 Some(BrowserAppAction::ToggleFocused)
             }
+            Key::Space if browser_window_focused_control_accepts_space_activation(app)? => {
+                Some(BrowserAppAction::SubmitFocused)
+            }
             Key::Space if app.active_session()?.focused_control().is_none() && modifiers.shift => {
                 Some(browser_window_page_scroll_action(app, -1)?)
             }
@@ -1053,6 +1056,18 @@ mod native {
                 matches!(
                     control.kind.to_ascii_lowercase().as_str(),
                     "checkbox" | "radio"
+                )
+            }))
+    }
+
+    fn browser_window_focused_control_accepts_space_activation(app: &BrowserApp) -> Result<bool> {
+        Ok(app
+            .active_session()?
+            .focused_control()
+            .is_some_and(|control| {
+                matches!(
+                    control.kind.to_ascii_lowercase().as_str(),
+                    "submit" | "reset"
                 )
             }))
     }
@@ -3137,6 +3152,72 @@ mod native {
 
             assert!(toggle.dirty);
             assert!(app.report().unwrap().text.contains("[x]"));
+        }
+
+        #[tokio::test]
+        async fn browser_window_space_submits_focused_submit_button() {
+            let dir = tempfile::tempdir().unwrap();
+            let form_page = dir.path().join("form.html");
+            let results_page = dir.path().join("results.html");
+            std::fs::write(
+                &form_page,
+                r#"
+                <html><head><title>Form</title></head><body>
+                  <form action="results.html" method="get">
+                    <input name="q" value="rust">
+                    <button id="go" name="commit" value="yes">Go</button>
+                  </form>
+                </body></html>
+                "#,
+            )
+            .unwrap();
+            std::fs::write(
+                &results_page,
+                "<html><head><title>Results</title></head><body>done</body></html>",
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                form_page.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Focus("#go".to_owned()))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "submit"
+            );
+            let mut mode = BrowserWindowMode::Page;
+
+            let submit = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Space,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(submit.dirty);
+            assert!(!submit.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            let current = app.active_session().unwrap().current().unwrap();
+            assert_eq!(current.title, "Results");
+            assert!(current.source.ends_with("results.html?q=rust&commit=yes"));
         }
 
         #[tokio::test]
