@@ -1598,6 +1598,42 @@ impl BrowserSession {
         self.focus_relative_control(true)
     }
 
+    pub fn blur_focused_control(&mut self) -> Result<bool> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot blur focus: session has no current page");
+        };
+        let Some(previous) = self.entries[current_index].focused_control.take() else {
+            return Ok(false);
+        };
+
+        {
+            let entry = &mut self.entries[current_index];
+            entry.page_state.runtime.active_element = None;
+            if previous.node_id < entry.page_state.dom.nodes.len() {
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    previous.node_id,
+                    "blur",
+                    false,
+                );
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    previous.node_id,
+                    "focusout",
+                    true,
+                );
+            }
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+
+        self.persist_entry_runtime_storage(current_index);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(true)
+    }
+
     fn focus_relative_control(&mut self, reverse: bool) -> Result<BrowserFocusedControl> {
         let Some(current_index) = self.current_index else {
             bail!("cannot move focus: session has no current page");

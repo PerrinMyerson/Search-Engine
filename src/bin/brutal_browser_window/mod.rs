@@ -814,6 +814,9 @@ mod native {
         }
 
         let action = match key {
+            Key::Escape if app.active_session()?.focused_control().is_some() => {
+                Some(BrowserAppAction::BlurFocused)
+            }
             Key::Escape => None,
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
@@ -2316,8 +2319,15 @@ mod native {
 
         #[tokio::test]
         async fn browser_window_escape_does_not_close_page_mode() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value="focused"></form></body></html>"#,
+            )
+            .unwrap();
             let mut app = BrowserApp::open(
-                "bench/browser-fixtures/static-text.html",
+                path.to_str().unwrap(),
                 BrowserAppOptions {
                     render: BrowserRenderOptions {
                         width: 40,
@@ -2331,6 +2341,8 @@ mod native {
             .await
             .unwrap();
             let mut mode = BrowserWindowMode::Page;
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
 
             let result = handle_browser_window_key(
                 &mut app,
@@ -2341,8 +2353,22 @@ mod native {
             .await
             .unwrap();
 
-            assert!(!result.dirty);
+            assert!(result.dirty);
             assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_session().unwrap().focused_control().is_none());
+
+            let unfocused = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!unfocused.dirty);
+            assert!(!unfocused.close);
             assert_eq!(mode, BrowserWindowMode::Page);
 
             mode = BrowserWindowMode::Location {
@@ -2360,6 +2386,41 @@ mod native {
 
             assert!(dismissed_prompt.dirty);
             assert!(!dismissed_prompt.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+        }
+
+        #[tokio::test]
+        async fn browser_window_escape_dismisses_location_prompt() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
             assert_eq!(mode, BrowserWindowMode::Page);
         }
 

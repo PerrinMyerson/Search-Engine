@@ -82,6 +82,7 @@ pub enum BrowserAppAction {
     Focus(String),
     FocusNext,
     FocusPrevious,
+    BlurFocused,
     TypeText(String),
     DeleteTextBackward(usize),
     ClearText,
@@ -328,6 +329,12 @@ impl BrowserApp {
             BrowserAppAction::FocusPrevious => {
                 self.active_tab_mut()?.session.focus_previous_control()?;
                 self.mark_active_content_dirty()
+            }
+            BrowserAppAction::BlurFocused => {
+                if self.active_tab_mut()?.session.blur_focused_control()? {
+                    self.mark_active_content_dirty()?;
+                }
+                Ok(())
             }
             BrowserAppAction::TypeText(text) => {
                 self.active_tab_mut()?.session.type_text(&text)?;
