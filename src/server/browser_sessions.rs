@@ -344,6 +344,7 @@ struct BrowserSessionFormPayload {
     no_validate: bool,
     controls: Vec<BrowserSessionFormControlPayload>,
     submit_url: String,
+    submit_new_session_url: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -474,6 +475,9 @@ enum BrowserSessionAction {
         control_index: usize,
     },
     Submit {
+        form_index: usize,
+    },
+    SubmitNewSession {
         form_index: usize,
     },
 }
@@ -754,6 +758,15 @@ impl BrowserSessionRegistry {
                     &id,
                     web_session,
                     BrowserSessionAction::LinkSelector(selector),
+                )
+                .await;
+        }
+        if let BrowserSessionAction::SubmitNewSession { form_index } = action {
+            return self
+                .open_browser_action_in_new_session_target(
+                    &id,
+                    web_session,
+                    BrowserSessionAction::Submit { form_index },
                 )
                 .await;
         }
@@ -2215,6 +2228,7 @@ async fn apply_browser_action(
         BrowserSessionAction::OpenNewSession(_)
         | BrowserSessionAction::LinkTextNewSession(_)
         | BrowserSessionAction::LinkSelectorNewSession(_)
+        | BrowserSessionAction::SubmitNewSession { .. }
         | BrowserSessionAction::DuplicateSession(_)
         | BrowserSessionAction::CloseSession(_)
         | BrowserSessionAction::CloseOtherSessions
@@ -2556,6 +2570,16 @@ fn browser_action(target: &RequestTarget) -> Result<BrowserSessionAction, Browse
             control_index: browser_action_index(target, "control", "control index")?,
         }),
         "submit" => Ok(BrowserSessionAction::Submit {
+            form_index: browser_action_index(target, "form", "form index")?,
+        }),
+        "submit-new-session"
+        | "submit_new_session"
+        | "submit-new-tab"
+        | "submit_new_tab"
+        | "submit-form-new-session"
+        | "submit_form_new_session"
+        | "submit-form-new-tab"
+        | "submit_form_new_tab" => Ok(BrowserSessionAction::SubmitNewSession {
             form_index: browser_action_index(target, "form", "form index")?,
         }),
         _ => Err(BrowserRouteError::BadRequest(format!(
@@ -3065,6 +3089,12 @@ fn browser_session_payload(
                 submit_url: browser_session_action_href(
                     id,
                     "submit",
+                    &[("form", form.index.to_string())],
+                    web_session,
+                ),
+                submit_new_session_url: browser_session_action_href(
+                    id,
+                    "submit-new-session",
                     &[("form", form.index.to_string())],
                     web_session,
                 ),
@@ -4057,10 +4087,11 @@ fn render_browser_session_forms(payload: &BrowserSessionPayload) -> String {
 
         let _ = write!(
             rows,
-            r#"<div class="control"><label>Submit</label><div class="details">{method} {target}</div><a class="small-action" href="{href}">Submit form</a></div></section>"#,
+            r#"<div class="control"><label>Submit</label><div class="details">{method} {target}</div><div class="resource-actions"><a class="small-action" href="{href}">Submit form</a><a class="small-action" href="{new_href}">New session</a></div></div></section>"#,
             method = html_escape::encode_text(&form.method.to_ascii_uppercase()),
             target = html_escape::encode_text(&form.resolved_action),
             href = html_escape::encode_double_quoted_attribute(&form.submit_url),
+            new_href = html_escape::encode_double_quoted_attribute(&form.submit_new_session_url),
         );
     }
     rows
