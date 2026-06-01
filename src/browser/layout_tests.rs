@@ -1454,6 +1454,95 @@ fn indents_blockquotes_and_definition_descriptions_by_default() {
 }
 
 #[test]
+fn css_border_side_properties_paint_only_requested_edges() {
+    let render = render_html(
+        "mem://css-border-sides",
+        br#"
+            <html><body>
+              <div style="width:80px; border-bottom:8px solid #000">Bottom</div>
+              <div style="width:80px; border-left:8px solid #000; border-right-width:8px; border-right-style:solid">Sides</div>
+              <div style="width:80px; border:8px solid #000">All</div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Bottom\nSides\nAll");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 1,
+                width: 10,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 1,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 11,
+                y: 2,
+                width: 1,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 3,
+                width: 12,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 4,
+                width: 1,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 11,
+                y: 4,
+                width: 1,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 5,
+                width: 12,
+                height: 1,
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Bottom".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 1,
+                y: 2,
+                text: "Sides".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 1,
+                y: 4,
+                text: "All".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_visibility_hidden_reserves_layout_without_painting() {
     let render = render_html(
         "mem://visibility-hidden",

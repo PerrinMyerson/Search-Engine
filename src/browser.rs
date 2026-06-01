@@ -1140,7 +1140,7 @@ struct ComputedStyle {
     line_height: Option<usize>,
     box_sizing: BoxSizing,
     list_style_type: Option<CssListStyleType>,
-    border: Option<BorderPaint>,
+    border: BorderBoxPaint,
     padding: BoxSpacing,
     margin: BoxSpacing,
     width: Option<usize>,
@@ -1176,7 +1176,7 @@ struct CssDeclarations {
     line_height: Option<usize>,
     box_sizing: Option<BoxSizing>,
     list_style_type: Option<CssListStyleType>,
-    border: Option<BorderPaint>,
+    border: BorderBoxPaint,
     padding: Option<BoxSpacing>,
     margin: Option<BoxSpacing>,
     width: Option<usize>,
@@ -1193,6 +1193,82 @@ struct CssDeclarations {
 struct BorderPaint {
     width: usize,
     shade: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BorderBoxPaint {
+    top: Option<BorderPaint>,
+    right: Option<BorderPaint>,
+    bottom: Option<BorderPaint>,
+    left: Option<BorderPaint>,
+}
+
+impl BorderBoxPaint {
+    fn is_empty(self) -> bool {
+        self.top.is_none() && self.right.is_none() && self.bottom.is_none() && self.left.is_none()
+    }
+
+    fn horizontal_width(self) -> usize {
+        self.left
+            .map(|border| border.width)
+            .unwrap_or(0)
+            .saturating_add(self.right.map(|border| border.width).unwrap_or(0))
+    }
+
+    fn apply_with_specificity(
+        &mut self,
+        border: BorderBoxPaint,
+        rule_specificity: u32,
+        specificity: &mut BorderBoxSpecificity,
+    ) {
+        if let Some(top) = border.top
+            && rule_specificity >= specificity.top
+        {
+            self.top = Some(top);
+            specificity.top = rule_specificity;
+        }
+        if let Some(right) = border.right
+            && rule_specificity >= specificity.right
+        {
+            self.right = Some(right);
+            specificity.right = rule_specificity;
+        }
+        if let Some(bottom) = border.bottom
+            && rule_specificity >= specificity.bottom
+        {
+            self.bottom = Some(bottom);
+            specificity.bottom = rule_specificity;
+        }
+        if let Some(left) = border.left
+            && rule_specificity >= specificity.left
+        {
+            self.left = Some(left);
+            specificity.left = rule_specificity;
+        }
+    }
+
+    fn apply_inline(&mut self, border: BorderBoxPaint) {
+        if let Some(top) = border.top {
+            self.top = Some(top);
+        }
+        if let Some(right) = border.right {
+            self.right = Some(right);
+        }
+        if let Some(bottom) = border.bottom {
+            self.bottom = Some(bottom);
+        }
+        if let Some(left) = border.left {
+            self.left = Some(left);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BorderBoxSpecificity {
+    top: u32,
+    right: u32,
+    bottom: u32,
+    left: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -9296,9 +9372,7 @@ fn is_selector_ident_continue(byte: u8) -> bool {
 
 fn parse_css_declarations(style: &str) -> CssDeclarations {
     let mut declarations = CssDeclarations::default();
-    let mut border_width = None;
-    let mut border_shade = None;
-    let mut border_enabled = false;
+    let mut border = BorderBoxDeclaration::default();
     let mut padding = PartialBoxSpacing::default();
     let mut margin = PartialBoxSpacing::default();
     for declaration in style.split(';') {
@@ -9373,19 +9447,84 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 }
             }
             "border" => {
-                let border = parse_css_border(value);
-                border_enabled |= border.enabled;
-                border_width = border.width.or(border_width);
-                border_shade = border.shade.or(border_shade);
+                border.set_all_parsed(parse_css_border(value));
             }
             "border-style" => {
-                border_enabled |= parse_css_border_style_enabled(value);
+                border.set_all_style(parse_css_border_style_enabled(value));
             }
             "border-width" => {
-                border_width = parse_css_border_width(value).or(border_width);
+                if let Some(width) = parse_css_border_width(value) {
+                    border.set_all_width(width);
+                }
             }
             "border-color" => {
-                border_shade = parse_css_color_shade(value).or(border_shade);
+                if let Some(shade) = parse_css_color_shade(value) {
+                    border.set_all_shade(shade);
+                }
+            }
+            "border-top" => {
+                border.set_side_parsed(BorderSide::Top, parse_css_border(value));
+            }
+            "border-right" => {
+                border.set_side_parsed(BorderSide::Right, parse_css_border(value));
+            }
+            "border-bottom" => {
+                border.set_side_parsed(BorderSide::Bottom, parse_css_border(value));
+            }
+            "border-left" => {
+                border.set_side_parsed(BorderSide::Left, parse_css_border(value));
+            }
+            "border-top-style" => {
+                border.set_side_style(BorderSide::Top, parse_css_border_style_enabled(value));
+            }
+            "border-right-style" => {
+                border.set_side_style(BorderSide::Right, parse_css_border_style_enabled(value));
+            }
+            "border-bottom-style" => {
+                border.set_side_style(BorderSide::Bottom, parse_css_border_style_enabled(value));
+            }
+            "border-left-style" => {
+                border.set_side_style(BorderSide::Left, parse_css_border_style_enabled(value));
+            }
+            "border-top-width" => {
+                if let Some(width) = parse_css_border_width(value) {
+                    border.set_side_width(BorderSide::Top, width);
+                }
+            }
+            "border-right-width" => {
+                if let Some(width) = parse_css_border_width(value) {
+                    border.set_side_width(BorderSide::Right, width);
+                }
+            }
+            "border-bottom-width" => {
+                if let Some(width) = parse_css_border_width(value) {
+                    border.set_side_width(BorderSide::Bottom, width);
+                }
+            }
+            "border-left-width" => {
+                if let Some(width) = parse_css_border_width(value) {
+                    border.set_side_width(BorderSide::Left, width);
+                }
+            }
+            "border-top-color" => {
+                if let Some(shade) = parse_css_color_shade(value) {
+                    border.set_side_shade(BorderSide::Top, shade);
+                }
+            }
+            "border-right-color" => {
+                if let Some(shade) = parse_css_color_shade(value) {
+                    border.set_side_shade(BorderSide::Right, shade);
+                }
+            }
+            "border-bottom-color" => {
+                if let Some(shade) = parse_css_color_shade(value) {
+                    border.set_side_shade(BorderSide::Bottom, shade);
+                }
+            }
+            "border-left-color" => {
+                if let Some(shade) = parse_css_color_shade(value) {
+                    border.set_side_shade(BorderSide::Left, shade);
+                }
             }
             "padding" => {
                 if let Some(parsed) = parse_css_padding(value) {
@@ -9466,12 +9605,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             _ => {}
         }
     }
-    if border_enabled {
-        declarations.border = Some(BorderPaint {
-            width: border_width.unwrap_or(1).clamp(1, 4),
-            shade: border_shade.unwrap_or(0),
-        });
-    }
+    declarations.border = border.finish();
     declarations.padding = padding.finish();
     declarations.margin = margin.finish();
     declarations
@@ -9674,6 +9808,124 @@ struct ParsedBorder {
     enabled: bool,
     width: Option<usize>,
     shade: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BorderSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BorderBoxDeclaration {
+    top: BorderSideDeclaration,
+    right: BorderSideDeclaration,
+    bottom: BorderSideDeclaration,
+    left: BorderSideDeclaration,
+}
+
+impl BorderBoxDeclaration {
+    fn set_all_parsed(&mut self, border: ParsedBorder) {
+        for side in [
+            BorderSide::Top,
+            BorderSide::Right,
+            BorderSide::Bottom,
+            BorderSide::Left,
+        ] {
+            self.set_side_parsed(side, border);
+        }
+    }
+
+    fn set_all_style(&mut self, enabled: bool) {
+        for side in [
+            BorderSide::Top,
+            BorderSide::Right,
+            BorderSide::Bottom,
+            BorderSide::Left,
+        ] {
+            self.set_side_style(side, enabled);
+        }
+    }
+
+    fn set_all_width(&mut self, width: usize) {
+        for side in [
+            BorderSide::Top,
+            BorderSide::Right,
+            BorderSide::Bottom,
+            BorderSide::Left,
+        ] {
+            self.set_side_width(side, width);
+        }
+    }
+
+    fn set_all_shade(&mut self, shade: u8) {
+        for side in [
+            BorderSide::Top,
+            BorderSide::Right,
+            BorderSide::Bottom,
+            BorderSide::Left,
+        ] {
+            self.set_side_shade(side, shade);
+        }
+    }
+
+    fn set_side_parsed(&mut self, side: BorderSide, border: ParsedBorder) {
+        self.side_mut(side).set_parsed(border);
+    }
+
+    fn set_side_style(&mut self, side: BorderSide, enabled: bool) {
+        self.side_mut(side).enabled = enabled;
+    }
+
+    fn set_side_width(&mut self, side: BorderSide, width: usize) {
+        self.side_mut(side).width = Some(width);
+    }
+
+    fn set_side_shade(&mut self, side: BorderSide, shade: u8) {
+        self.side_mut(side).shade = Some(shade);
+    }
+
+    fn finish(self) -> BorderBoxPaint {
+        BorderBoxPaint {
+            top: self.top.finish(),
+            right: self.right.finish(),
+            bottom: self.bottom.finish(),
+            left: self.left.finish(),
+        }
+    }
+
+    fn side_mut(&mut self, side: BorderSide) -> &mut BorderSideDeclaration {
+        match side {
+            BorderSide::Top => &mut self.top,
+            BorderSide::Right => &mut self.right,
+            BorderSide::Bottom => &mut self.bottom,
+            BorderSide::Left => &mut self.left,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BorderSideDeclaration {
+    enabled: bool,
+    width: Option<usize>,
+    shade: Option<u8>,
+}
+
+impl BorderSideDeclaration {
+    fn set_parsed(&mut self, border: ParsedBorder) {
+        self.enabled = border.enabled;
+        self.width = border.width;
+        self.shade = border.shade;
+    }
+
+    fn finish(self) -> Option<BorderPaint> {
+        self.enabled.then_some(BorderPaint {
+            width: self.width.unwrap_or(1).clamp(1, 4),
+            shade: self.shade.unwrap_or(0),
+        })
+    }
 }
 
 fn parse_css_border(value: &str) -> ParsedBorder {
@@ -10371,12 +10623,7 @@ fn render_node(
                     .padding
                     .left
                     .saturating_add(style.padding.right)
-                    .saturating_add(
-                        style
-                            .border
-                            .map(|border| border.width.saturating_mul(2))
-                            .unwrap_or(0),
-                    );
+                    .saturating_add(style.border.horizontal_width());
                 let mut block_width = match (style.width, style.box_sizing) {
                     (Some(width), BoxSizing::ContentBox) => {
                         width.saturating_add(horizontal_box_extra)
@@ -10424,10 +10671,16 @@ fn render_node(
                     renderer.current_row(),
                 )
             });
-            let border = block_box.and(style.border);
+            let border = block_box.and((!style.border.is_empty()).then_some(style.border));
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
-                renderer.push_block_border_top(box_x, box_width, border, Some(node_id));
-                renderer.enter_inset(border.width);
+                if let Some(top) = border.top {
+                    renderer.push_block_border_top(box_x, box_width, top, Some(node_id));
+                }
+                let left = border.left.map(|border| border.width).unwrap_or(0);
+                let right = border.right.map(|border| border.width).unwrap_or(0);
+                if left > 0 || right > 0 {
+                    renderer.enter_insets(left, right);
+                }
             }
             let side_start_y = renderer.current_row();
             let padding = block_box
@@ -10589,16 +10842,23 @@ fn render_node(
             }
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
                 let content_height = renderer.current_row().saturating_sub(side_start_y);
-                renderer.exit_inset(border.width);
+                let left = border.left.map(|border| border.width).unwrap_or(0);
+                let right = border.right.map(|border| border.width).unwrap_or(0);
+                if left > 0 || right > 0 {
+                    renderer.exit_insets(left, right);
+                }
                 renderer.push_block_border_sides(
                     box_x,
                     box_width,
                     side_start_y,
                     content_height,
-                    border,
+                    border.left,
+                    border.right,
                     Some(node_id),
                 );
-                renderer.push_block_border_bottom(box_x, box_width, border, Some(node_id));
+                if let Some(bottom) = border.bottom {
+                    renderer.push_block_border_bottom(box_x, box_width, bottom, Some(node_id));
+                }
             }
             if let Some((box_x, box_width, start_y, shade)) = background_start {
                 renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
@@ -10828,7 +11088,7 @@ fn computed_style(
             line_height: None,
             box_sizing: BoxSizing::ContentBox,
             list_style_type: None,
-            border: None,
+            border: BorderBoxPaint::default(),
             padding: BoxSpacing::default(),
             margin: BoxSpacing::default(),
             width: None,
@@ -10856,7 +11116,7 @@ fn computed_style(
     let mut line_height = None;
     let mut box_sizing = BoxSizing::ContentBox;
     let mut list_style_type = None;
-    let mut border = None;
+    let mut border = BorderBoxPaint::default();
     let mut padding = BoxSpacing::default();
     let mut margin = default_margin(&element.tag);
     let mut width = None;
@@ -10882,7 +11142,7 @@ fn computed_style(
     let mut line_height_specificity = 0u32;
     let mut box_sizing_specificity = 0u32;
     let mut list_style_type_specificity = 0u32;
-    let mut border_specificity = 0u32;
+    let mut border_specificity = BorderBoxSpecificity::default();
     let mut padding_specificity = 0u32;
     let mut margin_specificity = 0u32;
     let mut width_specificity = 0u32;
@@ -10989,12 +11249,11 @@ fn computed_style(
                 list_style_type = Some(rule_list_style_type);
                 list_style_type_specificity = rule_specificity;
             }
-            if let Some(rule_border) = rule.declarations.border
-                && rule_specificity >= border_specificity
-            {
-                border = Some(rule_border);
-                border_specificity = rule_specificity;
-            }
+            border.apply_with_specificity(
+                rule.declarations.border,
+                rule_specificity,
+                &mut border_specificity,
+            );
             if let Some(rule_padding) = rule.declarations.padding
                 && rule_specificity >= padding_specificity
             {
@@ -11103,9 +11362,7 @@ fn computed_style(
         if let Some(inline_list_style_type) = inline.list_style_type {
             list_style_type = Some(inline_list_style_type);
         }
-        if let Some(inline_border) = inline.border {
-            border = Some(inline_border);
-        }
+        border.apply_inline(inline.border);
         if let Some(inline_padding) = inline.padding {
             padding = inline_padding;
         }
@@ -12421,14 +12678,6 @@ impl FlowRenderer {
             .max(1)
     }
 
-    fn enter_inset(&mut self, border_width: usize) {
-        self.enter_insets(border_width, border_width);
-    }
-
-    fn exit_inset(&mut self, border_width: usize) {
-        self.exit_insets(border_width, border_width);
-    }
-
     fn enter_insets(&mut self, left: usize, right: usize) {
         self.left_inset = self.left_inset.saturating_add(left);
         self.right_inset = self.right_inset.saturating_add(right);
@@ -12476,7 +12725,8 @@ impl FlowRenderer {
         width: usize,
         start_y: usize,
         height: usize,
-        border: BorderPaint,
+        left: Option<BorderPaint>,
+        right: Option<BorderPaint>,
         target_node: Option<usize>,
     ) {
         if height == 0 {
@@ -12485,23 +12735,26 @@ impl FlowRenderer {
         if self.visibility != Visibility::Visible {
             return;
         }
-        let border_width = border.width.min(width);
-        self.border_list.push(DisplayCommand::Rect {
-            x,
-            y: start_y,
-            width: border_width,
-            height,
-            shade: border.shade,
-        });
-        self.border_targets
-            .push(DisplayHitTarget::node(target_node));
-        if width > border_width {
+        if let Some(left) = left {
+            let border_width = left.width.min(width);
+            self.border_list.push(DisplayCommand::Rect {
+                x,
+                y: start_y,
+                width: border_width,
+                height,
+                shade: left.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        if let Some(right) = right {
+            let border_width = right.width.min(width);
             self.border_list.push(DisplayCommand::Rect {
                 x: x.saturating_add(width.saturating_sub(border_width)),
                 y: start_y,
                 width: border_width,
                 height,
-                shade: border.shade,
+                shade: right.shade,
             });
             self.border_targets
                 .push(DisplayHitTarget::node(target_node));
