@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +213,7 @@ pub struct BrowserApp {
 struct BrowserAppTab {
     session: BrowserSession,
     viewport: BrowserViewportState,
+    history_viewports: HashMap<usize, BrowserViewportState>,
     last_presented_viewport: Option<BrowserViewportState>,
     content_dirty: bool,
     find: Option<BrowserAppFindState>,
@@ -248,6 +251,7 @@ impl BrowserApp {
             tabs: vec![BrowserAppTab {
                 session,
                 viewport,
+                history_viewports: HashMap::new(),
                 last_presented_viewport: None,
                 content_dirty: true,
                 find: None,
@@ -504,6 +508,7 @@ impl BrowserApp {
     }
 
     async fn open_in_active_tab(&mut self, target: &str) -> Result<()> {
+        self.remember_active_history_viewport()?;
         let target = self
             .active_tab_ref()?
             .session
@@ -511,6 +516,7 @@ impl BrowserApp {
         ensure_static_target(&target)?;
         let tab = self.active_tab_mut()?;
         tab.session.navigate(&target).await?;
+        self.prune_active_history_viewports()?;
         self.reset_active_viewport_to_page_start()
     }
 
@@ -550,6 +556,7 @@ impl BrowserApp {
         self.tabs.push(BrowserAppTab {
             session,
             viewport,
+            history_viewports: HashMap::new(),
             last_presented_viewport: None,
             content_dirty: true,
             find: None,
@@ -616,13 +623,15 @@ impl BrowserApp {
     }
 
     fn history_back(&mut self) -> Result<()> {
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?.session.back()?;
-        self.reset_active_viewport_to_page_start()
+        self.restore_active_history_viewport()
     }
 
     fn history_forward(&mut self) -> Result<()> {
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?.session.forward()?;
-        self.reset_active_viewport_to_page_start()
+        self.restore_active_history_viewport()
     }
 
     fn scroll_active(&mut self, delta_x: isize, delta_y: isize) -> Result<()> {
@@ -742,6 +751,7 @@ impl BrowserApp {
 
     async fn click_active(&mut self, x: usize, y: usize) -> Result<()> {
         let before = self.current_source();
+        self.remember_active_history_viewport()?;
         let (document_x, document_y) = {
             let viewport = self.active_tab_ref()?.viewport;
             (viewport.x.saturating_add(x), viewport.y.saturating_add(y))
@@ -797,6 +807,7 @@ impl BrowserApp {
 
     async fn click_selector(&mut self, selector: &str) -> Result<()> {
         let before = self.current_source();
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?
             .session
             .click_selector_with_default_action(selector)
@@ -806,6 +817,7 @@ impl BrowserApp {
 
     async fn submit_focused(&mut self) -> Result<()> {
         let before = self.current_source();
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?.session.submit_focused_form().await?;
         self.after_potential_navigation(before)
     }
@@ -823,33 +835,82 @@ impl BrowserApp {
     }
 
     async fn activate_link(&mut self, index: usize) -> Result<()> {
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?.session.activate_link(index).await?;
+        self.prune_active_history_viewports()?;
         self.reset_active_viewport_to_page_start()
     }
 
     async fn activate_link_text(&mut self, text: &str) -> Result<()> {
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?
             .session
             .activate_link_text(text)
             .await?;
+        self.prune_active_history_viewports()?;
         self.reset_active_viewport_to_page_start()
     }
 
     async fn activate_link_selector(&mut self, selector: &str) -> Result<()> {
+        self.remember_active_history_viewport()?;
         self.active_tab_mut()?
             .session
             .activate_link_selector(selector)
             .await?;
+        self.prune_active_history_viewports()?;
         self.reset_active_viewport_to_page_start()
     }
 
     fn after_potential_navigation(&mut self, before_source: Option<String>) -> Result<()> {
         let after_source = self.current_source();
         if before_source != after_source {
+            self.prune_active_history_viewports()?;
             self.reset_active_viewport_to_page_start()
         } else {
             self.mark_active_content_dirty()
         }
+    }
+
+    fn remember_active_history_viewport(&mut self) -> Result<()> {
+        let Some(index) = self.active_session()?.snapshot().current_index else {
+            return Ok(());
+        };
+        let viewport = self.active_viewport()?;
+        self.active_tab_mut()?
+            .history_viewports
+            .insert(index, viewport);
+        Ok(())
+    }
+
+    fn restore_active_history_viewport(&mut self) -> Result<()> {
+        let options = self.options;
+        let current_viewport = self.active_viewport()?;
+        let history_index = self.active_session()?.snapshot().current_index;
+        let restored = history_index.and_then(|index| {
+            self.active_tab_ref()
+                .ok()?
+                .history_viewports
+                .get(&index)
+                .copied()
+        });
+
+        let tab = self.active_tab_mut()?;
+        let mut viewport = restored.unwrap_or_else(|| initial_app_viewport(&tab.session, options));
+        viewport.width = current_viewport.width;
+        viewport.height = current_viewport.height;
+        tab.viewport = viewport;
+        tab.last_presented_viewport = None;
+        tab.content_dirty = true;
+        tab.find = None;
+        self.clamp_active_viewport()
+    }
+
+    fn prune_active_history_viewports(&mut self) -> Result<()> {
+        let history_len = self.active_session()?.snapshot().entries.len();
+        self.active_tab_mut()?
+            .history_viewports
+            .retain(|index, _| *index < history_len);
+        Ok(())
     }
 
     fn reset_active_viewport_to_page_start(&mut self) -> Result<()> {
@@ -1955,6 +2016,75 @@ mod tests {
         assert_eq!(report.tabs.len(), 2);
         assert!(report.tabs[0].active);
         assert_eq!(report.tabs[1].viewport.y, 1);
+    }
+
+    #[tokio::test]
+    async fn browser_app_restores_history_viewports_on_back_and_forward() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.html");
+        let second = dir.path().join("second.html");
+        fs::write(
+            &first,
+            r#"<html><head><title>First</title></head><body>
+            <p>First 1</p><p>First 2</p><p>First 3</p><p>First 4</p><p>First 5</p>
+            <p>First 6</p><p>First 7</p><p>First 8</p>
+            </body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            r#"<html><head><title>Second</title></head><body>
+            <p>Second 1</p><p>Second 2</p><p>Second 3</p><p>Second 4</p><p>Second 5</p>
+            <p>Second 6</p><p>Second 7</p><p>Second 8</p>
+            </body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&first.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::Scroll {
+            delta_x: 0,
+            delta_y: 3,
+        })
+        .await
+        .unwrap();
+        let first_viewport = app.active_viewport().unwrap();
+        assert!(first_viewport.y > 0);
+
+        app.apply_action(BrowserAppAction::Open(
+            second.to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Second"
+        );
+        assert_eq!(app.active_viewport().unwrap().y, 0);
+        app.apply_action(BrowserAppAction::Scroll {
+            delta_x: 0,
+            delta_y: 2,
+        })
+        .await
+        .unwrap();
+        let second_viewport = app.active_viewport().unwrap();
+        assert!(second_viewport.y > 0);
+        assert_ne!(first_viewport.y, second_viewport.y);
+
+        app.apply_action(BrowserAppAction::Back).await.unwrap();
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "First"
+        );
+        assert_eq!(app.active_viewport().unwrap().y, first_viewport.y);
+
+        app.apply_action(BrowserAppAction::Forward).await.unwrap();
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Second"
+        );
+        assert_eq!(app.active_viewport().unwrap().y, second_viewport.y);
     }
 
     #[tokio::test]
