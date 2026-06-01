@@ -1336,7 +1336,7 @@ mod native {
                     close: false,
                 })
             }
-            BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
+            BrowserAppWindowHit::PageViewport { x, y } if modifiers.command || modifiers.shift => {
                 let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
@@ -3407,6 +3407,68 @@ mod native {
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "First"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_shift_click_opens_page_link_in_foreground_tab() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body><a href="second.html">Second</a></body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+            )
+            .unwrap();
+
+            let mut app = BrowserApp::open(
+                &first.to_string_lossy(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.present_frame().unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
             );
         }
 
