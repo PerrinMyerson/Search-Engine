@@ -4475,9 +4475,12 @@ pub fn browser_text_viewport(
                     }
                 }
             }
-            DisplayCommand::Rect { .. } => {
-                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '#')
-            }
+            DisplayCommand::Rect { shade, .. } => fill_text_viewport_cells(
+                &mut cells,
+                viewport,
+                visible_bounds,
+                text_viewport_rect_fill_char(*shade),
+            ),
             DisplayCommand::Image { .. } => {
                 fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@')
             }
@@ -4507,6 +4510,10 @@ pub fn browser_text_viewport(
             .map(|line| trim_trailing_spaces(line.into_iter().collect::<String>()))
             .collect(),
     }
+}
+
+fn text_viewport_rect_fill_char(shade: u8) -> char {
+    if shade >= 240 { ' ' } else { '#' }
 }
 
 fn fill_text_viewport_cells(

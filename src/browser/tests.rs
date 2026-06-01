@@ -363,6 +363,47 @@ fn text_viewport_clips_display_list_for_browser_shell() {
 }
 
 #[test]
+fn text_viewport_keeps_light_backgrounds_readable() {
+    let render = render_from_display_list(
+        "mem://light-background-viewport",
+        12,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 12,
+                height: 2,
+                shade: 248,
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 0,
+                text: "Readable".to_owned(),
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 1,
+                shade: 96,
+            },
+        ],
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 3,
+        },
+    );
+
+    assert_eq!(viewport.lines, vec!["  Readable", "", "#####"]);
+}
+
+#[test]
 fn display_bounds_intersection_clips_to_raster_viewport() {
     let viewport = RasterViewport {
         x: 2,
