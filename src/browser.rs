@@ -10513,6 +10513,9 @@ fn render_node(
                 }
             }
 
+            if element.tag == "q" {
+                renderer.push_open_quote(Some(node_id));
+            }
             if element.tag == "details" {
                 render_details_children(
                     dom,
@@ -10532,6 +10535,9 @@ fn render_node(
                     renderer,
                     layout_box_count,
                 );
+            }
+            if element.tag == "q" {
+                renderer.push_inline_punctuation("\"", Some(node_id));
             }
 
             if table_cell_entered {
@@ -11994,6 +12000,33 @@ impl FlowRenderer {
 
     fn push_text_run_piece_unspaced(&mut self, piece: &str, target_node: Option<usize>) {
         self.push_text_run_piece_with_spacing(piece, target_node, false);
+    }
+
+    fn push_inline_punctuation(&mut self, piece: &str, target_node: Option<usize>) {
+        if self.current_width == 0 {
+            self.push_pending_text_indent();
+        }
+        self.push_text_run_piece_unspaced(piece, target_node);
+        self.soft_break_opportunity = false;
+    }
+
+    fn push_open_quote(&mut self, target_node: Option<usize>) {
+        let quote = "\"";
+        let quote_width = quote.chars().count();
+        if self.current_width == 0 {
+            self.push_pending_text_indent();
+        } else if self
+            .current_width
+            .saturating_add(self.inter_word_space_width())
+            .saturating_add(quote_width)
+            > self.available_width()
+        {
+            self.break_line();
+        } else {
+            self.push_inter_word_space(None);
+        }
+        self.push_text_run_piece_unspaced(quote, target_node);
+        self.soft_break_opportunity = true;
     }
 
     fn push_text_run_piece_with_spacing(

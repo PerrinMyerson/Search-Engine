@@ -1454,6 +1454,51 @@ fn indents_blockquotes_and_definition_descriptions_by_default() {
 }
 
 #[test]
+fn inline_quotes_generate_visible_quote_marks() {
+    let render = render_html(
+        "mem://default-q-quotes",
+        br#"
+            <html><body>
+              <p>Before <q>quoted <span style="color:red">red</span></q> after.</p>
+              <p><q>Start</q> line</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before \"quoted red\" after.\n\"Start\" line");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before \"quoted".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 14,
+                y: 0,
+                text: " red".to_owned(),
+                shade: 76,
+            },
+            DisplayCommand::Text {
+                x: 18,
+                y: 0,
+                text: "\" after.".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "\"Start\" line".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_visibility_hidden_reserves_layout_without_painting() {
     let render = render_html(
         "mem://visibility-hidden",
