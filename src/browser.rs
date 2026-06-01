@@ -9439,7 +9439,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     }
                 }
             }
-            "width" => {
+            "width" | "inline-size" => {
                 declarations.width =
                     parse_css_dimension_length(value, CssAxis::Horizontal).or(declarations.width);
             }
@@ -9451,7 +9451,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.min_width = parse_css_dimension_length(value, CssAxis::Horizontal)
                     .or(declarations.min_width);
             }
-            "height" => {
+            "height" | "block-size" => {
                 declarations.height =
                     parse_css_dimension_length(value, CssAxis::Vertical).or(declarations.height);
             }
@@ -9459,7 +9459,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.max_height = parse_css_dimension_length(value, CssAxis::Vertical)
                     .or(declarations.max_height);
             }
-            "min-height" => {
+            "min-height" | "min-block-size" => {
                 declarations.min_height = parse_css_dimension_length(value, CssAxis::Vertical)
                     .or(declarations.min_height);
             }

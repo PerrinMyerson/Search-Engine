@@ -1601,6 +1601,59 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn css_logical_size_aliases_map_to_physical_layout_dimensions() {
+    let render = render_html(
+        "mem://css-logical-size",
+        br#"
+            <html><body>
+              <div style="inline-size:40px">Alpha Beta</div>
+              <img alt="logical" width="80" height="48" style="inline-size:24px; block-size:24px">
+              <div style="block-size:24px"></div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Alpha\nBeta\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Alpha".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Beta".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("logical".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",
