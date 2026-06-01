@@ -10438,6 +10438,14 @@ fn render_node(
                     .background_shade
                     .map(|shade| (box_x, box_width, start_y, shade))
             });
+            let text_background_entered = if style.display.is_block_flow() {
+                None
+            } else {
+                style.background_shade
+            };
+            if let Some(background_shade) = text_background_entered {
+                renderer.enter_text_background_shade(background_shade);
+            }
             if let Some(text_align) = text_align_entered {
                 renderer.enter_text_align(text_align);
             }
@@ -10570,6 +10578,9 @@ fn render_node(
             }
             if text_align_entered.is_some() {
                 renderer.exit_text_align();
+            }
+            if text_background_entered.is_some() {
+                renderer.exit_text_background_shade();
             }
             if !padding.is_empty() {
                 renderer.exit_insets(padding.left, padding.right);
@@ -11538,6 +11549,7 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
 struct TextRun {
     text: String,
     shade: u8,
+    background_shade: Option<u8>,
     visible: bool,
     target_runs: Vec<TextHitTargetRun>,
 }
@@ -11633,6 +11645,8 @@ struct FlowRenderer {
     next_y: usize,
     text_shade: u8,
     text_shade_stack: Vec<u8>,
+    text_background_shade: Option<u8>,
+    text_background_shade_stack: Vec<Option<u8>>,
     text_align: TextAlign,
     text_align_stack: Vec<TextAlign>,
     visibility: Visibility,
@@ -11681,6 +11695,8 @@ impl FlowRenderer {
             next_y: 0,
             text_shade: 0,
             text_shade_stack: Vec::new(),
+            text_background_shade: None,
+            text_background_shade_stack: Vec::new(),
             text_align: TextAlign::Start,
             text_align_stack: Vec::new(),
             visibility: Visibility::Visible,
@@ -11920,6 +11936,16 @@ impl FlowRenderer {
                 let run_width = run.text.chars().count();
                 if run.visible {
                     text.push_str(&run.text);
+                    if let Some(background_shade) = run.background_shade {
+                        self.underlay_list.push(DisplayCommand::Rect {
+                            x: run_x,
+                            y,
+                            width: run_width,
+                            height: line_height,
+                            shade: background_shade,
+                        });
+                        self.underlay_targets.push(DisplayHitTarget::node(None));
+                    }
                     if run.shade == 0 {
                         self.display_list.push(DisplayCommand::Text {
                             x: run_x,
@@ -11998,6 +12024,7 @@ impl FlowRenderer {
         let visible = self.visibility == Visibility::Visible;
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
+            && last.background_shade == self.text_background_shade
             && last.visible == visible
         {
             let start = last.text.chars().count();
@@ -12010,6 +12037,7 @@ impl FlowRenderer {
         self.current_runs.push(TextRun {
             text: piece.to_owned(),
             shade: self.text_shade,
+            background_shade: self.text_background_shade,
             visible,
             target_runs,
         });
@@ -12092,6 +12120,16 @@ impl FlowRenderer {
 
     fn exit_text_shade(&mut self) {
         self.text_shade = self.text_shade_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_text_background_shade(&mut self, shade: u8) {
+        self.text_background_shade_stack
+            .push(self.text_background_shade);
+        self.text_background_shade = Some(shade);
+    }
+
+    fn exit_text_background_shade(&mut self) {
+        self.text_background_shade = self.text_background_shade_stack.pop().unwrap_or(None);
     }
 
     fn enter_text_align(&mut self, align: TextAlign) {
