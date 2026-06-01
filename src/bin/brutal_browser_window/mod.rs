@@ -626,20 +626,10 @@ mod native {
                     });
                 }
                 Key::Left | Key::LeftBracket => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Back).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, true).await;
                 }
                 Key::Right | Key::RightBracket => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Forward).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, false).await;
                 }
                 Key::Up => {
                     *mode = BrowserWindowMode::Page;
@@ -729,20 +719,10 @@ mod native {
                     });
                 }
                 Key::Left => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Back).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, true).await;
                 }
                 Key::Right => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Forward).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, false).await;
                 }
                 _ => {}
             }
@@ -790,7 +770,9 @@ mod native {
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
-            Key::Backspace => Some(BrowserAppAction::Back),
+            Key::Backspace => {
+                return handle_browser_window_history_navigation(app, mode, true).await;
+            }
             Key::Enter | Key::NumPadEnter if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::SubmitFocused)
             }
@@ -867,6 +849,37 @@ mod native {
             dirty: true,
             close: false,
         })
+    }
+
+    async fn handle_browser_window_history_navigation(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        backwards: bool,
+    ) -> Result<BrowserWindowKeyResult> {
+        let Some(action) = browser_window_history_action(app, backwards)? else {
+            return Ok(BrowserWindowKeyResult::default());
+        };
+        *mode = BrowserWindowMode::Page;
+        app.apply_action(action).await?;
+        Ok(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        })
+    }
+
+    fn browser_window_history_action(
+        app: &BrowserApp,
+        backwards: bool,
+    ) -> Result<Option<BrowserAppAction>> {
+        let history = app.active_session()?.snapshot();
+        let Some(current_index) = history.current_index else {
+            return Ok(None);
+        };
+        if backwards {
+            Ok((current_index > 0).then_some(BrowserAppAction::Back))
+        } else {
+            Ok((current_index + 1 < history.entries.len()).then_some(BrowserAppAction::Forward))
+        }
     }
 
     async fn handle_browser_window_location_key(
@@ -1605,6 +1618,138 @@ mod native {
                     .unwrap();
             assert!(forward.dirty);
             assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_history_shortcuts_noop_at_boundaries() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale".to_owned(),
+                replace_on_input: false,
+            };
+            let command = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+            let no_back = handle_browser_window_key(&mut app, &mut mode, Key::Left, command)
+                .await
+                .unwrap();
+            assert!(!no_back.dirty);
+            assert!(!no_back.close);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Find {
+                    text: "stale".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            mode = BrowserWindowMode::Page;
+            let no_backspace = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Backspace,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!no_backspace.dirty);
+            assert!(!no_backspace.close);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            app.apply_action(BrowserAppAction::Open(second.to_str().unwrap().to_owned()))
+                .await
+                .unwrap();
+            mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let back = handle_browser_window_key(&mut app, &mut mode, Key::Left, command)
+                .await
+                .unwrap();
+            assert!(back.dirty);
+            assert!(!back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            mode = BrowserWindowMode::Location {
+                text: second.to_string_lossy().into_owned(),
+                replace_on_input: false,
+            };
+            let alt = BrowserWindowModifiers {
+                command: false,
+                shift: false,
+                alt: true,
+            };
+            let forward = handle_browser_window_key(&mut app, &mut mode, Key::Right, alt)
+                .await
+                .unwrap();
+            assert!(forward.dirty);
+            assert!(!forward.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+
+            mode = BrowserWindowMode::Location {
+                text: "still open".to_owned(),
+                replace_on_input: false,
+            };
+            let no_forward = handle_browser_window_key(&mut app, &mut mode, Key::Right, alt)
+                .await
+                .unwrap();
+            assert!(!no_forward.dirty);
+            assert!(!no_forward.close);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: "still open".to_owned(),
+                    replace_on_input: false,
+                }
+            );
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
