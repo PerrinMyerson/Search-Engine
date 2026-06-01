@@ -829,6 +829,18 @@ mod native {
             Key::Space if browser_window_focused_control_accepts_space_toggle(app)? => {
                 Some(BrowserAppAction::ToggleFocused)
             }
+            Key::Up
+            | Key::Down
+            | Key::Left
+            | Key::Right
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Home
+            | Key::End
+                if app.active_session()?.focused_control().is_some() =>
+            {
+                None
+            }
             Key::Space if app.active_session()?.focused_control().is_none() && modifiers.shift => {
                 Some(browser_window_page_scroll_action(app, -1)?)
             }
@@ -1609,6 +1621,65 @@ mod native {
             assert!(!tab.dirty);
             assert!(!tab.close);
             assert_eq!(mode, BrowserWindowMode::Page);
+        }
+
+        #[tokio::test]
+        async fn browser_window_focused_control_captures_page_navigation_keys() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body>
+<form><input name="q" value="focused"></form>
+<p>row 1</p><p>row 2</p><p>row 3</p><p>row 4</p><p>row 5</p>
+</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+            let mut mode = BrowserWindowMode::Page;
+
+            let down = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!down.dirty);
+            assert!(!down.close);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let end = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::End,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!end.dirty);
+            assert!(!end.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
         }
 
         #[tokio::test]
