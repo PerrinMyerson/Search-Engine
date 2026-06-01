@@ -1291,12 +1291,13 @@ mod native {
                 })
             }
             BrowserAppWindowHit::PageViewport { x, y } => {
+                let was_page_mode = matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
                 app.apply_action(BrowserAppAction::OpenClickInBackgroundTab { x, y })
                     .await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: app.tab_count() != before_tabs,
+                    dirty: app.tab_count() != before_tabs || !was_page_mode,
                     close: false,
                 })
             }
@@ -2426,6 +2427,46 @@ mod native {
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_empty_page_dismisses_prompt_dirty() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.present_frame().unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Static Text Fixture"
             );
         }
 
