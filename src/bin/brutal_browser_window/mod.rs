@@ -900,6 +900,7 @@ mod native {
                     close: false,
                 })
             }
+            Key::Tab => handle_browser_window_prompt_tab_key(app, mode, modifiers).await,
             Key::Backspace | Key::Delete => Ok(BrowserWindowKeyResult {
                 dirty: delete_browser_window_location_text_backward(mode),
                 close: false,
@@ -941,12 +942,33 @@ mod native {
                     close: false,
                 })
             }
+            Key::Tab => handle_browser_window_prompt_tab_key(app, mode, modifiers).await,
             Key::Backspace | Key::Delete => Ok(BrowserWindowKeyResult {
                 dirty: delete_browser_window_find_text_backward(mode),
                 close: false,
             }),
             _ => Ok(BrowserWindowKeyResult::default()),
         }
+    }
+
+    async fn handle_browser_window_prompt_tab_key(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<BrowserWindowKeyResult> {
+        *mode = BrowserWindowMode::Page;
+        if browser_window_has_focusable_controls(app)? {
+            let action = if modifiers.shift {
+                BrowserAppAction::FocusPrevious
+            } else {
+                BrowserAppAction::FocusNext
+            };
+            app.apply_action(action).await?;
+        }
+        Ok(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        })
     }
 
     fn browser_window_tab_shortcut_index(key: Key, tab_count: usize) -> Option<usize> {
@@ -1491,6 +1513,85 @@ mod native {
             assert!(!tab.dirty);
             assert!(!tab.close);
             assert_eq!(mode, BrowserWindowMode::Page);
+        }
+
+        #[tokio::test]
+        async fn browser_window_tab_leaves_prompt_and_focuses_page_controls() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="first"><input name="second"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+
+            let forward = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Tab,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(forward.dirty);
+            assert!(!forward.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .name,
+                "first"
+            );
+
+            mode = BrowserWindowMode::Find {
+                text: "needle".to_owned(),
+                replace_on_input: false,
+            };
+            let backward = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Tab,
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(backward.dirty);
+            assert!(!backward.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .name,
+                "second"
+            );
         }
 
         #[tokio::test]
