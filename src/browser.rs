@@ -1105,6 +1105,21 @@ enum Visibility {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+impl Position {
+    fn is_out_of_flow(self) -> bool {
+        matches!(self, Self::Absolute | Self::Fixed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoxSizing {
     ContentBox,
     BorderBox,
@@ -1130,6 +1145,7 @@ struct ComputedStyle {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    position: Position,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -1166,6 +1182,7 @@ struct CssDeclarations {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    position: Option<Position>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -9328,6 +9345,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "visibility" => {
                 declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
             }
+            "position" => {
+                declarations.position = parse_css_position(value).or(declarations.position);
+            }
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
@@ -9766,6 +9786,22 @@ fn parse_css_visibility(value: &str) -> Option<Visibility> {
     {
         "visible" => Some(Visibility::Visible),
         "hidden" | "collapse" => Some(Visibility::Hidden),
+        _ => None,
+    }
+}
+
+fn parse_css_position(value: &str) -> Option<Position> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "static" => Some(Position::Static),
+        "relative" => Some(Position::Relative),
+        "absolute" => Some(Position::Absolute),
+        "fixed" => Some(Position::Fixed),
+        "sticky" | "-webkit-sticky" => Some(Position::Sticky),
         _ => None,
     }
 }
@@ -10290,9 +10326,16 @@ fn render_node(
             if let Some(visibility) = visibility_entered {
                 renderer.enter_visibility(visibility);
             }
+            let mut out_of_flow_entered = style
+                .position
+                .is_out_of_flow()
+                .then(|| renderer.enter_out_of_flow());
 
             if element.tag == "br" {
                 renderer.break_line();
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10300,6 +10343,9 @@ fn render_node(
             }
             if element.tag == "wbr" {
                 renderer.push_word_break_opportunity();
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10307,6 +10353,9 @@ fn render_node(
             }
             if element.tag == "hr" {
                 renderer.push_horizontal_rule(Some(node_id));
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10324,6 +10373,9 @@ fn render_node(
                     image_source.as_deref(),
                     Some(node_id),
                 );
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10332,6 +10384,9 @@ fn render_node(
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
+                }
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
                 }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
@@ -10617,6 +10672,9 @@ fn render_node(
             if text_shade_entered.is_some() {
                 renderer.exit_text_shade();
             }
+            if let Some(snapshot) = out_of_flow_entered.take() {
+                renderer.exit_out_of_flow(snapshot);
+            }
             if visibility_entered.is_some() {
                 renderer.exit_visibility();
             }
@@ -10818,6 +10876,7 @@ fn computed_style(
             text_shade: None,
             text_align: None,
             visibility: None,
+            position: Position::Static,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -10846,6 +10905,7 @@ fn computed_style(
     let mut text_shade = None;
     let mut text_align = None;
     let mut visibility = None;
+    let mut position = Position::Static;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -10872,6 +10932,7 @@ fn computed_style(
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
+    let mut position_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
@@ -10928,6 +10989,12 @@ fn computed_style(
             {
                 visibility = Some(rule_visibility);
                 visibility_specificity = rule_specificity;
+            }
+            if let Some(rule_position) = rule.declarations.position
+                && rule_specificity >= position_specificity
+            {
+                position = rule_position;
+                position_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
                 && rule_specificity >= white_space_specificity
@@ -11073,6 +11140,9 @@ fn computed_style(
         if let Some(inline_visibility) = inline.visibility {
             visibility = Some(inline_visibility);
         }
+        if let Some(inline_position) = inline.position {
+            position = inline_position;
+        }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
         }
@@ -11143,6 +11213,7 @@ fn computed_style(
         text_shade,
         text_align,
         visibility,
+        position,
         white_space,
         text_transform,
         letter_spacing,
@@ -11555,12 +11626,22 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
         || !compound.attributes.is_empty()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TextRun {
     text: String,
     shade: u8,
     visible: bool,
     target_runs: Vec<TextHitTargetRun>,
+}
+
+#[derive(Debug)]
+struct FlowOutOfFlowSnapshot {
+    lines_len: usize,
+    current_runs: Vec<TextRun>,
+    current_width: usize,
+    soft_break_opportunity: bool,
+    next_y: usize,
+    pending_text_indent: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -12043,6 +12124,27 @@ impl FlowRenderer {
         if indent > 0 {
             self.push_text_run_piece_unspaced(&" ".repeat(indent), None);
         }
+    }
+
+    fn enter_out_of_flow(&mut self) -> FlowOutOfFlowSnapshot {
+        FlowOutOfFlowSnapshot {
+            lines_len: self.lines.len(),
+            current_runs: std::mem::take(&mut self.current_runs),
+            current_width: std::mem::take(&mut self.current_width),
+            soft_break_opportunity: std::mem::take(&mut self.soft_break_opportunity),
+            next_y: self.next_y,
+            pending_text_indent: self.pending_text_indent.take(),
+        }
+    }
+
+    fn exit_out_of_flow(&mut self, snapshot: FlowOutOfFlowSnapshot) {
+        self.break_line();
+        self.lines.truncate(snapshot.lines_len);
+        self.current_runs = snapshot.current_runs;
+        self.current_width = snapshot.current_width;
+        self.soft_break_opportunity = snapshot.soft_break_opportunity;
+        self.next_y = snapshot.next_y;
+        self.pending_text_indent = snapshot.pending_text_indent;
     }
 
     fn effective_current_width(&self) -> usize {
