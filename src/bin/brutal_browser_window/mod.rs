@@ -814,12 +814,7 @@ mod native {
         }
 
         let action = match key {
-            Key::Escape => {
-                return Ok(BrowserWindowKeyResult {
-                    dirty: false,
-                    close: true,
-                });
-            }
+            Key::Escape => None,
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
@@ -2317,6 +2312,55 @@ mod native {
             assert!(!result.dirty);
             assert!(result.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_escape_does_not_close_page_mode() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+
+            mode = BrowserWindowMode::Location {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let dismissed_prompt = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(dismissed_prompt.dirty);
+            assert!(!dismissed_prompt.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
         }
 
         #[tokio::test]
