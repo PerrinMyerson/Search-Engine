@@ -810,6 +810,11 @@ mod native {
                 Some(BrowserAppAction::FocusNext)
             }
             Key::Tab => None,
+            Key::Up | Key::Down | Key::Left | Key::Right
+                if browser_window_focused_control_accepts_text_input(app)? =>
+            {
+                None
+            }
             Key::Up => Some(BrowserAppAction::Scroll {
                 delta_x: 0,
                 delta_y: -3,
@@ -1458,6 +1463,62 @@ mod native {
             .unwrap();
             assert!(space_up.dirty);
             assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_arrows_noop_when_text_control_focused() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("focused-arrows.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Focused Arrows</title></head><body><form><input name="q" value="filled"></form><p>line 1</p><p>line 2</p><p>line 3</p><p>line 4</p><p>line 5</p></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 2,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 2 })
+                .await
+                .unwrap();
+            let initial_viewport = app.active_viewport().unwrap();
+            assert!(initial_viewport.y > 0);
+            let mut mode = BrowserWindowMode::Page;
+
+            for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
+                let result = handle_browser_window_key(
+                    &mut app,
+                    &mut mode,
+                    key,
+                    BrowserWindowModifiers::default(),
+                )
+                .await
+                .unwrap();
+
+                assert!(!result.dirty);
+                assert!(!result.close);
+                assert_eq!(mode, BrowserWindowMode::Page);
+                assert_eq!(app.active_viewport().unwrap(), initial_viewport);
+            }
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .name,
+                "q"
+            );
         }
 
         #[tokio::test]
