@@ -10584,7 +10584,7 @@ fn render_node(
                 renderer.push_vertical_space(padding.bottom);
             }
             if let Some((_, _, start_y)) = block_box {
-                let block_height = style.height.unwrap_or(0).max(style.min_height);
+                let block_height = block_height_before_bottom_border(&style, padding, border);
                 renderer.ensure_current_row_at_least(start_y.saturating_add(block_height));
             }
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
@@ -10624,6 +10624,25 @@ fn render_node(
                 renderer.exit_table();
             }
         }
+    }
+}
+
+fn block_height_before_bottom_border(
+    style: &ComputedStyle,
+    padding: BoxSpacing,
+    border: Option<BorderPaint>,
+) -> usize {
+    let declared_height = style.height.unwrap_or(0).max(style.min_height);
+    if declared_height == 0 {
+        return 0;
+    }
+    let border_width = border.map(|border| border.width).unwrap_or(0);
+    match style.box_sizing {
+        BoxSizing::ContentBox => border_width
+            .saturating_add(padding.top)
+            .saturating_add(declared_height)
+            .saturating_add(padding.bottom),
+        BoxSizing::BorderBox => declared_height.saturating_sub(border_width),
     }
 }
 

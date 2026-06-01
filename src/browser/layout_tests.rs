@@ -1640,6 +1640,42 @@ fn css_box_sizing_content_box_keeps_width_as_content_width() {
 }
 
 #[test]
+fn css_box_sizing_content_box_height_includes_vertical_padding() {
+    let render = render_html(
+        "mem://box-sizing-height",
+        br#"
+            <html><body>
+              <div style="height:24px; padding-top:12px; padding-bottom:12px"></div>
+              <p>Content box after</p>
+              <div style="box-sizing:border-box; height:24px; padding-top:12px; padding-bottom:12px"></div>
+              <p>Border box after</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Content box after\nBorder box after");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Content box after".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Border box after".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn details_summary_hides_closed_content_and_marks_state() {
     let render = render_html(
         "mem://details-summary",
