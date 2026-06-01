@@ -1383,8 +1383,10 @@ mod native {
                 let active_tab = app.active_tab();
                 app.apply_action(BrowserAppAction::NewTab(target.source))
                     .await?;
-                app.apply_action(BrowserAppAction::SwitchTab(active_tab))
-                    .await?;
+                if !modifiers.shift {
+                    app.apply_action(BrowserAppAction::SwitchTab(active_tab))
+                        .await?;
+                }
                 Ok(BrowserWindowKeyResult {
                     dirty: true,
                     close: false,
@@ -2779,6 +2781,99 @@ mod native {
             app.apply_action(BrowserAppAction::SwitchTab(2))
                 .await
                 .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_shift_middle_click_history_buttons_open_foreground_tabs() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(
+                second.to_string_lossy().into_owned(),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let back = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::BackButton,
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(back.dirty);
+            assert!(!back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            app.apply_action(BrowserAppAction::SwitchTab(0))
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::Back).await.unwrap();
+            let forward = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::ForwardButton,
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(forward.dirty);
+            assert!(!forward.close);
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
