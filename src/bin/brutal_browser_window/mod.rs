@@ -568,13 +568,18 @@ mod native {
                     });
                 }
                 Key::Backspace | Key::Delete
-                    if app.active_session()?.focused_control().is_some() =>
+                    if browser_window_focused_control_accepts_text_input(app)? =>
                 {
                     app.apply_action(BrowserAppAction::ClearText).await?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
                     });
+                }
+                Key::Backspace | Key::Delete
+                    if app.active_session()?.focused_control().is_some() =>
+                {
+                    return Ok(BrowserWindowKeyResult::default());
                 }
                 Key::L => {
                     let source = current_browser_window_source(app)?;
@@ -3083,6 +3088,70 @@ mod native {
                     .value,
                 ""
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_delete_noops_on_focused_nontext_control() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("checkbox.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Checkbox</title></head><body><form><label><input type="checkbox" name="ok">Accept</label></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "checkbox"
+            );
+            assert!(app.report().unwrap().text.contains("[ ]"));
+            let mut mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let backspace =
+                handle_browser_window_key(&mut app, &mut mode, Key::Backspace, modifiers)
+                    .await
+                    .unwrap();
+            let delete = handle_browser_window_key(&mut app, &mut mode, Key::Delete, modifiers)
+                .await
+                .unwrap();
+
+            assert!(!backspace.dirty);
+            assert!(!backspace.close);
+            assert!(!delete.dirty);
+            assert!(!delete.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "checkbox"
+            );
+            assert!(app.report().unwrap().text.contains("[ ]"));
         }
 
         #[tokio::test]
