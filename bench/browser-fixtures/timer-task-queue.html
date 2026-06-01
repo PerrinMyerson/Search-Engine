@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <title>Timer Task Fixture</title>
+</head>
+<body>
+  <h1 id="headline">Before</h1>
+  <p id="order">start</p>
+  <script>
+    const headline = document.getElementById("headline");
+    setTimeout(() => {
+      headline.textContent = "Timer fired";
+      document.getElementById("order").textContent += " timer";
+    }, 0);
+    document.getElementById("order").textContent += " sync";
+  </script>
+</body>
+</html>

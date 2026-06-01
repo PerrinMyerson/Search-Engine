@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head><title>Lifecycle Events Fixture</title></head>
+  <body>
+    <h1 id="out">Before</h1>
+    <p id="order">start</p>
+    <script>
+      document.addEventListener("DOMContentLoaded", () => {
+        document.getElementById("out").textContent = "DOM ready";
+        document.getElementById("order").textContent += " dom";
+      });
+      window.addEventListener("load", function () {
+        document.getElementById("order").textContent += " load";
+        setTimeout(() => {
+          document.getElementById("order").textContent += " timer";
+        }, 0);
+      });
+      document.getElementById("order").textContent += " script";
+    </script>
+  </body>
+</html>

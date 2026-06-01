@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Listener Fixture</title>
+</head>
+<body>
+  <button id="go">Go</button>
+  <p id="status">Waiting</p>
+  <script>
+    const button = document.getElementById("go");
+    const status = document.getElementById("status");
+    button.addEventListener("click", () => {
+      status.textContent = "Clicked by listener";
+      button.textContent = "Listened";
+    });
+  </script>
+</body>
+</html>

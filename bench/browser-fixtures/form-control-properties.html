@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head><title>Form Control Properties Fixture</title></head>
+<body>
+  <form id="search" action="/old" method="get">
+    <input id="q" name="q" value="old">
+    <input id="fast" type="checkbox" name="fast">
+    <button id="go" name="commit" value="old">Go</button>
+  </form>
+  <p id="state">Waiting</p>
+  <script>
+    const form = document.getElementById("search");
+    const q = document.getElementById("q");
+    const fast = document.getElementById("fast");
+    const go = document.getElementById("go");
+    form.action = "/find";
+    form.method = "post";
+    q.name = "query";
+    q.value = "rust";
+    q.value += " browser";
+    q.type = "search";
+    fast.checked = true;
+    fast.disabled = false;
+    go.value = "submit";
+    const state = document.getElementById("state");
+    state.textContent = form.method;
+    state.textContent += " ";
+    state.textContent += form.action;
+    state.textContent += " ";
+    state.textContent += q.name;
+    state.textContent += " ";
+    state.textContent += q.value;
+    state.textContent += " ";
+    state.textContent += q.type;
+    state.textContent += " ";
+    state.textContent += fast.checked;
+    state.textContent += " ";
+    state.textContent += fast.disabled;
+    state.textContent += " ";
+    state.textContent += go.value;
+  </script>
+</body>
+</html>

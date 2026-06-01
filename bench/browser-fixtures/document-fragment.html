@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><title>Document Fragment Fixture</title></head>
+<body>
+  <main id="root"><p id="stale">Stale</p></main>
+  <p id="state">Before</p>
+  <script>
+    const fragment = document.createDocumentFragment();
+    const first = document.createElement("p");
+    first.textContent = "First";
+    const second = document.createElement("p");
+    second.textContent = "Second";
+    fragment.appendChild(first);
+    fragment.append(second);
+    document.getElementById("root").replaceChildren(fragment);
+    const state = document.getElementById("state");
+    state.textContent = fragment.childNodes.length;
+    state.textContent += " ";
+    state.textContent += fragment.nodeType;
+    state.textContent += " ";
+    state.textContent += document.getElementById("root").children.length;
+    state.textContent += " ";
+    state.textContent += document.getElementById("root").lastElementChild.nodeName;
+  </script>
+</body>
+</html>

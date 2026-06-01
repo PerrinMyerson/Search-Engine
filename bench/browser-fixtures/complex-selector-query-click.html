@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>Complex Selector Fixture</title>
+</head>
+<body>
+  <section data-kind="result">
+    <button class="primary action" onclick="document.querySelector('main[data-view=&quot;results&quot;] .status').textContent = 'Clicked'; this.textContent = 'Done'">Go</button>
+    <p class="title primary">Before</p>
+  </section>
+  <main data-view="results"><p class="status">Waiting</p></main>
+  <script>
+    document.querySelector('section[data-kind="result"] .title.primary').textContent = 'Found by query selector';
+    document.querySelector('main[data-view="results"] .status').textContent = 'Ready';
+  </script>
+</body>
+</html>

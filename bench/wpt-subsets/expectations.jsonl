@@ -1,0 +1,8 @@
+{"id":"html-static-text-display-none","subsystem":"html","expected_status":"PASS","reason":"Local browser fixture currently defines matching title and terminal text expectations."}
+{"id":"dom-inline-text-mutation","subsystem":"dom","expected_status":"PASS","reason":"Local browser fixture currently defines matching inline DOM mutation expectations."}
+{"id":"css-text-color","subsystem":"css","expected_status":"PASS","reason":"Local browser fixture currently defines matching styled text display-list expectations."}
+{"id":"rendering-rect-paint","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching rectangle paint and raster expectations."}
+{"id":"rendering-display-list-hit-test","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching display-list coordinate hit-test expectations."}
+{"id":"rendering-layer-tree-snapshot","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching deterministic layer-tree snapshot expectations."}
+{"id":"rendering-viewport-raster-culling","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching whole-document viewport-window CPU raster culling expectations."}
+{"id":"images-responsive-selection","subsystem":"images","expected_status":"PASS","reason":"Local browser fixture currently defines matching responsive image source selection, decode, display-list, and raster expectations."}

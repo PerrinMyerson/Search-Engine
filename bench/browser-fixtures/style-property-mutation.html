@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <title>Style Property Mutation Fixture</title>
+</head>
+<body>
+  <p id="accent">Runtime styled</p>
+  <p id="hidden">Hidden after style</p>
+  <p id="readout">Before</p>
+  <script>
+    const accent = document.getElementById("accent");
+    accent.style.color = "#808080";
+    accent.style.setProperty("background-color", "#d0d0d0");
+    document.getElementById("hidden").style.display = "none";
+    document.getElementById("readout").textContent = accent.style.getPropertyValue("color");
+  </script>
+</body>
+</html>

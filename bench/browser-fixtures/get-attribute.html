@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Get Attribute Fixture</title>
+  </head>
+  <body>
+    <a id="runtime" href="initial.html" data-role="primary">Before</a>
+    <script>
+      const link = document.getElementById("runtime");
+      const hrefName = "href";
+      const roleName = "data-role";
+      const href = link.getAttribute(hrefName);
+      const role = link.getAttribute(roleName);
+      link.textContent = href;
+      link.textContent += " ";
+      link.textContent += role;
+      const clone = document.createElement("a");
+      clone.setAttribute(hrefName, href);
+      clone.textContent = role;
+      document.body.appendChild(clone);
+    </script>
+  </body>
+</html>

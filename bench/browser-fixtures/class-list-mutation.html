@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+  <title>Class List Mutation Fixture</title>
+  <style>
+    .hidden { display: none; }
+    .accent { color: #808080; }
+    .panel { background-color: #d0d0d0; }
+  </style>
+</head>
+<body>
+  <p id="target" class="hidden">Class list visible</p>
+  <p id="state">Before</p>
+  <script>
+    const target = document.getElementById("target");
+    target.classList.remove("hidden");
+    target.classList.add("accent", "panel");
+    target.classList.toggle("active");
+    const state = document.getElementById("state");
+    state.textContent = target.classList.contains("accent");
+    state.textContent += " ";
+    state.textContent += target.classList.length;
+  </script>
+</body>
+</html>

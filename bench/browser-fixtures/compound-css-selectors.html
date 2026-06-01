@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <title>Compound CSS Fixture</title>
+  <style>
+    .note.ghost { display: none; }
+    nav > a.hidden { display: none; }
+    article.card span.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Compound CSS Visible</h1>
+  <p id="keep" class="primary">Kept by compound selector</p>
+  <p class="note ghost">Hidden compound</p>
+  <nav><a class="hidden">Hidden nav link</a><a>Visible nav link</a></nav>
+  <article class="card"><p><span class="hidden">Hidden descendant</span><span>Visible descendant sibling</span></p></article>
+</body>
+</html>

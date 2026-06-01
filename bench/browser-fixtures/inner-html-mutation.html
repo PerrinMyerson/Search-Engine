@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><title>innerHTML Mutation Fixture</title></head>
+<body>
+  <div id="root"><p>Old</p></div>
+  <p id="state">Waiting</p>
+  <script>
+    const root = document.getElementById("root");
+    root.innerHTML = `<section data-kind="card"><p class="title">Hello</p></section>`;
+    root.innerHTML += `<p class="tail">Tail</p>`;
+    const state = document.getElementById("state");
+    state.textContent = root.children.length;
+    state.textContent += " ";
+    state.textContent += root.querySelector(".title").matches("p.title");
+    state.textContent += " ";
+    state.textContent += root.querySelector(".tail").closest("#root").id;
+    state.textContent += " ";
+    state.textContent += document.head.nodeName;
+    state.textContent += " ";
+    state.textContent += root.innerHTML;
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+  <title>Attribute CSS Fixture</title>
+  <style>
+    [aria-hidden="true"] { display: none; }
+    [data-state="closed"] { display: none; }
+    section[data-kind="promo"] .target { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Attribute CSS Visible</h1>
+  <p hidden>Hidden by hidden attribute</p>
+  <p aria-hidden="true">Hidden by aria attribute selector</p>
+  <p data-state="closed">Hidden by data state selector</p>
+  <section data-kind="promo"><p class="target">Hidden descendant target</p></section>
+  <p data-state="open">Visible open state</p>
+</body>
+</html>

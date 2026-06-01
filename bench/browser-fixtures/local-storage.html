@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>Local Storage Fixture</title>
+</head>
+<body>
+  <h1 id="headline">Before</h1>
+  <p id="count">0</p>
+  <script>
+    localStorage.setItem("headline", "Stored locally");
+    const headline = localStorage.getItem("headline");
+    document.getElementById("headline").textContent = headline;
+    localStorage.setItem("side", "value");
+    document.getElementById("count").textContent = localStorage.length;
+  </script>
+</body>
+</html>

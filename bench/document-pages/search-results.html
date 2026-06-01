@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Document Search Fixture</title>
+    <style>
+      body { color: #111111; }
+      article {
+        border: 1px solid #777777;
+        padding: 8px;
+        margin: 8px;
+        width: 520px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Search Results</h1>
+    </header>
+    <form action="/search" method="get">
+      <input name="q" value="rust browser">
+      <button>Search</button>
+    </form>
+    <article>
+      <h2><a href="document-article.html">Rust Browser Notes</a></h2>
+      <p>Stage 1 focuses on fast readable documents.</p>
+    </article>
+    <article>
+      <h2><a href="document-article.html#install">Install guide</a></h2>
+      <p>Links and forms must keep working.</p>
+    </article>
+  </body>
+</html>

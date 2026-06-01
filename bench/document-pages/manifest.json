@@ -1,0 +1,20 @@
+{
+  "fixtures": [
+    {
+      "name": "stage1 document article",
+      "path": "document-article.html",
+      "width": 96,
+      "expected_title": "Document Article Fixture",
+      "expected_text": "Search Install\nRust Browser Notes\nBrutal Browser renders document pages first.\nInstall\nUse links, readable text, images, and forms before broad\nJS.",
+      "expected_screenshot_hash": "b0546a49aa847f88fd85a9eeeb722626bff350604dd87c81ade707a813257b2b"
+    },
+    {
+      "name": "stage1 search results document",
+      "path": "search-results.html",
+      "width": 96,
+      "expected_title": "Document Search Fixture",
+      "expected_text": "Search Results\n[rust browser] Search\nRust Browser Notes\nStage 1 focuses on fast readable documents.\nInstall guide\nLinks and forms must keep working.",
+      "expected_screenshot_hash": "e5f81acd76288c626d9c41a8512079d218054ea5f0e753e24cfbbec31a4de35b"
+    }
+  ]
+}

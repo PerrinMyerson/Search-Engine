@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>Session Storage Fixture</title>
+</head>
+<body>
+  <h1 id="headline">Before</h1>
+  <p id="count">0</p>
+  <script>
+    sessionStorage.setItem("headline", "Stored for session");
+    const headline = sessionStorage.getItem("headline");
+    document.getElementById("headline").textContent = headline;
+    sessionStorage.setItem("side", "value");
+    document.getElementById("count").textContent = sessionStorage.length;
+  </script>
+</body>
+</html>

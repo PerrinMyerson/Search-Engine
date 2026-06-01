@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Set Attribute Fixture</title>
+    <style>
+      .gone {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <a id="runtime">Before</a>
+    <p id="hidden">Hidden after script</p>
+    <script>
+      const link = document.getElementById("runtime");
+      link.setAttribute("href", "runtime.html");
+      link.setAttribute("class", "primary result");
+      link.textContent = "Runtime Attribute Link";
+      document.getElementById("hidden").setAttribute("class", "gone");
+    </script>
+  </body>
+</html>

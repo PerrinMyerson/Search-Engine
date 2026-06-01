@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head><title>DOM Insertion Methods Fixture</title></head>
+<body>
+  <main id="root">
+    <p id="anchor">Anchor</p>
+    <p id="old">Old</p>
+  </main>
+  <p id="state">Before</p>
+  <script>
+    const root = document.getElementById("root");
+    const anchor = document.getElementById("anchor");
+    const before = document.createElement("p");
+    before.textContent = "Before";
+    anchor.before(before);
+    anchor.prepend("Lead ");
+    anchor.append(" Tail");
+    const after = document.createElement("p");
+    after.textContent = "After";
+    anchor.after(after);
+    const replacement = document.createElement("p");
+    replacement.textContent = "Replacement";
+    document.getElementById("old").replaceWith(replacement);
+    const extra = document.createElement("p");
+    extra.textContent = "Extra";
+    root.append(extra);
+    root.prepend(document.createTextNode("Start"));
+    document.getElementById("state").replaceChildren("Children ", document.createTextNode("reset"));
+  </script>
+</body>
+</html>

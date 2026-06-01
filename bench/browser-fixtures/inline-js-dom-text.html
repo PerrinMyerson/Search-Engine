@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Before Script</title>
+</head>
+<body>
+  <h1 id="app">Before Script</h1>
+  <p>Static sibling</p>
+  <script>
+    document.title = "Inline JS Fixture";
+    document.getElementById("app").textContent = "Hydrated from inline script";
+  </script>
+</body>
+</html>

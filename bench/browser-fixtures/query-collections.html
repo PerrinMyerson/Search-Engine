@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Query Collections Fixture</title>
+    <style>.active { color:#808080 }</style>
+  </head>
+  <body>
+    <main id="root">
+      <section class="card featured">First</section>
+      <section class="card">Second</section>
+      <p class="item">Alpha</p>
+      <p class="item">Beta</p>
+    </main>
+    <p id="state">Before</p>
+    <script>
+      const root = document.getElementById("root");
+      const cards = root.querySelectorAll("section.card");
+      cards[1].classList.add("active");
+      cards.item(0).textContent = "Cards";
+      const featured = document.getElementsByClassName("featured");
+      featured[0].textContent += " ";
+      featured[0].textContent += cards.length;
+      const items = root.querySelectorAll(".item");
+      const state = document.getElementById("state");
+      state.textContent = items.length;
+      state.textContent += " ";
+      state.textContent += document.getElementsByTagName("section").length;
+      state.textContent += " ";
+      state.textContent += cards[1].textContent;
+    </script>
+  </body>
+</html>

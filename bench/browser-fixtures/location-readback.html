@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Location Readback Fixture</title>
+  </head>
+  <body>
+    <p id="state">Before</p>
+    <script>
+      const state = document.getElementById("state");
+      state.textContent = location.href;
+      state.textContent += " ";
+      state.textContent += document.URL;
+      state.textContent += " ";
+      state.textContent += document.location.pathname;
+    </script>
+  </body>
+</html>

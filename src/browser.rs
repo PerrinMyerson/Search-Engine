@@ -1,0 +1,12599 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+use anyhow::{Context, Result, bail, ensure};
+use html_escape::decode_html_entities;
+use memchr::memchr;
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+mod accessibility;
+mod app;
+mod cookies;
+mod coverage;
+#[cfg(test)]
+mod coverage_tests;
+mod events;
+mod focus;
+mod forms;
+mod fragments;
+mod images;
+mod labels;
+mod layout;
+#[cfg(test)]
+mod layout_tests;
+mod raster_pgm;
+mod resources;
+#[cfg(test)]
+mod runtime_tests;
+#[cfg(test)]
+mod session_event_tests;
+mod session_forms;
+#[cfg(test)]
+mod storage_tests;
+#[cfg(test)]
+mod style_tests;
+#[cfg(test)]
+mod viewport_tests;
+
+pub use accessibility::{
+    BrowserAccessibilityNode, BrowserAccessibilityTreeReport, accessibility_tree_from_html,
+    load_accessibility_tree,
+};
+pub use app::{
+    BrowserApp, BrowserAppAction, BrowserAppFindState, BrowserAppOptions, BrowserAppReport,
+    BrowserAppTabSummary, BrowserAppWindowClickReport, BrowserAppWindowFrame,
+    BrowserAppWindowFrameOptions, BrowserAppWindowFrameReport, BrowserAppWindowHit,
+};
+pub use cookies::{BrowserCookie, BrowserCookieJar};
+pub use coverage::{
+    BrowserCoverageGate, BrowserCoverageReport, BrowserFeatureCoverage, BrowserFeatureState,
+    browser_coverage_report, unsupported_feature_summary,
+};
+pub use forms::{
+    BrowserForm, BrowserFormControl, BrowserFormOption, build_get_form_url, build_post_form_body,
+};
+pub use fragments::BrowserFragmentTarget;
+pub use resources::{
+    BrowserImageRenderReport, BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport,
+    BrowserScriptRenderReport, BrowserStylesheetRenderReport,
+};
+
+use events::{
+    BrowserClickDispatch, BrowserEventDispatch, BrowserEventPayload, BrowserEventPhase,
+    BrowserEventTarget, JsEventListener, TinyJsEvent, begin_click_dispatch, begin_event_dispatch,
+    dispatch_event_listener_group as dispatch_event_listener_group_core, event_path_to_window,
+    restore_event_dispatch, restore_runtime_this_target, set_current_event_phase,
+    set_runtime_this_target,
+};
+use focus::{
+    BrowserFocusedFormControl, focusable_controls_for_render, focusable_form_control_for_node,
+};
+use forms::{
+    BrowserFormControlKey, BrowserFormFieldKey, BrowserFormSubmission, BrowserFormSubmitter,
+    apply_form_checked_state_to_render, apply_form_state_to_render,
+    build_form_submission_with_submitter, clear_form_checked_state_for_form,
+    clear_form_state_for_form, collect_forms, effective_form_overrides,
+    form_control_accepts_checked_state, form_control_accepts_fill_state,
+    form_control_accepts_select_state, form_control_accepts_text_edit_state,
+    form_control_has_enabled_option, form_control_index_for_node, form_index_for_node,
+    form_node_id_for_index, nearest_form_ancestor, select_options, select_value,
+    submitter_form_method, submitter_resolved_form_action, validate_supported_form_controls,
+};
+use fragments::{collect_fragment_targets, source_fragment};
+#[cfg(test)]
+use images::decode_simple_png;
+use images::{
+    DecodedImage, DecodedImageEntry, DecodedImageInfo, decode_image_reference,
+    decoded_cached_images, decoded_image_entry, image_render_source,
+};
+use labels::associated_label_control_node;
+use layout::{list_item_marker, nested_list_indent};
+use raster_pgm::{compare_raster_with_pgm, diff_within_threshold, encode_diff_pgm};
+use resources::{
+    BrowserResourceCache, collect_resources, collect_selected_image_resources,
+    fetch_resource_with_cache, load_post_form_target_with_cookie_jar, load_target,
+    load_target_with_cookie_jar, local_path_without_url_parts,
+};
+
+const TABLE_COLUMN_GAP_CELLS: usize = 2;
+
+#[derive(Debug, Clone, Copy)]
+pub struct BrowserRenderOptions {
+    pub width: usize,
+    pub max_bytes: usize,
+}
+
+impl Default for BrowserRenderOptions {
+    fn default() -> Self {
+        Self {
+            width: 100,
+            max_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserRender {
+    pub source: String,
+    pub title: String,
+    pub viewport_width: usize,
+    pub dom_node_count: usize,
+    pub css_rule_count: usize,
+    pub layout_box_count: usize,
+    #[serde(default)]
+    pub layout_boxes: Vec<BrowserLayoutBox>,
+    pub paint_command_count: usize,
+    #[serde(default)]
+    pub links: Vec<BrowserLink>,
+    #[serde(default)]
+    pub forms: Vec<BrowserForm>,
+    #[serde(default)]
+    pub resources: Vec<BrowserResource>,
+    #[serde(default)]
+    pub fragment_targets: Vec<BrowserFragmentTarget>,
+    #[serde(skip)]
+    decoded_images: Vec<DecodedImageEntry>,
+    #[serde(skip)]
+    hit_targets: Vec<DisplayHitTarget>,
+    pub display_list: Vec<DisplayCommand>,
+    pub text: String,
+}
+
+impl BrowserRender {
+    fn decoded_image(&self, url: &str) -> Option<&DecodedImage> {
+        self.decoded_images
+            .iter()
+            .find(|image| image.url == url)
+            .map(|image| &image.image)
+    }
+
+    pub fn fragment_scroll_y(&self, fragment: &str) -> Option<usize> {
+        let fragment = fragment.trim_start_matches('#');
+        self.fragment_targets
+            .iter()
+            .find(|target| target.name == fragment)
+            .map(|target| target.y)
+    }
+
+    pub fn source_fragment_scroll_y(&self) -> Option<usize> {
+        source_fragment(&self.source).and_then(|fragment| self.fragment_scroll_y(&fragment))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRenderTimings {
+    pub parse_us: u128,
+    pub script_us: u128,
+    pub style_us: u128,
+    pub collect_us: u128,
+    pub layout_us: u128,
+    pub total_us: u128,
+}
+
+impl BrowserRenderTimings {
+    pub(crate) fn add(self, other: Self) -> Self {
+        Self {
+            parse_us: self.parse_us + other.parse_us,
+            script_us: self.script_us + other.script_us,
+            style_us: self.style_us + other.style_us,
+            collect_us: self.collect_us + other.collect_us,
+            layout_us: self.layout_us + other.layout_us,
+            total_us: self.total_us + other.total_us,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct BrowserProfiledRender {
+    pub render: BrowserRender,
+    pub timings: BrowserRenderTimings,
+    #[serde(skip)]
+    click_default_action: Option<BrowserClickDefaultAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BrowserClickDefaultAction {
+    Anchor {
+        resolved: String,
+        default_prevented: bool,
+    },
+    SubmitForm {
+        form_index: usize,
+        submitter: BrowserFormSubmitter,
+        default_prevented: bool,
+    },
+    ResetForm {
+        form_index: usize,
+        default_prevented: bool,
+    },
+    ToggleFormControl {
+        form_index: usize,
+        control_index: usize,
+        default_prevented: bool,
+    },
+}
+
+impl BrowserClickDefaultAction {
+    fn default_prevented(&self) -> bool {
+        match self {
+            BrowserClickDefaultAction::Anchor {
+                default_prevented, ..
+            }
+            | BrowserClickDefaultAction::SubmitForm {
+                default_prevented, ..
+            }
+            | BrowserClickDefaultAction::ResetForm {
+                default_prevented, ..
+            }
+            | BrowserClickDefaultAction::ToggleFormControl {
+                default_prevented, ..
+            } => *default_prevented,
+        }
+    }
+
+    fn drains_post_click_timers(&self) -> bool {
+        self.default_prevented() || matches!(self, BrowserClickDefaultAction::ResetForm { .. })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DisplayHitTarget {
+    target_node: Option<usize>,
+    text_runs: Vec<TextHitTargetRun>,
+}
+
+impl DisplayHitTarget {
+    fn node(target_node: Option<usize>) -> Self {
+        Self {
+            target_node,
+            text_runs: Vec::new(),
+        }
+    }
+
+    fn text(text_runs: Vec<TextHitTargetRun>) -> Self {
+        Self {
+            target_node: None,
+            text_runs,
+        }
+    }
+
+    fn target_at_column(&self, column: usize) -> Option<usize> {
+        if !self.text_runs.is_empty() {
+            return self.text_runs.iter().find_map(|run| {
+                (column >= run.start && column < run.start.saturating_add(run.width))
+                    .then_some(run.target_node)
+                    .flatten()
+            });
+        }
+        self.target_node
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextHitTargetRun {
+    start: usize,
+    width: usize,
+    target_node: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLink {
+    pub text: String,
+    pub href: String,
+    pub resolved: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserHitTestReport {
+    pub source: String,
+    pub x: usize,
+    pub y: usize,
+    pub hit: Option<BrowserHitTest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserHitTest {
+    pub command_index: usize,
+    pub kind: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shade: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLayerTreeReport {
+    pub source: String,
+    pub viewport_width: usize,
+    pub paint_command_count: usize,
+    pub layer_count: usize,
+    pub layers: Vec<BrowserLayer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLayer {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub kind: String,
+    pub reason: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub paint_order: usize,
+    pub command_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLayoutTreeReport {
+    pub source: String,
+    pub viewport_width: usize,
+    pub layout_box_count: usize,
+    pub retained_box_count: usize,
+    pub boxes: Vec<BrowserLayoutBox>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLayoutBox {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub node_id: usize,
+    pub tag: String,
+    pub kind: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub children: Vec<usize>,
+    pub command_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserVisibleLayoutBox {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub node_id: usize,
+    pub tag: String,
+    pub kind: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub visible_x: usize,
+    pub visible_y: usize,
+    pub visible_width: usize,
+    pub visible_height: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserViewportState {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserViewportRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserDocumentViewportReport {
+    pub source: String,
+    pub title: String,
+    pub document_width: usize,
+    pub document_height: usize,
+    pub requested: BrowserViewportState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<BrowserViewportState>,
+    pub viewport: BrowserViewportState,
+    pub max_scroll_x: usize,
+    pub max_scroll_y: usize,
+    pub scroll_delta_x: isize,
+    pub scroll_delta_y: isize,
+    pub display_command_count: usize,
+    pub visible_command_count: usize,
+    pub culled_command_count: usize,
+    pub layout_box_count: usize,
+    pub visible_layout_box_count: usize,
+    pub culled_layout_box_count: usize,
+    pub visible_layout_boxes: Vec<BrowserVisibleLayoutBox>,
+    pub invalidated_regions: Vec<BrowserViewportRect>,
+    pub invalidated_area: usize,
+    pub reused_area: usize,
+    pub full_repaint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserViewportFrameDirtyRect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub viewport_x: usize,
+    pub viewport_y: usize,
+    pub viewport_width: usize,
+    pub viewport_height: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserViewportFrameReport {
+    pub viewport: BrowserDocumentViewportReport,
+    pub frame: BrowserRgbaRasterReport,
+    pub dirty_pixel_regions: Vec<BrowserViewportFrameDirtyRect>,
+    pub dirty_pixel_area: usize,
+    pub frame_width: usize,
+    pub frame_height: usize,
+    pub cell_width: usize,
+    pub cell_height: usize,
+    pub padding_x: usize,
+    pub padding_y: usize,
+    pub bytes_per_pixel: usize,
+    pub pixel_hash: String,
+    pub non_background_pixels: usize,
+    pub artifact_format: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserViewportFrame {
+    pub report: BrowserViewportFrameReport,
+    pub raster: BrowserRgbaRaster,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLayerMetrics {
+    pub layer_count: usize,
+    pub root_command_count: usize,
+    pub image_layer_count: usize,
+    pub root_layer_width: usize,
+    pub root_layer_height: usize,
+    pub max_layer_area: usize,
+    pub total_layer_area: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum DisplayCommand {
+    Text {
+        x: usize,
+        y: usize,
+        text: String,
+    },
+    StyledText {
+        x: usize,
+        y: usize,
+        text: String,
+        shade: u8,
+    },
+    Rect {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shade: u8,
+    },
+    Image {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shade: u8,
+        alt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_width: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_height: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_hash: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRasterOptions {
+    pub cell_width: usize,
+    pub cell_height: usize,
+    pub padding_x: usize,
+    pub padding_y: usize,
+    pub max_pixels: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_x: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_y: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_height: Option<usize>,
+}
+
+impl Default for BrowserRasterOptions {
+    fn default() -> Self {
+        Self {
+            cell_width: 8,
+            cell_height: 12,
+            padding_x: 4,
+            padding_y: 4,
+            max_pixels: 32 * 1024 * 1024,
+            viewport_x: None,
+            viewport_y: None,
+            viewport_width: None,
+            viewport_height: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRaster {
+    pub width: usize,
+    pub height: usize,
+    pub background: u8,
+    pub foreground: u8,
+    pub pixels: Vec<u8>,
+}
+
+impl BrowserRaster {
+    pub fn pixel_hash(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"brutal-browser-raster-v1");
+        hasher.update(&(self.width as u64).to_le_bytes());
+        hasher.update(&(self.height as u64).to_le_bytes());
+        hasher.update(&[self.background, self.foreground]);
+        hasher.update(&self.pixels);
+        hasher.finalize().to_hex().to_string()
+    }
+
+    pub fn non_background_pixels(&self) -> usize {
+        self.pixels
+            .iter()
+            .filter(|&&pixel| pixel != self.background)
+            .count()
+    }
+
+    pub fn encode_pgm(&self) -> Vec<u8> {
+        let mut encoded = format!("P5\n{} {}\n255\n", self.width, self.height).into_bytes();
+        encoded.extend_from_slice(&self.pixels);
+        encoded
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRgbaRaster {
+    pub width: usize,
+    pub height: usize,
+    pub background: [u8; 4],
+    pub pixels: Vec<u8>,
+}
+
+impl BrowserRgbaRaster {
+    pub fn from_grayscale(raster: &BrowserRaster) -> Self {
+        let mut pixels = Vec::with_capacity(raster.pixels.len().saturating_mul(4));
+        for &pixel in &raster.pixels {
+            pixels.extend_from_slice(&[pixel, pixel, pixel, 255]);
+        }
+        Self {
+            width: raster.width,
+            height: raster.height,
+            background: [raster.background, raster.background, raster.background, 255],
+            pixels,
+        }
+    }
+
+    pub fn pixel_hash(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"brutal-browser-rgba-raster-v1");
+        hasher.update(&(self.width as u64).to_le_bytes());
+        hasher.update(&(self.height as u64).to_le_bytes());
+        hasher.update(&self.background);
+        hasher.update(&self.pixels);
+        hasher.finalize().to_hex().to_string()
+    }
+
+    pub fn non_background_pixels(&self) -> usize {
+        self.pixels
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != self.background.as_slice())
+            .count()
+    }
+
+    pub fn encode_png(&self) -> Result<Vec<u8>> {
+        use std::io::Write as _;
+
+        ensure!(self.width <= u32::MAX as usize, "PNG width exceeds u32");
+        ensure!(self.height <= u32::MAX as usize, "PNG height exceeds u32");
+        ensure!(
+            self.pixels.len() == self.width.saturating_mul(self.height).saturating_mul(4),
+            "RGBA buffer length does not match raster dimensions"
+        );
+
+        let row_len = self.width.saturating_mul(4);
+        let mut raw = Vec::with_capacity(self.height.saturating_mul(row_len.saturating_add(1)));
+        for row in self.pixels.chunks_exact(row_len) {
+            raw.push(0);
+            raw.extend_from_slice(row);
+        }
+
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&raw)?;
+        let compressed = encoder.finish()?;
+
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&(self.width as u32).to_be_bytes());
+        ihdr.extend_from_slice(&(self.height as u32).to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        append_png_chunk(&mut png, b"IHDR", &ihdr);
+        append_png_chunk(&mut png, b"IDAT", &compressed);
+        append_png_chunk(&mut png, b"IEND", &[]);
+        Ok(png)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRasterReport {
+    pub source: String,
+    pub viewport_width: usize,
+    pub width: usize,
+    pub height: usize,
+    pub cell_width: usize,
+    pub cell_height: usize,
+    pub display_command_count: usize,
+    #[serde(default)]
+    pub visible_command_count: usize,
+    #[serde(default)]
+    pub culled_command_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_x: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_y: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_height: Option<usize>,
+    pub non_background_pixels: usize,
+    pub pixel_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRgbaRasterReport {
+    pub source: String,
+    pub viewport_width: usize,
+    pub width: usize,
+    pub height: usize,
+    pub cell_width: usize,
+    pub cell_height: usize,
+    pub bytes_per_pixel: usize,
+    pub display_command_count: usize,
+    #[serde(default)]
+    pub visible_command_count: usize,
+    #[serde(default)]
+    pub culled_command_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_x: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_y: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_height: Option<usize>,
+    pub non_background_pixels: usize,
+    pub pixel_hash: String,
+    pub artifact_format: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTextViewportOptions {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+impl Default for BrowserTextViewportOptions {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 24,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTextViewportReport {
+    pub source: String,
+    pub title: String,
+    pub document_width: usize,
+    pub document_height: usize,
+    pub x: usize,
+    pub y: usize,
+    #[serde(default)]
+    pub max_scroll_x: usize,
+    #[serde(default)]
+    pub max_scroll_y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub display_command_count: usize,
+    pub visible_command_count: usize,
+    pub culled_command_count: usize,
+    #[serde(default)]
+    pub layout_box_count: usize,
+    #[serde(default)]
+    pub visible_layout_box_count: usize,
+    #[serde(default)]
+    pub culled_layout_box_count: usize,
+    #[serde(default)]
+    pub visible_layout_boxes: Vec<BrowserVisibleLayoutBox>,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserVisualReport {
+    pub fixture_count: usize,
+    pub checked: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub missing_baseline: usize,
+    pub artifact_dir: Option<String>,
+    pub baseline_dir: Option<String>,
+    pub diff_checked: usize,
+    pub diff_passed: usize,
+    pub diff_failed: usize,
+    pub max_diff_pixels: Option<usize>,
+    pub max_diff_ratio: Option<f64>,
+    pub comparisons: Vec<BrowserVisualComparison>,
+    pub failures: Vec<BrowserFixtureFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserVisualComparison {
+    pub name: String,
+    pub path: String,
+    pub width: usize,
+    pub height: usize,
+    pub display_command_count: usize,
+    #[serde(default)]
+    pub visible_command_count: usize,
+    #[serde(default)]
+    pub culled_command_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_x: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_y: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster_viewport_height: Option<usize>,
+    pub non_background_pixels: usize,
+    pub expected_raster_hash: Option<String>,
+    pub actual_raster_hash: String,
+    pub matched: Option<bool>,
+    pub artifact: Option<String>,
+    pub baseline_artifact: Option<String>,
+    pub diff_artifact: Option<String>,
+    pub diff_pixels: Option<usize>,
+    pub diff_ratio: Option<f64>,
+    pub diff_passed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrowserFixtureManifest {
+    pub fixtures: Vec<BrowserFixture>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrowserFixture {
+    pub name: Option<String>,
+    pub path: PathBuf,
+    #[serde(default = "default_fixture_width")]
+    pub width: usize,
+    #[serde(default)]
+    pub external_scripts: bool,
+    pub click_selector: Option<String>,
+    pub expected_title: Option<String>,
+    pub expected_text: Option<String>,
+    pub expected_display_list: Option<Vec<DisplayCommand>>,
+    #[serde(default)]
+    pub expected_hit_tests: Vec<BrowserFixtureHitTest>,
+    #[serde(default)]
+    pub expected_layers: Option<Vec<BrowserLayer>>,
+    #[serde(default)]
+    pub raster_viewport_x: Option<usize>,
+    #[serde(default)]
+    pub raster_viewport_y: Option<usize>,
+    #[serde(default)]
+    pub raster_viewport_width: Option<usize>,
+    #[serde(default)]
+    pub raster_viewport_height: Option<usize>,
+    #[serde(default)]
+    pub expected_visible_command_count: Option<usize>,
+    #[serde(default)]
+    pub expected_culled_command_count: Option<usize>,
+    pub expected_raster_hash: Option<String>,
+    #[serde(default)]
+    pub expected_screenshot_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserFixtureHitTest {
+    pub x: usize,
+    pub y: usize,
+    pub expected: Option<BrowserHitTestExpectation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserHitTestExpectation {
+    pub kind: String,
+    #[serde(default)]
+    pub command_index: Option<usize>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub alt: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub shade: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserFixtureReport {
+    pub fixture_count: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub failures: Vec<BrowserFixtureFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserFixtureFailure {
+    pub name: String,
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserChromiumParityReport {
+    pub fixture_count: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub chrome: Option<String>,
+    pub comparisons: Vec<BrowserChromiumParityComparison>,
+    pub failures: Vec<BrowserFixtureFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserChromiumParityComparison {
+    pub name: String,
+    pub path: String,
+    pub title_match: bool,
+    pub text_match: bool,
+    pub brutal_title: String,
+    pub chromium_title: String,
+    pub brutal_text: String,
+    pub chromium_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChromiumStaticRender {
+    title: String,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserSession {
+    options: BrowserRenderOptions,
+    entries: Vec<BrowserSessionEntry>,
+    current_index: Option<usize>,
+    cookie_jar: BrowserCookieJar,
+    resource_cache: BrowserResourceCache,
+    local_storage: BrowserLocalStorage,
+    session_storage: BrowserLocalStorage,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserSessionEntry {
+    target: String,
+    html: Vec<u8>,
+    page_state: BrowserPageState,
+    render: BrowserRender,
+    form_state: HashMap<BrowserFormFieldKey, String>,
+    checked_state: HashMap<BrowserFormControlKey, bool>,
+    focused_control: Option<BrowserFocusedFormControl>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserPageState {
+    dom: Dom,
+    css_text: String,
+    runtime: TinyJsRuntime,
+    cached_images: Vec<DecodedImageEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserHistorySnapshot {
+    pub current_index: Option<usize>,
+    pub entries: Vec<BrowserHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserHistoryEntry {
+    pub target: String,
+    pub source: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserFocusedControl {
+    pub form_index: usize,
+    pub control_index: usize,
+    pub name: String,
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BrowserLocalStorage {
+    origins: HashMap<String, HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserLocalStorageEntry {
+    pub origin: String,
+    pub key: String,
+    pub value: String,
+}
+
+fn browser_storage_entries(storage: &BrowserLocalStorage) -> Vec<BrowserLocalStorageEntry> {
+    let mut entries = storage
+        .origins
+        .iter()
+        .flat_map(|(origin, values)| {
+            values.iter().map(|(key, value)| BrowserLocalStorageEntry {
+                origin: origin.clone(),
+                key: key.clone(),
+                value: value.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        left.origin
+            .cmp(&right.origin)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    entries
+}
+
+fn default_fixture_width() -> usize {
+    BrowserRenderOptions::default().width
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Dom {
+    nodes: Vec<Node>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Node {
+    kind: NodeKind,
+    parent: Option<usize>,
+    children: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NodeKind {
+    Document,
+    DocumentFragment,
+    Element(Box<ElementData>),
+    Text(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ElementData {
+    tag: String,
+    attrs: HashMap<String, String>,
+    id: Option<String>,
+    classes: Vec<String>,
+    style: Option<String>,
+    href: Option<String>,
+    src: Option<String>,
+    srcset: Option<String>,
+    rel: Option<String>,
+    media: Option<String>,
+    alt: Option<String>,
+    data: Option<String>,
+    name: Option<String>,
+    value: Option<String>,
+    input_type: Option<String>,
+    type_hint: Option<String>,
+    poster: Option<String>,
+    action: Option<String>,
+    method: Option<String>,
+    onclick: Option<String>,
+    hidden: bool,
+    disabled: bool,
+    checked: bool,
+    selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Display {
+    None,
+    Inline,
+    Block,
+    ListItem,
+}
+
+impl Display {
+    fn is_block_flow(self) -> bool {
+        matches!(self, Self::Block | Self::ListItem)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextAlign {
+    Start,
+    Center,
+    End,
+}
+
+impl TextAlign {
+    fn offset(self, available_width: usize, line_width: usize) -> usize {
+        let remaining = available_width.saturating_sub(line_width);
+        match self {
+            TextAlign::Start => 0,
+            TextAlign::Center => remaining / 2,
+            TextAlign::End => remaining,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhiteSpace {
+    Normal,
+    Nowrap,
+    Pre,
+    PreLine,
+    PreWrap,
+    BreakSpaces,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextTransform {
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverflowWrap {
+    Normal,
+    BreakWord,
+    Anywhere,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordBreak {
+    Normal,
+    BreakAll,
+    BreakWord,
+    KeepAll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Visibility {
+    Visible,
+    Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoxSizing {
+    ContentBox,
+    BorderBox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CssListStyleType {
+    NoMarker,
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+    LowerAlpha,
+    UpperAlpha,
+    LowerRoman,
+    UpperRoman,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComputedStyle {
+    display: Display,
+    background_shade: Option<u8>,
+    text_shade: Option<u8>,
+    text_align: Option<TextAlign>,
+    visibility: Option<Visibility>,
+    white_space: Option<WhiteSpace>,
+    text_transform: Option<TextTransform>,
+    letter_spacing: Option<usize>,
+    word_spacing: Option<usize>,
+    overflow_wrap: Option<OverflowWrap>,
+    word_break: Option<WordBreak>,
+    text_indent: Option<usize>,
+    line_height: Option<usize>,
+    box_sizing: BoxSizing,
+    list_style_type: Option<CssListStyleType>,
+    border: Option<BorderPaint>,
+    padding: BoxSpacing,
+    margin: BoxSpacing,
+    width: Option<usize>,
+    max_width: Option<usize>,
+    min_width: usize,
+    height: Option<usize>,
+    margin_left_auto: bool,
+    margin_right_auto: bool,
+    min_height: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CssRule {
+    selector: CssSelector,
+    declarations: CssDeclarations,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CssDeclarations {
+    display: Option<Display>,
+    background_shade: Option<u8>,
+    text_shade: Option<u8>,
+    text_align: Option<TextAlign>,
+    visibility: Option<Visibility>,
+    white_space: Option<WhiteSpace>,
+    text_transform: Option<TextTransform>,
+    letter_spacing: Option<usize>,
+    word_spacing: Option<usize>,
+    overflow_wrap: Option<OverflowWrap>,
+    word_break: Option<WordBreak>,
+    text_indent: Option<usize>,
+    line_height: Option<usize>,
+    box_sizing: Option<BoxSizing>,
+    list_style_type: Option<CssListStyleType>,
+    border: Option<BorderPaint>,
+    padding: Option<BoxSpacing>,
+    margin: Option<BoxSpacing>,
+    width: Option<usize>,
+    max_width: Option<usize>,
+    min_width: Option<usize>,
+    height: Option<usize>,
+    margin_left_auto: Option<bool>,
+    margin_right_auto: Option<bool>,
+    min_height: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BorderPaint {
+    width: usize,
+    shade: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BoxSpacing {
+    top: usize,
+    right: usize,
+    bottom: usize,
+    left: usize,
+}
+
+impl BoxSpacing {
+    fn is_empty(self) -> bool {
+        self.top == 0 && self.right == 0 && self.bottom == 0 && self.left == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CssCascade {
+    rules: Vec<CssRule>,
+    id_rules: HashMap<String, Vec<usize>>,
+    class_rules: HashMap<String, Vec<usize>>,
+    tag_rules: HashMap<String, Vec<usize>>,
+    attr_rules: HashMap<String, Vec<usize>>,
+    universal_rules: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CssSelector {
+    steps: Vec<SelectorStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectorStep {
+    compound: CompoundSelector,
+    combinator: Option<SelectorCombinator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompoundSelector {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+    attributes: Vec<AttributeSelector>,
+    universal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttributeSelector {
+    name: String,
+    value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectorCombinator {
+    Descendant,
+    Child,
+}
+
+pub async fn load_and_render(target: &str, options: BrowserRenderOptions) -> Result<BrowserRender> {
+    let (source, bytes) = load_target(target, options.max_bytes).await?;
+    Ok(render_html(&source, &bytes, options))
+}
+
+pub const BROWSER_ABOUT_BLANK_TARGET: &str = "about:blank";
+const BROWSER_ABOUT_BLANK_HTML: &[u8] =
+    b"<!doctype html><html><head><title></title></head><body></body></html>";
+
+async fn load_session_document(
+    target: &str,
+    options: BrowserRenderOptions,
+    cookie_jar: &mut BrowserCookieJar,
+    local_storage: &mut BrowserLocalStorage,
+    session_storage: &mut BrowserLocalStorage,
+) -> Result<(String, Vec<u8>, BrowserPageState, BrowserRender)> {
+    let (source, bytes) = if target == BROWSER_ABOUT_BLANK_TARGET {
+        (
+            BROWSER_ABOUT_BLANK_TARGET.to_owned(),
+            BROWSER_ABOUT_BLANK_HTML.to_vec(),
+        )
+    } else {
+        load_target_with_cookie_jar(target, options.max_bytes, Some(cookie_jar)).await?
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        &source,
+        &bytes,
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: Some(local_storage),
+            session_storage: Some(session_storage),
+            cached_images: &[],
+        },
+    )
+    .expect("session render without interaction should not fail");
+    Ok((source, bytes, page_state, profiled.render))
+}
+
+async fn load_session_post_form_document(
+    target: &str,
+    body: String,
+    options: BrowserRenderOptions,
+    cookie_jar: &mut BrowserCookieJar,
+    local_storage: &mut BrowserLocalStorage,
+    session_storage: &mut BrowserLocalStorage,
+) -> Result<(String, Vec<u8>, BrowserPageState, BrowserRender)> {
+    let (source, bytes) =
+        load_post_form_target_with_cookie_jar(target, body, options.max_bytes, cookie_jar).await?;
+    let (page_state, profiled) = render_html_prepared_with_state(
+        &source,
+        &bytes,
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: Some(local_storage),
+            session_storage: Some(session_storage),
+            cached_images: &[],
+        },
+    )
+    .expect("session POST render without interaction should not fail");
+    Ok((source, bytes, page_state, profiled.render))
+}
+
+impl BrowserSession {
+    pub fn new(options: BrowserRenderOptions) -> Self {
+        Self::new_with_cookie_jar(options, BrowserCookieJar::default())
+    }
+
+    pub fn new_with_cookie_jar(
+        options: BrowserRenderOptions,
+        cookie_jar: BrowserCookieJar,
+    ) -> Self {
+        Self::new_with_state(options, cookie_jar, BrowserLocalStorage::default())
+    }
+
+    pub fn new_with_state(
+        options: BrowserRenderOptions,
+        cookie_jar: BrowserCookieJar,
+        local_storage: BrowserLocalStorage,
+    ) -> Self {
+        Self {
+            options,
+            entries: Vec::new(),
+            current_index: None,
+            cookie_jar,
+            resource_cache: BrowserResourceCache::default(),
+            local_storage,
+            session_storage: BrowserLocalStorage::default(),
+        }
+    }
+
+    pub async fn navigate(&mut self, target: &str) -> Result<&BrowserRender> {
+        let (source, html, page_state, render) = load_session_document(
+            target,
+            self.options,
+            &mut self.cookie_jar,
+            &mut self.local_storage,
+            &mut self.session_storage,
+        )
+        .await?;
+        Ok(self.push_entry(source, html, page_state, render))
+    }
+
+    pub async fn reload(&mut self) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot reload: session has no current page");
+        };
+        let target = self.entries[current_index].target.clone();
+        let (_, html, page_state, render) = load_session_document(
+            &target,
+            self.options,
+            &mut self.cookie_jar,
+            &mut self.local_storage,
+            &mut self.session_storage,
+        )
+        .await?;
+        let entry = &mut self.entries[current_index];
+        entry.html = html;
+        entry.page_state = page_state;
+        entry.render = render;
+        entry.form_state.clear();
+        entry.checked_state.clear();
+        entry.focused_control = None;
+        Ok(&entry.render)
+    }
+
+    fn push_entry(
+        &mut self,
+        target: String,
+        html: Vec<u8>,
+        page_state: BrowserPageState,
+        render: BrowserRender,
+    ) -> &BrowserRender {
+        if let Some(current_index) = self.current_index {
+            self.entries.truncate(current_index + 1);
+        }
+        self.entries.push(BrowserSessionEntry {
+            target,
+            html,
+            page_state,
+            render,
+            form_state: HashMap::new(),
+            checked_state: HashMap::new(),
+            focused_control: None,
+        });
+        self.current_index = Some(self.entries.len() - 1);
+        &self.entries[self.entries.len() - 1].render
+    }
+
+    pub async fn submit_form(
+        &mut self,
+        form_index: usize,
+        overrides: &[(String, String)],
+    ) -> Result<&BrowserRender> {
+        self.submit_form_with_submitter(form_index, overrides, &BrowserFormSubmitter::default())
+            .await
+    }
+
+    async fn submit_form_with_submitter(
+        &mut self,
+        form_index: usize,
+        overrides: &[(String, String)],
+        submitter: &BrowserFormSubmitter,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot submit form: session has no current page");
+        };
+        let submit_event = self.dispatch_current_form_event(current_index, form_index, "submit")?;
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        if submit_event.default_prevented {
+            return Ok(&self.entries[current_index].render);
+        }
+        let submission = self.build_current_form_submission(form_index, overrides, submitter)?;
+        match submission {
+            BrowserFormSubmission::Get { target } => self.navigate(&target).await,
+            BrowserFormSubmission::PostUrlEncoded { target, body } => {
+                self.navigate_post_form(&target, body).await
+            }
+        }
+    }
+
+    pub async fn submit_get_form(
+        &mut self,
+        form_index: usize,
+        overrides: &[(String, String)],
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot submit form: session has no current page");
+        };
+        let submit_event = self.dispatch_current_form_event(current_index, form_index, "submit")?;
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        if submit_event.default_prevented {
+            return Ok(&self.entries[current_index].render);
+        }
+        let submission = self.build_current_form_submission(
+            form_index,
+            overrides,
+            &BrowserFormSubmitter::default(),
+        )?;
+        let BrowserFormSubmission::Get { target } = submission else {
+            bail!(
+                "form {} uses POST; use submit_form to submit non-GET forms",
+                form_index
+            );
+        };
+        self.navigate(&target).await
+    }
+
+    fn build_current_form_submission(
+        &self,
+        form_index: usize,
+        overrides: &[(String, String)],
+        submitter: &BrowserFormSubmitter,
+    ) -> Result<BrowserFormSubmission> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot submit form: session has no current page");
+        };
+        let entry = &self.entries[current_index];
+        let current = &entry.render;
+        let Some(form) = current.forms.get(form_index) else {
+            bail!(
+                "form index {} not found; current page has {} form(s)",
+                form_index,
+                current.forms.len()
+            );
+        };
+        let effective_overrides =
+            effective_form_overrides(form, &entry.form_state, form_index, overrides);
+        if !submitter.no_validate {
+            validate_supported_form_controls(form, &effective_overrides)?;
+        }
+        build_form_submission_with_submitter(form, &effective_overrides, submitter)
+    }
+
+    async fn navigate_post_form(&mut self, target: &str, body: String) -> Result<&BrowserRender> {
+        let (source, html, page_state, render) = load_session_post_form_document(
+            target,
+            body,
+            self.options,
+            &mut self.cookie_jar,
+            &mut self.local_storage,
+            &mut self.session_storage,
+        )
+        .await?;
+        Ok(self.push_entry(source, html, page_state, render))
+    }
+
+    pub fn set_form_field(
+        &mut self,
+        form_index: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot fill form field: session has no current page");
+        };
+        ensure!(
+            !name.is_empty(),
+            "cannot fill a form field with an empty name"
+        );
+        {
+            let current = &self.entries[current_index].render;
+            let Some(form) = current.forms.get(form_index) else {
+                bail!(
+                    "form index {} not found; current page has {} form(s)",
+                    form_index,
+                    current.forms.len()
+                );
+            };
+            let matching = form
+                .controls
+                .iter()
+                .filter(|control| control.name == name)
+                .collect::<Vec<_>>();
+            ensure!(
+                !matching.is_empty(),
+                "form {} has no field named {:?}",
+                form_index,
+                name
+            );
+            ensure!(
+                matching
+                    .iter()
+                    .all(|control| form_control_accepts_fill_state(control)),
+                "field {:?} in form {} is not a fillable form control",
+                name,
+                form_index
+            );
+            for control in matching {
+                if form_control_accepts_select_state(control) {
+                    ensure!(
+                        form_control_has_enabled_option(control, value),
+                        "select field {:?} in form {} has no enabled option value {:?}",
+                        name,
+                        form_index,
+                        value
+                    );
+                }
+            }
+        }
+        let targets = {
+            let form = &self.entries[current_index].render.forms[form_index];
+            form.controls
+                .iter()
+                .filter(|control| control.name == name && form_control_accepts_fill_state(control))
+                .map(|control| (control.node_id, control.kind.clone()))
+                .collect::<Vec<_>>()
+        };
+        self.entries[current_index].form_state.insert(
+            BrowserFormFieldKey {
+                form_index,
+                name: name.to_owned(),
+            },
+            value.to_owned(),
+        );
+        for (node_id, kind) in targets {
+            self.apply_live_form_value(current_index, node_id, &kind, value);
+            self.dispatch_live_form_events(current_index, node_id, &["input", "change"]);
+        }
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub fn focus_selector(&mut self, selector: &str) -> Result<BrowserFocusedControl> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot focus: session has no current page");
+        };
+        let focused = self.focusable_control_for_selector(current_index, selector)?;
+        self.set_focused_control(current_index, focused)?;
+        self.focused_control()
+            .context("focused control disappeared from current render")
+    }
+
+    pub fn focus_next_control(&mut self) -> Result<BrowserFocusedControl> {
+        self.focus_relative_control(false)
+    }
+
+    pub fn focus_previous_control(&mut self) -> Result<BrowserFocusedControl> {
+        self.focus_relative_control(true)
+    }
+
+    fn focus_relative_control(&mut self, reverse: bool) -> Result<BrowserFocusedControl> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot move focus: session has no current page");
+        };
+        let controls = focusable_controls_for_render(&self.entries[current_index].render);
+        ensure!(
+            !controls.is_empty(),
+            "cannot move focus: current page has no focusable form controls"
+        );
+        let current_position = self.entries[current_index]
+            .focused_control
+            .as_ref()
+            .and_then(|focused| {
+                controls.iter().position(|control| {
+                    control.form_index == focused.form_index
+                        && control.control_index == focused.control_index
+                        && control.name == focused.name
+                        && control.kind.eq_ignore_ascii_case(&focused.kind)
+                })
+            });
+        let next_position = match (current_position, reverse) {
+            (Some(position), false) => (position + 1) % controls.len(),
+            (Some(0), true) => controls.len() - 1,
+            (Some(position), true) => position - 1,
+            (None, false) => 0,
+            (None, true) => controls.len() - 1,
+        };
+        self.set_focused_control(current_index, controls[next_position].clone())?;
+        self.focused_control()
+            .context("focused control disappeared from current render")
+    }
+
+    fn set_focused_control(
+        &mut self,
+        current_index: usize,
+        focused: BrowserFocusedFormControl,
+    ) -> Result<()> {
+        let previous = self.entries[current_index].focused_control.clone();
+        if previous.as_ref() == Some(&focused) {
+            self.entries[current_index]
+                .page_state
+                .runtime
+                .active_element = Some(focused.node_id);
+            return Ok(());
+        }
+
+        {
+            let entry = &mut self.entries[current_index];
+            if let Some(previous_node_id) = previous
+                .as_ref()
+                .map(|previous| previous.node_id)
+                .filter(|&node_id| node_id < entry.page_state.dom.nodes.len())
+            {
+                entry.page_state.runtime.active_element = None;
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    previous_node_id,
+                    "blur",
+                    false,
+                );
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    previous_node_id,
+                    "focusout",
+                    true,
+                );
+            }
+
+            entry.focused_control = Some(focused.clone());
+            if focused.node_id < entry.page_state.dom.nodes.len() {
+                entry.page_state.runtime.active_element = Some(focused.node_id);
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    focused.node_id,
+                    "focus",
+                    false,
+                );
+                dispatch_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    focused.node_id,
+                    "focusin",
+                    true,
+                );
+            } else {
+                entry.focused_control = None;
+                entry.page_state.runtime.active_element = None;
+            }
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+
+        self.persist_entry_runtime_storage(current_index);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        ensure!(
+            self.focused_control().is_some(),
+            "focused control disappeared during focus event dispatch"
+        );
+        Ok(())
+    }
+
+    pub fn type_text(&mut self, text: &str) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot type text: session has no current page");
+        };
+        let focused = self.focused_text_control(current_index, "type text")?;
+        let (node_id, kind) = self.focused_text_control_target(current_index, &focused)?;
+
+        for ch in text.chars() {
+            let key = ch.to_string();
+            let keydown =
+                self.dispatch_live_keyboard_event(current_index, node_id, "keydown", &key);
+            if !keydown.default_prevented {
+                let beforeinput = self.dispatch_live_beforeinput_event(
+                    current_index,
+                    node_id,
+                    "insertText",
+                    Some(&key),
+                );
+                if !beforeinput.default_prevented {
+                    let mut value = self.live_form_control_value(current_index, node_id);
+                    value.push(ch);
+                    self.commit_focused_text_value(current_index, &focused, node_id, &kind, &value);
+                    self.dispatch_live_form_events(current_index, node_id, &["input"]);
+                }
+            }
+            self.dispatch_live_keyboard_event(current_index, node_id, "keyup", &key);
+        }
+
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub fn delete_text_backward(&mut self, count: usize) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot delete text: session has no current page");
+        };
+        let focused = self.focused_text_control(current_index, "delete text")?;
+        let (node_id, kind) = self.focused_text_control_target(current_index, &focused)?;
+
+        for _ in 0..count {
+            let keydown =
+                self.dispatch_live_keyboard_event(current_index, node_id, "keydown", "Backspace");
+            if !keydown.default_prevented {
+                let beforeinput = self.dispatch_live_beforeinput_event(
+                    current_index,
+                    node_id,
+                    "deleteContentBackward",
+                    None,
+                );
+                if !beforeinput.default_prevented {
+                    let mut value = self.live_form_control_value(current_index, node_id);
+                    if let Some((index, _)) = value.char_indices().next_back() {
+                        value.truncate(index);
+                        self.commit_focused_text_value(
+                            current_index,
+                            &focused,
+                            node_id,
+                            &kind,
+                            &value,
+                        );
+                        self.dispatch_live_form_events(current_index, node_id, &["input"]);
+                    }
+                }
+            }
+            self.dispatch_live_keyboard_event(current_index, node_id, "keyup", "Backspace");
+        }
+
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub fn clear_focused_text(&mut self) -> Result<&BrowserRender> {
+        self.edit_focused_text_control("clear text", |value| value.clear())
+    }
+
+    pub fn toggle_form_control(
+        &mut self,
+        form_index: usize,
+        control_index: usize,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot toggle form control: session has no current page");
+        };
+        self.toggle_current_form_control_checked(current_index, form_index, control_index)
+    }
+
+    pub fn select_form_option(
+        &mut self,
+        form_index: usize,
+        control_index: usize,
+        value: &str,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot select form option: session has no current page");
+        };
+        let (name, node_id, kind) = {
+            let entry = &self.entries[current_index];
+            let Some(form) = entry.render.forms.get(form_index) else {
+                bail!(
+                    "form index {} not found; current page has {} form(s)",
+                    form_index,
+                    entry.render.forms.len()
+                );
+            };
+            let Some(control) = form.controls.get(control_index) else {
+                bail!(
+                    "control index {} not found; form {} has {} control(s)",
+                    control_index,
+                    form_index,
+                    form.controls.len()
+                );
+            };
+            ensure!(
+                !control.name.is_empty(),
+                "select control {} in form {} has no name",
+                control_index,
+                form_index
+            );
+            ensure!(
+                form_control_accepts_select_state(control),
+                "control {} in form {} is not an enabled select control",
+                control_index,
+                form_index
+            );
+            ensure!(
+                form_control_has_enabled_option(control, value),
+                "select control {} in form {} has no enabled option value {:?}",
+                control_index,
+                form_index,
+                value
+            );
+            (control.name.clone(), control.node_id, control.kind.clone())
+        };
+        self.entries[current_index]
+            .form_state
+            .insert(BrowserFormFieldKey { form_index, name }, value.to_owned());
+        self.apply_live_form_value(current_index, node_id, &kind, value);
+        self.dispatch_live_form_events(current_index, node_id, &["input", "change"]);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub fn select_focused_option(&mut self, value: &str) -> Result<&BrowserRender> {
+        let Some(focused) = self.focused_control() else {
+            bail!("cannot select focused option: no focused form control");
+        };
+        self.select_form_option(focused.form_index, focused.control_index, value)
+    }
+
+    pub fn dispatch_wheel_event(&mut self, delta_x: isize, delta_y: isize) -> Result<bool> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot dispatch wheel event: session has no current page");
+        };
+        let mut dispatch = BrowserEventDispatch {
+            node_id: 0,
+            default_prevented: false,
+        };
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            dispatch = dispatch_event_listeners_with_payload(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                BrowserEventPayload::wheel(0, delta_x, delta_y),
+                true,
+            );
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+        self.persist_entry_runtime_storage(current_index);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(dispatch.default_prevented)
+    }
+
+    fn edit_focused_text_control(
+        &mut self,
+        action: &str,
+        edit: impl FnOnce(&mut String),
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot {action}: session has no current page");
+        };
+        let focused = self.focused_text_control(current_index, action)?;
+        let (node_id, kind) = self.focused_text_control_target(current_index, &focused)?;
+        let mut value = self.live_form_control_value(current_index, node_id);
+        edit(&mut value);
+        self.commit_focused_text_value(current_index, &focused, node_id, &kind, &value);
+        self.dispatch_live_form_events(current_index, node_id, &["input"]);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    fn focused_text_control(
+        &self,
+        current_index: usize,
+        action: &str,
+    ) -> Result<BrowserFocusedFormControl> {
+        let Some(focused) = self.entries[current_index].focused_control.clone() else {
+            bail!("cannot {action}: no focused form control");
+        };
+        self.focused_text_control_target(current_index, &focused)?;
+        Ok(focused)
+    }
+
+    fn focused_text_control_target(
+        &self,
+        current_index: usize,
+        focused: &BrowserFocusedFormControl,
+    ) -> Result<(usize, String)> {
+        let entry = &self.entries[current_index];
+        let control = entry
+            .render
+            .forms
+            .get(focused.form_index)
+            .and_then(|form| form.controls.get(focused.control_index))
+            .with_context(|| {
+                format!(
+                    "focused control form={} control={} no longer exists",
+                    focused.form_index, focused.control_index
+                )
+            })?;
+        ensure!(
+            control.node_id == focused.node_id
+                && control.name == focused.name
+                && control.kind.eq_ignore_ascii_case(&focused.kind)
+                && form_control_accepts_text_edit_state(control),
+            "focused control {:?} is no longer an editable text-like control",
+            focused.name
+        );
+        Ok((control.node_id, control.kind.clone()))
+    }
+
+    fn live_form_control_value(&self, current_index: usize, node_id: usize) -> String {
+        let Some(entry) = self.entries.get(current_index) else {
+            return String::new();
+        };
+        match entry
+            .page_state
+            .dom
+            .nodes
+            .get(node_id)
+            .map(|node| &node.kind)
+        {
+            Some(NodeKind::Element(element)) if element.tag == "textarea" => element
+                .value
+                .clone()
+                .unwrap_or_else(|| text_content(&entry.page_state.dom, node_id)),
+            _ => get_element_attribute(&entry.page_state.dom, node_id, "value").unwrap_or_default(),
+        }
+    }
+
+    fn commit_focused_text_value(
+        &mut self,
+        current_index: usize,
+        focused: &BrowserFocusedFormControl,
+        node_id: usize,
+        kind: &str,
+        value: &str,
+    ) {
+        self.entries[current_index].form_state.insert(
+            BrowserFormFieldKey {
+                form_index: focused.form_index,
+                name: focused.name.clone(),
+            },
+            value.to_owned(),
+        );
+        self.apply_live_form_value(current_index, node_id, kind, value);
+    }
+
+    fn toggle_current_form_control_checked(
+        &mut self,
+        current_index: usize,
+        form_index: usize,
+        control_index: usize,
+    ) -> Result<&BrowserRender> {
+        let (kind, name, checked, target_node_id) = {
+            let entry = &self.entries[current_index];
+            let Some(form) = entry.render.forms.get(form_index) else {
+                bail!(
+                    "form index {} not found; current page has {} form(s)",
+                    form_index,
+                    entry.render.forms.len()
+                );
+            };
+            let Some(control) = form.controls.get(control_index) else {
+                bail!(
+                    "control index {} not found; form {} has {} control(s)",
+                    control_index,
+                    form_index,
+                    form.controls.len()
+                );
+            };
+            ensure!(
+                form_control_accepts_checked_state(control),
+                "control {} in form {} is not a checkable checkbox or radio",
+                control_index,
+                form_index
+            );
+            (
+                control.kind.clone(),
+                control.name.clone(),
+                control.checked,
+                control.node_id,
+            )
+        };
+        let next_checked = if kind.eq_ignore_ascii_case("radio") {
+            true
+        } else {
+            !checked
+        };
+
+        let mut checked_updates = Vec::new();
+        if kind.eq_ignore_ascii_case("radio") && next_checked {
+            let radio_group = self.entries[current_index]
+                .render
+                .forms
+                .get(form_index)
+                .map(|form| {
+                    form.controls
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, control)| {
+                            control.kind.eq_ignore_ascii_case("radio") && control.name == name
+                        })
+                        .map(|(index, control)| (index, control.node_id))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for (index, node_id) in radio_group {
+                self.entries[current_index].checked_state.insert(
+                    BrowserFormControlKey {
+                        form_index,
+                        control_index: index,
+                    },
+                    false,
+                );
+                checked_updates.push((node_id, false));
+            }
+        }
+        self.entries[current_index].checked_state.insert(
+            BrowserFormControlKey {
+                form_index,
+                control_index,
+            },
+            next_checked,
+        );
+        checked_updates.push((target_node_id, next_checked));
+        for (node_id, checked) in checked_updates {
+            self.apply_live_form_checked(current_index, node_id, checked);
+        }
+        self.dispatch_live_form_events(current_index, target_node_id, &["input", "change"]);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub async fn activate_link(&mut self, link_index: usize) -> Result<&BrowserRender> {
+        let target = {
+            let Some(current) = self.current() else {
+                bail!("cannot activate link: session has no current page");
+            };
+            let Some(link) = current.links.get(link_index) else {
+                bail!(
+                    "link index {} not found; current page has {} link(s)",
+                    link_index,
+                    current.links.len()
+                );
+            };
+            link.resolved.clone()
+        };
+        self.navigate(&target).await
+    }
+
+    pub fn focused_control(&self) -> Option<BrowserFocusedControl> {
+        let current_index = self.current_index?;
+        let entry = self.entries.get(current_index)?;
+        let focused = entry.focused_control.as_ref()?;
+        entry
+            .render
+            .forms
+            .get(focused.form_index)
+            .and_then(|form| form.controls.get(focused.control_index))
+            .filter(|control| {
+                control.name == focused.name && control.kind.eq_ignore_ascii_case(&focused.kind)
+            })
+            .map(|control| BrowserFocusedControl {
+                form_index: focused.form_index,
+                control_index: focused.control_index,
+                name: control.name.clone(),
+                kind: control.kind.clone(),
+                value: control.value.clone(),
+            })
+    }
+
+    pub async fn activate_link_text(&mut self, text: &str) -> Result<&BrowserRender> {
+        let target = {
+            let Some(current) = self.current() else {
+                bail!("cannot activate link text: session has no current page");
+            };
+            let text = collapse_ascii_whitespace(text);
+            ensure!(!text.is_empty(), "cannot activate empty link text");
+            let matches = current
+                .links
+                .iter()
+                .filter(|link| link.text == text)
+                .collect::<Vec<_>>();
+            let Some(link) = matches.first() else {
+                bail!("link text {text:?} not found");
+            };
+            ensure!(
+                matches.len() == 1,
+                "link text {:?} is ambiguous; {} links match",
+                text,
+                matches.len()
+            );
+            link.resolved.clone()
+        };
+        self.navigate(&target).await
+    }
+
+    pub async fn activate_link_selector(&mut self, selector: &str) -> Result<&BrowserRender> {
+        let target = {
+            let Some(current_index) = self.current_index else {
+                bail!("cannot activate link selector: session has no current page");
+            };
+            let entry = &self.entries[current_index];
+            let Some(node_id) = find_first_matching_selector(&entry.page_state.dom, selector)
+            else {
+                bail!("link selector not found: {selector}");
+            };
+            let Some(href) = anchor_href_for_node(&entry.page_state.dom, node_id) else {
+                bail!("selector did not resolve to a link: {selector}");
+            };
+            resolve_browser_href(&entry.render.source, &href)
+        };
+        self.navigate(&target).await
+    }
+
+    pub fn current_links(&self) -> &[BrowserLink] {
+        self.current().map_or(&[], |render| render.links.as_slice())
+    }
+
+    pub fn link_target_at(&self, x: usize, y: usize) -> Option<String> {
+        let current_index = self.current_index?;
+        let entry = self.entries.get(current_index)?;
+        let node_id = hit_test_target_node(&entry.render, x, y)?;
+        let href = anchor_href_for_node(&entry.page_state.dom, node_id)?;
+        Some(resolve_browser_href(&entry.render.source, &href))
+    }
+
+    pub fn current_forms(&self) -> &[BrowserForm] {
+        self.current().map_or(&[], |render| render.forms.as_slice())
+    }
+
+    pub fn back(&mut self) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot go back: session has no current page");
+        };
+        ensure!(current_index > 0, "cannot go back: already at first page");
+        let next_index = current_index - 1;
+        self.current_index = Some(next_index);
+        Ok(&self.entries[next_index].render)
+    }
+
+    pub fn forward(&mut self) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot go forward: session has no current page");
+        };
+        let next_index = current_index + 1;
+        ensure!(
+            next_index < self.entries.len(),
+            "cannot go forward: already at latest page"
+        );
+        self.current_index = Some(next_index);
+        Ok(&self.entries[next_index].render)
+    }
+
+    pub fn current(&self) -> Option<&BrowserRender> {
+        self.current_index
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| &entry.render)
+    }
+
+    pub fn resolve_current_target(&self, target: &str) -> String {
+        self.current().map_or_else(
+            || target.to_owned(),
+            |render| resolve_browser_href(&render.source, target),
+        )
+    }
+
+    pub fn click_selector(&mut self, selector: &str) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot click: session has no current page");
+        };
+        let profiled =
+            self.click_current_page_state(current_index, RenderClickTarget::Selector(selector))?;
+        self.set_entry_render(current_index, profiled.render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub async fn click_selector_with_default_action(
+        &mut self,
+        selector: &str,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot click: session has no current page");
+        };
+        let profiled =
+            self.click_current_page_state(current_index, RenderClickTarget::Selector(selector))?;
+        let default_action = profiled
+            .click_default_action
+            .clone()
+            .filter(|action| !action.default_prevented());
+        let focused_control = self
+            .focusable_control_for_selector(current_index, selector)
+            .ok();
+        self.set_entry_render(current_index, profiled.render);
+        if let Some(focused_control) = focused_control {
+            self.set_focused_control(current_index, focused_control)?;
+        }
+        if let Some(action) = default_action {
+            let render = self.entries[current_index].render.clone();
+            return self
+                .apply_click_default_action(current_index, render, action)
+                .await;
+        }
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub async fn click_at_with_default_action(
+        &mut self,
+        x: usize,
+        y: usize,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot click coordinates: session has no current page");
+        };
+        let target_node = {
+            let current = &self.entries[current_index].render;
+            hit_test_target_node(current, x, y)
+                .with_context(|| format!("click coordinates {x},{y} did not hit a DOM target"))?
+        };
+        let profiled = self.click_current_page_state(
+            current_index,
+            RenderClickTarget::Point {
+                node_id: target_node,
+                x,
+                y,
+            },
+        )?;
+        let default_action = profiled
+            .click_default_action
+            .clone()
+            .filter(|action| !action.default_prevented());
+        let focused_control = self.focusable_control_for_node(current_index, target_node);
+        self.set_entry_render(current_index, profiled.render);
+        if let Some(focused_control) = focused_control {
+            self.set_focused_control(current_index, focused_control)?;
+        }
+        if let Some(action) = default_action {
+            let render = self.entries[current_index].render.clone();
+            return self
+                .apply_click_default_action(current_index, render, action)
+                .await;
+        }
+        Ok(&self.entries[current_index].render)
+    }
+
+    fn click_current_page_state(
+        &mut self,
+        current_index: usize,
+        click_target: RenderClickTarget<'_>,
+    ) -> Result<BrowserProfiledRender> {
+        let page_source = self.entries[current_index].render.source.clone();
+        let click_default_action = {
+            let page_state = &mut self.entries[current_index].page_state;
+            let dispatch = match click_target {
+                RenderClickTarget::Selector(selector) => {
+                    dispatch_click_selector(&mut page_state.dom, &mut page_state.runtime, selector)?
+                }
+                RenderClickTarget::Point { node_id, x, y } => dispatch_pointer_click_node(
+                    &mut page_state.dom,
+                    &mut page_state.runtime,
+                    node_id,
+                    x,
+                    y,
+                )?,
+            };
+            let action = click_default_action_for_node(&page_state.dom, &page_source, dispatch);
+            if action
+                .as_ref()
+                .is_none_or(BrowserClickDefaultAction::drains_post_click_timers)
+            {
+                drain_timer_tasks(&mut page_state.dom, &mut page_state.runtime);
+            }
+            action
+        };
+        self.persist_entry_runtime_storage(current_index);
+        Ok(self.render_entry_page_state_profiled(current_index, click_default_action))
+    }
+
+    async fn apply_click_default_action(
+        &mut self,
+        current_index: usize,
+        render: BrowserRender,
+        action: BrowserClickDefaultAction,
+    ) -> Result<&BrowserRender> {
+        match action {
+            BrowserClickDefaultAction::Anchor { resolved, .. } => self.navigate(&resolved).await,
+            BrowserClickDefaultAction::SubmitForm {
+                form_index,
+                submitter,
+                ..
+            } => {
+                self.set_entry_render(current_index, render);
+                self.submit_form_with_submitter(form_index, &[], &submitter)
+                    .await
+            }
+            BrowserClickDefaultAction::ResetForm { form_index, .. } => {
+                self.reset_current_form_state_with_render(current_index, form_index, render)
+            }
+            BrowserClickDefaultAction::ToggleFormControl {
+                form_index,
+                control_index,
+                ..
+            } => {
+                self.set_entry_render(current_index, render);
+                self.toggle_current_form_control_checked(current_index, form_index, control_index)
+            }
+        }
+    }
+
+    fn reset_current_form_state_with_render(
+        &mut self,
+        current_index: usize,
+        form_index: usize,
+        _render: BrowserRender,
+    ) -> Result<&BrowserRender> {
+        ensure!(
+            form_index < self.entries[current_index].render.forms.len(),
+            "form index {} not found; current page has {} form(s)",
+            form_index,
+            self.entries[current_index].render.forms.len()
+        );
+        let reset_event = self.dispatch_current_form_event(current_index, form_index, "reset")?;
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        if reset_event.default_prevented {
+            return Ok(&self.entries[current_index].render);
+        }
+        self.reset_live_form_dom_to_defaults(current_index, form_index);
+        clear_form_state_for_form(&mut self.entries[current_index].form_state, form_index);
+        clear_form_checked_state_for_form(
+            &mut self.entries[current_index].checked_state,
+            form_index,
+        );
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(&self.entries[current_index].render)
+    }
+
+    fn reset_live_form_dom_to_defaults(&mut self, current_index: usize, form_index: usize) {
+        let Some(entry) = self.entries.get(current_index) else {
+            return;
+        };
+        let parsed = parse_html(&entry.html);
+        let default_forms = collect_forms(&parsed.dom, &entry.render.source);
+        let Some(default_form) = default_forms.get(form_index) else {
+            return;
+        };
+        let Some(current_form) = entry.render.forms.get(form_index) else {
+            return;
+        };
+        let resets = current_form
+            .controls
+            .iter()
+            .zip(default_form.controls.iter())
+            .map(|(current, default)| {
+                (
+                    current.node_id,
+                    current.kind.clone(),
+                    default.value.clone(),
+                    default.checked,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (node_id, kind, value, checked) in resets {
+            if form_control_kind_is_checkable(&kind) {
+                self.apply_live_form_checked(current_index, node_id, checked);
+            } else {
+                self.apply_live_form_value(current_index, node_id, &kind, &value);
+            }
+        }
+    }
+
+    fn apply_live_form_value(
+        &mut self,
+        current_index: usize,
+        node_id: usize,
+        kind: &str,
+        value: &str,
+    ) {
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            set_live_form_value(&mut entry.page_state.dom, node_id, kind, value);
+        }
+    }
+
+    fn apply_live_form_checked(&mut self, current_index: usize, node_id: usize, checked: bool) {
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            set_element_boolean_property(&mut entry.page_state.dom, node_id, "checked", checked);
+        }
+    }
+
+    fn dispatch_live_form_events(&mut self, current_index: usize, node_id: usize, events: &[&str]) {
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            for event_name in events {
+                dispatch_bubbling_event_listeners(
+                    &mut entry.page_state.dom,
+                    &mut entry.page_state.runtime,
+                    node_id,
+                    event_name,
+                );
+            }
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+        self.persist_entry_runtime_storage(current_index);
+    }
+
+    fn dispatch_live_keyboard_event(
+        &mut self,
+        current_index: usize,
+        node_id: usize,
+        event_name: &str,
+        key: &str,
+    ) -> BrowserEventDispatch {
+        let mut dispatch = BrowserEventDispatch {
+            node_id,
+            default_prevented: false,
+        };
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            dispatch = dispatch_keyboard_event(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                node_id,
+                event_name,
+                key,
+            );
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+        self.persist_entry_runtime_storage(current_index);
+        dispatch
+    }
+
+    fn dispatch_live_beforeinput_event(
+        &mut self,
+        current_index: usize,
+        node_id: usize,
+        input_type: &str,
+        data: Option<&str>,
+    ) -> BrowserEventDispatch {
+        let mut dispatch = BrowserEventDispatch {
+            node_id,
+            default_prevented: false,
+        };
+        if let Some(entry) = self.entries.get_mut(current_index) {
+            dispatch = dispatch_beforeinput_event(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                node_id,
+                input_type,
+                data,
+            );
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+        self.persist_entry_runtime_storage(current_index);
+        dispatch
+    }
+
+    fn dispatch_current_form_event(
+        &mut self,
+        current_index: usize,
+        form_index: usize,
+        event_name: &str,
+    ) -> Result<BrowserEventDispatch> {
+        ensure!(
+            current_index < self.entries.len(),
+            "cannot dispatch form event: session entry {current_index} does not exist"
+        );
+        ensure!(
+            form_index < self.entries[current_index].render.forms.len(),
+            "form index {} not found; current page has {} form(s)",
+            form_index,
+            self.entries[current_index].render.forms.len()
+        );
+        let form_node_id =
+            form_node_id_for_index(&self.entries[current_index].page_state.dom, form_index)
+                .with_context(|| format!("form node for form index {form_index} not found"))?;
+        let dispatch = {
+            let entry = &mut self.entries[current_index];
+            let dispatch = dispatch_bubbling_event_listeners(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                form_node_id,
+                event_name,
+            );
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+            dispatch
+        };
+        self.persist_entry_runtime_storage(current_index);
+        Ok(dispatch)
+    }
+
+    fn render_entry_page_state_profiled(
+        &self,
+        current_index: usize,
+        click_default_action: Option<BrowserClickDefaultAction>,
+    ) -> BrowserProfiledRender {
+        let entry = &self.entries[current_index];
+        render_page_state_profiled(
+            &entry.render.source,
+            self.options,
+            &entry.page_state,
+            click_default_action,
+        )
+    }
+
+    fn render_entry_page_state(&self, current_index: usize) -> BrowserRender {
+        self.render_entry_page_state_profiled(current_index, None)
+            .render
+    }
+
+    fn persist_entry_runtime_storage(&mut self, current_index: usize) {
+        let Some((source, local_values, session_values)) =
+            self.entries.get(current_index).map(|entry| {
+                (
+                    entry.render.source.clone(),
+                    entry.page_state.runtime.local_storage.clone(),
+                    entry.page_state.runtime.session_storage.clone(),
+                )
+            })
+        else {
+            return;
+        };
+        let origin = storage_origin_key(&source);
+        persist_web_storage_origin(&mut self.local_storage, &origin, &local_values);
+        persist_web_storage_origin(&mut self.session_storage, &origin, &session_values);
+    }
+
+    pub fn snapshot(&self) -> BrowserHistorySnapshot {
+        BrowserHistorySnapshot {
+            current_index: self.current_index,
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| BrowserHistoryEntry {
+                    target: entry.target.clone(),
+                    source: entry.render.source.clone(),
+                    title: entry.render.title.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn cookies_snapshot(&self) -> Vec<BrowserCookie> {
+        self.cookie_jar.snapshot()
+    }
+
+    pub fn clear_cookies(&mut self) {
+        self.cookie_jar.clear();
+    }
+
+    pub fn local_storage_snapshot(&self) -> BrowserLocalStorage {
+        self.local_storage.clone()
+    }
+
+    pub fn local_storage_entries(&self) -> Vec<BrowserLocalStorageEntry> {
+        browser_storage_entries(&self.local_storage)
+    }
+
+    pub fn session_storage_entries(&self) -> Vec<BrowserLocalStorageEntry> {
+        browser_storage_entries(&self.session_storage)
+    }
+
+    pub fn clear_local_storage(&mut self) {
+        self.local_storage.origins.clear();
+        for entry in &mut self.entries {
+            entry.page_state.runtime.local_storage.clear();
+        }
+    }
+
+    pub fn clear_session_storage(&mut self) {
+        self.session_storage.origins.clear();
+        for entry in &mut self.entries {
+            entry.page_state.runtime.session_storage.clear();
+        }
+    }
+
+    fn focusable_control_for_selector(
+        &self,
+        current_index: usize,
+        selector: &str,
+    ) -> Result<BrowserFocusedFormControl> {
+        let entry = &self.entries[current_index];
+        let Some(node_id) = find_first_matching_selector(&entry.page_state.dom, selector) else {
+            bail!("focus selector not found: {selector}");
+        };
+        focusable_form_control_for_node(&entry.page_state.dom, node_id).with_context(|| {
+            format!("selector did not resolve to a focusable form control: {selector}")
+        })
+    }
+
+    fn focusable_control_for_node(
+        &self,
+        current_index: usize,
+        node_id: usize,
+    ) -> Option<BrowserFocusedFormControl> {
+        let entry = self.entries.get(current_index)?;
+        focusable_form_control_for_node(&entry.page_state.dom, node_id)
+    }
+
+    pub async fn fetch_current_resources(
+        &mut self,
+        max_resource_bytes: usize,
+    ) -> Result<BrowserResourceFetchReport> {
+        let Some(current) = self.current() else {
+            bail!("cannot fetch resources: session has no current page");
+        };
+        let page_source = current.source.clone();
+        let resources = current.resources.clone();
+        let mut fetched_resources = Vec::with_capacity(resources.len());
+
+        for resource in resources {
+            let fetch = fetch_resource_with_cache(
+                resource,
+                max_resource_bytes,
+                &mut self.cookie_jar,
+                &mut self.resource_cache,
+            )
+            .await;
+            fetched_resources.push(fetch);
+        }
+
+        let fetched = fetched_resources
+            .iter()
+            .filter(|resource| resource.status == "fetched")
+            .count();
+        let cached = fetched_resources
+            .iter()
+            .filter(|resource| resource.status == "cached")
+            .count();
+        let failed = fetched_resources
+            .iter()
+            .filter(|resource| resource.status == "failed")
+            .count();
+        let skipped = fetched_resources
+            .iter()
+            .filter(|resource| resource.status == "skipped")
+            .count();
+
+        Ok(BrowserResourceFetchReport {
+            page_source,
+            total: fetched_resources.len(),
+            fetched,
+            cached,
+            failed,
+            skipped,
+            resources: fetched_resources,
+        })
+    }
+
+    pub async fn render_current_with_stylesheets(
+        &mut self,
+        max_resource_bytes: usize,
+    ) -> Result<BrowserStylesheetRenderReport> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot render with stylesheets: session has no current page");
+        };
+        let page_source = self.entries[current_index].render.source.clone();
+        let stylesheet_resources = self.entries[current_index]
+            .render
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == "stylesheet")
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut fetches = Vec::with_capacity(stylesheet_resources.len());
+        let mut stylesheet_text = Vec::new();
+
+        for resource in stylesheet_resources {
+            let fetch = fetch_resource_with_cache(
+                resource,
+                max_resource_bytes,
+                &mut self.cookie_jar,
+                &mut self.resource_cache,
+            )
+            .await;
+            if matches!(fetch.status.as_str(), "fetched" | "cached")
+                && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
+            {
+                stylesheet_text.push(String::from_utf8_lossy(bytes).into_owned());
+            }
+            fetches.push(fetch);
+        }
+
+        let applied = stylesheet_text.len();
+        let failed = fetches
+            .iter()
+            .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
+            .count();
+        if applied > 0 {
+            let css_text = &mut self.entries[current_index].page_state.css_text;
+            for sheet in &stylesheet_text {
+                css_text.push('\n');
+                css_text.push_str(sheet);
+            }
+        }
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+
+        Ok(BrowserStylesheetRenderReport {
+            page_source,
+            stylesheet_count: fetches.len(),
+            applied,
+            failed,
+            fetches,
+        })
+    }
+
+    pub async fn render_current_with_scripts(
+        &mut self,
+        max_resource_bytes: usize,
+    ) -> Result<BrowserScriptRenderReport> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot render with scripts: session has no current page");
+        };
+        let page_source = self.entries[current_index].render.source.clone();
+        let script_resources = self.entries[current_index]
+            .render
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == "script")
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut fetches = Vec::with_capacity(script_resources.len());
+        let mut script_text = Vec::new();
+
+        for resource in script_resources {
+            let fetch = fetch_resource_with_cache(
+                resource,
+                max_resource_bytes,
+                &mut self.cookie_jar,
+                &mut self.resource_cache,
+            )
+            .await;
+            if matches!(fetch.status.as_str(), "fetched" | "cached")
+                && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
+            {
+                script_text.push(String::from_utf8_lossy(bytes).into_owned());
+            }
+            fetches.push(fetch);
+        }
+
+        let applied = script_text.len();
+        let failed = fetches
+            .iter()
+            .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
+            .count();
+        if applied > 0 {
+            let page_state = &mut self.entries[current_index].page_state;
+            execute_scripts_without_lifecycle_events(
+                &mut page_state.dom,
+                &mut page_state.runtime,
+                &script_text,
+            );
+            self.persist_entry_runtime_storage(current_index);
+        }
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+
+        Ok(BrowserScriptRenderReport {
+            page_source,
+            script_count: fetches.len(),
+            applied,
+            failed,
+            fetches,
+        })
+    }
+
+    pub async fn render_current_with_images(
+        &mut self,
+        max_resource_bytes: usize,
+    ) -> Result<BrowserImageRenderReport> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot render with images: session has no current page");
+        };
+        let page_source = self.entries[current_index].render.source.clone();
+        let image_resources = collect_selected_image_resources(
+            &self.entries[current_index].page_state.dom,
+            &page_source,
+        );
+        let mut fetches = Vec::with_capacity(image_resources.len());
+
+        for resource in image_resources {
+            let fetch = fetch_resource_with_cache(
+                resource,
+                max_resource_bytes,
+                &mut self.cookie_jar,
+                &mut self.resource_cache,
+            )
+            .await;
+            fetches.push(fetch);
+        }
+
+        let cached_images = decoded_cached_images(&self.resource_cache);
+        let decoded = cached_images.len();
+        let failed = fetches
+            .iter()
+            .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
+            .count();
+        self.entries[current_index].page_state.cached_images = cached_images;
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+
+        Ok(BrowserImageRenderReport {
+            page_source,
+            image_count: fetches.len(),
+            decoded,
+            failed,
+            fetches,
+        })
+    }
+
+    fn set_entry_render(&mut self, index: usize, mut render: BrowserRender) {
+        if let Some(entry) = self.entries.get_mut(index) {
+            apply_form_state_to_render(&mut render, &entry.form_state);
+            apply_form_checked_state_to_render(&mut render, &entry.checked_state);
+            entry.render = render;
+        }
+    }
+}
+
+fn set_live_form_value(dom: &mut Dom, node_id: usize, kind: &str, value: &str) {
+    if kind.eq_ignore_ascii_case("select") {
+        set_live_select_value(dom, node_id, value);
+    } else {
+        set_element_attribute(dom, node_id, "value", value);
+    }
+}
+
+fn set_live_select_value(dom: &mut Dom, node_id: usize, value: &str) {
+    set_element_attribute(dom, node_id, "value", value);
+    let mut matched = false;
+    set_live_select_option_values(dom, node_id, value, &mut matched);
+}
+
+fn set_live_select_option_values(dom: &mut Dom, node_id: usize, value: &str, matched: &mut bool) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    let is_option = matches!(&node.kind, NodeKind::Element(element) if element.tag == "option");
+    let children = node.children.clone();
+    if is_option {
+        let option_value = option_dom_value(dom, node_id);
+        let selected = !*matched && option_value == value;
+        set_element_boolean_property(dom, node_id, "selected", selected);
+        if selected {
+            *matched = true;
+        }
+    }
+    for child in children {
+        set_live_select_option_values(dom, child, value, matched);
+    }
+}
+
+fn option_dom_value(dom: &Dom, node_id: usize) -> String {
+    match dom.nodes.get(node_id).map(|node| &node.kind) {
+        Some(NodeKind::Element(element)) => element
+            .value
+            .clone()
+            .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id))),
+        _ => String::new(),
+    }
+}
+
+fn form_control_kind_is_checkable(kind: &str) -> bool {
+    matches!(kind.to_ascii_lowercase().as_str(), "checkbox" | "radio")
+}
+
+fn storage_origin_key(source: &str) -> String {
+    let Ok(url) = Url::parse(source) else {
+        return "file://".to_owned();
+    };
+    match url.scheme() {
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+            match url.port_or_known_default() {
+                Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                None => format!("{}://{}", url.scheme(), host),
+            }
+        }
+        "file" => "file://".to_owned(),
+        scheme => {
+            if let Some(host) = url.host_str() {
+                format!("{scheme}://{}", host.to_ascii_lowercase())
+            } else {
+                format!("{scheme}:")
+            }
+        }
+    }
+}
+
+fn persist_runtime_web_storage(
+    source: &str,
+    runtime: &TinyJsRuntime,
+    local_storage: Option<&mut BrowserLocalStorage>,
+    session_storage: Option<&mut BrowserLocalStorage>,
+) {
+    let origin = storage_origin_key(source);
+    if let Some(storage) = local_storage {
+        persist_web_storage_origin(storage, &origin, &runtime.local_storage);
+    }
+    if let Some(storage) = session_storage {
+        persist_web_storage_origin(storage, &origin, &runtime.session_storage);
+    }
+}
+
+fn persist_web_storage_origin(
+    storage: &mut BrowserLocalStorage,
+    origin: &str,
+    values: &HashMap<String, String>,
+) {
+    if values.is_empty() {
+        storage.origins.remove(origin);
+    } else {
+        storage.origins.insert(origin.to_owned(), values.clone());
+    }
+}
+
+pub fn render_html(source: &str, html: &[u8], options: BrowserRenderOptions) -> BrowserRender {
+    render_html_with_external_css(source, html, options, &[])
+}
+
+pub fn render_html_with_external_css(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    external_css: &[String],
+) -> BrowserRender {
+    render_html_with_external_css_and_scripts(source, html, options, external_css, &[])
+}
+
+pub fn render_html_with_external_css_and_scripts(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    external_css: &[String],
+    external_scripts: &[String],
+) -> BrowserRender {
+    render_html_prepared(
+        source,
+        html,
+        options,
+        external_css,
+        external_scripts,
+        None,
+        None,
+    )
+    .expect("render without interaction should not fail")
+}
+
+pub fn render_html_with_click(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    selector: &str,
+) -> Result<BrowserRender> {
+    render_html_prepared(source, html, options, &[], &[], Some(selector), None)
+}
+
+fn render_html_prepared(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    external_css: &[String],
+    external_scripts: &[String],
+    click_selector: Option<&str>,
+    local_storage: Option<&mut BrowserLocalStorage>,
+) -> Result<BrowserRender> {
+    render_html_prepared_with_inputs(
+        source,
+        html,
+        options,
+        RenderPreparation {
+            external_css,
+            external_scripts,
+            click_target: click_selector.map(RenderClickTarget::Selector),
+            local_storage,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+}
+
+struct RenderPreparation<'a> {
+    external_css: &'a [String],
+    external_scripts: &'a [String],
+    click_target: Option<RenderClickTarget<'a>>,
+    local_storage: Option<&'a mut BrowserLocalStorage>,
+    session_storage: Option<&'a mut BrowserLocalStorage>,
+    cached_images: &'a [DecodedImageEntry],
+}
+
+enum RenderClickTarget<'a> {
+    Selector(&'a str),
+    Point { node_id: usize, x: usize, y: usize },
+}
+
+fn render_html_prepared_with_inputs(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    preparation: RenderPreparation<'_>,
+) -> Result<BrowserRender> {
+    Ok(render_html_prepared_profiled(source, html, options, preparation)?.render)
+}
+
+fn render_html_prepared_profiled(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    preparation: RenderPreparation<'_>,
+) -> Result<BrowserProfiledRender> {
+    Ok(render_html_prepared_with_state(source, html, options, preparation)?.1)
+}
+
+fn render_html_prepared_with_state(
+    source: &str,
+    html: &[u8],
+    options: BrowserRenderOptions,
+    preparation: RenderPreparation<'_>,
+) -> Result<(BrowserPageState, BrowserProfiledRender)> {
+    let total_start = Instant::now();
+    let parse_start = Instant::now();
+    let parsed = parse_html(html);
+    let parse_us = parse_start.elapsed().as_micros();
+
+    let mut css_text = parsed.style_text;
+    for sheet in preparation.external_css {
+        css_text.push('\n');
+        css_text.push_str(sheet);
+    }
+    let mut dom = parsed.dom;
+    let mut scripts = parsed.inline_scripts;
+    scripts.extend(preparation.external_scripts.iter().cloned());
+
+    let script_start = Instant::now();
+    let storage_origin = (preparation.local_storage.is_some()
+        || preparation.session_storage.is_some())
+    .then(|| storage_origin_key(source));
+    let initial_local_storage = match (
+        preparation.local_storage.as_ref(),
+        storage_origin.as_deref(),
+    ) {
+        (Some(storage), Some(origin)) => storage.origins.get(origin).cloned().unwrap_or_default(),
+        _ => HashMap::new(),
+    };
+    let initial_session_storage = match (
+        preparation.session_storage.as_ref(),
+        storage_origin.as_deref(),
+    ) {
+        (Some(storage), Some(origin)) => storage.origins.get(origin).cloned().unwrap_or_default(),
+        _ => HashMap::new(),
+    };
+    let mut runtime =
+        TinyJsRuntime::with_web_storage(initial_local_storage, initial_session_storage);
+    runtime.page_source = source.to_owned();
+    execute_scripts_with_runtime(&mut dom, &mut runtime, &scripts);
+    let click_default_action = match preparation.click_target {
+        Some(RenderClickTarget::Selector(selector)) => {
+            let dispatch = dispatch_click_selector(&mut dom, &mut runtime, selector)?;
+            click_default_action_for_node(&dom, source, dispatch)
+        }
+        Some(RenderClickTarget::Point { node_id, x, y }) => {
+            let dispatch = dispatch_pointer_click_node(&mut dom, &mut runtime, node_id, x, y)?;
+            click_default_action_for_node(&dom, source, dispatch)
+        }
+        None => None,
+    };
+    if click_default_action
+        .as_ref()
+        .is_none_or(BrowserClickDefaultAction::drains_post_click_timers)
+    {
+        drain_timer_tasks(&mut dom, &mut runtime);
+    }
+    persist_runtime_web_storage(
+        source,
+        &runtime,
+        preparation.local_storage,
+        preparation.session_storage,
+    );
+    let script_us = script_start.elapsed().as_micros();
+
+    let page_state = BrowserPageState {
+        dom,
+        css_text,
+        runtime,
+        cached_images: preparation.cached_images.to_vec(),
+    };
+    let profiled = render_page_state_with_timings(
+        source,
+        options,
+        &page_state,
+        parse_us,
+        script_us,
+        total_start,
+        click_default_action,
+    );
+    Ok((page_state, profiled))
+}
+
+fn render_page_state_profiled(
+    source: &str,
+    options: BrowserRenderOptions,
+    page_state: &BrowserPageState,
+    click_default_action: Option<BrowserClickDefaultAction>,
+) -> BrowserProfiledRender {
+    render_page_state_with_timings(
+        source,
+        options,
+        page_state,
+        0,
+        0,
+        Instant::now(),
+        click_default_action,
+    )
+}
+
+fn render_page_state_with_timings(
+    source: &str,
+    options: BrowserRenderOptions,
+    page_state: &BrowserPageState,
+    parse_us: u128,
+    script_us: u128,
+    total_start: Instant,
+    click_default_action: Option<BrowserClickDefaultAction>,
+) -> BrowserProfiledRender {
+    let style_start = Instant::now();
+    let css_cascade = parse_css(&page_state.css_text);
+    let style_us = style_start.elapsed().as_micros();
+
+    let collect_start = Instant::now();
+    let title = dom_title(&page_state.dom);
+    let links = collect_links(&page_state.dom, source);
+    let forms = collect_forms(&page_state.dom, source);
+    let resources = collect_resources(&page_state.dom, source);
+    let collect_us = collect_start.elapsed().as_micros();
+
+    let layout_start = Instant::now();
+    let mut renderer = FlowRenderer::new(options.width.max(20));
+    renderer.seed_decoded_images(&page_state.cached_images);
+    let mut layout_box_count = 0usize;
+
+    render_children(
+        &page_state.dom,
+        0,
+        source,
+        &css_cascade,
+        &mut renderer,
+        &mut layout_box_count,
+    );
+
+    let flow = renderer.finish();
+    let paint_command_count = flow.display_list.len();
+    let fragment_targets =
+        collect_fragment_targets(&page_state.dom, &flow.display_list, &flow.hit_targets);
+    let layout_boxes = collect_layout_boxes(
+        &page_state.dom,
+        &css_cascade,
+        &flow.display_list,
+        &flow.hit_targets,
+    );
+    let layout_us = layout_start.elapsed().as_micros();
+
+    let render = BrowserRender {
+        source: source.to_owned(),
+        title,
+        viewport_width: options.width.max(20),
+        dom_node_count: page_state.dom.nodes.len(),
+        css_rule_count: css_cascade.rules.len(),
+        layout_box_count,
+        layout_boxes,
+        paint_command_count,
+        links,
+        forms,
+        resources,
+        fragment_targets,
+        decoded_images: flow.decoded_images,
+        hit_targets: flow.hit_targets,
+        text: flow.text,
+        display_list: flow.display_list,
+    };
+    let timings = BrowserRenderTimings {
+        parse_us,
+        script_us,
+        style_us,
+        collect_us,
+        layout_us,
+        total_us: total_start.elapsed().as_micros(),
+    };
+
+    BrowserProfiledRender {
+        render,
+        timings,
+        click_default_action,
+    }
+}
+
+pub fn layout_tree_render(render: &BrowserRender) -> BrowserLayoutTreeReport {
+    BrowserLayoutTreeReport {
+        source: render.source.clone(),
+        viewport_width: render.viewport_width,
+        layout_box_count: render.layout_box_count,
+        retained_box_count: render.layout_boxes.len(),
+        boxes: render.layout_boxes.clone(),
+    }
+}
+
+pub fn hit_test_render(render: &BrowserRender, x: usize, y: usize) -> BrowserHitTestReport {
+    let hit = render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            let bounds = display_command_bounds(command);
+            bounds
+                .contains(x, y)
+                .then(|| browser_hit_test(command_index, command, bounds))
+        });
+
+    BrowserHitTestReport {
+        source: render.source.clone(),
+        x,
+        y,
+        hit,
+    }
+}
+
+fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            let bounds = display_command_bounds(command);
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+        })
+}
+
+pub fn layer_tree_render(render: &BrowserRender) -> BrowserLayerTreeReport {
+    let mut root_command_indices = Vec::new();
+    let mut child_layers = Vec::new();
+    let mut content_bounds = None;
+
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        let bounds = display_command_bounds(command);
+        content_bounds = Some(union_display_bounds(content_bounds, bounds));
+        if matches!(command, DisplayCommand::Image { .. }) {
+            child_layers.push(browser_layer(
+                child_layers.len() + 1,
+                Some(0),
+                "image",
+                "image-replaced-element",
+                bounds,
+                child_layers.len() + 1,
+                vec![command_index],
+            ));
+        } else {
+            root_command_indices.push(command_index);
+        }
+    }
+
+    let mut root_bounds = content_bounds.unwrap_or(DisplayCommandBounds {
+        x: 0,
+        y: 0,
+        width: render.viewport_width.max(1),
+        height: 1,
+    });
+    root_bounds.x = 0;
+    root_bounds.y = 0;
+    root_bounds.width = root_bounds.width.max(render.viewport_width.max(1));
+    root_bounds.height = root_bounds.height.max(1);
+
+    let mut layers = Vec::with_capacity(child_layers.len() + 1);
+    layers.push(browser_layer(
+        0,
+        None,
+        "root",
+        "document-root",
+        root_bounds,
+        0,
+        root_command_indices,
+    ));
+    layers.extend(child_layers);
+
+    BrowserLayerTreeReport {
+        source: render.source.clone(),
+        viewport_width: render.viewport_width,
+        paint_command_count: render.display_list.len(),
+        layer_count: layers.len(),
+        layers,
+    }
+}
+
+pub fn browser_layer_metrics(render: &BrowserRender) -> BrowserLayerMetrics {
+    let mut root_command_count = 0usize;
+    let mut image_layer_count = 0usize;
+    let mut max_image_layer_area = 0usize;
+    let mut total_image_layer_area = 0usize;
+    let mut content_bounds = None;
+
+    for command in &render.display_list {
+        let bounds = display_command_bounds(command);
+        content_bounds = Some(union_display_bounds(content_bounds, bounds));
+        if matches!(command, DisplayCommand::Image { .. }) {
+            image_layer_count += 1;
+            let area = bounds.width.saturating_mul(bounds.height);
+            max_image_layer_area = max_image_layer_area.max(area);
+            total_image_layer_area = total_image_layer_area.saturating_add(area);
+        } else {
+            root_command_count += 1;
+        }
+    }
+
+    let mut root_bounds = content_bounds.unwrap_or(DisplayCommandBounds {
+        x: 0,
+        y: 0,
+        width: render.viewport_width.max(1),
+        height: 1,
+    });
+    root_bounds.x = 0;
+    root_bounds.y = 0;
+    root_bounds.width = root_bounds.width.max(render.viewport_width.max(1));
+    root_bounds.height = root_bounds.height.max(1);
+
+    let root_layer_area = root_bounds.width.saturating_mul(root_bounds.height);
+    BrowserLayerMetrics {
+        layer_count: 1 + image_layer_count,
+        root_command_count,
+        image_layer_count,
+        root_layer_width: root_bounds.width,
+        root_layer_height: root_bounds.height,
+        max_layer_area: root_layer_area.max(max_image_layer_area),
+        total_layer_area: root_layer_area.saturating_add(total_image_layer_area),
+    }
+}
+
+fn browser_layer(
+    id: usize,
+    parent: Option<usize>,
+    kind: &str,
+    reason: &str,
+    bounds: DisplayCommandBounds,
+    paint_order: usize,
+    command_indices: Vec<usize>,
+) -> BrowserLayer {
+    BrowserLayer {
+        id,
+        parent,
+        kind: kind.to_owned(),
+        reason: reason.to_owned(),
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        paint_order,
+        command_indices,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayCommandBounds {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+impl DisplayCommandBounds {
+    fn contains(self, x: usize, y: usize) -> bool {
+        self.width > 0
+            && self.height > 0
+            && x >= self.x
+            && y >= self.y
+            && x < self.x.saturating_add(self.width)
+            && y < self.y.saturating_add(self.height)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RasterViewport {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    active: bool,
+}
+
+impl RasterViewport {
+    fn end_x(self) -> usize {
+        self.x.saturating_add(self.width)
+    }
+
+    fn end_y(self) -> usize {
+        self.y.saturating_add(self.height)
+    }
+}
+
+fn union_display_bounds(
+    current: Option<DisplayCommandBounds>,
+    next: DisplayCommandBounds,
+) -> DisplayCommandBounds {
+    let Some(current) = current else {
+        return next;
+    };
+    let min_x = current.x.min(next.x);
+    let min_y = current.y.min(next.y);
+    let max_x = current
+        .x
+        .saturating_add(current.width)
+        .max(next.x.saturating_add(next.width));
+    let max_y = current
+        .y
+        .saturating_add(current.height)
+        .max(next.y.saturating_add(next.height));
+    DisplayCommandBounds {
+        x: min_x,
+        y: min_y,
+        width: max_x.saturating_sub(min_x),
+        height: max_y.saturating_sub(min_y),
+    }
+}
+
+fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
+    match command {
+        DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
+            DisplayCommandBounds {
+                x: *x,
+                y: *y,
+                width: text.chars().count(),
+                height: 1,
+            }
+        }
+        DisplayCommand::Rect {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
+        | DisplayCommand::Image {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => DisplayCommandBounds {
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        },
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LayoutBoxAccumulator {
+    node_id: usize,
+    tag: String,
+    kind: String,
+    bounds: DisplayCommandBounds,
+    command_indices: Vec<usize>,
+}
+
+fn collect_layout_boxes(
+    dom: &Dom,
+    css_cascade: &CssCascade,
+    display_list: &[DisplayCommand],
+    hit_targets: &[DisplayHitTarget],
+) -> Vec<BrowserLayoutBox> {
+    let mut accumulators = Vec::<LayoutBoxAccumulator>::new();
+    let mut node_to_index = HashMap::<usize, usize>::new();
+
+    for (command_index, command) in display_list.iter().enumerate() {
+        let Some(hit_target) = hit_targets.get(command_index) else {
+            continue;
+        };
+        let command_bounds = display_command_bounds(command);
+        for (node_id, bounds) in display_command_node_bounds(command, hit_target, command_bounds) {
+            let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind)
+            else {
+                continue;
+            };
+            let entry_index = *node_to_index.entry(node_id).or_insert_with(|| {
+                let style = computed_style(dom, node_id, element, css_cascade);
+                let kind = layout_box_kind(dom, node_id, element, style);
+                let index = accumulators.len();
+                accumulators.push(LayoutBoxAccumulator {
+                    node_id,
+                    tag: element.tag.clone(),
+                    kind,
+                    bounds,
+                    command_indices: Vec::new(),
+                });
+                index
+            });
+            let accumulator = &mut accumulators[entry_index];
+            accumulator.bounds = union_display_bounds(Some(accumulator.bounds), bounds);
+            if accumulator.command_indices.last() != Some(&command_index) {
+                accumulator.command_indices.push(command_index);
+            }
+        }
+    }
+
+    let mut boxes: Vec<BrowserLayoutBox> = accumulators
+        .into_iter()
+        .enumerate()
+        .map(|(id, accumulator)| BrowserLayoutBox {
+            id,
+            parent: None,
+            node_id: accumulator.node_id,
+            tag: accumulator.tag,
+            kind: accumulator.kind,
+            x: accumulator.bounds.x,
+            y: accumulator.bounds.y,
+            width: accumulator.bounds.width,
+            height: accumulator.bounds.height,
+            children: Vec::new(),
+            command_indices: accumulator.command_indices,
+        })
+        .collect();
+
+    let node_to_box: HashMap<usize, usize> = boxes
+        .iter()
+        .map(|layout_box| (layout_box.node_id, layout_box.id))
+        .collect();
+    let parents: Vec<Option<usize>> = boxes
+        .iter()
+        .map(|layout_box| nearest_retained_layout_parent(dom, layout_box.node_id, &node_to_box))
+        .collect();
+    for (box_id, parent) in parents.into_iter().enumerate() {
+        boxes[box_id].parent = parent;
+        if let Some(parent_id) = parent {
+            boxes[parent_id].children.push(box_id);
+        }
+    }
+
+    boxes
+}
+
+fn display_command_node_bounds(
+    command: &DisplayCommand,
+    hit_target: &DisplayHitTarget,
+    command_bounds: DisplayCommandBounds,
+) -> Vec<(usize, DisplayCommandBounds)> {
+    if !hit_target.text_runs.is_empty() {
+        return hit_target
+            .text_runs
+            .iter()
+            .filter_map(|run| {
+                let node_id = run.target_node?;
+                (run.width > 0).then_some((
+                    node_id,
+                    DisplayCommandBounds {
+                        x: command_bounds.x.saturating_add(run.start),
+                        y: command_bounds.y,
+                        width: run.width,
+                        height: command_bounds.height.max(1),
+                    },
+                ))
+            })
+            .collect();
+    }
+
+    let Some(node_id) = hit_target.target_node else {
+        return Vec::new();
+    };
+    if command_bounds.width == 0 || command_bounds.height == 0 {
+        return Vec::new();
+    }
+    match command {
+        DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => Vec::new(),
+        DisplayCommand::Rect { .. } | DisplayCommand::Image { .. } => {
+            vec![(node_id, command_bounds)]
+        }
+    }
+}
+
+fn layout_box_kind(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    style: ComputedStyle,
+) -> String {
+    if element.tag == "img" {
+        "replaced".to_owned()
+    } else if form_control_render_text(dom, node_id, element).is_some() {
+        "form-control".to_owned()
+    } else {
+        match style.display {
+            Display::Block => "block".to_owned(),
+            Display::ListItem => "list-item".to_owned(),
+            Display::Inline => "inline".to_owned(),
+            Display::None => "none".to_owned(),
+        }
+    }
+}
+
+fn nearest_retained_layout_parent(
+    dom: &Dom,
+    node_id: usize,
+    node_to_box: &HashMap<usize, usize>,
+) -> Option<usize> {
+    let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+    while let Some(parent_node_id) = current {
+        if let Some(parent_box_id) = node_to_box.get(&parent_node_id) {
+            return Some(*parent_box_id);
+        }
+        current = dom.nodes.get(parent_node_id).and_then(|node| node.parent);
+    }
+    None
+}
+
+fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
+    let mut max_column = render.viewport_width.max(1);
+    let mut max_row = 1usize;
+    for command in &render.display_list {
+        let bounds = display_command_bounds(command);
+        max_column = max_column.max(bounds.x.saturating_add(bounds.width));
+        max_row = max_row.max(bounds.y.saturating_add(bounds.height));
+    }
+    for layout_box in &render.layout_boxes {
+        let bounds = layout_box_bounds(layout_box);
+        max_column = max_column.max(bounds.x.saturating_add(bounds.width));
+        max_row = max_row.max(bounds.y.saturating_add(bounds.height));
+    }
+    (max_column, max_row)
+}
+
+fn layout_box_bounds(layout_box: &BrowserLayoutBox) -> DisplayCommandBounds {
+    DisplayCommandBounds {
+        x: layout_box.x,
+        y: layout_box.y,
+        width: layout_box.width,
+        height: layout_box.height,
+    }
+}
+
+fn effective_raster_viewport(
+    render: &BrowserRender,
+    options: BrowserRasterOptions,
+) -> RasterViewport {
+    let (full_width, full_height) = raster_full_grid(render);
+    let x = options.viewport_x.unwrap_or(0);
+    let y = options.viewport_y.unwrap_or(0);
+    let active = options.viewport_x.is_some()
+        || options.viewport_y.is_some()
+        || options.viewport_width.is_some()
+        || options.viewport_height.is_some();
+    let width = options
+        .viewport_width
+        .unwrap_or_else(|| full_width.saturating_sub(x).max(1));
+    let height = options
+        .viewport_height
+        .unwrap_or_else(|| full_height.saturating_sub(y).max(1));
+    RasterViewport {
+        x,
+        y,
+        width: width.max(1),
+        height: height.max(1),
+        active,
+    }
+}
+
+pub fn browser_fixture_raster_options(
+    fixture: &BrowserFixture,
+    mut options: BrowserRasterOptions,
+) -> BrowserRasterOptions {
+    if let Some(viewport_x) = fixture.raster_viewport_x {
+        options.viewport_x = Some(viewport_x);
+    }
+    if let Some(viewport_y) = fixture.raster_viewport_y {
+        options.viewport_y = Some(viewport_y);
+    }
+    if let Some(viewport_width) = fixture.raster_viewport_width {
+        options.viewport_width = Some(viewport_width);
+    }
+    if let Some(viewport_height) = fixture.raster_viewport_height {
+        options.viewport_height = Some(viewport_height);
+    }
+    options
+}
+
+fn intersect_display_bounds_with_viewport(
+    bounds: DisplayCommandBounds,
+    viewport: RasterViewport,
+) -> Option<DisplayCommandBounds> {
+    let x = bounds.x.max(viewport.x);
+    let y = bounds.y.max(viewport.y);
+    let end_x = bounds.x.saturating_add(bounds.width).min(viewport.end_x());
+    let end_y = bounds.y.saturating_add(bounds.height).min(viewport.end_y());
+    (x < end_x && y < end_y).then_some(DisplayCommandBounds {
+        x,
+        y,
+        width: end_x.saturating_sub(x),
+        height: end_y.saturating_sub(y),
+    })
+}
+
+fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) -> (usize, usize) {
+    let visible = render
+        .display_list
+        .iter()
+        .filter(|command| {
+            intersect_display_bounds_with_viewport(display_command_bounds(command), viewport)
+                .is_some()
+        })
+        .count();
+    (visible, render.display_list.len().saturating_sub(visible))
+}
+
+fn layout_box_visibility(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> (usize, usize, Vec<BrowserVisibleLayoutBox>) {
+    let visible_layout_boxes = render
+        .layout_boxes
+        .iter()
+        .filter_map(|layout_box| {
+            let visible_bounds =
+                intersect_display_bounds_with_viewport(layout_box_bounds(layout_box), viewport)?;
+            Some(BrowserVisibleLayoutBox {
+                id: layout_box.id,
+                parent: layout_box.parent,
+                node_id: layout_box.node_id,
+                tag: layout_box.tag.clone(),
+                kind: layout_box.kind.clone(),
+                x: layout_box.x,
+                y: layout_box.y,
+                width: layout_box.width,
+                height: layout_box.height,
+                visible_x: visible_bounds.x.saturating_sub(viewport.x),
+                visible_y: visible_bounds.y.saturating_sub(viewport.y),
+                visible_width: visible_bounds.width,
+                visible_height: visible_bounds.height,
+            })
+        })
+        .collect::<Vec<_>>();
+    (
+        visible_layout_boxes.len(),
+        render
+            .layout_boxes
+            .len()
+            .saturating_sub(visible_layout_boxes.len()),
+        visible_layout_boxes,
+    )
+}
+
+pub fn browser_document_viewport(
+    render: &BrowserRender,
+    requested: BrowserViewportState,
+    previous: Option<BrowserViewportState>,
+) -> BrowserDocumentViewportReport {
+    let (document_width, document_height) = raster_full_grid(render);
+    let requested = normalize_browser_viewport_state(requested);
+    let viewport_state = clamp_browser_viewport_state(document_width, document_height, requested);
+    let previous = previous.map(|state| {
+        clamp_browser_viewport_state(
+            document_width,
+            document_height,
+            normalize_browser_viewport_state(state),
+        )
+    });
+    let viewport = raster_viewport_from_state(viewport_state);
+    let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    let (visible_layout_box_count, culled_layout_box_count, visible_layout_boxes) =
+        layout_box_visibility(render, viewport);
+    let (invalidated_regions, full_repaint) =
+        browser_viewport_invalidated_regions(previous, viewport_state);
+    let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
+    let invalidated_area = invalidated_regions
+        .iter()
+        .map(|region| region.width.saturating_mul(region.height))
+        .sum::<usize>()
+        .min(viewport_area);
+    let previous_state = previous.unwrap_or(viewport_state);
+
+    BrowserDocumentViewportReport {
+        source: render.source.clone(),
+        title: render.title.clone(),
+        document_width,
+        document_height,
+        requested,
+        previous,
+        viewport: viewport_state,
+        max_scroll_x: document_width.saturating_sub(viewport_state.width),
+        max_scroll_y: document_height.saturating_sub(viewport_state.height),
+        scroll_delta_x: browser_viewport_signed_delta(viewport_state.x, previous_state.x),
+        scroll_delta_y: browser_viewport_signed_delta(viewport_state.y, previous_state.y),
+        display_command_count: render.display_list.len(),
+        visible_command_count,
+        culled_command_count,
+        layout_box_count: render.layout_boxes.len(),
+        visible_layout_box_count,
+        culled_layout_box_count,
+        visible_layout_boxes,
+        invalidated_regions,
+        invalidated_area,
+        reused_area: viewport_area.saturating_sub(invalidated_area),
+        full_repaint,
+    }
+}
+
+pub fn browser_viewport_frame(
+    render: &BrowserRender,
+    requested: BrowserViewportState,
+    previous: Option<BrowserViewportState>,
+    mut raster_options: BrowserRasterOptions,
+) -> Result<BrowserViewportFrame> {
+    let viewport = browser_document_viewport(render, requested, previous);
+    raster_options.viewport_x = Some(viewport.viewport.x);
+    raster_options.viewport_y = Some(viewport.viewport.y);
+    raster_options.viewport_width = Some(viewport.viewport.width);
+    raster_options.viewport_height = Some(viewport.viewport.height);
+
+    let raster = rasterize_render_rgba(render, raster_options)?;
+    let frame = rgba_raster_report(render, &raster, raster_options);
+    let dirty_pixel_regions =
+        browser_viewport_frame_dirty_regions(&viewport, &frame, raster_options);
+    let dirty_pixel_area = dirty_pixel_regions
+        .iter()
+        .map(|region| region.width.saturating_mul(region.height))
+        .sum::<usize>()
+        .min(frame.width.saturating_mul(frame.height));
+
+    let report = BrowserViewportFrameReport {
+        frame_width: frame.width,
+        frame_height: frame.height,
+        cell_width: frame.cell_width,
+        cell_height: frame.cell_height,
+        padding_x: raster_options.padding_x,
+        padding_y: raster_options.padding_y,
+        bytes_per_pixel: frame.bytes_per_pixel,
+        pixel_hash: frame.pixel_hash.clone(),
+        non_background_pixels: frame.non_background_pixels,
+        artifact_format: frame.artifact_format.clone(),
+        viewport,
+        frame,
+        dirty_pixel_regions,
+        dirty_pixel_area,
+    };
+
+    Ok(BrowserViewportFrame { report, raster })
+}
+
+fn normalize_browser_viewport_state(state: BrowserViewportState) -> BrowserViewportState {
+    BrowserViewportState {
+        width: state.width.max(1),
+        height: state.height.max(1),
+        ..state
+    }
+}
+
+fn clamp_browser_viewport_state(
+    document_width: usize,
+    document_height: usize,
+    state: BrowserViewportState,
+) -> BrowserViewportState {
+    let max_scroll_x = document_width.saturating_sub(state.width);
+    let max_scroll_y = document_height.saturating_sub(state.height);
+    BrowserViewportState {
+        x: state.x.min(max_scroll_x),
+        y: state.y.min(max_scroll_y),
+        ..state
+    }
+}
+
+fn raster_viewport_from_state(state: BrowserViewportState) -> RasterViewport {
+    RasterViewport {
+        x: state.x,
+        y: state.y,
+        width: state.width,
+        height: state.height,
+        active: true,
+    }
+}
+
+fn browser_viewport_invalidated_regions(
+    previous: Option<BrowserViewportState>,
+    current: BrowserViewportState,
+) -> (Vec<BrowserViewportRect>, bool) {
+    let full_viewport = BrowserViewportRect {
+        x: 0,
+        y: 0,
+        width: current.width,
+        height: current.height,
+    };
+    let Some(previous) = previous else {
+        return (vec![full_viewport], true);
+    };
+    if previous.width != current.width || previous.height != current.height {
+        return (vec![full_viewport], true);
+    }
+
+    let dirty_width = current.x.abs_diff(previous.x).min(current.width);
+    let dirty_height = current.y.abs_diff(previous.y).min(current.height);
+    if dirty_width == 0 && dirty_height == 0 {
+        return (Vec::new(), false);
+    }
+    if dirty_width == current.width || dirty_height == current.height {
+        return (vec![full_viewport], true);
+    }
+
+    let mut regions = Vec::new();
+    if dirty_height > 0 {
+        let y = if current.y > previous.y {
+            current.height.saturating_sub(dirty_height)
+        } else {
+            0
+        };
+        regions.push(BrowserViewportRect {
+            x: 0,
+            y,
+            width: current.width,
+            height: dirty_height,
+        });
+    }
+    if dirty_width > 0 {
+        let x = if current.x > previous.x {
+            current.width.saturating_sub(dirty_width)
+        } else {
+            0
+        };
+        let y = if current.y < previous.y {
+            dirty_height
+        } else {
+            0
+        };
+        let height = current.height.saturating_sub(dirty_height);
+        if height > 0 {
+            regions.push(BrowserViewportRect {
+                x,
+                y,
+                width: dirty_width,
+                height,
+            });
+        }
+    }
+
+    (regions, false)
+}
+
+fn browser_viewport_frame_dirty_regions(
+    viewport: &BrowserDocumentViewportReport,
+    frame: &BrowserRgbaRasterReport,
+    options: BrowserRasterOptions,
+) -> Vec<BrowserViewportFrameDirtyRect> {
+    if viewport.full_repaint {
+        return vec![BrowserViewportFrameDirtyRect {
+            x: 0,
+            y: 0,
+            width: frame.width,
+            height: frame.height,
+            viewport_x: 0,
+            viewport_y: 0,
+            viewport_width: viewport.viewport.width,
+            viewport_height: viewport.viewport.height,
+        }];
+    }
+
+    viewport
+        .invalidated_regions
+        .iter()
+        .filter(|region| region.width > 0 && region.height > 0)
+        .map(|region| BrowserViewportFrameDirtyRect {
+            x: options
+                .padding_x
+                .saturating_add(region.x.saturating_mul(options.cell_width)),
+            y: options
+                .padding_y
+                .saturating_add(region.y.saturating_mul(options.cell_height)),
+            width: region.width.saturating_mul(options.cell_width),
+            height: region.height.saturating_mul(options.cell_height),
+            viewport_x: region.x,
+            viewport_y: region.y,
+            viewport_width: region.width,
+            viewport_height: region.height,
+        })
+        .collect()
+}
+
+fn browser_viewport_signed_delta(current: usize, previous: usize) -> isize {
+    if current >= previous {
+        current.saturating_sub(previous).min(isize::MAX as usize) as isize
+    } else {
+        -(previous.saturating_sub(current).min(isize::MAX as usize) as isize)
+    }
+}
+
+fn append_png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    png.extend_from_slice(&png_crc32(kind, data).to_be_bytes());
+}
+
+fn png_crc32(kind: &[u8; 4], data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in kind.iter().chain(data.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn browser_hit_test(
+    command_index: usize,
+    command: &DisplayCommand,
+    bounds: DisplayCommandBounds,
+) -> BrowserHitTest {
+    match command {
+        DisplayCommand::Text { text, .. } => BrowserHitTest {
+            command_index,
+            kind: "text".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: Some(text.clone()),
+            alt: None,
+            url: None,
+            shade: None,
+        },
+        DisplayCommand::StyledText { text, shade, .. } => BrowserHitTest {
+            command_index,
+            kind: "styled_text".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: Some(text.clone()),
+            alt: None,
+            url: None,
+            shade: Some(*shade),
+        },
+        DisplayCommand::Rect { shade, .. } => BrowserHitTest {
+            command_index,
+            kind: "rect".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: None,
+            alt: None,
+            url: None,
+            shade: Some(*shade),
+        },
+        DisplayCommand::Image {
+            alt, url, shade, ..
+        } => BrowserHitTest {
+            command_index,
+            kind: "image".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: None,
+            alt: alt.clone(),
+            url: url.clone(),
+            shade: Some(*shade),
+        },
+    }
+}
+
+pub fn rasterize_render(
+    render: &BrowserRender,
+    options: BrowserRasterOptions,
+) -> Result<BrowserRaster> {
+    const GLYPH_WIDTH: usize = 5;
+    const GLYPH_HEIGHT: usize = 7;
+
+    ensure!(
+        options.cell_width > GLYPH_WIDTH,
+        "cell_width must be at least {}",
+        GLYPH_WIDTH + 1
+    );
+    ensure!(
+        options.cell_height > GLYPH_HEIGHT,
+        "cell_height must be at least {}",
+        GLYPH_HEIGHT + 1
+    );
+    if let Some(viewport_width) = options.viewport_width {
+        ensure!(
+            viewport_width > 0,
+            "viewport_width must be greater than zero"
+        );
+    }
+    if let Some(viewport_height) = options.viewport_height {
+        ensure!(
+            viewport_height > 0,
+            "viewport_height must be greater than zero"
+        );
+    }
+
+    let viewport = effective_raster_viewport(render, options);
+    let text_width = viewport
+        .width
+        .checked_mul(options.cell_width)
+        .context("raster width overflow")?;
+    let text_height = viewport
+        .height
+        .checked_mul(options.cell_height)
+        .context("raster height overflow")?;
+    let width = text_width
+        .checked_add(options.padding_x.saturating_mul(2))
+        .context("raster padded width overflow")?;
+    let height = text_height
+        .checked_add(options.padding_y.saturating_mul(2))
+        .context("raster padded height overflow")?;
+    let pixel_count = width.checked_mul(height).context("raster pixel overflow")?;
+    ensure!(
+        pixel_count <= options.max_pixels,
+        "raster would allocate {pixel_count} pixels, over max {}",
+        options.max_pixels
+    );
+
+    let background = 255u8;
+    let mut pixels = vec![background; pixel_count];
+    for command in &render.display_list {
+        let command_bounds = display_command_bounds(command);
+        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+        else {
+            continue;
+        };
+        match command {
+            DisplayCommand::Text { x, y, text } => {
+                if *y < viewport.y || *y >= viewport.end_y() {
+                    continue;
+                }
+                for (column_offset, ch) in text.chars().enumerate() {
+                    let document_column = x.saturating_add(column_offset);
+                    if document_column < viewport.x || document_column >= viewport.end_x() {
+                        continue;
+                    }
+                    let cell_x = options.padding_x.saturating_add(
+                        document_column
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
+                    );
+                    let cell_y = options.padding_y.saturating_add(
+                        y.saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    draw_glyph(&mut pixels, width, cell_x, cell_y, ch, 0);
+                }
+            }
+            DisplayCommand::StyledText { x, y, text, shade } => {
+                if *y < viewport.y || *y >= viewport.end_y() {
+                    continue;
+                }
+                for (column_offset, ch) in text.chars().enumerate() {
+                    let document_column = x.saturating_add(column_offset);
+                    if document_column < viewport.x || document_column >= viewport.end_x() {
+                        continue;
+                    }
+                    let cell_x = options.padding_x.saturating_add(
+                        document_column
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
+                    );
+                    let cell_y = options.padding_y.saturating_add(
+                        y.saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    draw_glyph(&mut pixels, width, cell_x, cell_y, ch, *shade);
+                }
+            }
+            DisplayCommand::Rect {
+                x: _,
+                y: _,
+                width: _,
+                height: _,
+                shade,
+            } => {
+                let rect_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let rect_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
+                fill_raster_rect(
+                    &mut pixels,
+                    width,
+                    rect_x,
+                    rect_y,
+                    rect_width,
+                    rect_height,
+                    *shade,
+                );
+            }
+            DisplayCommand::Image {
+                x,
+                y,
+                width: image_width,
+                height,
+                shade,
+                url,
+                ..
+            } => {
+                let image_width_cells = *image_width;
+                let image_height_cells = *height;
+                let image_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let image_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let clipped_image_height =
+                    visible_bounds.height.saturating_mul(options.cell_height);
+                let image_width = image_width_cells.saturating_mul(options.cell_width);
+                let image_height = image_height_cells.saturating_mul(options.cell_height);
+                let source_offset_x = visible_bounds
+                    .x
+                    .saturating_sub(*x)
+                    .saturating_mul(options.cell_width);
+                let source_offset_y = visible_bounds
+                    .y
+                    .saturating_sub(*y)
+                    .saturating_mul(options.cell_height);
+                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
+                    draw_decoded_image_region(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        image_width,
+                        image_height,
+                        decoded,
+                    );
+                } else if let Some(decoded) = url
+                    .as_deref()
+                    .and_then(|url| decode_image_reference(&render.source, url))
+                {
+                    draw_decoded_image_region(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        image_width,
+                        image_height,
+                        &decoded,
+                    );
+                } else {
+                    fill_raster_rect(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        *shade,
+                    );
+                    let original_right = x.saturating_add(image_width_cells);
+                    let original_bottom = y.saturating_add(image_height_cells);
+                    if visible_bounds.y == *y {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            1,
+                            96,
+                        );
+                    }
+                    if visible_bounds.y.saturating_add(visible_bounds.height) == original_bottom {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y.saturating_add(clipped_image_height.saturating_sub(1)),
+                            clipped_image_width,
+                            1,
+                            96,
+                        );
+                    }
+                    if visible_bounds.x == *x {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y,
+                            1,
+                            clipped_image_height,
+                            96,
+                        );
+                    }
+                    if visible_bounds.x.saturating_add(visible_bounds.width) == original_right {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x.saturating_add(clipped_image_width.saturating_sub(1)),
+                            image_y,
+                            1,
+                            clipped_image_height,
+                            96,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(BrowserRaster {
+        width,
+        height,
+        background,
+        foreground: 0,
+        pixels,
+    })
+}
+
+pub fn rasterize_render_rgba(
+    render: &BrowserRender,
+    options: BrowserRasterOptions,
+) -> Result<BrowserRgbaRaster> {
+    let raster = rasterize_render(render, options)?;
+    Ok(BrowserRgbaRaster::from_grayscale(&raster))
+}
+
+pub fn raster_report(
+    render: &BrowserRender,
+    raster: &BrowserRaster,
+    options: BrowserRasterOptions,
+) -> BrowserRasterReport {
+    let viewport = effective_raster_viewport(render, options);
+    let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    BrowserRasterReport {
+        source: render.source.clone(),
+        viewport_width: render.viewport_width,
+        width: raster.width,
+        height: raster.height,
+        cell_width: options.cell_width,
+        cell_height: options.cell_height,
+        display_command_count: render.display_list.len(),
+        visible_command_count,
+        culled_command_count,
+        raster_viewport_x: viewport.active.then_some(viewport.x),
+        raster_viewport_y: viewport.active.then_some(viewport.y),
+        raster_viewport_width: viewport.active.then_some(viewport.width),
+        raster_viewport_height: viewport.active.then_some(viewport.height),
+        non_background_pixels: raster.non_background_pixels(),
+        pixel_hash: raster.pixel_hash(),
+    }
+}
+
+pub fn rgba_raster_report(
+    render: &BrowserRender,
+    raster: &BrowserRgbaRaster,
+    options: BrowserRasterOptions,
+) -> BrowserRgbaRasterReport {
+    let viewport = effective_raster_viewport(render, options);
+    let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    BrowserRgbaRasterReport {
+        source: render.source.clone(),
+        viewport_width: render.viewport_width,
+        width: raster.width,
+        height: raster.height,
+        cell_width: options.cell_width,
+        cell_height: options.cell_height,
+        bytes_per_pixel: 4,
+        display_command_count: render.display_list.len(),
+        visible_command_count,
+        culled_command_count,
+        raster_viewport_x: viewport.active.then_some(viewport.x),
+        raster_viewport_y: viewport.active.then_some(viewport.y),
+        raster_viewport_width: viewport.active.then_some(viewport.width),
+        raster_viewport_height: viewport.active.then_some(viewport.height),
+        non_background_pixels: raster.non_background_pixels(),
+        pixel_hash: raster.pixel_hash(),
+        artifact_format: "png-rgba8".to_owned(),
+    }
+}
+
+pub fn browser_text_viewport(
+    render: &BrowserRender,
+    options: BrowserTextViewportOptions,
+) -> BrowserTextViewportReport {
+    let document_viewport = browser_document_viewport(
+        render,
+        BrowserViewportState {
+            x: options.x,
+            y: options.y,
+            width: options.width,
+            height: options.height,
+        },
+        None,
+    );
+    let viewport = raster_viewport_from_state(document_viewport.viewport);
+    let width = document_viewport.viewport.width;
+    let height = document_viewport.viewport.height;
+    let mut cells = vec![vec![' '; width]; height];
+
+    for command in &render.display_list {
+        let command_bounds = display_command_bounds(command);
+        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+        else {
+            continue;
+        };
+        match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
+                if *y < viewport.y || *y >= viewport.end_y() {
+                    continue;
+                }
+                let row = y.saturating_sub(viewport.y);
+                for (column_offset, ch) in text.chars().enumerate() {
+                    let document_column = x.saturating_add(column_offset);
+                    if document_column < viewport.x || document_column >= viewport.end_x() {
+                        continue;
+                    }
+                    let column = document_column.saturating_sub(viewport.x);
+                    if let Some(cell) = cells.get_mut(row).and_then(|line| line.get_mut(column)) {
+                        *cell = ch;
+                    }
+                }
+            }
+            DisplayCommand::Rect { .. } => {
+                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '#')
+            }
+            DisplayCommand::Image { .. } => {
+                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@')
+            }
+        }
+    }
+
+    BrowserTextViewportReport {
+        source: document_viewport.source,
+        title: document_viewport.title,
+        document_width: document_viewport.document_width,
+        document_height: document_viewport.document_height,
+        x: viewport.x,
+        y: viewport.y,
+        max_scroll_x: document_viewport.max_scroll_x,
+        max_scroll_y: document_viewport.max_scroll_y,
+        width,
+        height,
+        display_command_count: document_viewport.display_command_count,
+        visible_command_count: document_viewport.visible_command_count,
+        culled_command_count: document_viewport.culled_command_count,
+        layout_box_count: document_viewport.layout_box_count,
+        visible_layout_box_count: document_viewport.visible_layout_box_count,
+        culled_layout_box_count: document_viewport.culled_layout_box_count,
+        visible_layout_boxes: document_viewport.visible_layout_boxes,
+        lines: cells
+            .into_iter()
+            .map(|line| trim_trailing_spaces(line.into_iter().collect::<String>()))
+            .collect(),
+    }
+}
+
+fn fill_text_viewport_cells(
+    cells: &mut [Vec<char>],
+    viewport: RasterViewport,
+    bounds: DisplayCommandBounds,
+    ch: char,
+) {
+    let start_y = bounds.y.saturating_sub(viewport.y);
+    let end_y = start_y.saturating_add(bounds.height).min(cells.len());
+    let start_x = bounds.x.saturating_sub(viewport.x);
+    let end_x = start_x.saturating_add(bounds.width).min(viewport.width);
+    for row in start_y..end_y {
+        if let Some(line) = cells.get_mut(row) {
+            for column in start_x..end_x {
+                if let Some(cell) = line.get_mut(column) {
+                    *cell = ch;
+                }
+            }
+        }
+    }
+}
+
+fn trim_trailing_spaces(mut line: String) -> String {
+    while line.ends_with(' ') {
+        line.pop();
+    }
+    line
+}
+
+fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch: char, ink: u8) {
+    for (row, mask) in glyph_rows(ch).iter().enumerate() {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            set_raster_pixel(
+                pixels,
+                width,
+                cell_x.saturating_add(1 + column),
+                cell_y.saturating_add(2 + row),
+                ink,
+            );
+        }
+    }
+}
+
+fn fill_raster_rect(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    value: u8,
+) {
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            set_raster_pixel(pixels, raster_width, column, row, value);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_decoded_image_region(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    source_offset_x: usize,
+    source_offset_y: usize,
+    full_width: usize,
+    full_height: usize,
+    decoded: &DecodedImage,
+) {
+    if width == 0
+        || height == 0
+        || full_width == 0
+        || full_height == 0
+        || decoded.width == 0
+        || decoded.height == 0
+    {
+        return;
+    }
+    for row in 0..height {
+        let source_y = source_offset_y
+            .saturating_add(row)
+            .saturating_mul(decoded.height)
+            / full_height;
+        for column in 0..width {
+            let source_x = source_offset_x
+                .saturating_add(column)
+                .saturating_mul(decoded.width)
+                / full_width;
+            let Some(value) = decoded.pixels.get(
+                source_y
+                    .saturating_mul(decoded.width)
+                    .saturating_add(source_x),
+            ) else {
+                continue;
+            };
+            set_raster_pixel(
+                pixels,
+                raster_width,
+                x.saturating_add(column),
+                y.saturating_add(row),
+                *value,
+            );
+        }
+    }
+}
+
+fn set_raster_pixel(pixels: &mut [u8], width: usize, x: usize, y: usize, value: u8) {
+    let Some(index) = y.checked_mul(width).and_then(|row| row.checked_add(x)) else {
+        return;
+    };
+    if let Some(pixel) = pixels.get_mut(index) {
+        *pixel = value;
+    }
+}
+
+fn glyph_rows(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
+        ],
+        'X' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100,
+        ],
+        ',' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110, 0b01100,
+        ],
+        ':' => [
+            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000,
+        ],
+        ';' => [
+            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b00100, 0b01000,
+        ],
+        '!' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
+        ],
+        '?' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b00000, 0b11110, 0b00000, 0b00000, 0b00000,
+        ],
+        '_' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111,
+        ],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '\\' => [
+            0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001,
+        ],
+        '&' => [
+            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
+        ],
+        '+' => [
+            0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
+        ],
+        '=' => [
+            0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000,
+        ],
+        '(' => [
+            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
+        ],
+        ')' => [
+            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
+        ],
+        '[' => [
+            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
+        ],
+        ']' => [
+            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
+        ],
+        '\'' => [
+            0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '"' => [
+            0b01010, 0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        ' ' | '\t' | '\n' | '\r' => [0; 7],
+        _ => [
+            0b11111, 0b10001, 0b00010, 0b00100, 0b00010, 0b10001, 0b11111,
+        ],
+    }
+}
+
+pub fn verify_browser_fixtures(manifest_path: &Path) -> Result<BrowserFixtureReport> {
+    let manifest_text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("read browser fixture manifest {}", manifest_path.display()))?;
+    let manifest: BrowserFixtureManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("parse browser fixture manifest {}", manifest_path.display()))?;
+    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut failures = Vec::new();
+
+    for fixture in &manifest.fixtures {
+        let path = if fixture.path.is_absolute() {
+            fixture.path.clone()
+        } else {
+            base_dir.join(&fixture.path)
+        };
+        let name = fixture
+            .name
+            .clone()
+            .unwrap_or_else(|| fixture.path.display().to_string());
+
+        match verify_browser_fixture(&name, &path, fixture) {
+            Ok(()) => {}
+            Err(error) => failures.push(BrowserFixtureFailure {
+                name,
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(BrowserFixtureReport {
+        fixture_count: manifest.fixtures.len(),
+        passed: manifest.fixtures.len().saturating_sub(failures.len()),
+        failed: failures.len(),
+        failures,
+    })
+}
+
+fn verify_browser_fixture(name: &str, path: &Path, fixture: &BrowserFixture) -> Result<()> {
+    let bytes = fs::read(path).with_context(|| format!("read browser fixture {name}"))?;
+    let render = render_browser_fixture(path, &bytes, fixture)?;
+
+    if let Some(expected_title) = &fixture.expected_title
+        && render.title != *expected_title
+    {
+        bail!(
+            "title mismatch: expected {:?}, got {:?}",
+            expected_title,
+            render.title
+        );
+    }
+
+    if let Some(expected_text) = &fixture.expected_text
+        && render.text != *expected_text
+    {
+        bail!(
+            "text mismatch: expected {:?}, got {:?}",
+            expected_text,
+            render.text
+        );
+    }
+
+    if let Some(expected_display_list) = &fixture.expected_display_list
+        && render.display_list != *expected_display_list
+    {
+        bail!(
+            "display list mismatch: expected {:?}, got {:?}",
+            expected_display_list,
+            render.display_list
+        );
+    }
+
+    for expected_hit_test in &fixture.expected_hit_tests {
+        let actual = hit_test_render(&render, expected_hit_test.x, expected_hit_test.y);
+        if !hit_test_expectation_matches(actual.hit.as_ref(), expected_hit_test.expected.as_ref()) {
+            bail!(
+                "hit test mismatch at ({}, {}): expected {:?}, got {:?}",
+                expected_hit_test.x,
+                expected_hit_test.y,
+                expected_hit_test.expected,
+                actual.hit
+            );
+        }
+    }
+
+    if let Some(expected_layers) = &fixture.expected_layers {
+        let actual = layer_tree_render(&render);
+        if actual.layers != *expected_layers {
+            bail!(
+                "layer tree mismatch: expected {:?}, got {:?}",
+                expected_layers,
+                actual.layers
+            );
+        }
+    }
+
+    let needs_raster_check = fixture.expected_raster_hash.is_some()
+        || fixture.expected_screenshot_hash.is_some()
+        || fixture.expected_visible_command_count.is_some()
+        || fixture.expected_culled_command_count.is_some();
+    if needs_raster_check {
+        let raster_options =
+            browser_fixture_raster_options(fixture, BrowserRasterOptions::default());
+        let raster = rasterize_render(&render, raster_options)?;
+        let report = raster_report(&render, &raster, raster_options);
+        if let Some(expected_raster_hash) = &fixture.expected_raster_hash {
+            let actual = raster.pixel_hash();
+            if actual != *expected_raster_hash {
+                bail!(
+                    "raster hash mismatch: expected {:?}, got {:?}",
+                    expected_raster_hash,
+                    actual
+                );
+            }
+        }
+        if let Some(expected_screenshot_hash) = &fixture.expected_screenshot_hash {
+            let screenshot = BrowserRgbaRaster::from_grayscale(&raster);
+            let actual = screenshot.pixel_hash();
+            if actual != *expected_screenshot_hash {
+                bail!(
+                    "screenshot hash mismatch: expected {:?}, got {:?}",
+                    expected_screenshot_hash,
+                    actual
+                );
+            }
+        }
+        if let Some(expected_visible_command_count) = fixture.expected_visible_command_count
+            && report.visible_command_count != expected_visible_command_count
+        {
+            bail!(
+                "visible raster command count mismatch: expected {}, got {}",
+                expected_visible_command_count,
+                report.visible_command_count
+            );
+        }
+        if let Some(expected_culled_command_count) = fixture.expected_culled_command_count
+            && report.culled_command_count != expected_culled_command_count
+        {
+            bail!(
+                "culled raster command count mismatch: expected {}, got {}",
+                expected_culled_command_count,
+                report.culled_command_count
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn hit_test_expectation_matches(
+    actual: Option<&BrowserHitTest>,
+    expected: Option<&BrowserHitTestExpectation>,
+) -> bool {
+    match (actual, expected) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => {
+            actual.kind == expected.kind
+                && expected
+                    .command_index
+                    .is_none_or(|command_index| actual.command_index == command_index)
+                && expected
+                    .text
+                    .as_ref()
+                    .is_none_or(|text| actual.text.as_ref() == Some(text))
+                && expected
+                    .alt
+                    .as_ref()
+                    .is_none_or(|alt| actual.alt.as_ref() == Some(alt))
+                && expected
+                    .url
+                    .as_ref()
+                    .is_none_or(|url| actual.url.as_ref() == Some(url))
+                && expected
+                    .shade
+                    .is_none_or(|shade| actual.shade == Some(shade))
+        }
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BrowserVisualRunOptions<'a> {
+    raster: BrowserRasterOptions,
+    artifact_dir: Option<&'a Path>,
+    baseline_dir: Option<&'a Path>,
+    max_diff_pixels: Option<usize>,
+    max_diff_ratio: Option<f64>,
+}
+
+pub fn verify_browser_visuals(
+    manifest_path: &Path,
+    artifact_dir: Option<&Path>,
+    baseline_dir: Option<&Path>,
+    require_all_baselines: bool,
+    max_diff_pixels: Option<usize>,
+    max_diff_ratio: Option<f64>,
+) -> Result<BrowserVisualReport> {
+    let manifest_text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("read browser fixture manifest {}", manifest_path.display()))?;
+    let manifest: BrowserFixtureManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("parse browser fixture manifest {}", manifest_path.display()))?;
+    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    if let Some(dir) = artifact_dir {
+        fs::create_dir_all(dir)
+            .with_context(|| format!("create visual artifact dir {}", dir.display()))?;
+    }
+
+    let mut comparisons = Vec::new();
+    let mut failures = Vec::new();
+    let mut missing_baseline = 0usize;
+    let options = BrowserVisualRunOptions {
+        raster: BrowserRasterOptions::default(),
+        artifact_dir,
+        baseline_dir,
+        max_diff_pixels,
+        max_diff_ratio,
+    };
+
+    for (index, fixture) in manifest.fixtures.iter().enumerate() {
+        let path = if fixture.path.is_absolute() {
+            fixture.path.clone()
+        } else {
+            base_dir.join(&fixture.path)
+        };
+        let name = fixture
+            .name
+            .clone()
+            .unwrap_or_else(|| fixture.path.display().to_string());
+        let expected_raster_hash = fixture.expected_raster_hash.clone();
+        if expected_raster_hash.is_none() {
+            missing_baseline += 1;
+            if require_all_baselines {
+                failures.push(BrowserFixtureFailure {
+                    name: name.clone(),
+                    path: path.display().to_string(),
+                    reason: "missing expected_raster_hash baseline".to_owned(),
+                });
+            }
+        }
+
+        match visual_comparison_for_fixture(
+            index,
+            &name,
+            &path,
+            fixture,
+            expected_raster_hash.as_deref(),
+            &options,
+        ) {
+            Ok(comparison) => {
+                if comparison.matched == Some(false) {
+                    failures.push(BrowserFixtureFailure {
+                        name: name.clone(),
+                        path: path.display().to_string(),
+                        reason: format!(
+                            "raster hash mismatch: expected {:?}, got {:?}",
+                            expected_raster_hash.as_deref().unwrap_or_default(),
+                            comparison.actual_raster_hash
+                        ),
+                    });
+                }
+                if comparison.diff_passed == Some(false) {
+                    failures.push(BrowserFixtureFailure {
+                        name: name.clone(),
+                        path: path.display().to_string(),
+                        reason: format!(
+                            "visual pixel diff exceeded threshold: diff_pixels={} diff_ratio={:.6}",
+                            comparison.diff_pixels.unwrap_or_default(),
+                            comparison.diff_ratio.unwrap_or_default()
+                        ),
+                    });
+                }
+                comparisons.push(comparison);
+            }
+            Err(error) => failures.push(BrowserFixtureFailure {
+                name,
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(BrowserVisualReport {
+        fixture_count: manifest.fixtures.len(),
+        checked: comparisons
+            .iter()
+            .filter(|comparison| comparison.expected_raster_hash.is_some())
+            .count(),
+        passed: comparisons
+            .iter()
+            .filter(|comparison| comparison.matched == Some(true))
+            .count(),
+        failed: failures.len(),
+        missing_baseline,
+        artifact_dir: artifact_dir.map(|path| path.display().to_string()),
+        baseline_dir: baseline_dir.map(|path| path.display().to_string()),
+        diff_checked: comparisons
+            .iter()
+            .filter(|comparison| comparison.diff_pixels.is_some())
+            .count(),
+        diff_passed: comparisons
+            .iter()
+            .filter(|comparison| comparison.diff_passed == Some(true))
+            .count(),
+        diff_failed: comparisons
+            .iter()
+            .filter(|comparison| comparison.diff_passed == Some(false))
+            .count(),
+        max_diff_pixels: baseline_dir.map(|_| max_diff_pixels.unwrap_or(0)),
+        max_diff_ratio: baseline_dir.map(|_| max_diff_ratio.unwrap_or(0.0)),
+        comparisons,
+        failures,
+    })
+}
+
+fn visual_comparison_for_fixture(
+    index: usize,
+    name: &str,
+    path: &Path,
+    fixture: &BrowserFixture,
+    expected_raster_hash: Option<&str>,
+    options: &BrowserVisualRunOptions<'_>,
+) -> Result<BrowserVisualComparison> {
+    let bytes = fs::read(path).with_context(|| format!("read browser fixture {name}"))?;
+    let render = render_browser_fixture(path, &bytes, fixture)?;
+    let raster_options = browser_fixture_raster_options(fixture, options.raster);
+    let raster = rasterize_render(&render, raster_options)?;
+    let raster_summary = raster_report(&render, &raster, raster_options);
+    let actual_raster_hash = raster.pixel_hash();
+    let artifact_name = format!("{index:03}-{}.pgm", artifact_slug(name));
+    let artifact = if let Some(dir) = options.artifact_dir {
+        let path = dir.join(&artifact_name);
+        fs::write(&path, raster.encode_pgm())
+            .with_context(|| format!("write visual artifact {}", path.display()))?;
+        Some(path.display().to_string())
+    } else {
+        None
+    };
+    let baseline_path = options.baseline_dir.map(|dir| dir.join(&artifact_name));
+    let diff = if let Some(path) = baseline_path.as_ref() {
+        Some(
+            compare_raster_with_pgm(&raster, path)
+                .with_context(|| format!("compare visual baseline artifact {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let diff_artifact = match (options.artifact_dir, diff.as_ref()) {
+        (Some(dir), Some(diff)) => {
+            let path = dir.join(format!("{index:03}-{}-diff.pgm", artifact_slug(name)));
+            fs::write(&path, encode_diff_pgm(diff))
+                .with_context(|| format!("write visual diff artifact {}", path.display()))?;
+            Some(path.display().to_string())
+        }
+        _ => None,
+    };
+    let diff_passed = diff
+        .as_ref()
+        .map(|diff| diff_within_threshold(diff, options.max_diff_pixels, options.max_diff_ratio));
+
+    Ok(BrowserVisualComparison {
+        name: name.to_owned(),
+        path: path.display().to_string(),
+        width: raster.width,
+        height: raster.height,
+        display_command_count: raster_summary.display_command_count,
+        visible_command_count: raster_summary.visible_command_count,
+        culled_command_count: raster_summary.culled_command_count,
+        raster_viewport_x: raster_summary.raster_viewport_x,
+        raster_viewport_y: raster_summary.raster_viewport_y,
+        raster_viewport_width: raster_summary.raster_viewport_width,
+        raster_viewport_height: raster_summary.raster_viewport_height,
+        non_background_pixels: raster.non_background_pixels(),
+        expected_raster_hash: expected_raster_hash.map(str::to_owned),
+        matched: expected_raster_hash.map(|expected| actual_raster_hash == expected),
+        actual_raster_hash,
+        artifact,
+        baseline_artifact: baseline_path.map(|path| path.display().to_string()),
+        diff_artifact,
+        diff_pixels: diff.as_ref().map(|diff| diff.diff_pixels),
+        diff_ratio: diff.as_ref().map(|diff| diff.diff_ratio),
+        diff_passed,
+    })
+}
+
+fn artifact_slug(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "fixture".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+pub fn compare_browser_fixtures_with_chromium(
+    manifest_path: &Path,
+) -> Result<BrowserChromiumParityReport> {
+    let chrome = chrome_program().context("Chrome/Chromium executable not found")?;
+    let manifest_text = fs::read_to_string(manifest_path)
+        .with_context(|| format!("read browser fixture manifest {}", manifest_path.display()))?;
+    let manifest: BrowserFixtureManifest = serde_json::from_str(&manifest_text)
+        .with_context(|| format!("parse browser fixture manifest {}", manifest_path.display()))?;
+    let base_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut comparisons = Vec::with_capacity(manifest.fixtures.len());
+    let mut failures = Vec::new();
+
+    for fixture in &manifest.fixtures {
+        let path = if fixture.path.is_absolute() {
+            fixture.path.clone()
+        } else {
+            base_dir.join(&fixture.path)
+        };
+        let name = fixture
+            .name
+            .clone()
+            .unwrap_or_else(|| fixture.path.display().to_string());
+
+        match compare_browser_fixture_with_chromium(&chrome, &name, &path, fixture) {
+            Ok(comparison) => {
+                if !comparison.title_match || !comparison.text_match {
+                    failures.push(BrowserFixtureFailure {
+                        name: name.clone(),
+                        path: path.display().to_string(),
+                        reason: parity_failure_reason(&comparison),
+                    });
+                }
+                comparisons.push(comparison);
+            }
+            Err(error) => failures.push(BrowserFixtureFailure {
+                name,
+                path: path.display().to_string(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(BrowserChromiumParityReport {
+        fixture_count: manifest.fixtures.len(),
+        passed: manifest.fixtures.len().saturating_sub(failures.len()),
+        failed: failures.len(),
+        chrome: chrome_version(),
+        comparisons,
+        failures,
+    })
+}
+
+fn compare_browser_fixture_with_chromium(
+    chrome: &str,
+    name: &str,
+    path: &Path,
+    fixture: &BrowserFixture,
+) -> Result<BrowserChromiumParityComparison> {
+    let bytes = fs::read(path).with_context(|| format!("read browser fixture {name}"))?;
+    let render = render_browser_fixture(path, &bytes, fixture)?;
+    let chromium = chromium_static_render(chrome, path, &bytes, fixture.click_selector.as_deref())?;
+    let brutal_text = normalize_browser_parity_text(&render.text);
+    let chromium_text = normalize_browser_parity_text(&chromium.text);
+    let brutal_title = render.title.trim().to_owned();
+    let chromium_title = chromium.title.trim().to_owned();
+
+    Ok(BrowserChromiumParityComparison {
+        name: name.to_owned(),
+        path: path.display().to_string(),
+        title_match: brutal_title == chromium_title,
+        text_match: brutal_text == chromium_text,
+        brutal_title,
+        chromium_title,
+        brutal_text,
+        chromium_text,
+    })
+}
+
+pub(crate) fn render_browser_fixture(
+    path: &Path,
+    bytes: &[u8],
+    fixture: &BrowserFixture,
+) -> Result<BrowserRender> {
+    Ok(render_browser_fixture_profiled(path, bytes, fixture)?.render)
+}
+
+pub(crate) fn render_browser_fixture_profiled(
+    path: &Path,
+    bytes: &[u8],
+    fixture: &BrowserFixture,
+) -> Result<BrowserProfiledRender> {
+    let source = path.display().to_string();
+    let options = BrowserRenderOptions {
+        width: fixture.width,
+        ..BrowserRenderOptions::default()
+    };
+    if !fixture.external_scripts {
+        if let Some(selector) = fixture.click_selector.as_deref() {
+            return render_html_prepared_profiled(
+                &source,
+                bytes,
+                options,
+                RenderPreparation {
+                    external_css: &[],
+                    external_scripts: &[],
+                    click_target: Some(RenderClickTarget::Selector(selector)),
+                    local_storage: None,
+                    session_storage: None,
+                    cached_images: &[],
+                },
+            );
+        }
+        return render_html_prepared_profiled(
+            &source,
+            bytes,
+            options,
+            RenderPreparation {
+                external_css: &[],
+                external_scripts: &[],
+                click_target: None,
+                local_storage: None,
+                session_storage: None,
+                cached_images: &[],
+            },
+        );
+    }
+
+    let first_pass = render_html_prepared_profiled(
+        &source,
+        bytes,
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )?;
+    let script_text = local_external_script_texts(&first_pass.render)?;
+    let mut second_pass = render_html_prepared_profiled(
+        &source,
+        bytes,
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &script_text,
+            click_target: fixture
+                .click_selector
+                .as_deref()
+                .map(RenderClickTarget::Selector),
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )?;
+    second_pass.timings = first_pass.timings.add(second_pass.timings);
+    Ok(second_pass)
+}
+
+fn local_external_script_texts(render: &BrowserRender) -> Result<Vec<String>> {
+    render
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == "script")
+        .map(read_local_script_resource)
+        .collect()
+}
+
+fn read_local_script_resource(resource: &BrowserResource) -> Result<String> {
+    if resource.resolved.starts_with("http://") || resource.resolved.starts_with("https://") {
+        bail!(
+            "fixture external script must be local, got {}",
+            resource.resolved
+        );
+    }
+    let bytes = if resource.resolved.starts_with("file://") {
+        let url = Url::parse(&resource.resolved)
+            .with_context(|| format!("parse script URL {}", resource.resolved))?;
+        let path = url.to_file_path().map_err(|_| {
+            anyhow::anyhow!(
+                "script file URL cannot be converted to a local path: {}",
+                resource.resolved
+            )
+        })?;
+        fs::read(&path).with_context(|| format!("read script {}", path.display()))?
+    } else {
+        let path = local_path_without_url_parts(&resource.resolved);
+        fs::read(path).with_context(|| format!("read script {}", resource.resolved))?
+    };
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn parity_failure_reason(comparison: &BrowserChromiumParityComparison) -> String {
+    match (comparison.title_match, comparison.text_match) {
+        (false, false) => "title and text mismatch".to_owned(),
+        (false, true) => "title mismatch".to_owned(),
+        (true, false) => "text mismatch".to_owned(),
+        (true, true) => "matched".to_owned(),
+    }
+}
+
+fn chromium_static_render(
+    chrome: &str,
+    fixture_path: &Path,
+    html: &[u8],
+    click_selector: Option<&str>,
+) -> Result<ChromiumStaticRender> {
+    let html = String::from_utf8_lossy(html);
+    let base_href = chromium_fixture_base_href(fixture_path);
+    let wrapper = chromium_static_wrapper_html(&html, base_href.as_deref(), click_selector)?;
+    let path = std::env::temp_dir().join(format!(
+        "brutal-browser-chromium-static-{}.html",
+        std::process::id()
+    ));
+    fs::write(&path, wrapper).with_context(|| format!("write {}", path.display()))?;
+
+    let output = Command::new(chrome)
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--disable-background-networking")
+        .arg("--disable-default-apps")
+        .arg("--disable-extensions")
+        .arg("--run-all-compositor-stages-before-draw")
+        .arg("--virtual-time-budget=1000")
+        .arg("--dump-dom")
+        .arg(format!("file://{}", path.display()))
+        .output()
+        .with_context(|| format!("run Chromium static parity {}", path.display()))?;
+    let _ = fs::remove_file(&path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(json) = extract_chromium_result_json(&stdout) else {
+        ensure!(
+            output.status.success(),
+            "Chromium static parity failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        bail!("Chromium static parity output did not contain JSON");
+    };
+    Ok(serde_json::from_str(json)?)
+}
+
+fn chromium_fixture_base_href(fixture_path: &Path) -> Option<String> {
+    let parent = fixture_path.parent()?;
+    let parent = fs::canonicalize(parent).ok()?;
+    Url::from_directory_path(parent)
+        .ok()
+        .map(|url| url.to_string())
+}
+
+fn chromium_static_wrapper_html(
+    html: &str,
+    base_href: Option<&str>,
+    click_selector: Option<&str>,
+) -> Result<String> {
+    let base = base_href
+        .map(|href| {
+            format!(
+                r#"<base href="{}">"#,
+                html_escape::encode_double_quoted_attribute(href)
+            )
+        })
+        .unwrap_or_default();
+    let click_selector_json = serde_json::to_string(&click_selector)?;
+    Ok(format!(
+        r#"{base}{html}
+<script>
+const CLICK_SELECTOR = {click_selector_json};
+if (CLICK_SELECTOR) {{
+  const clickTarget = document.querySelector(CLICK_SELECTOR);
+  if (clickTarget) clickTarget.click();
+}}
+setTimeout(() => {{
+  const result = {{
+    title: document.title || "",
+    text: document.body ? document.body.innerText : ""
+  }};
+  const out = document.createElement("script");
+  out.type = "application/json";
+  out.id = "brutal-chromium-result";
+  out.textContent = JSON.stringify(result).replaceAll("</", "<\\/");
+  document.documentElement.appendChild(out);
+}}, 0);
+</script>"#
+    ))
+}
+
+fn extract_chromium_result_json(dump: &str) -> Option<&str> {
+    let marker = "id=\"brutal-chromium-result\"";
+    let marker_index = dump.find(marker)?;
+    let after_marker = &dump[marker_index..];
+    let start = after_marker.find('>')? + marker_index + 1;
+    let after_start = &dump[start..];
+    let end = after_start.find("</script>")? + start;
+    dump.get(start..end)
+}
+
+fn normalize_browser_parity_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Debug)]
+struct ParsedHtml {
+    dom: Dom,
+    style_text: String,
+    inline_scripts: Vec<String>,
+}
+
+fn parse_html(html: &[u8]) -> ParsedHtml {
+    let mut dom = Dom {
+        nodes: vec![Node {
+            kind: NodeKind::Document,
+            parent: None,
+            children: Vec::new(),
+        }],
+    };
+    let mut stack = vec![0usize];
+    let mut style_text = String::new();
+    let mut inline_scripts = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < html.len() {
+        if let Some(raw_text_tag) = stack
+            .last()
+            .and_then(|&node_id| current_raw_text_tag(&dom, node_id))
+        {
+            let Some(closing_start) = find_closing_tag(html, cursor, raw_text_tag) else {
+                push_text(
+                    &mut dom,
+                    &stack,
+                    &html[cursor..],
+                    &mut style_text,
+                    &mut inline_scripts,
+                );
+                break;
+            };
+            push_text(
+                &mut dom,
+                &stack,
+                &html[cursor..closing_start],
+                &mut style_text,
+                &mut inline_scripts,
+            );
+            let Some(tag_end_offset) = memchr(b'>', &html[closing_start + 1..]) else {
+                break;
+            };
+            let tag_end = closing_start + 1 + tag_end_offset;
+            if let Some(tag) = parse_tag(&html[closing_start + 1..tag_end])
+                && matches!(tag.kind, TagKind::Closing)
+            {
+                pop_until(&mut stack, &dom, &tag.name);
+            }
+            cursor = tag_end + 1;
+            continue;
+        }
+
+        let Some(offset) = memchr(b'<', &html[cursor..]) else {
+            push_text(
+                &mut dom,
+                &stack,
+                &html[cursor..],
+                &mut style_text,
+                &mut inline_scripts,
+            );
+            break;
+        };
+        let tag_start = cursor + offset;
+        push_text(
+            &mut dom,
+            &stack,
+            &html[cursor..tag_start],
+            &mut style_text,
+            &mut inline_scripts,
+        );
+
+        let Some(tag_end_offset) = memchr(b'>', &html[tag_start + 1..]) else {
+            break;
+        };
+        let tag_end = tag_start + 1 + tag_end_offset;
+        let raw_tag = &html[tag_start + 1..tag_end];
+        if let Some(tag) = parse_tag(raw_tag) {
+            match tag.kind {
+                TagKind::Opening => {
+                    let parent = *stack.last().unwrap_or(&0);
+                    let attrs = parse_attributes(raw_tag);
+                    let element = element_data_from_attrs(tag.name.clone(), attrs);
+                    let node_id = push_node(&mut dom, parent, NodeKind::Element(Box::new(element)));
+                    if !tag.self_closing && !is_void_tag(&tag.name) {
+                        stack.push(node_id);
+                    }
+                }
+                TagKind::Closing => pop_until(&mut stack, &dom, &tag.name),
+            }
+        }
+
+        cursor = tag_end + 1;
+    }
+
+    ParsedHtml {
+        dom,
+        style_text,
+        inline_scripts,
+    }
+}
+
+fn push_text(
+    dom: &mut Dom,
+    stack: &[usize],
+    raw: &[u8],
+    style_text: &mut String,
+    inline_scripts: &mut Vec<String>,
+) {
+    if raw.is_empty() {
+        return;
+    }
+
+    let parent = *stack.last().unwrap_or(&0);
+    if current_element_is(dom, parent, "template") {
+        return;
+    }
+
+    let lossy = String::from_utf8_lossy(raw);
+    let decoded = decode_html_entities(&lossy).into_owned();
+    if current_element_is(dom, parent, "script") {
+        inline_scripts.push(decoded);
+        return;
+    }
+    if current_element_is(dom, parent, "style") {
+        style_text.push_str(&decoded);
+        return;
+    }
+
+    if decoded.trim().is_empty() {
+        return;
+    }
+    push_node(dom, parent, NodeKind::Text(decoded));
+}
+
+fn push_node(dom: &mut Dom, parent: usize, kind: NodeKind) -> usize {
+    let node_id = dom.nodes.len();
+    dom.nodes.push(Node {
+        kind,
+        parent: Some(parent),
+        children: Vec::new(),
+    });
+    if let Some(parent) = dom.nodes.get_mut(parent) {
+        parent.children.push(node_id);
+    }
+    node_id
+}
+
+fn push_detached_node(dom: &mut Dom, kind: NodeKind) -> usize {
+    let node_id = dom.nodes.len();
+    dom.nodes.push(Node {
+        kind,
+        parent: None,
+        children: Vec::new(),
+    });
+    node_id
+}
+
+fn current_element_is(dom: &Dom, node_id: usize, tag: &str) -> bool {
+    matches!(
+        dom.nodes.get(node_id).map(|node| &node.kind),
+        Some(NodeKind::Element(element)) if element.tag == tag
+    )
+}
+
+fn current_raw_text_tag(dom: &Dom, node_id: usize) -> Option<&'static str> {
+    match dom.nodes.get(node_id).map(|node| &node.kind) {
+        Some(NodeKind::Element(element)) if element.tag == "script" => Some("script"),
+        Some(NodeKind::Element(element)) if element.tag == "style" => Some("style"),
+        _ => None,
+    }
+}
+
+fn find_closing_tag(html: &[u8], start: usize, tag: &str) -> Option<usize> {
+    let needle = format!("</{tag}");
+    html.get(start..)?
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+        .map(|offset| start + offset)
+}
+
+const MAX_TIMER_TASKS_PER_RENDER: usize = 1024;
+
+#[derive(Debug, Clone)]
+struct TinyJsRuntime {
+    page_source: String,
+    bindings: HashMap<String, usize>,
+    node_list_bindings: HashMap<String, Vec<usize>>,
+    string_bindings: HashMap<String, String>,
+    function_bindings: HashMap<String, String>,
+    event_listeners: HashMap<(BrowserEventTarget, String), Vec<JsEventListener>>,
+    lifecycle_event_listeners: HashMap<String, Vec<String>>,
+    local_storage: HashMap<String, String>,
+    session_storage: HashMap<String, String>,
+    timer_tasks: VecDeque<TimerTask>,
+    cancelled_timer_ids: HashSet<u64>,
+    next_timer_id: u64,
+    this_node: Option<usize>,
+    this_target: Option<BrowserEventTarget>,
+    active_element: Option<usize>,
+    current_event: Option<TinyJsEvent>,
+    default_prevented: bool,
+    propagation_stopped: bool,
+    immediate_propagation_stopped: bool,
+    return_false_prevents_default: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TimerTask {
+    id: u64,
+    handler: String,
+}
+
+impl Default for TinyJsRuntime {
+    fn default() -> Self {
+        Self {
+            page_source: String::new(),
+            bindings: HashMap::new(),
+            node_list_bindings: HashMap::new(),
+            string_bindings: HashMap::new(),
+            function_bindings: HashMap::new(),
+            event_listeners: HashMap::new(),
+            lifecycle_event_listeners: HashMap::new(),
+            local_storage: HashMap::new(),
+            session_storage: HashMap::new(),
+            timer_tasks: VecDeque::new(),
+            cancelled_timer_ids: HashSet::new(),
+            next_timer_id: 1,
+            this_node: None,
+            this_target: None,
+            active_element: None,
+            current_event: None,
+            default_prevented: false,
+            propagation_stopped: false,
+            immediate_propagation_stopped: false,
+            return_false_prevents_default: false,
+        }
+    }
+}
+
+impl TinyJsRuntime {
+    fn with_web_storage(
+        local_storage: HashMap<String, String>,
+        session_storage: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            local_storage,
+            session_storage,
+            ..Self::default()
+        }
+    }
+}
+
+fn execute_scripts_with_runtime(dom: &mut Dom, runtime: &mut TinyJsRuntime, scripts: &[String]) {
+    for script in scripts {
+        for statement in split_js_statements(script) {
+            execute_js_statement(dom, runtime, statement);
+        }
+    }
+    dispatch_lifecycle_event(dom, runtime, "DOMContentLoaded");
+    dispatch_lifecycle_event(dom, runtime, "load");
+    drain_timer_tasks(dom, runtime);
+}
+
+fn execute_scripts_without_lifecycle_events(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    scripts: &[String],
+) {
+    for script in scripts {
+        for statement in split_js_statements(script) {
+            execute_js_statement(dom, runtime, statement);
+        }
+    }
+    drain_timer_tasks(dom, runtime);
+}
+
+fn dispatch_lifecycle_event(dom: &mut Dom, runtime: &mut TinyJsRuntime, event_name: &str) {
+    let Some(listeners) = runtime.lifecycle_event_listeners.get(event_name).cloned() else {
+        return;
+    };
+    for listener in listeners {
+        let previous_this = runtime.this_node.take();
+        let previous_this_target = runtime.this_target.take();
+        for statement in split_js_statements(&listener) {
+            execute_js_statement(dom, runtime, statement);
+        }
+        runtime.this_node = previous_this;
+        runtime.this_target = previous_this_target;
+    }
+}
+
+fn dispatch_click_selector(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    selector: &str,
+) -> Result<BrowserClickDispatch> {
+    let Some(node_id) = resolve_event_target(dom, selector) else {
+        bail!("click target not found: {selector}");
+    };
+    Ok(dispatch_click(dom, runtime, node_id))
+}
+
+fn dispatch_click(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+) -> BrowserClickDispatch {
+    dispatch_click_with_payload(
+        dom,
+        runtime,
+        node_id,
+        BrowserEventPayload::new("click", node_id),
+    )
+}
+
+fn dispatch_pointer_click_node(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    x: usize,
+    y: usize,
+) -> Result<BrowserClickDispatch> {
+    ensure!(
+        node_id < dom.nodes.len(),
+        "click target node {node_id} is outside the current DOM"
+    );
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::pointer("pointerdown", node_id, x, y),
+        true,
+    );
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::mouse("mousedown", node_id, x, y),
+        true,
+    );
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::pointer("pointerup", node_id, x, y),
+        true,
+    );
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::mouse("mouseup", node_id, x, y),
+        true,
+    );
+    Ok(dispatch_click_with_payload(
+        dom,
+        runtime,
+        node_id,
+        BrowserEventPayload::mouse("click", node_id, x, y),
+    ))
+}
+
+fn dispatch_click_with_payload(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    payload: BrowserEventPayload,
+) -> BrowserClickDispatch {
+    let snapshot = begin_click_dispatch(runtime, payload);
+    let event_path = event_path_to_window(dom, node_id);
+    for &current_target in event_path.iter().skip(1).rev() {
+        dispatch_event_listener_group(
+            dom,
+            runtime,
+            current_target,
+            "click",
+            true,
+            BrowserEventPhase::Capture,
+        );
+        if runtime.propagation_stopped {
+            break;
+        }
+    }
+    if !runtime.propagation_stopped {
+        dispatch_click_target_phase(dom, runtime, node_id);
+    }
+    if !runtime.propagation_stopped {
+        for &current_target in event_path.iter().skip(1) {
+            dispatch_click_bubble_target(dom, runtime, current_target);
+            if runtime.propagation_stopped {
+                break;
+            }
+        }
+    }
+    let default_prevented = restore_event_dispatch(runtime, snapshot);
+    BrowserClickDispatch {
+        node_id,
+        default_prevented,
+    }
+}
+
+fn dispatch_click_target_phase(dom: &mut Dom, runtime: &mut TinyJsRuntime, node_id: usize) {
+    let previous_this = runtime.this_node.replace(node_id);
+    let previous_this_target = runtime
+        .this_target
+        .replace(BrowserEventTarget::Node(node_id));
+    dispatch_event_listener_group(
+        dom,
+        runtime,
+        BrowserEventTarget::Node(node_id),
+        "click",
+        true,
+        BrowserEventPhase::Target,
+    );
+    if !runtime.immediate_propagation_stopped
+        && let Some(onclick) = onclick_handler(dom, node_id)
+    {
+        set_current_event_phase(runtime, BrowserEventPhase::Target);
+        execute_click_handler(dom, runtime, &onclick, true);
+    }
+    if !runtime.immediate_propagation_stopped {
+        dispatch_event_listener_group(
+            dom,
+            runtime,
+            BrowserEventTarget::Node(node_id),
+            "click",
+            false,
+            BrowserEventPhase::Target,
+        );
+    }
+    runtime.this_node = previous_this;
+    runtime.this_target = previous_this_target;
+}
+
+fn dispatch_click_bubble_target(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    target: BrowserEventTarget,
+) {
+    let previous_this = set_runtime_this_target(runtime, target);
+    if let BrowserEventTarget::Node(node_id) = target
+        && let Some(onclick) = onclick_handler(dom, node_id)
+    {
+        set_current_event_phase(runtime, BrowserEventPhase::Bubble);
+        execute_click_handler(dom, runtime, &onclick, true);
+    }
+    if !runtime.immediate_propagation_stopped {
+        dispatch_event_listener_group(
+            dom,
+            runtime,
+            target,
+            "click",
+            false,
+            BrowserEventPhase::Bubble,
+        );
+    }
+    restore_runtime_this_target(runtime, previous_this);
+}
+
+fn onclick_handler(dom: &Dom, node_id: usize) -> Option<String> {
+    match dom.nodes.get(node_id).map(|node| &node.kind) {
+        Some(NodeKind::Element(element)) => element.onclick.clone(),
+        _ => None,
+    }
+}
+
+fn dispatch_bubbling_event_listeners(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    event_name: &str,
+) -> BrowserEventDispatch {
+    dispatch_event_listeners(dom, runtime, node_id, event_name, true)
+}
+
+fn dispatch_keyboard_event(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    event_name: &str,
+    key: &str,
+) -> BrowserEventDispatch {
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::keyboard(event_name, node_id, key),
+        true,
+    )
+}
+
+fn dispatch_event_listeners(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    event_name: &str,
+    bubbles: bool,
+) -> BrowserEventDispatch {
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::new(event_name, node_id),
+        bubbles,
+    )
+}
+
+fn dispatch_beforeinput_event(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    node_id: usize,
+    input_type: &str,
+    data: Option<&str>,
+) -> BrowserEventDispatch {
+    dispatch_event_listeners_with_payload(
+        dom,
+        runtime,
+        BrowserEventPayload::beforeinput(node_id, input_type, data),
+        true,
+    )
+}
+
+fn dispatch_event_listeners_with_payload(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    payload: BrowserEventPayload,
+    bubbles: bool,
+) -> BrowserEventDispatch {
+    let node_id = payload.target_node;
+    if node_id >= dom.nodes.len() {
+        return BrowserEventDispatch {
+            node_id,
+            default_prevented: false,
+        };
+    }
+    let event_name = payload.type_name.clone();
+    let snapshot = begin_event_dispatch(runtime, payload);
+
+    let event_path = event_path_to_window(dom, node_id);
+    for &current_target in event_path.iter().skip(1).rev() {
+        dispatch_event_listener_group(
+            dom,
+            runtime,
+            current_target,
+            &event_name,
+            true,
+            BrowserEventPhase::Capture,
+        );
+        if runtime.propagation_stopped {
+            break;
+        }
+    }
+    if !runtime.propagation_stopped {
+        dispatch_event_listener_group(
+            dom,
+            runtime,
+            BrowserEventTarget::Node(node_id),
+            &event_name,
+            true,
+            BrowserEventPhase::Target,
+        );
+        if !runtime.immediate_propagation_stopped {
+            dispatch_event_listener_group(
+                dom,
+                runtime,
+                BrowserEventTarget::Node(node_id),
+                &event_name,
+                false,
+                BrowserEventPhase::Target,
+            );
+        }
+    }
+    if !runtime.propagation_stopped && bubbles {
+        for &current_target in event_path.iter().skip(1) {
+            dispatch_event_listener_group(
+                dom,
+                runtime,
+                current_target,
+                &event_name,
+                false,
+                BrowserEventPhase::Bubble,
+            );
+            if runtime.propagation_stopped {
+                break;
+            }
+        }
+    }
+    let default_prevented = restore_event_dispatch(runtime, snapshot);
+    BrowserEventDispatch {
+        node_id,
+        default_prevented,
+    }
+}
+
+fn dispatch_event_listener_group(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    target: BrowserEventTarget,
+    event_name: &str,
+    capture: bool,
+    phase: BrowserEventPhase,
+) {
+    dispatch_event_listener_group_core(
+        runtime,
+        target,
+        event_name,
+        capture,
+        phase,
+        |runtime, handler| execute_click_handler(dom, runtime, handler, false),
+    );
+}
+
+fn execute_click_handler(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    handler: &str,
+    return_false_prevents_default: bool,
+) {
+    let previous = runtime.return_false_prevents_default;
+    runtime.return_false_prevents_default = return_false_prevents_default;
+    for statement in split_js_statements(handler) {
+        execute_js_statement(dom, runtime, statement);
+    }
+    runtime.return_false_prevents_default = previous;
+}
+
+fn resolve_event_target(dom: &Dom, selector: &str) -> Option<usize> {
+    find_first_matching_selector(dom, selector)
+}
+
+fn split_js_statements(script: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+
+    for (index, ch) in script.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        if matches!(ch, '"' | '\'' | '`') {
+            quote = Some(ch);
+        } else if ch == '(' {
+            paren_depth += 1;
+        } else if ch == ')' {
+            paren_depth = paren_depth.saturating_sub(1);
+        } else if ch == '{' {
+            brace_depth += 1;
+        } else if ch == '}' {
+            brace_depth = brace_depth.saturating_sub(1);
+        } else if ch == '[' {
+            bracket_depth += 1;
+        } else if ch == ']' {
+            bracket_depth = bracket_depth.saturating_sub(1);
+        } else if ch == ';' && paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 {
+            statements.push(&script[start..index]);
+            start = index + ch.len_utf8();
+        }
+    }
+
+    if start < script.len() {
+        statements.push(&script[start..]);
+    }
+    statements
+}
+
+fn execute_js_statement(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) {
+    let statement = statement.trim();
+    if statement.is_empty() || statement.starts_with("//") {
+        return;
+    }
+
+    if execute_js_default_prevention(runtime, statement) {
+        return;
+    }
+
+    if execute_js_declaration(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_tree_mutation(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_set_attribute(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_class_list_mutation(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_style_mutation(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_web_storage(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_timer(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_remove_event_listener(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_add_event_listener(dom, runtime, statement) {
+        return;
+    }
+
+    let Some((operator_index, append)) = find_js_assignment(statement) else {
+        return;
+    };
+    let mut left = statement[..operator_index].trim();
+    if append {
+        left = left.trim_end_matches('+').trim_end();
+    }
+    let right = statement[operator_index + 1..].trim();
+    if is_js_identifier(left)
+        && let Some(timer_id) = schedule_js_timeout(runtime, right)
+    {
+        runtime
+            .string_bindings
+            .insert(left.to_owned(), timer_id.to_string());
+        runtime.bindings.remove(left);
+        runtime.function_bindings.remove(left);
+        return;
+    }
+    let Some(value) = evaluate_js_string_expression(dom, runtime, right) else {
+        return;
+    };
+
+    if left == "document.title" {
+        set_document_title(dom, &value, append);
+        return;
+    }
+
+    if let Some(target) = left.strip_suffix(".innerHTML")
+        && let Some(node_id) = resolve_js_node_ref(dom, runtime, target.trim())
+    {
+        set_inner_html(dom, node_id, &value, append);
+        return;
+    }
+
+    for property in [".textContent", ".innerText"] {
+        if let Some(target) = left.strip_suffix(property)
+            && let Some(node_id) = resolve_js_node_ref(dom, runtime, target.trim())
+        {
+            set_text_content(dom, node_id, &value, append);
+            return;
+        }
+    }
+
+    for property in [".checked", ".disabled", ".hidden", ".selected"] {
+        if let Some(target) = left.strip_suffix(property)
+            && let Some(node_id) = resolve_js_node_ref(dom, runtime, target.trim())
+        {
+            set_element_boolean_property(dom, node_id, &property[1..], js_truthy_string(&value));
+            return;
+        }
+    }
+
+    for property in [
+        ".id",
+        ".className",
+        ".href",
+        ".value",
+        ".name",
+        ".type",
+        ".src",
+        ".alt",
+        ".action",
+        ".method",
+    ] {
+        if let Some(target) = left.strip_suffix(property)
+            && let Some(node_id) = resolve_js_node_ref(dom, runtime, target.trim())
+        {
+            set_element_string_property(dom, node_id, &property[1..], &value, append);
+            return;
+        }
+    }
+
+    if let Some((target, property)) = parse_js_style_property_ref(left)
+        && let Some(node_id) = resolve_js_node_ref(dom, runtime, target)
+    {
+        set_element_style_property(dom, node_id, property, &value, append);
+    }
+}
+
+fn execute_js_default_prevention(runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let statement = statement.trim().trim_end_matches(';').trim();
+    if statement == "return false" {
+        if runtime.return_false_prevents_default {
+            runtime.default_prevented = true;
+        }
+        return true;
+    }
+    if statement == "preventDefault()" || statement.ends_with(".preventDefault()") {
+        runtime.default_prevented = true;
+        return true;
+    }
+    if statement == "stopImmediatePropagation()"
+        || statement.ends_with(".stopImmediatePropagation()")
+    {
+        runtime.propagation_stopped = true;
+        runtime.immediate_propagation_stopped = true;
+        return true;
+    }
+    if statement == "stopPropagation()" || statement.ends_with(".stopPropagation()") {
+        runtime.propagation_stopped = true;
+        return true;
+    }
+    false
+}
+
+fn execute_js_declaration(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let Some((name, expression)) = parse_js_declaration(statement) else {
+        return false;
+    };
+
+    if let Some(node_id) = create_js_node_from_expression(dom, expression) {
+        runtime.bindings.insert(name.to_owned(), node_id);
+        runtime.node_list_bindings.remove(name);
+        runtime.string_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    if let Some(node_id) = resolve_js_node_ref(dom, runtime, expression) {
+        runtime.bindings.insert(name.to_owned(), node_id);
+        runtime.node_list_bindings.remove(name);
+        runtime.string_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    if let Some(node_ids) = resolve_js_node_list_ref(dom, runtime, expression) {
+        runtime.node_list_bindings.insert(name.to_owned(), node_ids);
+        runtime.bindings.remove(name);
+        runtime.string_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    if let Some(handler) = parse_js_callable_handler_body(expression) {
+        runtime.function_bindings.insert(name.to_owned(), handler);
+        runtime.bindings.remove(name);
+        runtime.node_list_bindings.remove(name);
+        runtime.string_bindings.remove(name);
+        return true;
+    }
+    if let Some(timer_id) = schedule_js_timeout(runtime, expression) {
+        runtime
+            .string_bindings
+            .insert(name.to_owned(), timer_id.to_string());
+        runtime.bindings.remove(name);
+        runtime.node_list_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    if let Some(value) = evaluate_js_string_expression(dom, runtime, expression) {
+        runtime.string_bindings.insert(name.to_owned(), value);
+        runtime.bindings.remove(name);
+        runtime.node_list_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    false
+}
+
+fn parse_js_declaration(statement: &str) -> Option<(&str, &str)> {
+    for prefix in ["const ", "let ", "var "] {
+        let Some(rest) = statement.strip_prefix(prefix) else {
+            continue;
+        };
+        let (name, expression) = rest.split_once('=')?;
+        let name = name.trim();
+        if is_js_identifier(name) {
+            return Some((name, expression.trim()));
+        }
+    }
+    None
+}
+
+fn is_js_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || matches!(first, '_' | '$'))
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$'))
+}
+
+fn create_js_node_from_expression(dom: &mut Dom, expression: &str) -> Option<usize> {
+    if let Some(tag) = parse_js_call_string_arg(expression, "document.createElement") {
+        let tag = tag.trim().to_ascii_lowercase();
+        if tag.is_empty() {
+            return None;
+        }
+        return Some(push_detached_node(
+            dom,
+            NodeKind::Element(Box::new(empty_element_data(&tag))),
+        ));
+    }
+    if let Some(text) = parse_js_call_string_arg(expression, "document.createTextNode") {
+        return Some(push_detached_node(dom, NodeKind::Text(text)));
+    }
+    if matches!(
+        expression.trim(),
+        "document.createDocumentFragment()" | "new DocumentFragment()"
+    ) {
+        return Some(push_detached_node(dom, NodeKind::DocumentFragment));
+    }
+    None
+}
+
+fn execute_js_tree_mutation(dom: &mut Dom, runtime: &TinyJsRuntime, statement: &str) -> bool {
+    if let Some((target, child)) = parse_js_method_call(statement, ".appendChild") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        if let Some(child_id) = resolve_or_create_js_node(dom, runtime, child) {
+            append_child(dom, parent_id, child_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".insertBefore") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        let Some(child_id) = args
+            .first()
+            .and_then(|arg| resolve_or_create_js_node(dom, runtime, arg))
+        else {
+            return true;
+        };
+        let reference_id = args
+            .get(1)
+            .and_then(|arg| resolve_optional_js_node_ref(dom, runtime, arg));
+        insert_child_before(dom, parent_id, child_id, reference_id);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".replaceChildren") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let child_ids = resolve_js_insert_nodes(dom, runtime, args);
+        detach_children(dom, parent_id);
+        for child_id in child_ids {
+            append_child(dom, parent_id, child_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".append") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        for child_id in resolve_js_insert_nodes(dom, runtime, args) {
+            append_child(dom, parent_id, child_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".prepend") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let reference_id = dom
+            .nodes
+            .get(parent_id)
+            .and_then(|node| node.children.first().copied());
+        for child_id in resolve_js_insert_nodes(dom, runtime, args) {
+            insert_child_before(dom, parent_id, child_id, reference_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".before") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let Some(parent_id) = dom.nodes.get(node_id).and_then(|node| node.parent) else {
+            return true;
+        };
+        for child_id in resolve_js_insert_nodes(dom, runtime, args) {
+            insert_child_before(dom, parent_id, child_id, Some(node_id));
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".after") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let Some(parent_id) = dom.nodes.get(node_id).and_then(|node| node.parent) else {
+            return true;
+        };
+        let next_id = next_child_after(dom, parent_id, node_id);
+        for child_id in resolve_js_insert_nodes(dom, runtime, args) {
+            insert_child_before(dom, parent_id, child_id, next_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".replaceWith") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let Some(parent_id) = dom.nodes.get(node_id).and_then(|node| node.parent) else {
+            return true;
+        };
+        for child_id in resolve_js_insert_nodes(dom, runtime, args) {
+            insert_child_before(dom, parent_id, child_id, Some(node_id));
+        }
+        remove_child(dom, parent_id, node_id);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".replaceChild") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        let Some(new_child_id) = args
+            .first()
+            .and_then(|arg| resolve_or_create_js_node(dom, runtime, arg))
+        else {
+            return true;
+        };
+        let Some(old_child_id) = args
+            .get(1)
+            .and_then(|arg| resolve_js_node_ref(dom, runtime, arg))
+        else {
+            return true;
+        };
+        replace_child(dom, parent_id, new_child_id, old_child_id);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".removeChild") {
+        let Some(parent_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        if let Some(child_id) = args
+            .first()
+            .and_then(|arg| resolve_js_node_ref(dom, runtime, arg))
+        {
+            remove_child(dom, parent_id, child_id);
+        }
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".remove") {
+        if !args.trim().is_empty() {
+            return false;
+        }
+        if let Some(node_id) = resolve_js_node_ref(dom, runtime, target) {
+            remove_node(dom, node_id);
+        }
+        return true;
+    }
+
+    false
+}
+
+fn resolve_js_insert_nodes(dom: &mut Dom, runtime: &TinyJsRuntime, args: &str) -> Vec<usize> {
+    split_js_arguments(args)
+        .into_iter()
+        .filter_map(|arg| resolve_or_create_js_insert_node(dom, runtime, arg))
+        .collect()
+}
+
+fn resolve_or_create_js_node(
+    dom: &mut Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<usize> {
+    resolve_js_node_ref(dom, runtime, expression)
+        .or_else(|| create_js_node_from_expression(dom, expression))
+}
+
+fn resolve_or_create_js_insert_node(
+    dom: &mut Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<usize> {
+    if let Some(node_id) = resolve_or_create_js_node(dom, runtime, expression) {
+        return Some(node_id);
+    }
+    let text = evaluate_js_string_expression(dom, runtime, expression)?;
+    Some(push_detached_node(dom, NodeKind::Text(text)))
+}
+
+fn resolve_optional_js_node_ref(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<usize> {
+    let expression = expression.trim();
+    if matches!(expression, "null" | "undefined" | "") {
+        None
+    } else {
+        resolve_js_node_ref(dom, runtime, expression)
+    }
+}
+
+fn execute_js_set_attribute(dom: &mut Dom, runtime: &TinyJsRuntime, statement: &str) -> bool {
+    let Some((target, args)) = parse_js_method_call(statement, ".setAttribute") else {
+        return false;
+    };
+    let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+        return true;
+    };
+    let args = split_js_arguments(args);
+    let Some(name) = args
+        .first()
+        .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+    else {
+        return true;
+    };
+    let Some(value) = args
+        .get(1)
+        .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+    else {
+        return true;
+    };
+    set_element_attribute(dom, node_id, &name, &value);
+    true
+}
+
+fn execute_js_class_list_mutation(dom: &mut Dom, runtime: &TinyJsRuntime, statement: &str) -> bool {
+    if let Some((target, args)) = parse_js_method_call(statement, ".classList.add") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let tokens = evaluate_js_class_tokens(dom, runtime, args);
+        add_element_class_tokens(dom, node_id, &tokens);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".classList.remove") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let tokens = evaluate_js_class_tokens(dom, runtime, args);
+        remove_element_class_tokens(dom, node_id, &tokens);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".classList.toggle") {
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        let Some(token) = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+            .and_then(|token| normalize_class_token(&token))
+        else {
+            return true;
+        };
+        let force = args
+            .get(1)
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+            .and_then(|value| parse_js_boolish(&value));
+        toggle_element_class_token(dom, node_id, &token, force);
+        return true;
+    }
+
+    false
+}
+
+fn execute_js_style_mutation(dom: &mut Dom, runtime: &TinyJsRuntime, statement: &str) -> bool {
+    if let Some((target, args)) = parse_js_method_call(statement, ".setProperty") {
+        let Some(target) = target.strip_suffix(".style").map(str::trim) else {
+            return false;
+        };
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        let Some(property) = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        else {
+            return true;
+        };
+        let Some(value) = args
+            .get(1)
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        else {
+            return true;
+        };
+        set_element_style_property(dom, node_id, &property, &value, false);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".removeProperty") {
+        let Some(target) = target.strip_suffix(".style").map(str::trim) else {
+            return false;
+        };
+        let Some(node_id) = resolve_js_node_ref(dom, runtime, target) else {
+            return true;
+        };
+        let args = split_js_arguments(args);
+        if let Some(property) = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        {
+            remove_element_style_property(dom, node_id, &property);
+        }
+        return true;
+    }
+
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserWebStorageKind {
+    Local,
+    Session,
+}
+
+fn execute_js_web_storage(dom: &Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    if let Some((target, args)) = parse_js_method_call(statement, ".setItem") {
+        let Some(kind) = web_storage_kind(target) else {
+            return false;
+        };
+        let args = split_js_arguments(args);
+        let Some(key) = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        else {
+            return true;
+        };
+        let Some(value) = args
+            .get(1)
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        else {
+            return true;
+        };
+        web_storage_mut(runtime, kind).insert(key, value);
+        return true;
+    }
+
+    if let Some((target, args)) = parse_js_method_call(statement, ".removeItem") {
+        let Some(kind) = web_storage_kind(target) else {
+            return false;
+        };
+        let args = split_js_arguments(args);
+        if let Some(key) = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        {
+            web_storage_mut(runtime, kind).remove(&key);
+        }
+        return true;
+    }
+
+    if let Some((target, _args)) = parse_js_method_call(statement, ".clear") {
+        let Some(kind) = web_storage_kind(target) else {
+            return false;
+        };
+        web_storage_mut(runtime, kind).clear();
+        return true;
+    }
+
+    false
+}
+
+fn is_local_storage_ref(target: &str) -> bool {
+    matches!(target.trim(), "localStorage" | "window.localStorage")
+}
+
+fn is_session_storage_ref(target: &str) -> bool {
+    matches!(target.trim(), "sessionStorage" | "window.sessionStorage")
+}
+
+fn web_storage_kind(target: &str) -> Option<BrowserWebStorageKind> {
+    if is_local_storage_ref(target) {
+        Some(BrowserWebStorageKind::Local)
+    } else if is_session_storage_ref(target) {
+        Some(BrowserWebStorageKind::Session)
+    } else {
+        None
+    }
+}
+
+fn web_storage(runtime: &TinyJsRuntime, kind: BrowserWebStorageKind) -> &HashMap<String, String> {
+    match kind {
+        BrowserWebStorageKind::Local => &runtime.local_storage,
+        BrowserWebStorageKind::Session => &runtime.session_storage,
+    }
+}
+
+fn web_storage_mut(
+    runtime: &mut TinyJsRuntime,
+    kind: BrowserWebStorageKind,
+) -> &mut HashMap<String, String> {
+    match kind {
+        BrowserWebStorageKind::Local => &mut runtime.local_storage,
+        BrowserWebStorageKind::Session => &mut runtime.session_storage,
+    }
+}
+
+fn execute_js_timer(dom: &Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    if schedule_js_timeout(runtime, statement).is_some() {
+        return true;
+    }
+
+    let Some(args) = parse_js_named_call(statement, &["clearTimeout", "window.clearTimeout"])
+    else {
+        return false;
+    };
+    let args = split_js_arguments(args);
+    if let Some(timer_id) = args
+        .first()
+        .and_then(|arg| evaluate_js_timer_id(dom, runtime, arg))
+    {
+        runtime.cancelled_timer_ids.insert(timer_id);
+    }
+    true
+}
+
+fn schedule_js_timeout(runtime: &mut TinyJsRuntime, expression: &str) -> Option<u64> {
+    let args = parse_js_named_call(expression, &["setTimeout", "window.setTimeout"])?;
+    let args = split_js_arguments(args);
+    let handler = parse_js_handler_body(runtime, args.first()?.trim())?;
+    let timer_id = runtime.next_timer_id;
+    runtime.next_timer_id = runtime.next_timer_id.saturating_add(1).max(1);
+    runtime.timer_tasks.push_back(TimerTask {
+        id: timer_id,
+        handler,
+    });
+    Some(timer_id)
+}
+
+fn evaluate_js_timer_id(dom: &Dom, runtime: &TinyJsRuntime, expression: &str) -> Option<u64> {
+    let expression = expression.trim();
+    expression.parse::<u64>().ok().or_else(|| {
+        evaluate_js_string_expression(dom, runtime, expression)
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    })
+}
+
+fn drain_timer_tasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
+    let mut executed = 0usize;
+    while let Some(task) = runtime.timer_tasks.pop_front() {
+        if runtime.cancelled_timer_ids.remove(&task.id) {
+            continue;
+        }
+        let previous_this = runtime.this_node.take();
+        let previous_this_target = runtime.this_target.take();
+        for statement in split_js_statements(&task.handler) {
+            execute_js_statement(dom, runtime, statement);
+        }
+        runtime.this_node = previous_this;
+        runtime.this_target = previous_this_target;
+        executed += 1;
+        if executed >= MAX_TIMER_TASKS_PER_RENDER {
+            runtime.timer_tasks.clear();
+            break;
+        }
+    }
+}
+
+fn execute_js_add_event_listener(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    statement: &str,
+) -> bool {
+    let Some((target, args)) = parse_js_method_call(statement, ".addEventListener") else {
+        return false;
+    };
+    let Some((event_name, listener)) = parse_event_listener_args(runtime, args) else {
+        return true;
+    };
+    if is_js_lifecycle_event_target(target) && is_supported_lifecycle_event(&event_name) {
+        runtime
+            .lifecycle_event_listeners
+            .entry(event_name)
+            .or_default()
+            .push(listener.handler);
+        return true;
+    }
+    let Some(target) = resolve_js_event_target(dom, runtime, target) else {
+        return true;
+    };
+    runtime
+        .event_listeners
+        .entry((target, event_name))
+        .or_default()
+        .push(listener);
+    true
+}
+
+fn execute_js_remove_event_listener(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    statement: &str,
+) -> bool {
+    let Some((target, args)) = parse_js_method_call(statement, ".removeEventListener") else {
+        return false;
+    };
+    let Some((event_name, listener)) = parse_event_listener_args(runtime, args) else {
+        return true;
+    };
+    if is_js_lifecycle_event_target(target) && is_supported_lifecycle_event(&event_name) {
+        if let Some(listeners) = runtime.lifecycle_event_listeners.get_mut(&event_name) {
+            listeners.retain(|handler| handler != &listener.handler);
+        }
+        return true;
+    }
+    let Some(target) = resolve_js_event_target(dom, runtime, target) else {
+        return true;
+    };
+    if let Some(listeners) = runtime.event_listeners.get_mut(&(target, event_name)) {
+        listeners.retain(|registered| {
+            registered.handler != listener.handler || registered.capture != listener.capture
+        });
+    }
+    true
+}
+
+fn resolve_js_event_target(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<BrowserEventTarget> {
+    match expression.trim() {
+        "window" => Some(BrowserEventTarget::Window),
+        _ => resolve_js_node_ref(dom, runtime, expression).map(BrowserEventTarget::Node),
+    }
+}
+
+fn is_js_lifecycle_event_target(target: &str) -> bool {
+    matches!(target.trim(), "document" | "window")
+}
+
+fn is_supported_lifecycle_event(event_name: &str) -> bool {
+    matches!(event_name, "DOMContentLoaded" | "load")
+}
+
+fn parse_event_listener_args(
+    runtime: &TinyJsRuntime,
+    args: &str,
+) -> Option<(String, JsEventListener)> {
+    let args = split_js_arguments(args);
+    let event_name = parse_js_string_value(args.first()?.trim())?;
+    let handler = parse_js_handler_body(runtime, args.get(1)?.trim())?;
+    let (capture, once) = args
+        .get(2)
+        .map(|options| parse_js_event_listener_options(options))
+        .unwrap_or((false, false));
+    Some((
+        event_name,
+        JsEventListener {
+            handler,
+            capture,
+            once,
+        },
+    ))
+}
+
+fn parse_js_event_listener_options(options: &str) -> (bool, bool) {
+    let options = options.trim();
+    if parse_js_boolish(options) == Some(true) {
+        return (true, false);
+    }
+    let Some(inner) = options
+        .strip_prefix('{')
+        .and_then(|options| options.strip_suffix('}'))
+    else {
+        return (false, false);
+    };
+    let mut capture = false;
+    let mut once = false;
+    for property in split_js_arguments(inner) {
+        let Some((name, value)) = property.split_once(':') else {
+            continue;
+        };
+        let name = parse_js_string_value(name.trim()).unwrap_or_else(|| name.trim().to_owned());
+        let value = parse_js_boolish(value.trim()) == Some(true);
+        match name.as_str() {
+            "capture" => capture = value,
+            "once" => once = value,
+            _ => {}
+        }
+    }
+    (capture, once)
+}
+
+fn split_js_arguments(args: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+
+    for (index, ch) in args.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        if matches!(ch, '"' | '\'' | '`') {
+            quote = Some(ch);
+        } else if ch == '(' {
+            paren_depth += 1;
+        } else if ch == ')' {
+            paren_depth = paren_depth.saturating_sub(1);
+        } else if ch == '{' {
+            brace_depth += 1;
+        } else if ch == '}' {
+            brace_depth = brace_depth.saturating_sub(1);
+        } else if ch == '[' {
+            bracket_depth += 1;
+        } else if ch == ']' {
+            bracket_depth = bracket_depth.saturating_sub(1);
+        } else if ch == ',' && paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 {
+            out.push(args[start..index].trim());
+            start = index + ch.len_utf8();
+        }
+    }
+    if start < args.len() {
+        out.push(args[start..].trim());
+    }
+    out
+}
+
+fn parse_js_handler_body(runtime: &TinyJsRuntime, expression: &str) -> Option<String> {
+    if let Some(body) = parse_js_string_value(expression) {
+        return Some(body);
+    }
+    let expression = expression.trim();
+    if let Some(handler) = runtime.function_bindings.get(expression) {
+        return Some(handler.clone());
+    }
+    parse_js_callable_handler_body(expression)
+}
+
+fn parse_js_callable_handler_body(expression: &str) -> Option<String> {
+    let expression = expression.trim();
+    if expression.starts_with("function") {
+        let body = parse_js_callable_body(expression)?;
+        return Some(normalize_js_event_parameter(
+            parse_function_first_parameter(expression).as_deref(),
+            &body,
+        ));
+    }
+    if let Some(arrow_index) = expression.find("=>") {
+        let parameter = parse_arrow_first_parameter(&expression[..arrow_index]);
+        let body_expression = expression[arrow_index + 2..].trim();
+        let body = parse_js_callable_body(body_expression)
+            .unwrap_or_else(|| body_expression.trim_end_matches(';').trim().to_owned());
+        return Some(normalize_js_event_parameter(parameter.as_deref(), &body));
+    }
+    None
+}
+
+fn parse_function_first_parameter(expression: &str) -> Option<String> {
+    let open = expression.find('(')?;
+    let close = expression[open + 1..].find(')')? + open + 1;
+    split_js_arguments(&expression[open + 1..close])
+        .first()
+        .and_then(|parameter| parse_js_parameter_name(parameter))
+}
+
+fn parse_arrow_first_parameter(parameters: &str) -> Option<String> {
+    let parameters = parameters.trim();
+    let first = if let Some(inner) = parameters
+        .strip_prefix('(')
+        .and_then(|parameters| parameters.strip_suffix(')'))
+    {
+        split_js_arguments(inner).first().copied()?
+    } else {
+        parameters
+    };
+    parse_js_parameter_name(first)
+}
+
+fn parse_js_parameter_name(parameter: &str) -> Option<String> {
+    let parameter = parameter.trim();
+    is_js_identifier(parameter).then(|| parameter.to_owned())
+}
+
+fn normalize_js_event_parameter(parameter: Option<&str>, body: &str) -> String {
+    let Some(parameter) = parameter.filter(|parameter| *parameter != "event") else {
+        return body.to_owned();
+    };
+    body.replace(&format!("{parameter}."), "event.")
+}
+
+fn parse_js_callable_body(expression: &str) -> Option<String> {
+    let expression = expression.trim();
+    if let Some(body) = expression.strip_prefix('{') {
+        let close = body.rfind('}')?;
+        return Some(body[..close].trim().to_owned());
+    }
+    let open = expression.find('{')?;
+    let close = expression.rfind('}')?;
+    (close > open).then(|| expression[open + 1..close].trim().to_owned())
+}
+
+fn parse_js_method_call<'a>(statement: &'a str, method: &str) -> Option<(&'a str, &'a str)> {
+    let (target, rest) = statement.split_once(method)?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('(')?.trim();
+    let close = rest.rfind(')')?;
+    Some((target.trim(), rest[..close].trim()))
+}
+
+fn parse_js_named_call<'a>(expression: &'a str, names: &[&str]) -> Option<&'a str> {
+    let expression = expression.trim();
+    for name in names {
+        let Some(rest) = expression.strip_prefix(name) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('(')?.trim();
+        let close = rest.rfind(')')?;
+        return Some(rest[..close].trim());
+    }
+    None
+}
+
+fn find_js_assignment(statement: &str) -> Option<(usize, bool)> {
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, ch) in statement.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        if matches!(ch, '"' | '\'' | '`') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch != '=' {
+            continue;
+        }
+
+        let previous = previous_non_ws_char(&statement[..index]);
+        let next = statement[index + 1..]
+            .chars()
+            .find(|ch| !ch.is_whitespace());
+        if matches!(previous, Some('=' | '!' | '<' | '>')) || next == Some('=') {
+            continue;
+        }
+        return Some((index, previous == Some('+')));
+    }
+    None
+}
+
+fn previous_non_ws_char(text: &str) -> Option<char> {
+    text.chars().rev().find(|ch| !ch.is_whitespace())
+}
+
+fn parse_js_string_value(expression: &str) -> Option<String> {
+    let expression = expression.trim();
+    let quote = expression.chars().next()?;
+    if !matches!(quote, '"' | '\'' | '`') {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in expression[quote.len_utf8()..].chars() {
+        if escaped {
+            match ch {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                '\'' => out.push('\''),
+                '`' => out.push('`'),
+                other => out.push(other),
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == quote {
+            return Some(out);
+        } else {
+            out.push(ch);
+        }
+    }
+    None
+}
+
+fn evaluate_js_string_expression(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<String> {
+    let expression = expression.trim();
+    if let Some(value) = parse_js_string_value(expression) {
+        return Some(value);
+    }
+    if matches!(expression, "true" | "false") || expression.parse::<i64>().is_ok() {
+        return Some(expression.to_owned());
+    }
+    if let Some(value) = runtime.string_bindings.get(expression) {
+        return Some(value.clone());
+    }
+    if let Some(value) = evaluate_js_event_expression(runtime, expression) {
+        return Some(value);
+    }
+    if let Some(value) = evaluate_js_event_target_expression(runtime, expression) {
+        return Some(value);
+    }
+    if let Some(value) = evaluate_js_location_expression(&runtime.page_source, expression) {
+        return Some(value);
+    }
+    for (suffix, property) in [
+        (".textContent", "textContent"),
+        (".innerText", "innerText"),
+        (".innerHTML", "innerHTML"),
+        (".id", "id"),
+        (".className", "className"),
+        (".href", "href"),
+        (".value", "value"),
+        (".name", "name"),
+        (".type", "type"),
+        (".src", "src"),
+        (".alt", "alt"),
+        (".action", "action"),
+        (".method", "method"),
+        (".checked", "checked"),
+        (".disabled", "disabled"),
+        (".hidden", "hidden"),
+        (".selected", "selected"),
+        (".tagName", "tagName"),
+        (".nodeName", "nodeName"),
+        (".nodeType", "nodeType"),
+    ] {
+        if let Some(target) = expression.strip_suffix(suffix) {
+            let node_id = resolve_js_node_ref(dom, runtime, target)?;
+            return get_element_string_property(dom, node_id, property);
+        }
+    }
+    if let Some(target) = expression.strip_suffix(".childElementCount") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return Some(element_child_ids(dom, node_id).len().to_string());
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".classList.contains") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        let args = split_js_arguments(args);
+        let token = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return Some(get_element_class_contains(dom, node_id, &token).to_string());
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".matches") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        let selector = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return Some(node_matches_selector(dom, node_id, &selector).to_string());
+    }
+    if let Some(target) = expression.strip_suffix(".classList.length") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return Some(get_element_class_list_len(dom, node_id).to_string());
+    }
+    if let Some(target) = expression.strip_suffix(".length")
+        && let Some(node_ids) = resolve_js_node_list_ref(dom, runtime, target)
+    {
+        return Some(node_ids.len().to_string());
+    }
+    if let Some(kind) = web_storage_length_expression_kind(expression) {
+        return Some(web_storage(runtime, kind).len().to_string());
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".getItem")
+        && let Some(kind) = web_storage_kind(target)
+    {
+        let args = split_js_arguments(args);
+        let key = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return Some(
+            web_storage(runtime, kind)
+                .get(&key)
+                .cloned()
+                .unwrap_or_default(),
+        );
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".getAttribute") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        let args = split_js_arguments(args);
+        let name = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return get_element_attribute(dom, node_id, &name);
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".getPropertyValue")
+        && let Some(target) = target.strip_suffix(".style").map(str::trim)
+    {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        let args = split_js_arguments(args);
+        let property = args
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return get_element_style_property(dom, node_id, &property);
+    }
+    if let Some((target, property)) = parse_js_style_property_ref(expression) {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return get_element_style_property(dom, node_id, property);
+    }
+    None
+}
+
+fn evaluate_js_event_expression(runtime: &TinyJsRuntime, expression: &str) -> Option<String> {
+    let event = runtime.current_event.as_ref()?;
+    match expression.trim() {
+        "event.type" => Some(event.type_name.clone()),
+        "event.key" => Some(event.key.clone().unwrap_or_default()),
+        "event.data" => Some(event.data.clone().unwrap_or_default()),
+        "event.inputType" => Some(event.input_type.clone().unwrap_or_default()),
+        "event.clientX" => Some(
+            event
+                .client_x
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.clientY" => Some(
+            event
+                .client_y
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.button" => Some(
+            event
+                .button
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.pointerId" => Some(
+            event
+                .pointer_id
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.pointerType" => Some(event.pointer_type.clone().unwrap_or_default()),
+        "event.isPrimary" => Some(
+            event
+                .is_primary
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.deltaX" => Some(
+            event
+                .delta_x
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.deltaY" => Some(
+            event
+                .delta_y
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        ),
+        "event.eventPhase" => Some(event.phase.as_dom_event_phase().to_owned()),
+        "event.defaultPrevented" => Some(runtime.default_prevented.to_string()),
+        _ => None,
+    }
+}
+
+fn evaluate_js_event_target_expression(
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<String> {
+    let expression = expression.trim();
+    match expression {
+        "event.currentTarget === window"
+        | "event.currentTarget == window"
+        | "window === event.currentTarget"
+        | "window == event.currentTarget"
+        | "this === window"
+        | "this == window"
+        | "window === this"
+        | "window == this" => {
+            return Some((runtime.this_target == Some(BrowserEventTarget::Window)).to_string());
+        }
+        "event.currentTarget === document"
+        | "event.currentTarget == document"
+        | "document === event.currentTarget"
+        | "document == event.currentTarget"
+        | "this === document"
+        | "this == document"
+        | "document === this"
+        | "document == this" => {
+            return Some((runtime.this_target == Some(BrowserEventTarget::Node(0))).to_string());
+        }
+        "event.currentTarget.location"
+        | "event.currentTarget.location.href"
+        | "this.location"
+        | "this.location.href" => {
+            if runtime.this_target == Some(BrowserEventTarget::Window) {
+                return Some(location_property(&runtime.page_source, "href"));
+            }
+        }
+        _ => {}
+    }
+    for prefix in ["event.currentTarget.location.", "this.location."] {
+        if let Some(property) = expression.strip_prefix(prefix)
+            && runtime.this_target == Some(BrowserEventTarget::Window)
+            && is_supported_location_property(property)
+        {
+            return Some(location_property(&runtime.page_source, property));
+        }
+    }
+    None
+}
+
+fn web_storage_length_expression_kind(expression: &str) -> Option<BrowserWebStorageKind> {
+    match expression.trim() {
+        "localStorage.length" | "window.localStorage.length" => Some(BrowserWebStorageKind::Local),
+        "sessionStorage.length" | "window.sessionStorage.length" => {
+            Some(BrowserWebStorageKind::Session)
+        }
+        _ => None,
+    }
+}
+
+fn evaluate_js_location_expression(source: &str, expression: &str) -> Option<String> {
+    let expression = expression.trim();
+    match expression {
+        "location"
+        | "window.location"
+        | "document.location"
+        | "location.href"
+        | "window.location.href"
+        | "document.location.href"
+        | "document.URL"
+        | "document.documentURI"
+        | "document.baseURI" => {
+            return Some(location_property(source, "href"));
+        }
+        _ => {}
+    }
+    if let Some((target, _args)) = parse_js_method_call(expression, ".toString")
+        && is_location_object_ref(target)
+    {
+        return Some(location_property(source, "href"));
+    }
+    for prefix in ["location.", "window.location.", "document.location."] {
+        if let Some(property) = expression.strip_prefix(prefix)
+            && is_supported_location_property(property)
+        {
+            return Some(location_property(source, property));
+        }
+    }
+    None
+}
+
+fn is_location_object_ref(target: &str) -> bool {
+    matches!(
+        target.trim(),
+        "location" | "window.location" | "document.location"
+    )
+}
+
+fn is_supported_location_property(property: &str) -> bool {
+    matches!(
+        property,
+        "href"
+            | "protocol"
+            | "host"
+            | "hostname"
+            | "port"
+            | "pathname"
+            | "search"
+            | "hash"
+            | "origin"
+    )
+}
+
+fn location_property(source: &str, property: &str) -> String {
+    if let Ok(url) = Url::parse(source) {
+        return parsed_url_location_property(&url, property);
+    }
+    match property {
+        "href" => source.to_owned(),
+        "pathname" => source_pathname(source),
+        "search" => source_search(source),
+        "hash" => source_hash(source),
+        _ => String::new(),
+    }
+}
+
+fn parsed_url_location_property(url: &Url, property: &str) -> String {
+    match property {
+        "href" => url.to_string(),
+        "protocol" => format!("{}:", url.scheme()),
+        "host" => location_host(url),
+        "hostname" => url.host_str().unwrap_or_default().to_owned(),
+        "port" => url.port().map(|port| port.to_string()).unwrap_or_default(),
+        "pathname" => url.path().to_owned(),
+        "search" => url
+            .query()
+            .map(|query| format!("?{query}"))
+            .unwrap_or_default(),
+        "hash" => url
+            .fragment()
+            .map(|fragment| format!("#{fragment}"))
+            .unwrap_or_default(),
+        "origin" => location_origin(url),
+        _ => String::new(),
+    }
+}
+
+fn location_host(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    }
+}
+
+fn location_origin(url: &Url) -> String {
+    match url.scheme() {
+        "http" | "https" => format!("{}://{}", url.scheme(), location_host(url)),
+        "file" => "file://".to_owned(),
+        scheme => url
+            .host_str()
+            .map(|host| format!("{scheme}://{host}"))
+            .unwrap_or_else(|| "null".to_owned()),
+    }
+}
+
+fn source_pathname(source: &str) -> String {
+    let without_hash = source
+        .split_once('#')
+        .map_or(source, |(before_hash, _)| before_hash);
+    without_hash
+        .split_once('?')
+        .map_or(without_hash, |(before_query, _)| before_query)
+        .to_owned()
+}
+
+fn source_search(source: &str) -> String {
+    let without_hash = source
+        .split_once('#')
+        .map_or(source, |(before_hash, _)| before_hash);
+    without_hash
+        .split_once('?')
+        .map(|(_, query)| format!("?{query}"))
+        .unwrap_or_default()
+}
+
+fn source_hash(source: &str) -> String {
+    source
+        .split_once('#')
+        .map(|(_, fragment)| format!("#{fragment}"))
+        .unwrap_or_default()
+}
+
+fn resolve_js_node_ref(dom: &Dom, runtime: &TinyJsRuntime, expression: &str) -> Option<usize> {
+    let expression = expression.trim();
+    if expression == "document"
+        && matches!(
+            dom.nodes.first().map(|node| &node.kind),
+            Some(NodeKind::Document)
+        )
+    {
+        return Some(0);
+    }
+    if let Some(&node_id) = runtime.bindings.get(expression)
+        && node_id < dom.nodes.len()
+    {
+        return Some(node_id);
+    }
+    if let Some(node_id) = resolve_js_node_list_item_ref(dom, runtime, expression) {
+        return Some(node_id);
+    }
+    if expression == "this" {
+        if let Some(BrowserEventTarget::Node(node_id)) = runtime.this_target
+            && node_id < dom.nodes.len()
+        {
+            return Some(node_id);
+        }
+        return runtime
+            .this_node
+            .filter(|&node_id| node_id < dom.nodes.len());
+    }
+    if expression == "document.activeElement" {
+        return runtime
+            .active_element
+            .filter(|&node_id| node_id < dom.nodes.len());
+    }
+    if expression == "event.target" {
+        return runtime
+            .current_event
+            .as_ref()
+            .map(|event| event.target_node)
+            .filter(|&node_id| node_id < dom.nodes.len());
+    }
+    if expression == "event.currentTarget" {
+        return runtime.this_target.and_then(|target| match target {
+            BrowserEventTarget::Node(node_id) if node_id < dom.nodes.len() => Some(node_id),
+            _ => None,
+        });
+    }
+    if let Some(target) = expression
+        .strip_suffix(".parentNode")
+        .or_else(|| expression.strip_suffix(".parentElement"))
+    {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return dom.nodes.get(node_id).and_then(|node| node.parent);
+    }
+    if let Some(target) = expression.strip_suffix(".firstChild") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return dom.nodes.get(node_id)?.children.first().copied();
+    }
+    if let Some(target) = expression.strip_suffix(".lastChild") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return dom.nodes.get(node_id)?.children.last().copied();
+    }
+    if let Some(target) = expression.strip_suffix(".firstElementChild") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return element_child_ids(dom, node_id).first().copied();
+    }
+    if let Some(target) = expression.strip_suffix(".lastElementChild") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return element_child_ids(dom, node_id).last().copied();
+    }
+    if let Some(target) = expression.strip_suffix(".nextElementSibling") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return element_sibling(dom, node_id, 1);
+    }
+    if let Some(target) = expression.strip_suffix(".previousElementSibling") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return element_sibling(dom, node_id, -1);
+    }
+    if expression == "document.body" {
+        return find_first_element_by_tag(dom, "body");
+    }
+    if expression == "document.head" {
+        return find_first_element_by_tag(dom, "head");
+    }
+    if expression == "document.documentElement" {
+        return find_first_element_by_tag(dom, "html");
+    }
+    if let Some(id) = parse_js_call_string_arg(expression, "document.getElementById") {
+        return find_element_by_id(dom, &id);
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".closest") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        let selector = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        return closest_matching_selector(dom, node_id, &selector);
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".querySelector") {
+        let selector = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        let scope = js_query_scope(dom, runtime, target)?;
+        return find_first_matching_selector_in_scope(dom, &selector, scope);
+    }
+    None
+}
+
+fn resolve_js_node_list_item_ref(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<usize> {
+    let expression = expression.trim();
+    if let Some((target, args)) = parse_js_method_call(expression, ".item") {
+        let index = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_index_expression(dom, runtime, arg))?;
+        return resolve_js_node_list_ref(dom, runtime, target)
+            .and_then(|nodes| nodes.get(index).copied());
+    }
+    let (target, index) = parse_js_index_ref(expression)?;
+    let index = evaluate_js_index_expression(dom, runtime, index)?;
+    resolve_js_node_list_ref(dom, runtime, target).and_then(|nodes| nodes.get(index).copied())
+}
+
+fn parse_js_index_ref(expression: &str) -> Option<(&str, &str)> {
+    let expression = expression.trim();
+    let inner = expression.strip_suffix(']')?;
+    let open = inner.rfind('[')?;
+    Some((inner[..open].trim(), inner[open + 1..].trim()))
+}
+
+fn evaluate_js_index_expression(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<usize> {
+    expression.trim().parse::<usize>().ok().or_else(|| {
+        evaluate_js_string_expression(dom, runtime, expression)?
+            .parse()
+            .ok()
+    })
+}
+
+fn resolve_js_node_list_ref(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<Vec<usize>> {
+    let expression = expression.trim();
+    if let Some(node_ids) = runtime.node_list_bindings.get(expression) {
+        return Some(
+            node_ids
+                .iter()
+                .copied()
+                .filter(|&node_id| node_id < dom.nodes.len())
+                .collect(),
+        );
+    }
+    if let Some(target) = expression.strip_suffix(".children") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return Some(element_child_ids(dom, node_id));
+    }
+    if let Some(target) = expression.strip_suffix(".childNodes") {
+        let node_id = resolve_js_node_ref(dom, runtime, target)?;
+        return dom.nodes.get(node_id).map(|node| node.children.clone());
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".querySelectorAll") {
+        let selector = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        let scope = js_query_scope(dom, runtime, target)?;
+        return Some(find_all_matching_selector_in_scope(dom, &selector, scope));
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".getElementsByClassName") {
+        let class_names = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        let scope = js_query_scope(dom, runtime, target)?;
+        return Some(find_elements_by_class_name_in_scope(
+            dom,
+            &class_names,
+            scope,
+        ));
+    }
+    if let Some((target, args)) = parse_js_method_call(expression, ".getElementsByTagName") {
+        let tag = split_js_arguments(args)
+            .first()
+            .and_then(|arg| evaluate_js_string_expression(dom, runtime, arg))?;
+        let scope = js_query_scope(dom, runtime, target)?;
+        return Some(find_elements_by_tag_name_in_scope(dom, &tag, scope));
+    }
+    None
+}
+
+fn js_query_scope(dom: &Dom, runtime: &TinyJsRuntime, target: &str) -> Option<usize> {
+    if target.trim() == "document" {
+        Some(0)
+    } else {
+        resolve_js_node_ref(dom, runtime, target)
+    }
+}
+
+fn parse_js_call_string_arg(expression: &str, function_name: &str) -> Option<String> {
+    let rest = expression.strip_prefix(function_name)?.trim_start();
+    let rest = rest.strip_prefix('(')?.trim();
+    let close = rest.rfind(')')?;
+    parse_js_string_value(rest[..close].trim())
+}
+
+fn find_element_by_id(dom: &Dom, id: &str) -> Option<usize> {
+    dom.nodes
+        .iter()
+        .enumerate()
+        .find_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element) if element.id.as_deref() == Some(id) => Some(node_id),
+            _ => None,
+        })
+}
+
+fn find_first_element_by_tag(dom: &Dom, tag: &str) -> Option<usize> {
+    dom.nodes
+        .iter()
+        .enumerate()
+        .find_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element) if element.tag == tag => Some(node_id),
+            _ => None,
+        })
+}
+
+fn find_first_matching_selector(dom: &Dom, selector: &str) -> Option<usize> {
+    find_first_matching_selector_in_scope(dom, selector, 0)
+}
+
+fn node_matches_selector(dom: &Dom, node_id: usize, selector: &str) -> bool {
+    parse_selector(selector.trim())
+        .as_ref()
+        .is_some_and(|selector| selector_matches(selector, dom, node_id))
+}
+
+fn closest_matching_selector(dom: &Dom, node_id: usize, selector: &str) -> Option<usize> {
+    let selector = parse_selector(selector.trim())?;
+    let mut current = Some(node_id);
+    while let Some(current_id) = current {
+        if selector_matches(&selector, dom, current_id) {
+            return Some(current_id);
+        }
+        current = dom.nodes.get(current_id).and_then(|node| node.parent);
+    }
+    None
+}
+
+fn find_first_matching_selector_in_scope(dom: &Dom, selector: &str, scope: usize) -> Option<usize> {
+    let selector = parse_selector(selector.trim())?;
+    dom.nodes.iter().enumerate().find_map(|(node_id, _)| {
+        (node_in_query_scope(dom, node_id, scope) && selector_matches(&selector, dom, node_id))
+            .then_some(node_id)
+    })
+}
+
+fn find_all_matching_selector_in_scope(dom: &Dom, selector: &str, scope: usize) -> Vec<usize> {
+    let Some(selector) = parse_selector(selector.trim()) else {
+        return Vec::new();
+    };
+    dom.nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, _)| {
+            (node_in_query_scope(dom, node_id, scope) && selector_matches(&selector, dom, node_id))
+                .then_some(node_id)
+        })
+        .collect()
+}
+
+fn find_elements_by_class_name_in_scope(dom: &Dom, class_names: &str, scope: usize) -> Vec<usize> {
+    let classes = class_names
+        .split_ascii_whitespace()
+        .filter(|class| !class.is_empty())
+        .collect::<Vec<_>>();
+    if classes.is_empty() {
+        return Vec::new();
+    }
+    dom.nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element)
+                if node_in_query_scope(dom, node_id, scope)
+                    && classes.iter().all(|class| {
+                        element
+                            .classes
+                            .iter()
+                            .any(|element_class| element_class == class)
+                    }) =>
+            {
+                Some(node_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn find_elements_by_tag_name_in_scope(dom: &Dom, tag: &str, scope: usize) -> Vec<usize> {
+    let tag = tag.trim().to_ascii_lowercase();
+    if tag.is_empty() {
+        return Vec::new();
+    }
+    dom.nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element)
+                if node_in_query_scope(dom, node_id, scope)
+                    && (tag == "*" || element.tag == tag) =>
+            {
+                Some(node_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn node_in_query_scope(dom: &Dom, node_id: usize, scope: usize) -> bool {
+    node_id != scope && node_id < dom.nodes.len() && is_descendant_of(dom, node_id, scope)
+}
+
+fn element_child_ids(dom: &Dom, node_id: usize) -> Vec<usize> {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return Vec::new();
+    };
+    node.children
+        .iter()
+        .copied()
+        .filter(|&child_id| {
+            matches!(
+                dom.nodes.get(child_id).map(|node| &node.kind),
+                Some(NodeKind::Element(_))
+            )
+        })
+        .collect()
+}
+
+fn element_sibling(dom: &Dom, node_id: usize, direction: isize) -> Option<usize> {
+    let parent_id = dom.nodes.get(node_id)?.parent?;
+    let siblings = element_child_ids(dom, parent_id);
+    let index = siblings
+        .iter()
+        .position(|&sibling_id| sibling_id == node_id)?;
+    let next_index = index.checked_add_signed(direction)?;
+    siblings.get(next_index).copied()
+}
+
+fn set_document_title(dom: &mut Dom, value: &str, append: bool) {
+    let title_id = find_first_element_by_tag(dom, "title").unwrap_or_else(|| {
+        let parent = find_first_element_by_tag(dom, "head").unwrap_or(0);
+        push_node(
+            dom,
+            parent,
+            NodeKind::Element(Box::new(empty_element_data("title"))),
+        )
+    });
+    set_text_content(dom, title_id, value, append);
+}
+
+fn set_text_content(dom: &mut Dom, node_id: usize, value: &str, append: bool) {
+    if node_id >= dom.nodes.len() {
+        return;
+    }
+    let text = if append {
+        let mut current = text_content(dom, node_id);
+        current.push_str(value);
+        current
+    } else {
+        value.to_owned()
+    };
+    detach_children(dom, node_id);
+    if !text.is_empty() {
+        push_node(dom, node_id, NodeKind::Text(text));
+    }
+}
+
+fn set_inner_html(dom: &mut Dom, node_id: usize, value: &str, append: bool) {
+    if node_id >= dom.nodes.len() {
+        return;
+    }
+    if !append {
+        detach_children(dom, node_id);
+    }
+    let parsed = parse_html(value.as_bytes());
+    for child_id in parsed
+        .dom
+        .nodes
+        .first()
+        .map(|node| node.children.clone())
+        .unwrap_or_default()
+    {
+        clone_dom_subtree(dom, &parsed.dom, child_id, node_id);
+    }
+}
+
+fn clone_dom_subtree(
+    dest: &mut Dom,
+    source: &Dom,
+    source_id: usize,
+    parent_id: usize,
+) -> Option<usize> {
+    let source_node = source.nodes.get(source_id)?;
+    let node_id = push_node(dest, parent_id, source_node.kind.clone());
+    for child_id in source_node.children.iter().copied() {
+        clone_dom_subtree(dest, source, child_id, node_id);
+    }
+    Some(node_id)
+}
+
+fn detach_children(dom: &mut Dom, node_id: usize) {
+    let children = std::mem::take(&mut dom.nodes[node_id].children);
+    for child in children {
+        if let Some(node) = dom.nodes.get_mut(child)
+            && node.parent == Some(node_id)
+        {
+            node.parent = None;
+        }
+    }
+}
+
+fn set_element_string_property(
+    dom: &mut Dom,
+    node_id: usize,
+    property: &str,
+    value: &str,
+    append: bool,
+) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+
+    match property {
+        "id" => {
+            let mut next = attr_string(element.id.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "id", &next);
+        }
+        "className" => {
+            let current = element.classes.join(" ");
+            let mut next = attr_string((!current.is_empty()).then_some(current.as_str()), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "class", &next);
+        }
+        "href" => {
+            let mut next = attr_string(element.href.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "href", &next);
+        }
+        "value" => {
+            let mut next = attr_string(element.value.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "value", &next);
+        }
+        "name" => {
+            let mut next = attr_string(element.name.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "name", &next);
+        }
+        "type" => {
+            let mut next = attr_string(element.type_hint.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "type", &next);
+        }
+        "src" => {
+            let mut next = attr_string(element.src.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "src", &next);
+        }
+        "alt" => {
+            let mut next = attr_string(element.alt.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "alt", &next);
+        }
+        "action" => {
+            let mut next = attr_string(element.action.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "action", &next);
+        }
+        "method" => {
+            let mut next = attr_string(element.method.as_deref(), append);
+            next.push_str(value);
+            set_element_attribute_data(element, "method", &next);
+        }
+        _ => {}
+    }
+}
+
+fn set_element_boolean_property(dom: &mut Dom, node_id: usize, property: &str, value: bool) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    set_element_boolean_attribute_data(element, property, value);
+}
+
+fn js_truthy_string(value: &str) -> bool {
+    parse_js_boolish(value).unwrap_or_else(|| !value.is_empty())
+}
+
+fn evaluate_js_class_tokens(dom: &Dom, runtime: &TinyJsRuntime, args: &str) -> Vec<String> {
+    split_js_arguments(args)
+        .into_iter()
+        .filter_map(|arg| evaluate_js_string_expression(dom, runtime, arg))
+        .filter_map(|token| normalize_class_token(&token))
+        .collect()
+}
+
+fn add_element_class_tokens(dom: &mut Dom, node_id: usize, tokens: &[String]) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    for token in tokens {
+        if !element.classes.iter().any(|class| class == token) {
+            element.classes.push(token.clone());
+        }
+    }
+    sync_element_class_attribute(element);
+}
+
+fn remove_element_class_tokens(dom: &mut Dom, node_id: usize, tokens: &[String]) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    element
+        .classes
+        .retain(|class| !tokens.iter().any(|token| token == class));
+    sync_element_class_attribute(element);
+}
+
+fn toggle_element_class_token(dom: &mut Dom, node_id: usize, token: &str, force: Option<bool>) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    let contains = element.classes.iter().any(|class| class == token);
+    match (contains, force) {
+        (true, Some(false) | None) => element.classes.retain(|class| class != token),
+        (false, Some(true) | None) => element.classes.push(token.to_owned()),
+        _ => {}
+    }
+    sync_element_class_attribute(element);
+}
+
+fn get_element_class_contains(dom: &Dom, node_id: usize, token: &str) -> bool {
+    let Some(token) = normalize_class_token(token) else {
+        return false;
+    };
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return false;
+    };
+    element.classes.iter().any(|class| class == &token)
+}
+
+fn get_element_class_list_len(dom: &Dom, node_id: usize) -> usize {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return 0;
+    };
+    element.classes.len()
+}
+
+fn sync_element_class_attribute(element: &mut ElementData) {
+    let class_attr = element.classes.join(" ");
+    set_element_attribute_data(element, "class", &class_attr);
+}
+
+fn normalize_class_token(token: &str) -> Option<String> {
+    let token = token.trim();
+    (!token.is_empty() && !token.chars().any(char::is_whitespace)).then(|| token.to_owned())
+}
+
+fn parse_js_boolish(value: &str) -> Option<bool> {
+    match value.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" | "" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_js_style_property_ref(expression: &str) -> Option<(&str, &str)> {
+    let (target, property) = expression.trim().rsplit_once(".style.")?;
+    let property = property.trim();
+    if property.is_empty()
+        || property
+            .chars()
+            .any(|ch| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')))
+    {
+        return None;
+    }
+    Some((target.trim(), property))
+}
+
+fn set_element_style_property(
+    dom: &mut Dom,
+    node_id: usize,
+    property: &str,
+    value: &str,
+    append: bool,
+) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    set_element_style_property_data(element, property, value, append);
+}
+
+fn remove_element_style_property(dom: &mut Dom, node_id: usize, property: &str) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    set_element_style_property_data(element, property, "", false);
+}
+
+fn get_element_style_property(dom: &Dom, node_id: usize, property: &str) -> Option<String> {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return None;
+    };
+    get_element_style_property_data(element, property)
+}
+
+fn get_element_string_property(dom: &Dom, node_id: usize, property: &str) -> Option<String> {
+    match property {
+        "textContent" | "innerText" => Some(text_content(dom, node_id)),
+        "innerHTML" => Some(inner_html(dom, node_id)),
+        "id" | "className" | "href" | "value" | "name" | "type" | "src" | "alt" | "action"
+        | "method" => get_element_attribute(dom, node_id, property).or_else(|| Some(String::new())),
+        "checked" | "disabled" | "hidden" | "selected" => {
+            Some(get_element_boolean_property(dom, node_id, property).to_string())
+        }
+        "tagName" => match dom.nodes.get(node_id).map(|node| &node.kind) {
+            Some(NodeKind::Element(element)) => Some(element.tag.to_ascii_uppercase()),
+            _ => None,
+        },
+        "nodeName" => match dom.nodes.get(node_id).map(|node| &node.kind) {
+            Some(NodeKind::Document) => Some("#document".to_owned()),
+            Some(NodeKind::DocumentFragment) => Some("#document-fragment".to_owned()),
+            Some(NodeKind::Text(_)) => Some("#text".to_owned()),
+            Some(NodeKind::Element(element)) => Some(element.tag.to_ascii_uppercase()),
+            None => None,
+        },
+        "nodeType" => match dom.nodes.get(node_id).map(|node| &node.kind) {
+            Some(NodeKind::Element(_)) => Some("1".to_owned()),
+            Some(NodeKind::Text(_)) => Some("3".to_owned()),
+            Some(NodeKind::Document) => Some("9".to_owned()),
+            Some(NodeKind::DocumentFragment) => Some("11".to_owned()),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+fn inner_html(dom: &Dom, node_id: usize) -> String {
+    let mut html = String::new();
+    for child_id in dom
+        .nodes
+        .get(node_id)
+        .map(|node| node.children.as_slice())
+        .unwrap_or_default()
+    {
+        serialize_html_node(dom, *child_id, &mut html);
+    }
+    html
+}
+
+fn serialize_html_node(dom: &Dom, node_id: usize, out: &mut String) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.kind {
+        NodeKind::Document | NodeKind::DocumentFragment => {
+            for child_id in node.children.iter().copied() {
+                serialize_html_node(dom, child_id, out);
+            }
+        }
+        NodeKind::Text(text) => escape_html_text(text, out),
+        NodeKind::Element(element) => {
+            out.push('<');
+            out.push_str(&element.tag);
+            let mut attrs = element.attrs.iter().collect::<Vec<_>>();
+            attrs.sort_by(|left, right| left.0.cmp(right.0));
+            for (name, value) in attrs {
+                out.push(' ');
+                out.push_str(name);
+                out.push_str("=\"");
+                escape_html_attr(value, out);
+                out.push('"');
+            }
+            out.push('>');
+            if is_void_tag(&element.tag) {
+                return;
+            }
+            for child_id in node.children.iter().copied() {
+                serialize_html_node(dom, child_id, out);
+            }
+            out.push_str("</");
+            out.push_str(&element.tag);
+            out.push('>');
+        }
+    }
+}
+
+fn escape_html_text(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn escape_html_attr(text: &str, out: &mut String) {
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn set_element_style_property_data(
+    element: &mut ElementData,
+    property: &str,
+    value: &str,
+    append: bool,
+) {
+    let Some(property) = normalize_css_style_property(property) else {
+        return;
+    };
+    let mut declarations = parse_style_attribute_declarations(element.style.as_deref());
+    let index = declarations
+        .iter()
+        .position(|(name, _)| normalize_css_style_property(name).as_deref() == Some(&property));
+    let mut next_value = String::new();
+    if append && let Some(existing) = index.and_then(|index| declarations.get(index)) {
+        next_value.push_str(existing.1.as_str());
+    }
+    next_value.push_str(value);
+    if next_value.trim().is_empty() {
+        if let Some(index) = index {
+            declarations.remove(index);
+        }
+    } else if let Some(index) = index {
+        declarations[index].0 = property;
+        declarations[index].1 = next_value;
+    } else {
+        declarations.push((property, next_value));
+    }
+    let style = serialize_style_attribute_declarations(&declarations);
+    set_element_attribute_data(element, "style", &style);
+}
+
+fn get_element_style_property_data(element: &ElementData, property: &str) -> Option<String> {
+    let property = normalize_css_style_property(property)?;
+    parse_style_attribute_declarations(element.style.as_deref())
+        .into_iter()
+        .find_map(|(name, value)| {
+            (normalize_css_style_property(&name).as_deref() == Some(&property))
+                .then(|| serialize_css_style_property_value(&property, &value))
+        })
+}
+
+fn parse_style_attribute_declarations(style: Option<&str>) -> Vec<(String, String)> {
+    style
+        .unwrap_or_default()
+        .split(';')
+        .filter_map(|declaration| {
+            let (name, value) = declaration.split_once(':')?;
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name.to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn serialize_style_attribute_declarations(declarations: &[(String, String)]) -> String {
+    declarations
+        .iter()
+        .filter(|(name, value)| !name.trim().is_empty() && !value.trim().is_empty())
+        .map(|(name, value)| format!("{}: {}", name.trim(), value.trim()))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn normalize_css_style_property(property: &str) -> Option<String> {
+    let property = property.trim();
+    if property.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for ch in property.chars() {
+        if ch.is_ascii_uppercase() {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '_' {
+            out.push('-');
+        } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' {
+            out.push(ch);
+        } else {
+            return None;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn serialize_css_style_property_value(property: &str, value: &str) -> String {
+    if matches!(
+        property,
+        "color" | "background" | "background-color" | "border-color"
+    ) && let Some((red, green, blue)) = parse_hex_color_rgb(value.trim())
+    {
+        return format!("rgb({red}, {green}, {blue})");
+    }
+    value.to_owned()
+}
+
+fn attr_string(current: Option<&str>, append: bool) -> String {
+    if append {
+        current.unwrap_or_default().to_owned()
+    } else {
+        String::new()
+    }
+}
+
+fn set_element_attribute(dom: &mut Dom, node_id: usize, name: &str, value: &str) {
+    let Some(NodeKind::Element(element)) = dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+    else {
+        return;
+    };
+    set_element_attribute_data(element, name, value);
+}
+
+fn get_element_attribute(dom: &Dom, node_id: usize, name: &str) -> Option<String> {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return None;
+    };
+    get_element_attribute_data(element, name)
+}
+
+fn non_empty(value: Option<&String>) -> Option<String> {
+    value.filter(|value| !value.is_empty()).cloned()
+}
+
+fn non_empty_owned(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn boolean_attribute(value: bool) -> Option<String> {
+    value.then(String::new)
+}
+
+fn get_element_attribute_data(element: &ElementData, name: &str) -> Option<String> {
+    let name = normalize_attribute_name(name);
+    if let Some(value) = element.attrs.get(&name) {
+        return Some(value.clone());
+    }
+    match name.as_str() {
+        "id" => non_empty(element.id.as_ref()),
+        "class" => non_empty_owned(element.classes.join(" ")),
+        "style" => non_empty(element.style.as_ref()),
+        "href" => non_empty(element.href.as_ref()),
+        "src" => non_empty(element.src.as_ref()),
+        "srcset" => non_empty(element.srcset.as_ref()),
+        "rel" => non_empty(element.rel.as_ref()),
+        "media" => non_empty(element.media.as_ref()),
+        "alt" => non_empty(element.alt.as_ref()),
+        "data" => non_empty(element.data.as_ref()),
+        "name" => non_empty(element.name.as_ref()),
+        "value" => non_empty(element.value.as_ref()),
+        "type" => non_empty(element.type_hint.as_ref()),
+        "poster" => non_empty(element.poster.as_ref()),
+        "action" => non_empty(element.action.as_ref()),
+        "method" => non_empty(element.method.as_ref()),
+        "onclick" => non_empty(element.onclick.as_ref()),
+        "hidden" => boolean_attribute(element.hidden),
+        "disabled" => boolean_attribute(element.disabled),
+        "checked" => boolean_attribute(element.checked),
+        "selected" => boolean_attribute(element.selected),
+        _ => None,
+    }
+}
+
+fn normalize_attribute_name(name: &str) -> String {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "classname" => "class".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn set_optional_attribute(slot: &mut Option<String>, value: &str) {
+    *slot = if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
+    };
+}
+
+fn set_element_attribute_data(element: &mut ElementData, name: &str, value: &str) {
+    let name = normalize_attribute_name(name);
+    element.attrs.insert(name.clone(), value.to_owned());
+    match name.as_str() {
+        "id" => set_optional_attribute(&mut element.id, value),
+        "class" => {
+            element.classes = value.split_ascii_whitespace().map(str::to_owned).collect();
+        }
+        "style" => set_optional_attribute(&mut element.style, value),
+        "href" => set_optional_attribute(&mut element.href, value),
+        "src" => set_optional_attribute(&mut element.src, value),
+        "srcset" => set_optional_attribute(&mut element.srcset, value),
+        "rel" => set_optional_attribute(&mut element.rel, value),
+        "media" => set_optional_attribute(&mut element.media, value),
+        "alt" => set_optional_attribute(&mut element.alt, value),
+        "data" => set_optional_attribute(&mut element.data, value),
+        "name" => set_optional_attribute(&mut element.name, value),
+        "value" => set_optional_attribute(&mut element.value, value),
+        "type" => {
+            set_optional_attribute(&mut element.type_hint, value);
+            element.input_type = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_ascii_lowercase())
+            };
+        }
+        "poster" => set_optional_attribute(&mut element.poster, value),
+        "action" => set_optional_attribute(&mut element.action, value),
+        "method" => {
+            element.method = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_ascii_uppercase())
+            };
+        }
+        "onclick" => set_optional_attribute(&mut element.onclick, value),
+        "hidden" => element.hidden = true,
+        "disabled" => element.disabled = true,
+        "checked" => element.checked = true,
+        "selected" => element.selected = true,
+        _ => {}
+    }
+}
+
+fn set_element_boolean_attribute_data(element: &mut ElementData, name: &str, value: bool) {
+    let name = normalize_attribute_name(name);
+    if value {
+        element.attrs.insert(name.clone(), String::new());
+    } else {
+        element.attrs.remove(&name);
+    }
+    match name.as_str() {
+        "hidden" => element.hidden = value,
+        "disabled" => element.disabled = value,
+        "checked" => element.checked = value,
+        "selected" => element.selected = value,
+        _ => {}
+    }
+}
+
+fn get_element_boolean_property(dom: &Dom, node_id: usize, property: &str) -> bool {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return false;
+    };
+    match normalize_attribute_name(property).as_str() {
+        "hidden" => element.hidden,
+        "disabled" => element.disabled,
+        "checked" => element.checked,
+        "selected" => element.selected,
+        _ => false,
+    }
+}
+
+fn append_child(dom: &mut Dom, parent_id: usize, child_id: usize) {
+    if parent_id >= dom.nodes.len()
+        || child_id >= dom.nodes.len()
+        || parent_id == child_id
+        || is_descendant_of(dom, parent_id, child_id)
+    {
+        return;
+    }
+
+    if matches!(
+        dom.nodes.get(child_id).map(|node| &node.kind),
+        Some(NodeKind::DocumentFragment)
+    ) {
+        append_document_fragment_children(dom, parent_id, child_id);
+        return;
+    }
+
+    if let Some(old_parent) = dom.nodes[child_id].parent
+        && let Some(parent) = dom.nodes.get_mut(old_parent)
+    {
+        parent.children.retain(|&id| id != child_id);
+    }
+    dom.nodes[child_id].parent = Some(parent_id);
+    if !dom.nodes[parent_id].children.contains(&child_id) {
+        dom.nodes[parent_id].children.push(child_id);
+    }
+}
+
+fn insert_child_before(
+    dom: &mut Dom,
+    parent_id: usize,
+    child_id: usize,
+    reference_id: Option<usize>,
+) {
+    if parent_id >= dom.nodes.len()
+        || child_id >= dom.nodes.len()
+        || parent_id == child_id
+        || is_descendant_of(dom, parent_id, child_id)
+    {
+        return;
+    }
+
+    if matches!(
+        dom.nodes.get(child_id).map(|node| &node.kind),
+        Some(NodeKind::DocumentFragment)
+    ) {
+        insert_document_fragment_children_before(dom, parent_id, child_id, reference_id);
+        return;
+    }
+
+    let insert_index = match reference_id {
+        Some(reference_id) => {
+            if reference_id == child_id {
+                return;
+            }
+            let Some(index) = dom.nodes[parent_id]
+                .children
+                .iter()
+                .position(|&id| id == reference_id)
+            else {
+                return;
+            };
+            index
+        }
+        None => dom.nodes[parent_id].children.len(),
+    };
+    let old_index = (dom.nodes[child_id].parent == Some(parent_id))
+        .then(|| {
+            dom.nodes[parent_id]
+                .children
+                .iter()
+                .position(|&id| id == child_id)
+        })
+        .flatten();
+
+    detach_from_parent(dom, child_id);
+    dom.nodes[child_id].parent = Some(parent_id);
+    let adjusted_index = if old_index.is_some_and(|old_index| old_index < insert_index) {
+        insert_index.saturating_sub(1)
+    } else {
+        insert_index
+    }
+    .min(dom.nodes[parent_id].children.len());
+    dom.nodes[parent_id]
+        .children
+        .insert(adjusted_index, child_id);
+}
+
+fn replace_child(dom: &mut Dom, parent_id: usize, new_child_id: usize, old_child_id: usize) {
+    if parent_id >= dom.nodes.len()
+        || new_child_id >= dom.nodes.len()
+        || old_child_id >= dom.nodes.len()
+        || parent_id == new_child_id
+        || is_descendant_of(dom, parent_id, new_child_id)
+    {
+        return;
+    }
+    if matches!(
+        dom.nodes.get(new_child_id).map(|node| &node.kind),
+        Some(NodeKind::DocumentFragment)
+    ) {
+        insert_document_fragment_children_before(dom, parent_id, new_child_id, Some(old_child_id));
+        remove_child(dom, parent_id, old_child_id);
+        return;
+    }
+    let Some(index) = dom.nodes[parent_id]
+        .children
+        .iter()
+        .position(|&id| id == old_child_id)
+    else {
+        return;
+    };
+
+    detach_from_parent(dom, new_child_id);
+    remove_child(dom, parent_id, old_child_id);
+    let index = index.min(dom.nodes[parent_id].children.len());
+    dom.nodes[new_child_id].parent = Some(parent_id);
+    dom.nodes[parent_id].children.insert(index, new_child_id);
+}
+
+fn append_document_fragment_children(dom: &mut Dom, parent_id: usize, fragment_id: usize) {
+    let children = dom
+        .nodes
+        .get(fragment_id)
+        .map(|node| node.children.clone())
+        .unwrap_or_default();
+    for child_id in children {
+        append_child(dom, parent_id, child_id);
+    }
+}
+
+fn insert_document_fragment_children_before(
+    dom: &mut Dom,
+    parent_id: usize,
+    fragment_id: usize,
+    reference_id: Option<usize>,
+) {
+    let children = dom
+        .nodes
+        .get(fragment_id)
+        .map(|node| node.children.clone())
+        .unwrap_or_default();
+    for child_id in children {
+        insert_child_before(dom, parent_id, child_id, reference_id);
+    }
+}
+
+fn remove_node(dom: &mut Dom, node_id: usize) {
+    if node_id >= dom.nodes.len() {
+        return;
+    }
+    if let Some(parent_id) = dom.nodes[node_id].parent {
+        remove_child(dom, parent_id, node_id);
+    }
+}
+
+fn remove_child(dom: &mut Dom, parent_id: usize, child_id: usize) {
+    if parent_id >= dom.nodes.len() || child_id >= dom.nodes.len() {
+        return;
+    }
+    if dom.nodes[child_id].parent != Some(parent_id) {
+        return;
+    }
+    dom.nodes[parent_id].children.retain(|&id| id != child_id);
+    dom.nodes[child_id].parent = None;
+}
+
+fn next_child_after(dom: &Dom, parent_id: usize, child_id: usize) -> Option<usize> {
+    let children = dom.nodes.get(parent_id)?.children.as_slice();
+    let index = children.iter().position(|&id| id == child_id)?;
+    children.get(index + 1).copied()
+}
+
+fn detach_from_parent(dom: &mut Dom, child_id: usize) {
+    if let Some(old_parent) = dom.nodes.get(child_id).and_then(|node| node.parent)
+        && let Some(parent) = dom.nodes.get_mut(old_parent)
+    {
+        parent.children.retain(|&id| id != child_id);
+    }
+}
+
+fn is_descendant_of(dom: &Dom, node_id: usize, possible_ancestor: usize) -> bool {
+    let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+    while let Some(parent) = current {
+        if parent == possible_ancestor {
+            return true;
+        }
+        current = dom.nodes.get(parent).and_then(|node| node.parent);
+    }
+    false
+}
+
+fn empty_element_data(tag: &str) -> ElementData {
+    ElementData {
+        tag: tag.to_owned(),
+        attrs: HashMap::new(),
+        id: None,
+        classes: Vec::new(),
+        style: None,
+        href: None,
+        src: None,
+        srcset: None,
+        rel: None,
+        media: None,
+        alt: None,
+        data: None,
+        name: None,
+        value: None,
+        input_type: None,
+        type_hint: None,
+        poster: None,
+        action: None,
+        method: None,
+        onclick: None,
+        hidden: false,
+        disabled: false,
+        checked: false,
+        selected: false,
+    }
+}
+
+fn element_data_from_attrs(tag: String, attrs: HashMap<String, String>) -> ElementData {
+    let type_hint = attr_from_attrs(&attrs, "type");
+
+    ElementData {
+        tag,
+        id: attr_from_attrs(&attrs, "id"),
+        classes: attr_from_attrs(&attrs, "class")
+            .map(|value| value.split_ascii_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        style: attr_from_attrs(&attrs, "style"),
+        href: attr_from_attrs(&attrs, "href"),
+        src: attr_from_attrs(&attrs, "src"),
+        srcset: attr_from_attrs(&attrs, "srcset"),
+        rel: attr_from_attrs(&attrs, "rel"),
+        media: attr_from_attrs(&attrs, "media"),
+        alt: attr_from_attrs(&attrs, "alt"),
+        data: attr_from_attrs(&attrs, "data"),
+        name: attr_from_attrs(&attrs, "name"),
+        value: attr_from_attrs(&attrs, "value"),
+        input_type: type_hint.as_ref().map(|value| value.to_ascii_lowercase()),
+        type_hint,
+        poster: attr_from_attrs(&attrs, "poster"),
+        action: attr_from_attrs(&attrs, "action"),
+        method: attr_from_attrs(&attrs, "method").map(|value| value.to_ascii_uppercase()),
+        onclick: attr_from_attrs(&attrs, "onclick"),
+        hidden: attrs.contains_key("hidden"),
+        disabled: attrs.contains_key("disabled"),
+        checked: attrs.contains_key("checked"),
+        selected: attrs.contains_key("selected"),
+        attrs,
+    }
+}
+
+fn attr_from_attrs(attrs: &HashMap<String, String>, name: &str) -> Option<String> {
+    attrs.get(name).cloned()
+}
+
+fn pop_until(stack: &mut Vec<usize>, dom: &Dom, tag: &str) {
+    while stack.len() > 1 {
+        let node_id = stack.pop().unwrap_or(0);
+        if current_element_is(dom, node_id, tag) {
+            return;
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TagKind {
+    Opening,
+    Closing,
+}
+
+#[derive(Debug)]
+struct Tag {
+    kind: TagKind,
+    name: String,
+    self_closing: bool,
+}
+
+fn parse_tag(raw: &[u8]) -> Option<Tag> {
+    let mut i = 0;
+    while i < raw.len() && raw[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= raw.len() || matches!(raw[i], b'!' | b'?') {
+        return None;
+    }
+
+    let kind = if raw[i] == b'/' {
+        i += 1;
+        TagKind::Closing
+    } else {
+        TagKind::Opening
+    };
+
+    while i < raw.len() && raw[i].is_ascii_whitespace() {
+        i += 1;
+    }
+
+    let name_start = i;
+    while i < raw.len() && (raw[i].is_ascii_alphanumeric() || matches!(raw[i], b':' | b'-' | b'_'))
+    {
+        i += 1;
+    }
+    if i == name_start {
+        return None;
+    }
+
+    let mut name = String::from_utf8_lossy(&raw[name_start..i]).into_owned();
+    name.make_ascii_lowercase();
+    let self_closing = raw.iter().rposition(|byte| !byte.is_ascii_whitespace())
+        == Some(raw.len() - 1)
+        && raw.last() == Some(&b'/');
+
+    Some(Tag {
+        kind,
+        name,
+        self_closing,
+    })
+}
+
+fn parse_attributes(raw_tag: &[u8]) -> HashMap<String, String> {
+    let mut attrs = HashMap::new();
+    let mut i = 0;
+
+    while i < raw_tag.len() && raw_tag[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i < raw_tag.len() && raw_tag[i] == b'/' {
+        i += 1;
+    }
+    while i < raw_tag.len() && raw_tag[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    while i < raw_tag.len()
+        && (raw_tag[i].is_ascii_alphanumeric() || matches!(raw_tag[i], b':' | b'-' | b'_'))
+    {
+        i += 1;
+    }
+
+    while i < raw_tag.len() {
+        while i < raw_tag.len()
+            && !raw_tag[i].is_ascii_alphabetic()
+            && raw_tag[i] != b'_'
+            && raw_tag[i] != b'-'
+        {
+            i += 1;
+        }
+        let name_start = i;
+        while i < raw_tag.len()
+            && (raw_tag[i].is_ascii_alphanumeric() || matches!(raw_tag[i], b':' | b'-' | b'_'))
+        {
+            i += 1;
+        }
+        if name_start == i {
+            break;
+        }
+        let name = normalize_attribute_name(&String::from_utf8_lossy(&raw_tag[name_start..i]));
+
+        while i < raw_tag.len() && raw_tag[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let value = if i < raw_tag.len() && raw_tag[i] == b'=' {
+            i += 1;
+            while i < raw_tag.len() && raw_tag[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= raw_tag.len() {
+                String::new()
+            } else {
+                let raw_value = if matches!(raw_tag[i], b'\'' | b'"') {
+                    let quote = raw_tag[i];
+                    i += 1;
+                    let value_start = i;
+                    while i < raw_tag.len() && raw_tag[i] != quote {
+                        i += 1;
+                    }
+                    let value = &raw_tag[value_start..i];
+                    i += usize::from(i < raw_tag.len());
+                    value
+                } else {
+                    let value_start = i;
+                    while i < raw_tag.len()
+                        && !raw_tag[i].is_ascii_whitespace()
+                        && raw_tag[i] != b'>'
+                    {
+                        i += 1;
+                    }
+                    &raw_tag[value_start..i]
+                };
+                let lossy = String::from_utf8_lossy(raw_value);
+                decode_html_entities(&lossy).into_owned()
+            }
+        } else {
+            String::new()
+        };
+
+        attrs.insert(name, value);
+    }
+
+    attrs
+}
+
+fn is_void_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+fn parse_css(css: &str) -> CssCascade {
+    let mut cascade = CssCascade {
+        rules: Vec::new(),
+        id_rules: HashMap::new(),
+        class_rules: HashMap::new(),
+        tag_rules: HashMap::new(),
+        attr_rules: HashMap::new(),
+        universal_rules: Vec::new(),
+    };
+
+    for block in css.split('}') {
+        let Some((selectors, declarations)) = block.split_once('{') else {
+            continue;
+        };
+        let declarations = parse_css_declarations(declarations);
+        if declarations == CssDeclarations::default() {
+            continue;
+        }
+        for selector in selectors.split(',') {
+            if let Some(selector) = parse_selector(selector) {
+                cascade.push(CssRule {
+                    selector,
+                    declarations,
+                });
+            }
+        }
+    }
+
+    cascade
+}
+
+impl CssCascade {
+    fn push(&mut self, rule: CssRule) {
+        let rule_index = self.rules.len();
+        let bucket = rule.selector.target_bucket();
+        match bucket {
+            SelectorBucket::Id(id) => self
+                .id_rules
+                .entry(id.to_owned())
+                .or_default()
+                .push(rule_index),
+            SelectorBucket::Class(class) => self
+                .class_rules
+                .entry(class.to_owned())
+                .or_default()
+                .push(rule_index),
+            SelectorBucket::Tag(tag) => self
+                .tag_rules
+                .entry(tag.to_owned())
+                .or_default()
+                .push(rule_index),
+            SelectorBucket::Attr(attr) => self
+                .attr_rules
+                .entry(attr.to_owned())
+                .or_default()
+                .push(rule_index),
+            SelectorBucket::Universal => self.universal_rules.push(rule_index),
+        }
+        self.rules.push(rule);
+    }
+
+    fn candidate_rule_indices(&self, element: &ElementData) -> Vec<usize> {
+        let mut indices = Vec::new();
+        if let Some(id) = &element.id
+            && let Some(bucket) = self.id_rules.get(id)
+        {
+            indices.extend(bucket);
+        }
+        for class in &element.classes {
+            if let Some(bucket) = self.class_rules.get(class) {
+                indices.extend(bucket);
+            }
+        }
+        if let Some(bucket) = self.tag_rules.get(&element.tag) {
+            indices.extend(bucket);
+        }
+        for attr in element.attrs.keys() {
+            if let Some(bucket) = self.attr_rules.get(attr) {
+                indices.extend(bucket);
+            }
+        }
+        indices.extend(&self.universal_rules);
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SelectorBucket<'a> {
+    Id(&'a str),
+    Class(&'a str),
+    Tag(&'a str),
+    Attr(&'a str),
+    Universal,
+}
+
+impl CssSelector {
+    fn target_bucket(&self) -> SelectorBucket<'_> {
+        let Some(target) = self.steps.last().map(|step| &step.compound) else {
+            return SelectorBucket::Universal;
+        };
+        if let Some(id) = &target.id {
+            SelectorBucket::Id(id)
+        } else if let Some(class) = target.classes.first() {
+            SelectorBucket::Class(class)
+        } else if let Some(tag) = &target.tag {
+            SelectorBucket::Tag(tag)
+        } else if let Some(attribute) = target.attributes.first() {
+            SelectorBucket::Attr(&attribute.name)
+        } else {
+            SelectorBucket::Universal
+        }
+    }
+}
+
+fn parse_selector(selector: &str) -> Option<CssSelector> {
+    let bytes = selector.as_bytes();
+    let mut steps = Vec::new();
+    let mut pending_combinator = None;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let mut saw_space = false;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            saw_space = true;
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'>' {
+            pending_combinator = Some(SelectorCombinator::Child);
+            i += 1;
+            continue;
+        }
+        if saw_space && !steps.is_empty() && pending_combinator.is_none() {
+            pending_combinator = Some(SelectorCombinator::Descendant);
+        }
+
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+            i += 1;
+        }
+        let compound = parse_compound_selector(&selector[start..i])?;
+        let combinator = if steps.is_empty() {
+            None
+        } else {
+            Some(
+                pending_combinator
+                    .take()
+                    .unwrap_or(SelectorCombinator::Descendant),
+            )
+        };
+        steps.push(SelectorStep {
+            compound,
+            combinator,
+        });
+    }
+
+    (!steps.is_empty()).then_some(CssSelector { steps })
+}
+
+fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
+    let bytes = selector.as_bytes();
+    let mut tag = None;
+    let mut id = None;
+    let mut classes = Vec::new();
+    let mut attributes = Vec::new();
+    let mut universal = false;
+    let mut i = 0usize;
+
+    if bytes.get(i) == Some(&b'*') {
+        universal = true;
+        i += 1;
+    } else if bytes
+        .get(i)
+        .is_some_and(|byte| is_selector_ident_start(*byte))
+    {
+        let start = i;
+        i += 1;
+        while i < bytes.len() && is_selector_ident_continue(bytes[i]) {
+            i += 1;
+        }
+        tag = Some(selector[start..i].to_ascii_lowercase());
+    }
+
+    while i < bytes.len() {
+        let prefix = bytes[i];
+        if prefix == b'[' {
+            let (attribute, next) = parse_attribute_selector(selector, i)?;
+            attributes.push(attribute);
+            i = next;
+            continue;
+        }
+        if !matches!(prefix, b'#' | b'.') {
+            return None;
+        }
+        i += 1;
+        let start = i;
+        if !bytes
+            .get(i)
+            .is_some_and(|byte| is_selector_ident_start(*byte))
+        {
+            return None;
+        }
+        i += 1;
+        while i < bytes.len() && is_selector_ident_continue(bytes[i]) {
+            i += 1;
+        }
+        let value = selector[start..i].to_owned();
+        if prefix == b'#' {
+            if id.replace(value).is_some() {
+                return None;
+            }
+        } else {
+            classes.push(value);
+        }
+    }
+
+    (universal || tag.is_some() || id.is_some() || !classes.is_empty() || !attributes.is_empty())
+        .then_some(CompoundSelector {
+            tag,
+            id,
+            classes,
+            attributes,
+            universal,
+        })
+}
+
+fn parse_attribute_selector(selector: &str, start: usize) -> Option<(AttributeSelector, usize)> {
+    let bytes = selector.as_bytes();
+    if bytes.get(start) != Some(&b'[') {
+        return None;
+    }
+    let mut i = start + 1;
+    let content_start = i;
+    let mut quote = None;
+    while i < bytes.len() {
+        if let Some(active_quote) = quote {
+            if bytes[i] == active_quote {
+                quote = None;
+            }
+        } else if matches!(bytes[i], b'\'' | b'"') {
+            quote = Some(bytes[i]);
+        } else if bytes[i] == b']' {
+            let content = selector[content_start..i].trim();
+            let attribute = parse_attribute_selector_content(content)?;
+            return Some((attribute, i + 1));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_attribute_selector_content(content: &str) -> Option<AttributeSelector> {
+    let (name, value) = content
+        .split_once('=')
+        .map_or((content.trim(), None), |(name, value)| {
+            (name.trim(), Some(unquote_css_attribute_value(value.trim())))
+        });
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| is_selector_ident_continue(byte) || byte == b':')
+    {
+        return None;
+    }
+    Some(AttributeSelector {
+        name: normalize_attribute_name(name),
+        value,
+    })
+}
+
+fn unquote_css_attribute_value(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 && matches!(bytes[0], b'\'' | b'"') && bytes.last() == Some(&bytes[0]) {
+        value[1..value.len() - 1].to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn is_selector_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'-')
+}
+
+fn is_selector_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+}
+
+fn parse_css_declarations(style: &str) -> CssDeclarations {
+    let mut declarations = CssDeclarations::default();
+    let mut border_width = None;
+    let mut border_shade = None;
+    let mut border_enabled = false;
+    let mut padding = PartialBoxSpacing::default();
+    let mut margin = PartialBoxSpacing::default();
+    for declaration in style.split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "display" => {
+                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => Some(Display::None),
+                    "block" => Some(Display::Block),
+                    "inline" => Some(Display::Inline),
+                    "list-item" => Some(Display::ListItem),
+                    _ => declarations.display,
+                };
+            }
+            "background" | "background-color" => {
+                declarations.background_shade =
+                    parse_css_color_shade(value).or(declarations.background_shade);
+            }
+            "color" => {
+                declarations.text_shade = parse_css_color_shade(value).or(declarations.text_shade);
+            }
+            "text-align" => {
+                declarations.text_align = parse_css_text_align(value).or(declarations.text_align);
+            }
+            "visibility" => {
+                declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
+            }
+            "white-space" => {
+                declarations.white_space =
+                    parse_css_white_space(value).or(declarations.white_space);
+            }
+            "text-transform" => {
+                declarations.text_transform =
+                    parse_css_text_transform(value).or(declarations.text_transform);
+            }
+            "letter-spacing" => {
+                declarations.letter_spacing =
+                    parse_css_letter_spacing(value).or(declarations.letter_spacing);
+            }
+            "word-spacing" => {
+                declarations.word_spacing =
+                    parse_css_word_spacing(value).or(declarations.word_spacing);
+            }
+            "overflow-wrap" | "word-wrap" => {
+                declarations.overflow_wrap =
+                    parse_css_overflow_wrap(value).or(declarations.overflow_wrap);
+            }
+            "word-break" => {
+                declarations.word_break = parse_css_word_break(value).or(declarations.word_break);
+            }
+            "text-indent" => {
+                declarations.text_indent = parse_css_dimension_length(value, CssAxis::Horizontal)
+                    .or(declarations.text_indent);
+            }
+            "line-height" => {
+                declarations.line_height =
+                    parse_css_line_height(value).or(declarations.line_height);
+            }
+            "box-sizing" => {
+                declarations.box_sizing = parse_css_box_sizing(value).or(declarations.box_sizing);
+            }
+            "list-style-type" => {
+                if let Some(list_style_type) = parse_css_list_style_type(value) {
+                    declarations.list_style_type = Some(list_style_type);
+                }
+            }
+            "list-style" => {
+                if let Some(list_style_type) = parse_css_list_style(value) {
+                    declarations.list_style_type = Some(list_style_type);
+                }
+            }
+            "border" => {
+                let border = parse_css_border(value);
+                border_enabled |= border.enabled;
+                border_width = border.width.or(border_width);
+                border_shade = border.shade.or(border_shade);
+            }
+            "border-style" => {
+                border_enabled |= parse_css_border_style_enabled(value);
+            }
+            "border-width" => {
+                border_width = parse_css_border_width(value).or(border_width);
+            }
+            "border-color" => {
+                border_shade = parse_css_color_shade(value).or(border_shade);
+            }
+            "padding" => {
+                if let Some(parsed) = parse_css_padding(value) {
+                    padding.set_all(parsed);
+                }
+            }
+            "padding-top" => {
+                padding.top = parse_css_padding_length(value, CssAxis::Vertical);
+            }
+            "padding-right" => {
+                padding.right = parse_css_padding_length(value, CssAxis::Horizontal);
+            }
+            "padding-bottom" => {
+                padding.bottom = parse_css_padding_length(value, CssAxis::Vertical);
+            }
+            "padding-left" => {
+                padding.left = parse_css_padding_length(value, CssAxis::Horizontal);
+            }
+            "margin" => {
+                if let Some(parsed) = parse_css_margin(value) {
+                    margin.set_partial(parsed.spacing);
+                    declarations.margin_left_auto =
+                        parsed.left_auto.or(declarations.margin_left_auto);
+                    declarations.margin_right_auto =
+                        parsed.right_auto.or(declarations.margin_right_auto);
+                }
+            }
+            "margin-top" => {
+                margin.top = parse_css_margin_length(value, CssAxis::Vertical);
+            }
+            "margin-right" => {
+                if css_value_is_auto(value) {
+                    declarations.margin_right_auto = Some(true);
+                } else {
+                    margin.right = parse_css_margin_length(value, CssAxis::Horizontal);
+                    if margin.right.is_some() {
+                        declarations.margin_right_auto = Some(false);
+                    }
+                }
+            }
+            "margin-bottom" => {
+                margin.bottom = parse_css_margin_length(value, CssAxis::Vertical);
+            }
+            "margin-left" => {
+                if css_value_is_auto(value) {
+                    declarations.margin_left_auto = Some(true);
+                } else {
+                    margin.left = parse_css_margin_length(value, CssAxis::Horizontal);
+                    if margin.left.is_some() {
+                        declarations.margin_left_auto = Some(false);
+                    }
+                }
+            }
+            "width" => {
+                declarations.width =
+                    parse_css_dimension_length(value, CssAxis::Horizontal).or(declarations.width);
+            }
+            "max-width" | "max-inline-size" => {
+                declarations.max_width = parse_css_dimension_length(value, CssAxis::Horizontal)
+                    .or(declarations.max_width);
+            }
+            "min-width" | "min-inline-size" => {
+                declarations.min_width = parse_css_dimension_length(value, CssAxis::Horizontal)
+                    .or(declarations.min_width);
+            }
+            "height" => {
+                declarations.height =
+                    parse_css_dimension_length(value, CssAxis::Vertical).or(declarations.height);
+            }
+            "min-height" => {
+                declarations.min_height = parse_css_dimension_length(value, CssAxis::Vertical)
+                    .or(declarations.min_height);
+            }
+            _ => {}
+        }
+    }
+    if border_enabled {
+        declarations.border = Some(BorderPaint {
+            width: border_width.unwrap_or(1).clamp(1, 4),
+            shade: border_shade.unwrap_or(0),
+        });
+    }
+    declarations.padding = padding.finish();
+    declarations.margin = margin.finish();
+    declarations
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PartialBoxSpacing {
+    top: Option<usize>,
+    right: Option<usize>,
+    bottom: Option<usize>,
+    left: Option<usize>,
+}
+
+impl PartialBoxSpacing {
+    fn set_all(&mut self, spacing: BoxSpacing) {
+        self.top = Some(spacing.top);
+        self.right = Some(spacing.right);
+        self.bottom = Some(spacing.bottom);
+        self.left = Some(spacing.left);
+    }
+
+    fn set_partial(&mut self, spacing: Self) {
+        if let Some(top) = spacing.top {
+            self.top = Some(top);
+        }
+        if let Some(right) = spacing.right {
+            self.right = Some(right);
+        }
+        if let Some(bottom) = spacing.bottom {
+            self.bottom = Some(bottom);
+        }
+        if let Some(left) = spacing.left {
+            self.left = Some(left);
+        }
+    }
+
+    fn finish(self) -> Option<BoxSpacing> {
+        (self.top.is_some() || self.right.is_some() || self.bottom.is_some() || self.left.is_some())
+            .then_some(BoxSpacing {
+                top: self.top.unwrap_or(0),
+                right: self.right.unwrap_or(0),
+                bottom: self.bottom.unwrap_or(0),
+                left: self.left.unwrap_or(0),
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParsedMargin {
+    spacing: PartialBoxSpacing,
+    left_auto: Option<bool>,
+    right_auto: Option<bool>,
+}
+
+fn parse_css_padding(value: &str) -> Option<BoxSpacing> {
+    parse_css_box_spacing(value)
+}
+
+fn parse_css_margin(value: &str) -> Option<ParsedMargin> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let [top, right, bottom, left] = match tokens.as_slice() {
+        [all] => [*all, *all, *all, *all],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
+        [top, right, bottom, left, ..] => [*top, *right, *bottom, *left],
+        [] => return None,
+    };
+    let mut parsed = ParsedMargin::default();
+    set_parsed_margin_side(&mut parsed, CssBoxSide::Top, top)?;
+    set_parsed_margin_side(&mut parsed, CssBoxSide::Right, right)?;
+    set_parsed_margin_side(&mut parsed, CssBoxSide::Bottom, bottom)?;
+    set_parsed_margin_side(&mut parsed, CssBoxSide::Left, left)?;
+    Some(parsed)
+}
+
+fn parse_css_box_spacing(value: &str) -> Option<BoxSpacing> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let [top, right, bottom, left] = match tokens.as_slice() {
+        [all] => [*all, *all, *all, *all],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
+        [top, right, bottom, left, ..] => [*top, *right, *bottom, *left],
+        [] => return None,
+    };
+    Some(BoxSpacing {
+        top: parse_css_padding_length(top, CssAxis::Vertical)?,
+        right: parse_css_padding_length(right, CssAxis::Horizontal)?,
+        bottom: parse_css_padding_length(bottom, CssAxis::Vertical)?,
+        left: parse_css_padding_length(left, CssAxis::Horizontal)?,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssBoxSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+fn set_parsed_margin_side(parsed: &mut ParsedMargin, side: CssBoxSide, value: &str) -> Option<()> {
+    if css_value_is_auto(value) {
+        match side {
+            CssBoxSide::Left => parsed.left_auto = Some(true),
+            CssBoxSide::Right => parsed.right_auto = Some(true),
+            CssBoxSide::Top | CssBoxSide::Bottom => {}
+        }
+        return Some(());
+    }
+    let axis = match side {
+        CssBoxSide::Top | CssBoxSide::Bottom => CssAxis::Vertical,
+        CssBoxSide::Left | CssBoxSide::Right => CssAxis::Horizontal,
+    };
+    let length = parse_css_margin_length(value, axis)?;
+    match side {
+        CssBoxSide::Top => parsed.spacing.top = Some(length),
+        CssBoxSide::Right => {
+            parsed.spacing.right = Some(length);
+            parsed.right_auto = Some(false);
+        }
+        CssBoxSide::Bottom => parsed.spacing.bottom = Some(length),
+        CssBoxSide::Left => {
+            parsed.spacing.left = Some(length);
+            parsed.left_auto = Some(false);
+        }
+    }
+    Some(())
+}
+
+fn css_value_is_auto(value: &str) -> bool {
+    value
+        .trim()
+        .trim_end_matches(';')
+        .eq_ignore_ascii_case("auto")
+}
+
+fn parse_css_padding_length(value: &str, axis: CssAxis) -> Option<usize> {
+    parse_css_box_spacing_length(value, axis)
+}
+
+fn parse_css_margin_length(value: &str, axis: CssAxis) -> Option<usize> {
+    parse_css_box_spacing_length(value, axis)
+}
+
+fn parse_css_box_spacing_length(value: &str, axis: CssAxis) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value.contains('%') || value.starts_with('-') {
+        return None;
+    }
+    let numeric = value.strip_suffix("px").unwrap_or(&value);
+    let pixels = numeric
+        .split_once('.')
+        .map_or(numeric, |(whole, _)| whole)
+        .parse::<usize>()
+        .ok()?;
+    if pixels == 0 {
+        return Some(0);
+    }
+    let cell_px = match axis {
+        CssAxis::Horizontal => 8,
+        CssAxis::Vertical => 12,
+    };
+    Some(pixels.div_ceil(cell_px).clamp(0, 8))
+}
+
+fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value.contains('%')
+        || value.starts_with('-')
+        || value == "auto"
+        || value == "inherit"
+        || value == "initial"
+    {
+        return None;
+    }
+    let numeric = value.strip_suffix("px").unwrap_or(&value);
+    let pixels = numeric
+        .split_once('.')
+        .map_or(numeric, |(whole, _)| whole)
+        .parse::<usize>()
+        .ok()?;
+    if pixels == 0 {
+        return Some(0);
+    }
+    let cell_px = match axis {
+        CssAxis::Horizontal => 8,
+        CssAxis::Vertical => 12,
+    };
+    Some(pixels.div_ceil(cell_px).clamp(1, 512))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParsedBorder {
+    enabled: bool,
+    width: Option<usize>,
+    shade: Option<u8>,
+}
+
+fn parse_css_border(value: &str) -> ParsedBorder {
+    let mut border = ParsedBorder::default();
+    for token in value.split_ascii_whitespace() {
+        if token.eq_ignore_ascii_case("none") || token.eq_ignore_ascii_case("hidden") {
+            return ParsedBorder::default();
+        }
+        border.enabled |= parse_css_border_style_enabled(token);
+        border.width = parse_css_border_width(token).or(border.width);
+        border.shade = parse_css_color_shade(token).or(border.shade);
+    }
+    border
+}
+
+fn parse_css_border_style_enabled(value: &str) -> bool {
+    value.split_ascii_whitespace().any(|token| {
+        matches!(
+            token.to_ascii_lowercase().as_str(),
+            "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset"
+        )
+    })
+}
+
+fn parse_css_border_width(value: &str) -> Option<usize> {
+    for token in value.split_ascii_whitespace() {
+        let token = token.trim().to_ascii_lowercase();
+        match token.as_str() {
+            "thin" | "medium" => return Some(1),
+            "thick" => return Some(2),
+            _ => {}
+        }
+        if let Some(px) = token
+            .strip_suffix("px")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            if px == 0 {
+                continue;
+            }
+            return Some(px.div_ceil(8).clamp(1, 4));
+        }
+    }
+    None
+}
+
+fn parse_css_color_shade(value: &str) -> Option<u8> {
+    for token in value.split_ascii_whitespace() {
+        let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
+        if token.eq_ignore_ascii_case("transparent") {
+            return None;
+        }
+        if let Some(shade) = parse_hex_color_shade(token) {
+            return Some(shade);
+        }
+        match token.to_ascii_lowercase().as_str() {
+            "black" => return Some(0),
+            "white" => return Some(255),
+            "gray" | "grey" => return Some(128),
+            "silver" => return Some(192),
+            "red" => return Some(rgb_to_luma(255, 0, 0)),
+            "green" => return Some(rgb_to_luma(0, 128, 0)),
+            "blue" => return Some(rgb_to_luma(0, 0, 255)),
+            "yellow" => return Some(rgb_to_luma(255, 255, 0)),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_css_text_align(value: &str) -> Option<TextAlign> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "left" | "start" => Some(TextAlign::Start),
+        "center" => Some(TextAlign::Center),
+        "right" | "end" => Some(TextAlign::End),
+        _ => None,
+    }
+}
+
+fn parse_css_visibility(value: &str) -> Option<Visibility> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "visible" => Some(Visibility::Visible),
+        "hidden" | "collapse" => Some(Visibility::Hidden),
+        _ => None,
+    }
+}
+
+fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "content-box" => Some(BoxSizing::ContentBox),
+        "border-box" => Some(BoxSizing::BorderBox),
+        _ => None,
+    }
+}
+
+fn parse_css_white_space(value: &str) -> Option<WhiteSpace> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "normal" => Some(WhiteSpace::Normal),
+        "nowrap" => Some(WhiteSpace::Nowrap),
+        "pre" => Some(WhiteSpace::Pre),
+        "pre-line" => Some(WhiteSpace::PreLine),
+        "pre-wrap" => Some(WhiteSpace::PreWrap),
+        "break-spaces" => Some(WhiteSpace::BreakSpaces),
+        _ => None,
+    }
+}
+
+fn parse_css_text_transform(value: &str) -> Option<TextTransform> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => Some(TextTransform::None),
+        "uppercase" => Some(TextTransform::Uppercase),
+        "lowercase" => Some(TextTransform::Lowercase),
+        "capitalize" => Some(TextTransform::Capitalize),
+        _ => None,
+    }
+}
+
+fn parse_css_letter_spacing(value: &str) -> Option<usize> {
+    if value
+        .trim()
+        .trim_end_matches(';')
+        .eq_ignore_ascii_case("normal")
+    {
+        return Some(0);
+    }
+    parse_css_dimension_length(value, CssAxis::Horizontal)
+}
+
+fn parse_css_word_spacing(value: &str) -> Option<usize> {
+    if value
+        .trim()
+        .trim_end_matches(';')
+        .eq_ignore_ascii_case("normal")
+    {
+        return Some(0);
+    }
+    parse_css_dimension_length(value, CssAxis::Horizontal)
+}
+
+fn parse_css_overflow_wrap(value: &str) -> Option<OverflowWrap> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "normal" => Some(OverflowWrap::Normal),
+        "break-word" => Some(OverflowWrap::BreakWord),
+        "anywhere" => Some(OverflowWrap::Anywhere),
+        _ => None,
+    }
+}
+
+fn parse_css_word_break(value: &str) -> Option<WordBreak> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "normal" => Some(WordBreak::Normal),
+        "break-all" => Some(WordBreak::BreakAll),
+        "break-word" => Some(WordBreak::BreakWord),
+        "keep-all" => Some(WordBreak::KeepAll),
+        _ => None,
+    }
+}
+
+fn parse_css_line_height(value: &str) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "normal" {
+        return Some(1);
+    }
+    if value.starts_with('-') || value == "inherit" || value == "initial" {
+        return None;
+    }
+    if value.ends_with("px") {
+        return parse_css_dimension_length(&value, CssAxis::Vertical);
+    }
+    let rows = if let Some(percent) = value.strip_suffix('%') {
+        percent.parse::<f32>().ok()? / 100.0
+    } else if let Some(em) = value.strip_suffix("em") {
+        em.parse::<f32>().ok()?
+    } else {
+        value.parse::<f32>().ok()?
+    };
+    (rows > 0.0)
+        .then(|| rows.ceil() as usize)
+        .map(|rows| rows.clamp(1, 16))
+}
+
+fn parse_css_list_style(value: &str) -> Option<CssListStyleType> {
+    value
+        .split_ascii_whitespace()
+        .find_map(parse_css_list_style_type)
+}
+
+fn parse_css_list_style_type(value: &str) -> Option<CssListStyleType> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => Some(CssListStyleType::NoMarker),
+        "disc" => Some(CssListStyleType::Disc),
+        "circle" => Some(CssListStyleType::Circle),
+        "square" => Some(CssListStyleType::Square),
+        "decimal" => Some(CssListStyleType::Decimal),
+        "lower-alpha" | "lower-latin" => Some(CssListStyleType::LowerAlpha),
+        "upper-alpha" | "upper-latin" => Some(CssListStyleType::UpperAlpha),
+        "lower-roman" => Some(CssListStyleType::LowerRoman),
+        "upper-roman" => Some(CssListStyleType::UpperRoman),
+        _ => None,
+    }
+}
+
+fn parse_hex_color_shade(token: &str) -> Option<u8> {
+    let (red, green, blue) = parse_hex_color_rgb(token)?;
+    Some(rgb_to_luma(red, green, blue))
+}
+
+fn parse_hex_color_rgb(token: &str) -> Option<(u8, u8, u8)> {
+    let hex = token.strip_prefix('#')?;
+    match hex.len() {
+        3 => {
+            let r = hex_nibble(hex.as_bytes()[0])? * 17;
+            let g = hex_nibble(hex.as_bytes()[1])? * 17;
+            let b = hex_nibble(hex.as_bytes()[2])? * 17;
+            Some((r, g, b))
+        }
+        6 => {
+            let r = hex_byte(&hex.as_bytes()[0..2])?;
+            let g = hex_byte(&hex.as_bytes()[2..4])?;
+            let b = hex_byte(&hex.as_bytes()[4..6])?;
+            Some((r, g, b))
+        }
+        _ => None,
+    }
+}
+
+fn hex_byte(bytes: &[u8]) -> Option<u8> {
+    Some(hex_nibble(bytes[0])? * 16 + hex_nibble(bytes[1])?)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn rgb_to_luma(red: u8, green: u8, blue: u8) -> u8 {
+    let red = red as u16;
+    let green = green as u16;
+    let blue = blue as u16;
+    ((red * 77 + green * 150 + blue * 29) >> 8) as u8
+}
+
+fn dom_title(dom: &Dom) -> String {
+    dom.nodes
+        .iter()
+        .enumerate()
+        .find_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element) if element.tag == "title" => {
+                Some(text_content(dom, node_id).trim().to_owned())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn text_content(dom: &Dom, node_id: usize) -> String {
+    let mut out = String::new();
+    collect_text(dom, node_id, &mut out);
+    out
+}
+
+fn collect_links(dom: &Dom, source: &str) -> Vec<BrowserLink> {
+    let mut links = Vec::new();
+    collect_links_at(dom, 0, source, &mut links);
+    links
+}
+
+fn collect_links_at(dom: &Dom, node_id: usize, source: &str, links: &mut Vec<BrowserLink>) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+
+    if let NodeKind::Element(element) = &node.kind
+        && element.tag == "a"
+        && let Some(href) = element.href.as_ref().map(|href| href.trim())
+        && !href.is_empty()
+    {
+        links.push(BrowserLink {
+            text: collapse_ascii_whitespace(&text_content(dom, node_id)),
+            href: href.to_owned(),
+            resolved: resolve_browser_href(source, href),
+        });
+    }
+
+    for &child in &node.children {
+        collect_links_at(dom, child, source, links);
+    }
+}
+
+fn anchor_href_for_node(dom: &Dom, mut node_id: usize) -> Option<String> {
+    loop {
+        let node = dom.nodes.get(node_id)?;
+        if let NodeKind::Element(element) = &node.kind
+            && element.tag == "a"
+            && let Some(href) = element.href.as_ref().map(|href| href.trim())
+            && !href.is_empty()
+        {
+            return Some(href.to_owned());
+        }
+        node_id = node.parent?;
+    }
+}
+
+fn click_default_action_for_node(
+    dom: &Dom,
+    source: &str,
+    dispatch: BrowserClickDispatch,
+) -> Option<BrowserClickDefaultAction> {
+    if let Some(href) = anchor_href_for_node(dom, dispatch.node_id) {
+        return Some(BrowserClickDefaultAction::Anchor {
+            resolved: resolve_browser_href(source, &href),
+            default_prevented: dispatch.default_prevented,
+        });
+    }
+    form_default_action_for_node(dom, source, dispatch.node_id).map(|action| match action {
+        FormControlDefaultAction::Submit {
+            form_index,
+            submitter,
+        } => BrowserClickDefaultAction::SubmitForm {
+            form_index,
+            submitter,
+            default_prevented: dispatch.default_prevented,
+        },
+        FormControlDefaultAction::Reset { form_index } => BrowserClickDefaultAction::ResetForm {
+            form_index,
+            default_prevented: dispatch.default_prevented,
+        },
+        FormControlDefaultAction::Toggle {
+            form_index,
+            control_index,
+        } => BrowserClickDefaultAction::ToggleFormControl {
+            form_index,
+            control_index,
+            default_prevented: dispatch.default_prevented,
+        },
+    })
+}
+
+enum FormControlDefaultAction {
+    Submit {
+        form_index: usize,
+        submitter: BrowserFormSubmitter,
+    },
+    Reset {
+        form_index: usize,
+    },
+    Toggle {
+        form_index: usize,
+        control_index: usize,
+    },
+}
+
+fn form_default_action_for_node(
+    dom: &Dom,
+    source: &str,
+    node_id: usize,
+) -> Option<FormControlDefaultAction> {
+    form_default_action_for_node_or_ancestor(dom, source, node_id).or_else(|| {
+        associated_label_control_node(dom, node_id).and_then(|control_node_id| {
+            form_default_action_for_node_or_ancestor(dom, source, control_node_id)
+        })
+    })
+}
+
+fn form_default_action_for_node_or_ancestor(
+    dom: &Dom,
+    source: &str,
+    node_id: usize,
+) -> Option<FormControlDefaultAction> {
+    let mut current = Some(node_id);
+    while let Some(current_node_id) = current {
+        let node = dom.nodes.get(current_node_id)?;
+        if let NodeKind::Element(element) = &node.kind {
+            if element.tag == "form" {
+                return None;
+            }
+            if let Some(control_action) = default_action_for_form_control(element, source) {
+                let form_node_id = nearest_form_ancestor(dom, current_node_id)?;
+                let form_index = form_index_for_node(dom, form_node_id)?;
+                return match control_action {
+                    FormControlElementAction::Submit(submitter) => {
+                        Some(FormControlDefaultAction::Submit {
+                            form_index,
+                            submitter,
+                        })
+                    }
+                    FormControlElementAction::Reset => {
+                        Some(FormControlDefaultAction::Reset { form_index })
+                    }
+                    FormControlElementAction::Toggle => {
+                        let control_index =
+                            form_control_index_for_node(dom, form_node_id, current_node_id)?;
+                        Some(FormControlDefaultAction::Toggle {
+                            form_index,
+                            control_index,
+                        })
+                    }
+                };
+            }
+        }
+        current = node.parent;
+    }
+    None
+}
+
+enum FormControlElementAction {
+    Submit(BrowserFormSubmitter),
+    Reset,
+    Toggle,
+}
+
+fn default_action_for_form_control(
+    element: &ElementData,
+    source: &str,
+) -> Option<FormControlElementAction> {
+    if element.disabled {
+        return None;
+    }
+    match element.tag.as_str() {
+        "input" => {
+            let kind = element.input_type.as_deref().unwrap_or("text");
+            if kind.eq_ignore_ascii_case("submit") {
+                return Some(FormControlElementAction::Submit(submitter_from_element(
+                    element, source,
+                )));
+            }
+            if kind.eq_ignore_ascii_case("reset") {
+                return Some(FormControlElementAction::Reset);
+            }
+            if matches!(kind.to_ascii_lowercase().as_str(), "checkbox" | "radio") {
+                return Some(FormControlElementAction::Toggle);
+            }
+            None
+        }
+        "button" => {
+            let kind = element.input_type.as_deref().unwrap_or("submit");
+            if kind.eq_ignore_ascii_case("submit") {
+                return Some(FormControlElementAction::Submit(submitter_from_element(
+                    element, source,
+                )));
+            }
+            if kind.eq_ignore_ascii_case("reset") {
+                return Some(FormControlElementAction::Reset);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn submitter_from_element(element: &ElementData, source: &str) -> BrowserFormSubmitter {
+    let fields = match element.name.as_deref() {
+        Some(name) if !name.is_empty() => vec![(
+            name.to_owned(),
+            element
+                .value
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_default(),
+        )],
+        _ => Vec::new(),
+    };
+    BrowserFormSubmitter {
+        fields,
+        no_validate: element.attrs.contains_key("formnovalidate"),
+        method: submitter_form_method(element),
+        resolved_action: submitter_resolved_form_action(element, source),
+    }
+}
+
+fn collapse_ascii_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn resolve_browser_href(source: &str, href: &str) -> String {
+    if let Ok(url) = Url::parse(href) {
+        return url.to_string();
+    }
+    if let Ok(base) = Url::parse(source)
+        && let Ok(url) = base.join(href)
+    {
+        return url.to_string();
+    }
+    if href.starts_with('#') {
+        let base = source
+            .split_once('#')
+            .map_or(source, |(without_fragment, _)| without_fragment);
+        return format!("{base}{href}");
+    }
+    if href.starts_with('?') {
+        let fragmentless = source
+            .split_once('#')
+            .map_or(source, |(without_fragment, _)| without_fragment);
+        let base = fragmentless
+            .split_once('?')
+            .map_or(fragmentless, |(without_query, _)| without_query);
+        return format!("{base}{href}");
+    }
+
+    let base = Path::new(source);
+    let parent = if base.is_dir() {
+        base
+    } else {
+        base.parent().unwrap_or_else(|| Path::new("."))
+    };
+    parent.join(href).display().to_string()
+}
+
+fn collect_text(dom: &Dom, node_id: usize, out: &mut String) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.kind {
+        NodeKind::Text(text) => out.push_str(text),
+        _ => {
+            for &child in &node.children {
+                collect_text(dom, child, out);
+            }
+        }
+    }
+}
+
+fn render_children(
+    dom: &Dom,
+    node_id: usize,
+    source: &str,
+    css_cascade: &CssCascade,
+    renderer: &mut FlowRenderer,
+    layout_box_count: &mut usize,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    for &child in &node.children {
+        render_node(dom, child, source, css_cascade, renderer, layout_box_count);
+    }
+}
+
+fn render_node(
+    dom: &Dom,
+    node_id: usize,
+    source: &str,
+    css_cascade: &CssCascade,
+    renderer: &mut FlowRenderer,
+    layout_box_count: &mut usize,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.kind {
+        NodeKind::Document | NodeKind::DocumentFragment => render_children(
+            dom,
+            node_id,
+            source,
+            css_cascade,
+            renderer,
+            layout_box_count,
+        ),
+        NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
+        NodeKind::Element(element) => {
+            let style = computed_style(dom, node_id, element, css_cascade);
+            if source.starts_with("mem://overflow-wrap") && element.tag == "p" {
+                eprintln!("style for p: {:?}", style);
+            }
+            if style.display == Display::None {
+                return;
+            }
+            *layout_box_count += 1;
+
+            let visibility_entered = style.visibility;
+            if let Some(visibility) = visibility_entered {
+                renderer.enter_visibility(visibility);
+            }
+
+            if element.tag == "br" {
+                renderer.break_line();
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
+            if element.tag == "wbr" {
+                renderer.push_word_break_opportunity();
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
+            if element.tag == "hr" {
+                renderer.push_horizontal_rule(Some(node_id));
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
+            if element.tag == "img" {
+                let (image_width, image_height) =
+                    image_placeholder_extent(element, &style, renderer);
+                let image_source = image_render_source(dom, node_id, element);
+                renderer.push_image_placeholder(
+                    image_width,
+                    image_height,
+                    element.alt.clone(),
+                    source,
+                    image_source.as_deref(),
+                    Some(node_id),
+                );
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
+            if let Some(label) = form_control_render_text(dom, node_id, element) {
+                if !label.is_empty() {
+                    renderer.push_inline_widget(&label, Some(node_id));
+                }
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
+            let text_shade_entered = style.text_shade;
+            if let Some(text_shade) = text_shade_entered {
+                renderer.enter_text_shade(text_shade);
+            }
+            let text_align_entered = style.text_align;
+            let white_space_entered = style.white_space;
+            let text_transform_entered = style.text_transform;
+            let letter_spacing_entered = style.letter_spacing;
+            let word_spacing_entered = style.word_spacing;
+            let overflow_wrap_entered = style.overflow_wrap;
+            let word_break_entered = style.word_break;
+            let text_indent_entered = style.text_indent;
+            let line_height_entered = style.line_height;
+            let margin = if style.display.is_block_flow() {
+                style.margin
+            } else {
+                BoxSpacing::default()
+            };
+            if style.display.is_block_flow() {
+                renderer.break_line();
+                if margin.top > 0 {
+                    renderer.push_vertical_space(margin.top);
+                }
+                if margin.left > 0 || margin.right > 0 {
+                    renderer.enter_insets(margin.left, margin.right);
+                }
+            }
+            let width_inset = if style.display.is_block_flow() {
+                let available_width = renderer.available_width();
+                let horizontal_box_extra = style
+                    .padding
+                    .left
+                    .saturating_add(style.padding.right)
+                    .saturating_add(
+                        style
+                            .border
+                            .map(|border| border.width.saturating_mul(2))
+                            .unwrap_or(0),
+                    );
+                let mut block_width = match (style.width, style.box_sizing) {
+                    (Some(width), BoxSizing::ContentBox) => {
+                        width.saturating_add(horizontal_box_extra)
+                    }
+                    (Some(width), BoxSizing::BorderBox) => width,
+                    (None, _) => available_width,
+                };
+                if let Some(max_width) = style.max_width {
+                    let max_outer_width = match style.box_sizing {
+                        BoxSizing::ContentBox => max_width.saturating_add(horizontal_box_extra),
+                        BoxSizing::BorderBox => max_width,
+                    };
+                    block_width = block_width.min(max_outer_width);
+                }
+                if style.min_width > 0 {
+                    let min_outer_width = match style.box_sizing {
+                        BoxSizing::ContentBox => {
+                            style.min_width.saturating_add(horizontal_box_extra)
+                        }
+                        BoxSizing::BorderBox => style.min_width,
+                    };
+                    block_width = block_width.max(min_outer_width);
+                }
+                let block_width = block_width.clamp(1, available_width);
+                let remaining_width = available_width.saturating_sub(block_width);
+                let left_inset = if style.margin_left_auto && style.margin_right_auto {
+                    remaining_width / 2
+                } else if style.margin_left_auto {
+                    remaining_width
+                } else {
+                    0
+                };
+                let right_inset = remaining_width.saturating_sub(left_inset);
+                if left_inset > 0 || right_inset > 0 {
+                    renderer.enter_insets(left_inset, right_inset);
+                }
+                (left_inset, right_inset)
+            } else {
+                (0, 0)
+            };
+            let block_box = style.display.is_block_flow().then(|| {
+                (
+                    renderer.box_x(),
+                    renderer.available_width(),
+                    renderer.current_row(),
+                )
+            });
+            let border = block_box.and(style.border);
+            if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
+                renderer.push_block_border_top(box_x, box_width, border, Some(node_id));
+                renderer.enter_inset(border.width);
+            }
+            let side_start_y = renderer.current_row();
+            let padding = block_box
+                .map(|_| style.padding)
+                .unwrap_or_else(BoxSpacing::default);
+            if padding.top > 0 {
+                renderer.push_vertical_space(padding.top);
+            }
+            if !padding.is_empty() {
+                renderer.enter_insets(padding.left, padding.right);
+            }
+            let background_start = block_box.and_then(|(box_x, box_width, start_y)| {
+                style
+                    .background_shade
+                    .map(|shade| (box_x, box_width, start_y, shade))
+            });
+            if let Some(text_align) = text_align_entered {
+                renderer.enter_text_align(text_align);
+            }
+            if let Some(white_space) = white_space_entered {
+                renderer.enter_white_space(white_space);
+            }
+            if let Some(text_transform) = text_transform_entered {
+                renderer.enter_text_transform(text_transform);
+            }
+            if let Some(letter_spacing) = letter_spacing_entered {
+                renderer.enter_letter_spacing(letter_spacing);
+            }
+            if let Some(word_spacing) = word_spacing_entered {
+                renderer.enter_word_spacing(word_spacing);
+            }
+            if let Some(overflow_wrap) = overflow_wrap_entered {
+                renderer.enter_overflow_wrap(overflow_wrap);
+            }
+            if let Some(word_break) = word_break_entered {
+                renderer.enter_word_break(word_break);
+            }
+            if let Some(text_indent) = text_indent_entered {
+                renderer.enter_text_indent(text_indent);
+            }
+            if let Some(line_height) = line_height_entered {
+                renderer.enter_line_height(line_height);
+            }
+            let text_indent_block_entered = if style.display.is_block_flow() {
+                renderer.enter_block_text_indent();
+                true
+            } else {
+                false
+            };
+            let table_entered = if element.tag == "table" {
+                renderer.enter_table(table_column_widths(dom, node_id, css_cascade));
+                true
+            } else {
+                false
+            };
+            let table_row_entered = if element.tag == "tr" {
+                renderer.enter_table_row(table_row_cell_count(dom, node_id, css_cascade));
+                true
+            } else {
+                false
+            };
+            let table_cell_entered =
+                if is_table_cell_tag(&element.tag) && style.display == Display::Inline {
+                    renderer.enter_table_cell(
+                        table_cell_colspan(dom, node_id),
+                        table_cell_rowspan(dom, node_id),
+                    );
+                    true
+                } else {
+                    false
+                };
+            let list_indent = if style.display.is_block_flow() {
+                nested_list_indent(dom, node_id)
+            } else {
+                0
+            };
+            if list_indent > 0 {
+                renderer.enter_insets(list_indent, 0);
+            }
+            if style.display == Display::ListItem {
+                if let Some(marker) = list_item_marker(dom, node_id, css_cascade) {
+                    renderer.push_text(&marker, Some(node_id));
+                }
+            }
+
+            if element.tag == "details" {
+                render_details_children(
+                    dom,
+                    node_id,
+                    element,
+                    source,
+                    css_cascade,
+                    renderer,
+                    layout_box_count,
+                );
+            } else {
+                render_children(
+                    dom,
+                    node_id,
+                    source,
+                    css_cascade,
+                    renderer,
+                    layout_box_count,
+                );
+            }
+
+            if table_cell_entered {
+                renderer.exit_table_cell();
+            }
+            if table_row_entered {
+                renderer.exit_table_row();
+            }
+            if list_indent > 0 {
+                renderer.break_line();
+                renderer.exit_insets(list_indent, 0);
+            }
+            if style.display.is_block_flow() {
+                renderer.break_line();
+            }
+            if text_indent_block_entered {
+                renderer.exit_block_text_indent();
+            }
+            if line_height_entered.is_some() {
+                renderer.exit_line_height();
+            }
+            if text_indent_entered.is_some() {
+                renderer.exit_text_indent();
+            }
+            if word_break_entered.is_some() {
+                renderer.exit_word_break();
+            }
+            if overflow_wrap_entered.is_some() {
+                renderer.exit_overflow_wrap();
+            }
+            if word_spacing_entered.is_some() {
+                renderer.exit_word_spacing();
+            }
+            if letter_spacing_entered.is_some() {
+                renderer.exit_letter_spacing();
+            }
+            if text_transform_entered.is_some() {
+                renderer.exit_text_transform();
+            }
+            if white_space_entered.is_some() {
+                renderer.exit_white_space();
+            }
+            if text_align_entered.is_some() {
+                renderer.exit_text_align();
+            }
+            if !padding.is_empty() {
+                renderer.exit_insets(padding.left, padding.right);
+            }
+            if padding.bottom > 0 {
+                renderer.push_vertical_space(padding.bottom);
+            }
+            if let Some((_, _, start_y)) = block_box {
+                let block_height = style.height.unwrap_or(0).max(style.min_height);
+                renderer.ensure_current_row_at_least(start_y.saturating_add(block_height));
+            }
+            if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
+                let content_height = renderer.current_row().saturating_sub(side_start_y);
+                renderer.exit_inset(border.width);
+                renderer.push_block_border_sides(
+                    box_x,
+                    box_width,
+                    side_start_y,
+                    content_height,
+                    border,
+                    Some(node_id),
+                );
+                renderer.push_block_border_bottom(box_x, box_width, border, Some(node_id));
+            }
+            if let Some((box_x, box_width, start_y, shade)) = background_start {
+                renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
+            }
+            if style.display.is_block_flow() {
+                if width_inset.0 > 0 || width_inset.1 > 0 {
+                    renderer.exit_insets(width_inset.0, width_inset.1);
+                }
+                if margin.left > 0 || margin.right > 0 {
+                    renderer.exit_insets(margin.left, margin.right);
+                }
+                if margin.bottom > 0 {
+                    renderer.push_vertical_space(margin.bottom);
+                }
+            }
+            if text_shade_entered.is_some() {
+                renderer.exit_text_shade();
+            }
+            if visibility_entered.is_some() {
+                renderer.exit_visibility();
+            }
+            if table_entered {
+                renderer.exit_table();
+            }
+        }
+    }
+}
+
+fn render_details_children(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    source: &str,
+    css_cascade: &CssCascade,
+    renderer: &mut FlowRenderer,
+    layout_box_count: &mut usize,
+) {
+    let is_open = element.attrs.contains_key("open");
+    let summary_child = first_details_summary_child(dom, node_id, css_cascade);
+    if !is_open {
+        if let Some(summary_child) = summary_child {
+            render_node(
+                dom,
+                summary_child,
+                source,
+                css_cascade,
+                renderer,
+                layout_box_count,
+            );
+        } else {
+            renderer.push_text("> Details", Some(node_id));
+        }
+        return;
+    }
+
+    if summary_child.is_none() {
+        renderer.push_text("v Details", Some(node_id));
+        renderer.break_line();
+    }
+    render_children(
+        dom,
+        node_id,
+        source,
+        css_cascade,
+        renderer,
+        layout_box_count,
+    );
+}
+
+fn first_details_summary_child(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+) -> Option<usize> {
+    let node = dom.nodes.get(node_id)?;
+    node.children.iter().copied().find(|&child_id| {
+        let Some(NodeKind::Element(element)) = dom.nodes.get(child_id).map(|node| &node.kind)
+        else {
+            return false;
+        };
+        element.tag == "summary"
+            && computed_style(dom, child_id, element, css_cascade).display != Display::None
+    })
+}
+
+fn element_target_for_node(dom: &Dom, node_id: usize) -> Option<usize> {
+    let mut current = Some(node_id);
+    while let Some(current_id) = current {
+        let node = dom.nodes.get(current_id)?;
+        if matches!(node.kind, NodeKind::Element(_)) {
+            return Some(current_id);
+        }
+        current = node.parent;
+    }
+    None
+}
+
+fn image_placeholder_extent(
+    element: &ElementData,
+    style: &ComputedStyle,
+    renderer: &FlowRenderer,
+) -> (usize, usize) {
+    let attr_width = element
+        .attrs
+        .get("width")
+        .and_then(|value| parse_pixel_dimension_cells(value, 8));
+    let mut width = style.width.or(attr_width).unwrap_or(10);
+    if let Some(max_width) = style.max_width {
+        width = width.min(max_width);
+    }
+    width = width.max(style.min_width);
+    let height = style
+        .height
+        .or_else(|| {
+            element
+                .attrs
+                .get("height")
+                .and_then(|value| parse_pixel_dimension_cells(value, 12))
+        })
+        .unwrap_or(4)
+        .max(style.min_height)
+        .clamp(1, 24);
+    (width.clamp(1, renderer.available_width()), height)
+}
+
+fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
+    match element.tag.as_str() {
+        "input" => input_render_text(element),
+        "select" => Some(select_render_text(dom, node_id)),
+        "textarea" => Some(format!(
+            "[{}]",
+            element
+                .value
+                .clone()
+                .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)))
+        )),
+        _ => None,
+    }
+}
+
+fn input_render_text(element: &ElementData) -> Option<String> {
+    let kind = element
+        .input_type
+        .as_deref()
+        .unwrap_or("text")
+        .to_ascii_lowercase();
+    match kind.as_str() {
+        "hidden" => Some(String::new()),
+        "checkbox" => Some(if element.checked { "[x]" } else { "[ ]" }.to_owned()),
+        "radio" => Some(if element.checked { "(x)" } else { "( )" }.to_owned()),
+        "submit" => Some(format!(
+            "[{}]",
+            element.value.as_deref().unwrap_or("Submit").trim()
+        )),
+        "reset" => Some(format!(
+            "[{}]",
+            element.value.as_deref().unwrap_or("Reset").trim()
+        )),
+        "button" => Some(format!(
+            "[{}]",
+            element.value.as_deref().unwrap_or("Button").trim()
+        )),
+        "image" => element
+            .alt
+            .as_deref()
+            .or(element.value.as_deref())
+            .map(|label| format!("[{}]", label.trim()))
+            .or_else(|| Some("[image]".to_owned())),
+        "password" => Some(format!(
+            "[{}]",
+            "*".repeat(element.value.as_deref().unwrap_or_default().chars().count())
+        )),
+        _ => Some(format!(
+            "[{}]",
+            element
+                .value
+                .as_deref()
+                .or_else(|| element.attrs.get("placeholder").map(String::as_str))
+                .unwrap_or_default()
+        )),
+    }
+}
+
+fn select_render_text(dom: &Dom, node_id: usize) -> String {
+    let options = select_options(dom, node_id);
+    let value = select_value(&options);
+    let label = value
+        .as_ref()
+        .and_then(|value| options.iter().find(|option| &option.value == value))
+        .map(|option| option.label.as_str())
+        .or_else(|| options.first().map(|option| option.label.as_str()))
+        .unwrap_or_default();
+    format!("[{label}]")
+}
+
+fn parse_pixel_dimension_cells(value: &str, cell_px: usize) -> Option<usize> {
+    let trimmed = value.trim().trim_end_matches("px").trim();
+    if trimmed.contains('%') || trimmed.is_empty() {
+        return None;
+    }
+    let pixels = trimmed.parse::<usize>().ok()?;
+    (pixels > 0).then_some(pixels.div_ceil(cell_px))
+}
+
+fn computed_style(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    css_cascade: &CssCascade,
+) -> ComputedStyle {
+    if element.hidden || default_display(&element.tag) == Display::None {
+        return ComputedStyle {
+            display: Display::None,
+            background_shade: None,
+            text_shade: None,
+            text_align: None,
+            visibility: None,
+            white_space: None,
+            text_transform: None,
+            letter_spacing: None,
+            word_spacing: None,
+            overflow_wrap: None,
+            word_break: None,
+            text_indent: None,
+            line_height: None,
+            box_sizing: BoxSizing::ContentBox,
+            list_style_type: None,
+            border: None,
+            padding: BoxSpacing::default(),
+            margin: BoxSpacing::default(),
+            width: None,
+            max_width: None,
+            min_width: 0,
+            height: None,
+            margin_left_auto: false,
+            margin_right_auto: false,
+            min_height: 0,
+        };
+    }
+    let mut display = default_display(&element.tag);
+    let mut background_shade = None;
+    let mut text_shade = None;
+    let mut text_align = None;
+    let mut visibility = None;
+    let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
+    let mut text_transform = None;
+    let mut letter_spacing = None;
+    let mut word_spacing = None;
+    let mut overflow_wrap = None;
+    let mut word_break = None;
+    let mut text_indent = None;
+    let mut line_height = None;
+    let mut box_sizing = BoxSizing::ContentBox;
+    let mut list_style_type = None;
+    let mut border = None;
+    let mut padding = BoxSpacing::default();
+    let mut margin = default_margin(&element.tag);
+    let mut width = None;
+    let mut max_width = None;
+    let mut min_width = 0usize;
+    let mut height = None;
+    let mut margin_left_auto = false;
+    let mut margin_right_auto = false;
+    let mut min_height = 0usize;
+    let mut display_specificity = 0u32;
+    let mut background_specificity = 0u32;
+    let mut text_specificity = 0u32;
+    let mut text_align_specificity = 0u32;
+    let mut visibility_specificity = 0u32;
+    let mut white_space_specificity = 0u32;
+    let mut text_transform_specificity = 0u32;
+    let mut letter_spacing_specificity = 0u32;
+    let mut word_spacing_specificity = 0u32;
+    let mut overflow_wrap_specificity = 0u32;
+    let mut word_break_specificity = 0u32;
+    let mut text_indent_specificity = 0u32;
+    let mut line_height_specificity = 0u32;
+    let mut box_sizing_specificity = 0u32;
+    let mut list_style_type_specificity = 0u32;
+    let mut border_specificity = 0u32;
+    let mut padding_specificity = 0u32;
+    let mut margin_specificity = 0u32;
+    let mut width_specificity = 0u32;
+    let mut max_width_specificity = 0u32;
+    let mut min_width_specificity = 0u32;
+    let mut height_specificity = 0u32;
+    let mut margin_left_auto_specificity = 0u32;
+    let mut margin_right_auto_specificity = 0u32;
+    let mut min_height_specificity = 0u32;
+    for rule_index in css_cascade.candidate_rule_indices(element) {
+        let Some(rule) = css_cascade.rules.get(rule_index) else {
+            continue;
+        };
+        if selector_matches(&rule.selector, dom, node_id) {
+            let rule_specificity = selector_specificity(&rule.selector);
+            if let Some(rule_display) = rule.declarations.display
+                && rule_specificity >= display_specificity
+            {
+                display = rule_display;
+                display_specificity = rule_specificity;
+            }
+            if let Some(rule_background) = rule.declarations.background_shade
+                && rule_specificity >= background_specificity
+            {
+                background_shade = Some(rule_background);
+                background_specificity = rule_specificity;
+            }
+            if let Some(rule_text) = rule.declarations.text_shade
+                && rule_specificity >= text_specificity
+            {
+                text_shade = Some(rule_text);
+                text_specificity = rule_specificity;
+            }
+            if let Some(rule_text_align) = rule.declarations.text_align
+                && rule_specificity >= text_align_specificity
+            {
+                text_align = Some(rule_text_align);
+                text_align_specificity = rule_specificity;
+            }
+            if let Some(rule_visibility) = rule.declarations.visibility
+                && rule_specificity >= visibility_specificity
+            {
+                visibility = Some(rule_visibility);
+                visibility_specificity = rule_specificity;
+            }
+            if let Some(rule_white_space) = rule.declarations.white_space
+                && rule_specificity >= white_space_specificity
+            {
+                white_space = Some(rule_white_space);
+                white_space_specificity = rule_specificity;
+            }
+            if let Some(rule_text_transform) = rule.declarations.text_transform
+                && rule_specificity >= text_transform_specificity
+            {
+                text_transform = Some(rule_text_transform);
+                text_transform_specificity = rule_specificity;
+            }
+            if let Some(rule_letter_spacing) = rule.declarations.letter_spacing
+                && rule_specificity >= letter_spacing_specificity
+            {
+                letter_spacing = Some(rule_letter_spacing);
+                letter_spacing_specificity = rule_specificity;
+            }
+            if let Some(rule_word_spacing) = rule.declarations.word_spacing
+                && rule_specificity >= word_spacing_specificity
+            {
+                word_spacing = Some(rule_word_spacing);
+                word_spacing_specificity = rule_specificity;
+            }
+            if let Some(rule_overflow_wrap) = rule.declarations.overflow_wrap
+                && rule_specificity >= overflow_wrap_specificity
+            {
+                overflow_wrap = Some(rule_overflow_wrap);
+                overflow_wrap_specificity = rule_specificity;
+            }
+            if let Some(rule_word_break) = rule.declarations.word_break
+                && rule_specificity >= word_break_specificity
+            {
+                word_break = Some(rule_word_break);
+                word_break_specificity = rule_specificity;
+            }
+            if let Some(rule_text_indent) = rule.declarations.text_indent
+                && rule_specificity >= text_indent_specificity
+            {
+                text_indent = Some(rule_text_indent);
+                text_indent_specificity = rule_specificity;
+            }
+            if let Some(rule_line_height) = rule.declarations.line_height
+                && rule_specificity >= line_height_specificity
+            {
+                line_height = Some(rule_line_height);
+                line_height_specificity = rule_specificity;
+            }
+            if let Some(rule_box_sizing) = rule.declarations.box_sizing
+                && rule_specificity >= box_sizing_specificity
+            {
+                box_sizing = rule_box_sizing;
+                box_sizing_specificity = rule_specificity;
+            }
+            if let Some(rule_list_style_type) = rule.declarations.list_style_type
+                && rule_specificity >= list_style_type_specificity
+            {
+                list_style_type = Some(rule_list_style_type);
+                list_style_type_specificity = rule_specificity;
+            }
+            if let Some(rule_border) = rule.declarations.border
+                && rule_specificity >= border_specificity
+            {
+                border = Some(rule_border);
+                border_specificity = rule_specificity;
+            }
+            if let Some(rule_padding) = rule.declarations.padding
+                && rule_specificity >= padding_specificity
+            {
+                padding = rule_padding;
+                padding_specificity = rule_specificity;
+            }
+            if let Some(rule_margin) = rule.declarations.margin
+                && rule_specificity >= margin_specificity
+            {
+                margin = rule_margin;
+                margin_specificity = rule_specificity;
+            }
+            if let Some(rule_width) = rule.declarations.width
+                && rule_specificity >= width_specificity
+            {
+                width = Some(rule_width);
+                width_specificity = rule_specificity;
+            }
+            if let Some(rule_max_width) = rule.declarations.max_width
+                && rule_specificity >= max_width_specificity
+            {
+                max_width = Some(rule_max_width);
+                max_width_specificity = rule_specificity;
+            }
+            if let Some(rule_min_width) = rule.declarations.min_width
+                && rule_specificity >= min_width_specificity
+            {
+                min_width = rule_min_width;
+                min_width_specificity = rule_specificity;
+            }
+            if let Some(rule_height) = rule.declarations.height
+                && rule_specificity >= height_specificity
+            {
+                height = Some(rule_height);
+                height_specificity = rule_specificity;
+            }
+            if let Some(rule_margin_left_auto) = rule.declarations.margin_left_auto
+                && rule_specificity >= margin_left_auto_specificity
+            {
+                margin_left_auto = rule_margin_left_auto;
+                margin_left_auto_specificity = rule_specificity;
+            }
+            if let Some(rule_margin_right_auto) = rule.declarations.margin_right_auto
+                && rule_specificity >= margin_right_auto_specificity
+            {
+                margin_right_auto = rule_margin_right_auto;
+                margin_right_auto_specificity = rule_specificity;
+            }
+            if let Some(rule_min_height) = rule.declarations.min_height
+                && rule_specificity >= min_height_specificity
+            {
+                min_height = rule_min_height;
+                min_height_specificity = rule_specificity;
+            }
+        }
+    }
+    if let Some(inline) = element.style.as_deref().map(parse_css_declarations) {
+        if let Some(inline_display) = inline.display {
+            display = inline_display;
+        }
+        if let Some(inline_background) = inline.background_shade {
+            background_shade = Some(inline_background);
+        }
+        if let Some(inline_text) = inline.text_shade {
+            text_shade = Some(inline_text);
+        }
+        if let Some(inline_text_align) = inline.text_align {
+            text_align = Some(inline_text_align);
+        }
+        if let Some(inline_visibility) = inline.visibility {
+            visibility = Some(inline_visibility);
+        }
+        if let Some(inline_white_space) = inline.white_space {
+            white_space = Some(inline_white_space);
+        }
+        if let Some(inline_text_transform) = inline.text_transform {
+            text_transform = Some(inline_text_transform);
+        }
+        if let Some(inline_letter_spacing) = inline.letter_spacing {
+            letter_spacing = Some(inline_letter_spacing);
+        }
+        if let Some(inline_word_spacing) = inline.word_spacing {
+            word_spacing = Some(inline_word_spacing);
+        }
+        if let Some(inline_overflow_wrap) = inline.overflow_wrap {
+            overflow_wrap = Some(inline_overflow_wrap);
+        }
+        if let Some(inline_word_break) = inline.word_break {
+            word_break = Some(inline_word_break);
+        }
+        if let Some(inline_text_indent) = inline.text_indent {
+            text_indent = Some(inline_text_indent);
+        }
+        if let Some(inline_line_height) = inline.line_height {
+            line_height = Some(inline_line_height);
+        }
+        if let Some(inline_box_sizing) = inline.box_sizing {
+            box_sizing = inline_box_sizing;
+        }
+        if let Some(inline_list_style_type) = inline.list_style_type {
+            list_style_type = Some(inline_list_style_type);
+        }
+        if let Some(inline_border) = inline.border {
+            border = Some(inline_border);
+        }
+        if let Some(inline_padding) = inline.padding {
+            padding = inline_padding;
+        }
+        if let Some(inline_margin) = inline.margin {
+            margin = inline_margin;
+        }
+        if let Some(inline_width) = inline.width {
+            width = Some(inline_width);
+        }
+        if let Some(inline_max_width) = inline.max_width {
+            max_width = Some(inline_max_width);
+        }
+        if let Some(inline_min_width) = inline.min_width {
+            min_width = inline_min_width;
+        }
+        if let Some(inline_height) = inline.height {
+            height = Some(inline_height);
+        }
+        if let Some(inline_margin_left_auto) = inline.margin_left_auto {
+            margin_left_auto = inline_margin_left_auto;
+        }
+        if let Some(inline_margin_right_auto) = inline.margin_right_auto {
+            margin_right_auto = inline_margin_right_auto;
+        }
+        if let Some(inline_min_height) = inline.min_height {
+            min_height = inline_min_height;
+        }
+    }
+    ComputedStyle {
+        display,
+        background_shade,
+        text_shade,
+        text_align,
+        visibility,
+        white_space,
+        text_transform,
+        letter_spacing,
+        word_spacing,
+        overflow_wrap,
+        word_break,
+        text_indent,
+        line_height,
+        box_sizing,
+        list_style_type,
+        border,
+        padding,
+        margin,
+        width,
+        max_width,
+        min_width,
+        height,
+        margin_left_auto,
+        margin_right_auto,
+        min_height,
+    }
+}
+
+fn default_display(tag: &str) -> Display {
+    match tag {
+        "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
+        "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
+        | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
+        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
+        | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
+        "li" | "summary" => Display::ListItem,
+        _ => Display::Inline,
+    }
+}
+
+fn default_margin(tag: &str) -> BoxSpacing {
+    match tag {
+        "blockquote" => BoxSpacing {
+            left: 4,
+            right: 4,
+            ..BoxSpacing::default()
+        },
+        "dd" => BoxSpacing {
+            left: 4,
+            ..BoxSpacing::default()
+        },
+        _ => BoxSpacing::default(),
+    }
+}
+
+fn is_table_cell_tag(tag: &str) -> bool {
+    matches!(tag, "td" | "th")
+}
+
+fn table_column_widths(dom: &Dom, table_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
+    let mut widths = table_column_width_hints(dom, table_id, css_cascade);
+    let mut rowspans = Vec::new();
+    for row_id in table_rows(dom, table_id, css_cascade) {
+        let mut column = 0usize;
+        for cell_id in table_row_cells(dom, row_id, css_cascade) {
+            while rowspans.get(column).copied().unwrap_or(0) > 0 {
+                column = column.saturating_add(1);
+            }
+            let colspan = table_cell_colspan(dom, cell_id);
+            let rowspan = table_cell_rowspan(dom, cell_id);
+            let cell_width = table_cell_layout_width(dom, cell_id, css_cascade);
+            let column_width = cell_width.div_ceil(colspan).max(1);
+            let end_column = column.saturating_add(colspan);
+            if widths.len() < end_column {
+                widths.resize(end_column, 0);
+            }
+            if rowspans.len() < end_column {
+                rowspans.resize(end_column, 0);
+            }
+            for width in &mut widths[column..end_column] {
+                *width = (*width).max(column_width);
+            }
+            for active_rowspan in &mut rowspans[column..end_column] {
+                *active_rowspan = (*active_rowspan).max(rowspan);
+            }
+            column = end_column;
+        }
+        decrement_table_rowspans(&mut rowspans);
+    }
+    widths
+}
+
+fn table_column_width_hints(dom: &Dom, table_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
+    let mut widths = Vec::new();
+    let Some(table) = dom.nodes.get(table_id) else {
+        return widths;
+    };
+
+    for &child_id in &table.children {
+        let Some(NodeKind::Element(element)) = dom.nodes.get(child_id).map(|node| &node.kind)
+        else {
+            continue;
+        };
+        if computed_style(dom, child_id, element, css_cascade).display == Display::None {
+            continue;
+        }
+        match element.tag.as_str() {
+            "col" => push_table_column_width_hint(dom, child_id, css_cascade, None, &mut widths),
+            "colgroup" => {
+                collect_table_colgroup_width_hints(dom, child_id, css_cascade, &mut widths)
+            }
+            _ => {}
+        }
+    }
+    widths
+}
+
+fn collect_table_colgroup_width_hints(
+    dom: &Dom,
+    colgroup_id: usize,
+    css_cascade: &CssCascade,
+    widths: &mut Vec<usize>,
+) {
+    let inherited_width = table_column_layout_width(dom, colgroup_id, css_cascade);
+    let Some(colgroup) = dom.nodes.get(colgroup_id) else {
+        return;
+    };
+    let mut saw_col = false;
+    for &child_id in &colgroup.children {
+        let Some(NodeKind::Element(element)) = dom.nodes.get(child_id).map(|node| &node.kind)
+        else {
+            continue;
+        };
+        if element.tag != "col"
+            || computed_style(dom, child_id, element, css_cascade).display == Display::None
+        {
+            continue;
+        }
+        saw_col = true;
+        push_table_column_width_hint(dom, child_id, css_cascade, inherited_width, widths);
+    }
+
+    if !saw_col {
+        let width = inherited_width.unwrap_or(0);
+        for _ in 0..table_column_span(dom, colgroup_id) {
+            widths.push(width);
+        }
+    }
+}
+
+fn push_table_column_width_hint(
+    dom: &Dom,
+    column_id: usize,
+    css_cascade: &CssCascade,
+    inherited_width: Option<usize>,
+    widths: &mut Vec<usize>,
+) {
+    let width = table_column_layout_width(dom, column_id, css_cascade)
+        .or(inherited_width)
+        .unwrap_or(0);
+    for _ in 0..table_column_span(dom, column_id) {
+        widths.push(width);
+    }
+}
+
+fn table_rows(dom: &Dom, table_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
+    let mut rows = Vec::new();
+    collect_table_rows(dom, table_id, table_id, css_cascade, &mut rows);
+    rows
+}
+
+fn collect_table_rows(
+    dom: &Dom,
+    table_id: usize,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    rows: &mut Vec<usize>,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    if let NodeKind::Element(element) = &node.kind {
+        if computed_style(dom, node_id, element, css_cascade).display == Display::None {
+            return;
+        }
+        if node_id != table_id && element.tag == "table" {
+            return;
+        }
+        if element.tag == "tr" {
+            rows.push(node_id);
+            return;
+        }
+    }
+
+    for &child in &node.children {
+        collect_table_rows(dom, table_id, child, css_cascade, rows);
+    }
+}
+
+fn table_row_cell_count(dom: &Dom, row_id: usize, css_cascade: &CssCascade) -> usize {
+    table_row_cells(dom, row_id, css_cascade).len()
+}
+
+fn table_row_cells(dom: &Dom, row_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
+    let Some(row) = dom.nodes.get(row_id) else {
+        return Vec::new();
+    };
+    row.children
+        .iter()
+        .copied()
+        .filter(|&child_id| {
+            let Some(NodeKind::Element(element)) = dom.nodes.get(child_id).map(|node| &node.kind)
+            else {
+                return false;
+            };
+            is_table_cell_tag(&element.tag)
+                && computed_style(dom, child_id, element, css_cascade).display != Display::None
+        })
+        .collect()
+}
+
+fn table_cell_colspan(dom: &Dom, cell_id: usize) -> usize {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(cell_id).map(|node| &node.kind) else {
+        return 1;
+    };
+    element
+        .attrs
+        .get("colspan")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16)
+}
+
+fn table_cell_rowspan(dom: &Dom, cell_id: usize) -> usize {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(cell_id).map(|node| &node.kind) else {
+        return 1;
+    };
+    element
+        .attrs
+        .get("rowspan")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16)
+}
+
+fn table_column_span(dom: &Dom, column_id: usize) -> usize {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(column_id).map(|node| &node.kind) else {
+        return 1;
+    };
+    element
+        .attrs
+        .get("span")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 64)
+}
+
+fn table_cell_layout_width(dom: &Dom, cell_id: usize, css_cascade: &CssCascade) -> usize {
+    let text_width = table_cell_text_width(dom, cell_id, css_cascade);
+    text_width.max(table_column_layout_width(dom, cell_id, css_cascade).unwrap_or(0))
+}
+
+fn table_column_layout_width(
+    dom: &Dom,
+    column_id: usize,
+    css_cascade: &CssCascade,
+) -> Option<usize> {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(column_id).map(|node| &node.kind) else {
+        return None;
+    };
+    let style_width = computed_style(dom, column_id, element, css_cascade).width;
+    let attr_width = element
+        .attrs
+        .get("width")
+        .and_then(|value| parse_css_dimension_length(value, CssAxis::Horizontal));
+    style_width.or(attr_width)
+}
+
+fn decrement_table_rowspans(rowspans: &mut [usize]) {
+    for rowspan in rowspans {
+        *rowspan = rowspan.saturating_sub(1);
+    }
+}
+
+fn table_cell_text_width(dom: &Dom, cell_id: usize, css_cascade: &CssCascade) -> usize {
+    let mut text = String::new();
+    collect_visible_layout_text(dom, cell_id, css_cascade, &mut text);
+    collapse_ascii_whitespace(&text).chars().count()
+}
+
+fn collect_visible_layout_text(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    out: &mut String,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.kind {
+        NodeKind::Text(text) => {
+            out.push(' ');
+            out.push_str(text);
+        }
+        NodeKind::Document | NodeKind::DocumentFragment => {
+            for &child in &node.children {
+                collect_visible_layout_text(dom, child, css_cascade, out);
+            }
+        }
+        NodeKind::Element(element) => {
+            if computed_style(dom, node_id, element, css_cascade).display == Display::None {
+                return;
+            }
+            for &child in &node.children {
+                collect_visible_layout_text(dom, child, css_cascade, out);
+            }
+        }
+    }
+}
+
+fn selector_specificity(selector: &CssSelector) -> u32 {
+    selector
+        .steps
+        .iter()
+        .map(|step| compound_specificity(&step.compound))
+        .sum()
+}
+
+fn compound_specificity(compound: &CompoundSelector) -> u32 {
+    u32::from(compound.id.is_some()) * 100
+        + (compound.classes.len() + compound.attributes.len()) as u32 * 10
+        + u32::from(compound.tag.is_some())
+}
+
+fn selector_matches(selector: &CssSelector, dom: &Dom, node_id: usize) -> bool {
+    if selector.steps.is_empty() {
+        return false;
+    }
+    selector_matches_step(selector, selector.steps.len() - 1, dom, node_id)
+}
+
+fn selector_matches_step(
+    selector: &CssSelector,
+    step_index: usize,
+    dom: &Dom,
+    node_id: usize,
+) -> bool {
+    let Some(step) = selector.steps.get(step_index) else {
+        return false;
+    };
+    if !compound_selector_matches(&step.compound, dom, node_id) {
+        return false;
+    }
+    if step_index == 0 {
+        return true;
+    }
+
+    match step.combinator.unwrap_or(SelectorCombinator::Descendant) {
+        SelectorCombinator::Child => dom
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.parent)
+            .is_some_and(|parent| selector_matches_step(selector, step_index - 1, dom, parent)),
+        SelectorCombinator::Descendant => {
+            let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+            while let Some(parent) = current {
+                if selector_matches_step(selector, step_index - 1, dom, parent) {
+                    return true;
+                }
+                current = dom.nodes.get(parent).and_then(|node| node.parent);
+            }
+            false
+        }
+    }
+}
+
+fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: usize) -> bool {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return false;
+    };
+    if let Some(tag) = &compound.tag
+        && element.tag != *tag
+    {
+        return false;
+    }
+    if let Some(id) = &compound.id
+        && element.id.as_deref() != Some(id.as_str())
+    {
+        return false;
+    }
+    if !compound
+        .classes
+        .iter()
+        .all(|class| element.classes.iter().any(|item| item == class))
+    {
+        return false;
+    }
+    for attribute in &compound.attributes {
+        let Some(value) = get_element_attribute_data(element, &attribute.name) else {
+            return false;
+        };
+        if attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| value != expected)
+        {
+            return false;
+        }
+    }
+    compound.universal
+        || compound.tag.is_some()
+        || compound.id.is_some()
+        || !compound.classes.is_empty()
+        || !compound.attributes.is_empty()
+}
+
+#[derive(Debug)]
+struct TextRun {
+    text: String,
+    shade: u8,
+    visible: bool,
+    target_runs: Vec<TextHitTargetRun>,
+}
+
+#[derive(Debug)]
+struct TableFlow {
+    column_widths: Vec<usize>,
+    row_stack: Vec<TableRowFlow>,
+    rowspans: Vec<usize>,
+}
+
+#[derive(Debug)]
+struct TableRowFlow {
+    remaining_cells: usize,
+    next_column_index: usize,
+    active_cell: Option<TableCellFlow>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TableCellFlow {
+    column_index: usize,
+    colspan: usize,
+    rowspan: usize,
+    start_width: usize,
+}
+
+fn table_spanned_column_width(
+    column_widths: &[usize],
+    active_cell: TableCellFlow,
+    fallback_width: usize,
+) -> usize {
+    let span = active_cell.colspan.max(1);
+    let Some(columns) =
+        column_widths.get(active_cell.column_index..active_cell.column_index.saturating_add(span))
+    else {
+        return fallback_width;
+    };
+    if columns.is_empty() {
+        return fallback_width;
+    }
+    columns.iter().copied().sum::<usize>().saturating_add(
+        span.saturating_sub(1)
+            .saturating_mul(TABLE_COLUMN_GAP_CELLS),
+    )
+}
+
+fn table_skipped_column_padding(column_widths: &[usize], start: usize, span: usize) -> usize {
+    if span == 0 {
+        return 0;
+    }
+    let width = column_widths
+        .get(start..start.saturating_add(span))
+        .map(|columns| columns.iter().copied().sum::<usize>())
+        .unwrap_or(0);
+    width
+        .saturating_add(span.saturating_mul(TABLE_COLUMN_GAP_CELLS))
+        .saturating_sub(1)
+}
+
+fn push_text_hit_target_run(
+    runs: &mut Vec<TextHitTargetRun>,
+    start: usize,
+    piece: &str,
+    target_node: Option<usize>,
+) {
+    let width = piece.chars().count();
+    if width == 0 {
+        return;
+    }
+    if let Some(last) = runs.last_mut()
+        && last.target_node == target_node
+        && last.start.saturating_add(last.width) == start
+    {
+        last.width = last.width.saturating_add(width);
+        return;
+    }
+    runs.push(TextHitTargetRun {
+        start,
+        width,
+        target_node,
+    });
+}
+
+#[derive(Debug)]
+struct FlowRenderer {
+    width: usize,
+    left_inset: usize,
+    right_inset: usize,
+    lines: Vec<String>,
+    current_runs: Vec<TextRun>,
+    current_width: usize,
+    soft_break_opportunity: bool,
+    next_y: usize,
+    text_shade: u8,
+    text_shade_stack: Vec<u8>,
+    text_align: TextAlign,
+    text_align_stack: Vec<TextAlign>,
+    visibility: Visibility,
+    visibility_stack: Vec<Visibility>,
+    white_space: WhiteSpace,
+    white_space_stack: Vec<WhiteSpace>,
+    text_transform: TextTransform,
+    text_transform_stack: Vec<TextTransform>,
+    text_transform_capitalize_next: bool,
+    text_transform_capitalize_next_stack: Vec<bool>,
+    letter_spacing: usize,
+    letter_spacing_stack: Vec<usize>,
+    word_spacing: usize,
+    word_spacing_stack: Vec<usize>,
+    overflow_wrap: OverflowWrap,
+    overflow_wrap_stack: Vec<OverflowWrap>,
+    word_break: WordBreak,
+    word_break_stack: Vec<WordBreak>,
+    text_indent: usize,
+    text_indent_stack: Vec<usize>,
+    pending_text_indent: Option<usize>,
+    pending_text_indent_stack: Vec<Option<usize>>,
+    line_height: usize,
+    line_height_stack: Vec<usize>,
+    table_stack: Vec<TableFlow>,
+    underlay_list: Vec<DisplayCommand>,
+    underlay_targets: Vec<DisplayHitTarget>,
+    border_list: Vec<DisplayCommand>,
+    border_targets: Vec<DisplayHitTarget>,
+    display_list: Vec<DisplayCommand>,
+    display_targets: Vec<DisplayHitTarget>,
+    decoded_images: Vec<DecodedImageEntry>,
+    decoded_image_cache: HashMap<String, Option<usize>>,
+}
+
+impl FlowRenderer {
+    fn new(width: usize) -> Self {
+        Self {
+            width,
+            left_inset: 0,
+            right_inset: 0,
+            lines: Vec::new(),
+            current_runs: Vec::new(),
+            current_width: 0,
+            soft_break_opportunity: false,
+            next_y: 0,
+            text_shade: 0,
+            text_shade_stack: Vec::new(),
+            text_align: TextAlign::Start,
+            text_align_stack: Vec::new(),
+            visibility: Visibility::Visible,
+            visibility_stack: Vec::new(),
+            white_space: WhiteSpace::Normal,
+            white_space_stack: Vec::new(),
+            text_transform: TextTransform::None,
+            text_transform_stack: Vec::new(),
+            text_transform_capitalize_next: true,
+            text_transform_capitalize_next_stack: Vec::new(),
+            letter_spacing: 0,
+            letter_spacing_stack: Vec::new(),
+            word_spacing: 0,
+            word_spacing_stack: Vec::new(),
+            overflow_wrap: OverflowWrap::Normal,
+            overflow_wrap_stack: Vec::new(),
+            word_break: WordBreak::Normal,
+            word_break_stack: Vec::new(),
+            text_indent: 0,
+            text_indent_stack: Vec::new(),
+            pending_text_indent: None,
+            pending_text_indent_stack: Vec::new(),
+            line_height: 1,
+            line_height_stack: Vec::new(),
+            table_stack: Vec::new(),
+            underlay_list: Vec::new(),
+            underlay_targets: Vec::new(),
+            border_list: Vec::new(),
+            border_targets: Vec::new(),
+            display_list: Vec::new(),
+            display_targets: Vec::new(),
+            decoded_images: Vec::new(),
+            decoded_image_cache: HashMap::new(),
+        }
+    }
+
+    fn seed_decoded_images(&mut self, images: &[DecodedImageEntry]) {
+        for image in images {
+            let index = self.decoded_images.len();
+            self.decoded_images.push(image.clone());
+            self.decoded_image_cache
+                .insert(image.url.clone(), Some(index));
+        }
+    }
+
+    fn push_text(&mut self, text: &str, target_node: Option<usize>) {
+        match self.white_space {
+            WhiteSpace::Normal => self.push_wrapped_text(text, target_node),
+            WhiteSpace::Nowrap => self.push_nowrap_text(text, target_node),
+            WhiteSpace::Pre => self.push_preformatted_text(text, target_node),
+            WhiteSpace::PreLine => self.push_pre_line_text(text, target_node),
+            WhiteSpace::PreWrap => self.push_pre_wrap_text(text, target_node),
+            WhiteSpace::BreakSpaces => self.push_break_spaces_text(text, target_node),
+        }
+    }
+
+    fn push_wrapped_text(&mut self, text: &str, target_node: Option<usize>) {
+        let available_width = self.available_width();
+        for word in text.split_whitespace() {
+            let word_width = self.letter_spaced_text_width(word);
+            if self.current_width == 0 {
+                self.soft_break_opportunity = false;
+                self.push_wrapped_word(word, target_node);
+            } else if self.soft_break_opportunity {
+                self.soft_break_opportunity = false;
+                if self.current_width.saturating_add(word_width) > available_width {
+                    self.break_line();
+                }
+                self.push_wrapped_word(word, target_node);
+            } else if self
+                .effective_current_width()
+                .saturating_add(self.inter_word_space_width())
+                .saturating_add(word_width)
+                > available_width
+            {
+                if self.can_break_word()
+                    && self
+                        .effective_current_width()
+                        .saturating_add(self.inter_word_space_width())
+                        < available_width
+                {
+                    self.push_inter_word_space(target_node);
+                } else {
+                    self.break_line();
+                }
+                self.push_wrapped_word(word, target_node);
+            } else {
+                self.push_inter_word_space(target_node);
+                self.push_wrapped_word(word, target_node);
+            }
+        }
+    }
+
+    fn push_wrapped_word(&mut self, word: &str, target_node: Option<usize>) {
+        let word_fits = self
+            .effective_current_width()
+            .saturating_add(self.letter_spaced_text_width(word))
+            <= self.available_width();
+        if !self.can_break_word() || word_fits {
+            self.push_text_run_piece(word, target_node);
+            return;
+        }
+        self.push_breakable_text_segment(word, target_node);
+    }
+
+    fn can_break_word(&self) -> bool {
+        self.overflow_wrap != OverflowWrap::Normal
+            || matches!(self.word_break, WordBreak::BreakAll | WordBreak::BreakWord)
+    }
+
+    fn push_nowrap_text(&mut self, text: &str, target_node: Option<usize>) {
+        self.soft_break_opportunity = false;
+        for word in text.split_whitespace() {
+            if self.current_width > 0 {
+                self.push_inter_word_space(target_node);
+            }
+            self.push_text_run_piece(word, target_node);
+        }
+    }
+
+    fn inter_word_space_width(&self) -> usize {
+        1usize.saturating_add(self.word_spacing)
+    }
+
+    fn push_inter_word_space(&mut self, target_node: Option<usize>) {
+        self.push_text_run_piece_unspaced(&" ".repeat(self.inter_word_space_width()), target_node);
+    }
+
+    fn push_word_break_opportunity(&mut self) {
+        if self.current_width > 0 {
+            self.soft_break_opportunity = true;
+        }
+    }
+
+    fn push_pre_line_text(&mut self, text: &str, target_node: Option<usize>) {
+        let mut start = 0usize;
+        for (index, ch) in text.char_indices() {
+            if ch == '\n' {
+                self.push_wrapped_text(&text[start..index], target_node);
+                self.force_line_break();
+                start = index + ch.len_utf8();
+            }
+        }
+        if start < text.len() {
+            self.push_wrapped_text(&text[start..], target_node);
+        }
+    }
+
+    fn push_pre_wrap_text(&mut self, text: &str, target_node: Option<usize>) {
+        let mut start = 0usize;
+        for (index, ch) in text.char_indices() {
+            if ch == '\n' {
+                self.push_pre_wrap_segment(&text[start..index], target_node);
+                self.force_line_break();
+                start = index + ch.len_utf8();
+            }
+        }
+        if start < text.len() {
+            self.push_pre_wrap_segment(&text[start..], target_node);
+        }
+    }
+
+    fn push_break_spaces_text(&mut self, text: &str, target_node: Option<usize>) {
+        self.push_pre_wrap_text(text, target_node);
+    }
+
+    fn push_pre_wrap_segment(&mut self, text: &str, target_node: Option<usize>) {
+        self.push_breakable_text_segment(text, target_node);
+    }
+
+    fn push_breakable_text_segment(&mut self, text: &str, target_node: Option<usize>) {
+        let available_width = self.available_width();
+        let mut start = 0usize;
+        let mut char_count = 0usize;
+        for (index, _) in text.char_indices() {
+            let next_width = self.letter_spaced_char_count_width(char_count.saturating_add(1));
+            if self.effective_current_width().saturating_add(next_width) > available_width {
+                if char_count > 0 {
+                    self.push_text_run_piece(&text[start..index], target_node);
+                }
+                self.break_line();
+                start = index;
+                char_count = 1;
+            } else {
+                char_count += 1;
+            }
+        }
+        if char_count > 0 {
+            self.push_text_run_piece(&text[start..], target_node);
+        }
+    }
+
+    fn push_preformatted_text(&mut self, text: &str, target_node: Option<usize>) {
+        let mut start = 0usize;
+        for (index, ch) in text.char_indices() {
+            if ch == '\n' {
+                self.push_text_run_piece(&text[start..index], target_node);
+                self.force_line_break();
+                start = index + ch.len_utf8();
+            }
+        }
+        if start < text.len() {
+            self.push_text_run_piece(&text[start..], target_node);
+        }
+    }
+
+    fn push_inline_widget(&mut self, text: &str, target_node: Option<usize>) {
+        let line_was_empty = self.current_width == 0;
+        if line_was_empty {
+            self.push_pending_text_indent();
+        }
+        let width = text.chars().count();
+        if width == 0 {
+            return;
+        }
+        if !line_was_empty && self.current_width > 0 {
+            if self.current_width.saturating_add(1).saturating_add(width) > self.available_width() {
+                self.break_line();
+            } else {
+                self.push_text_run_piece_unspaced(" ", None);
+            }
+        }
+        self.push_text_run_piece(text, target_node);
+    }
+
+    fn break_line(&mut self) {
+        self.soft_break_opportunity = false;
+        let line_height = self.line_height.max(1);
+        if !self.current_runs.is_empty() {
+            let y = self.next_y;
+            let align_offset = self
+                .text_align
+                .offset(self.available_width(), self.current_width);
+            let mut run_x = self.left_inset.saturating_add(align_offset);
+            let mut text = String::new();
+            for run in self.current_runs.drain(..) {
+                let run_width = run.text.chars().count();
+                if run.visible {
+                    text.push_str(&run.text);
+                    if run.shade == 0 {
+                        self.display_list.push(DisplayCommand::Text {
+                            x: run_x,
+                            y,
+                            text: run.text,
+                        });
+                    } else {
+                        self.display_list.push(DisplayCommand::StyledText {
+                            x: run_x,
+                            y,
+                            text: run.text,
+                            shade: run.shade,
+                        });
+                    }
+                    self.display_targets
+                        .push(DisplayHitTarget::text(run.target_runs));
+                } else {
+                    text.push_str(&" ".repeat(run_width));
+                }
+                run_x = run_x.saturating_add(run_width);
+            }
+            self.lines.push(text);
+            self.push_line_height_gaps(line_height);
+            self.next_y = self.next_y.saturating_add(line_height);
+        }
+        self.current_width = 0;
+    }
+
+    fn force_line_break(&mut self) {
+        self.soft_break_opportunity = false;
+        let line_height = self.line_height.max(1);
+        if self.current_runs.is_empty() {
+            self.lines.push(String::new());
+            self.push_line_height_gaps(line_height);
+            self.next_y = self.next_y.saturating_add(line_height);
+            self.current_width = 0;
+            return;
+        }
+        self.break_line();
+    }
+
+    fn push_line_height_gaps(&mut self, line_height: usize) {
+        for _ in 1..line_height {
+            self.lines.push(String::new());
+        }
+    }
+
+    fn push_text_run_piece(&mut self, piece: &str, target_node: Option<usize>) {
+        self.push_text_run_piece_with_spacing(piece, target_node, true);
+    }
+
+    fn push_text_run_piece_unspaced(&mut self, piece: &str, target_node: Option<usize>) {
+        self.push_text_run_piece_with_spacing(piece, target_node, false);
+    }
+
+    fn push_text_run_piece_with_spacing(
+        &mut self,
+        piece: &str,
+        target_node: Option<usize>,
+        apply_letter_spacing: bool,
+    ) {
+        if piece.is_empty() {
+            return;
+        }
+        if apply_letter_spacing && self.current_width == 0 {
+            self.push_pending_text_indent();
+        }
+        let piece = self.transform_text_piece(piece);
+        let piece = if apply_letter_spacing {
+            self.apply_letter_spacing(&piece)
+        } else {
+            piece
+        };
+        let piece = piece.as_str();
+        self.current_width = self.current_width.saturating_add(piece.chars().count());
+        let visible = self.visibility == Visibility::Visible;
+        if let Some(last) = self.current_runs.last_mut()
+            && last.shade == self.text_shade
+            && last.visible == visible
+        {
+            let start = last.text.chars().count();
+            last.text.push_str(piece);
+            push_text_hit_target_run(&mut last.target_runs, start, piece, target_node);
+            return;
+        }
+        let mut target_runs = Vec::new();
+        push_text_hit_target_run(&mut target_runs, 0, piece, target_node);
+        self.current_runs.push(TextRun {
+            text: piece.to_owned(),
+            shade: self.text_shade,
+            visible,
+            target_runs,
+        });
+    }
+
+    fn push_pending_text_indent(&mut self) {
+        let Some(indent) = self.pending_text_indent.take() else {
+            return;
+        };
+        if indent > 0 {
+            self.push_text_run_piece_unspaced(&" ".repeat(indent), None);
+        }
+    }
+
+    fn effective_current_width(&self) -> usize {
+        self.current_width
+            .saturating_add(self.pending_text_indent.unwrap_or(0))
+    }
+
+    fn letter_spaced_text_width(&self, text: &str) -> usize {
+        self.letter_spaced_char_count_width(text.chars().count())
+    }
+
+    fn letter_spaced_char_count_width(&self, char_count: usize) -> usize {
+        char_count.saturating_add(
+            self.letter_spacing
+                .saturating_mul(char_count.saturating_sub(1)),
+        )
+    }
+
+    fn apply_letter_spacing(&self, text: &str) -> String {
+        if self.letter_spacing == 0 {
+            return text.to_owned();
+        }
+        let mut chars = text.chars();
+        let Some(first) = chars.next() else {
+            return String::new();
+        };
+        let mut spaced = String::with_capacity(self.letter_spaced_text_width(text));
+        spaced.push(first);
+        let gap = " ".repeat(self.letter_spacing);
+        for ch in chars {
+            spaced.push_str(&gap);
+            spaced.push(ch);
+        }
+        spaced
+    }
+
+    fn transform_text_piece(&mut self, piece: &str) -> String {
+        match self.text_transform {
+            TextTransform::None => piece.to_owned(),
+            TextTransform::Uppercase => piece.to_ascii_uppercase(),
+            TextTransform::Lowercase => piece.to_ascii_lowercase(),
+            TextTransform::Capitalize => self.capitalize_text_piece(piece),
+        }
+    }
+
+    fn capitalize_text_piece(&mut self, piece: &str) -> String {
+        let mut transformed = String::with_capacity(piece.len());
+        for ch in piece.chars() {
+            if ch.is_ascii_alphanumeric() {
+                if self.text_transform_capitalize_next && ch.is_ascii_alphabetic() {
+                    transformed.push(ch.to_ascii_uppercase());
+                } else {
+                    transformed.push(ch);
+                }
+                self.text_transform_capitalize_next = false;
+            } else {
+                transformed.push(ch);
+                self.text_transform_capitalize_next = true;
+            }
+        }
+        transformed
+    }
+
+    fn enter_text_shade(&mut self, shade: u8) {
+        self.text_shade_stack.push(self.text_shade);
+        self.text_shade = shade;
+    }
+
+    fn exit_text_shade(&mut self) {
+        self.text_shade = self.text_shade_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_text_align(&mut self, align: TextAlign) {
+        self.text_align_stack.push(self.text_align);
+        self.text_align = align;
+    }
+
+    fn exit_text_align(&mut self) {
+        self.text_align = self.text_align_stack.pop().unwrap_or(TextAlign::Start);
+    }
+
+    fn enter_visibility(&mut self, visibility: Visibility) {
+        self.visibility_stack.push(self.visibility);
+        self.visibility = visibility;
+    }
+
+    fn exit_visibility(&mut self) {
+        self.visibility = self.visibility_stack.pop().unwrap_or(Visibility::Visible);
+    }
+
+    fn enter_white_space(&mut self, white_space: WhiteSpace) {
+        self.white_space_stack.push(self.white_space);
+        self.white_space = white_space;
+    }
+
+    fn exit_white_space(&mut self) {
+        self.white_space = self.white_space_stack.pop().unwrap_or(WhiteSpace::Normal);
+    }
+
+    fn enter_text_transform(&mut self, text_transform: TextTransform) {
+        self.text_transform_stack.push(self.text_transform);
+        self.text_transform_capitalize_next_stack
+            .push(self.text_transform_capitalize_next);
+        self.text_transform = text_transform;
+        if self.text_transform == TextTransform::Capitalize {
+            self.text_transform_capitalize_next = true;
+        }
+    }
+
+    fn exit_text_transform(&mut self) {
+        self.text_transform = self
+            .text_transform_stack
+            .pop()
+            .unwrap_or(TextTransform::None);
+        self.text_transform_capitalize_next = self
+            .text_transform_capitalize_next_stack
+            .pop()
+            .unwrap_or(true);
+    }
+
+    fn enter_letter_spacing(&mut self, letter_spacing: usize) {
+        self.letter_spacing_stack.push(self.letter_spacing);
+        self.letter_spacing = letter_spacing;
+    }
+
+    fn exit_letter_spacing(&mut self) {
+        self.letter_spacing = self.letter_spacing_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_word_spacing(&mut self, word_spacing: usize) {
+        self.word_spacing_stack.push(self.word_spacing);
+        self.word_spacing = word_spacing;
+    }
+
+    fn exit_word_spacing(&mut self) {
+        self.word_spacing = self.word_spacing_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_overflow_wrap(&mut self, overflow_wrap: OverflowWrap) {
+        self.overflow_wrap_stack.push(self.overflow_wrap);
+        self.overflow_wrap = overflow_wrap;
+    }
+
+    fn exit_overflow_wrap(&mut self) {
+        self.overflow_wrap = self
+            .overflow_wrap_stack
+            .pop()
+            .unwrap_or(OverflowWrap::Normal);
+    }
+
+    fn enter_word_break(&mut self, word_break: WordBreak) {
+        self.word_break_stack.push(self.word_break);
+        self.word_break = word_break;
+    }
+
+    fn exit_word_break(&mut self) {
+        self.word_break = self.word_break_stack.pop().unwrap_or(WordBreak::Normal);
+    }
+
+    fn enter_text_indent(&mut self, text_indent: usize) {
+        self.text_indent_stack.push(self.text_indent);
+        self.text_indent = text_indent;
+    }
+
+    fn exit_text_indent(&mut self) {
+        self.text_indent = self.text_indent_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_block_text_indent(&mut self) {
+        self.pending_text_indent_stack
+            .push(self.pending_text_indent.take());
+        self.pending_text_indent = (self.text_indent > 0).then_some(self.text_indent);
+    }
+
+    fn exit_block_text_indent(&mut self) {
+        self.pending_text_indent = self.pending_text_indent_stack.pop().unwrap_or(None);
+    }
+
+    fn enter_line_height(&mut self, line_height: usize) {
+        self.line_height_stack.push(self.line_height);
+        self.line_height = line_height.max(1);
+    }
+
+    fn exit_line_height(&mut self) {
+        self.line_height = self.line_height_stack.pop().unwrap_or(1);
+    }
+
+    fn enter_table(&mut self, column_widths: Vec<usize>) {
+        self.table_stack.push(TableFlow {
+            column_widths,
+            row_stack: Vec::new(),
+            rowspans: Vec::new(),
+        });
+    }
+
+    fn exit_table(&mut self) {
+        self.table_stack.pop();
+    }
+
+    fn enter_table_row(&mut self, cell_count: usize) {
+        if let Some(table) = self.table_stack.last_mut() {
+            table.row_stack.push(TableRowFlow {
+                remaining_cells: cell_count,
+                next_column_index: 0,
+                active_cell: None,
+            });
+        }
+    }
+
+    fn exit_table_row(&mut self) {
+        if let Some(table) = self.table_stack.last_mut() {
+            table.row_stack.pop();
+            decrement_table_rowspans(&mut table.rowspans);
+        }
+    }
+
+    fn enter_table_cell(&mut self, colspan: usize, rowspan: usize) {
+        let skipped_padding = {
+            let Some(table) = self.table_stack.last_mut() else {
+                return;
+            };
+            let Some(row) = table.row_stack.last_mut() else {
+                return;
+            };
+            if row.active_cell.is_some() {
+                return;
+            }
+            let start_column = row.next_column_index;
+            while table
+                .rowspans
+                .get(row.next_column_index)
+                .copied()
+                .unwrap_or(0)
+                > 0
+            {
+                row.next_column_index = row.next_column_index.saturating_add(1);
+            }
+            let skipped_columns = row.next_column_index.saturating_sub(start_column);
+            let start_width = self
+                .current_width
+                .saturating_add(table_skipped_column_padding(
+                    &table.column_widths,
+                    start_column,
+                    skipped_columns,
+                ));
+            row.active_cell = Some(TableCellFlow {
+                column_index: row.next_column_index,
+                colspan: colspan.clamp(1, 16),
+                rowspan: rowspan.clamp(1, 16),
+                start_width,
+            });
+            table_skipped_column_padding(&table.column_widths, start_column, skipped_columns)
+        };
+        if skipped_padding > 0 {
+            self.push_text_run_piece_unspaced(&" ".repeat(skipped_padding), None);
+        }
+    }
+
+    fn exit_table_cell(&mut self) {
+        let padding = {
+            let Some(table) = self.table_stack.last_mut() else {
+                return;
+            };
+            let Some(row) = table.row_stack.last_mut() else {
+                return;
+            };
+            let Some(active_cell) = row.active_cell.take() else {
+                return;
+            };
+            let cell_width = self.current_width.saturating_sub(active_cell.start_width);
+            let column_width =
+                table_spanned_column_width(&table.column_widths, active_cell, cell_width);
+            let next_column_index = active_cell.column_index.saturating_add(active_cell.colspan);
+            if table.rowspans.len() < next_column_index {
+                table.rowspans.resize(next_column_index, 0);
+            }
+            for rowspan in &mut table.rowspans[active_cell.column_index..next_column_index] {
+                *rowspan = (*rowspan).max(active_cell.rowspan);
+            }
+            let has_next_cell = row.remaining_cells > 1;
+            row.remaining_cells = row.remaining_cells.saturating_sub(1);
+            row.next_column_index = next_column_index;
+            has_next_cell.then_some(
+                column_width
+                    .saturating_sub(cell_width)
+                    .saturating_add(TABLE_COLUMN_GAP_CELLS.saturating_sub(1)),
+            )
+        };
+        if let Some(padding) = padding
+            && padding > 0
+        {
+            self.push_text_run_piece_unspaced(&" ".repeat(padding), None);
+        }
+    }
+
+    fn push_horizontal_rule(&mut self, target_node: Option<usize>) {
+        self.break_line();
+        if self.visibility == Visibility::Visible {
+            self.display_list.push(DisplayCommand::Rect {
+                x: 0,
+                y: self.next_y,
+                width: self.width,
+                height: 1,
+                shade: 96,
+            });
+            self.display_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        self.next_y += 1;
+    }
+
+    fn push_image_placeholder(
+        &mut self,
+        width: usize,
+        height: usize,
+        alt: Option<String>,
+        source: &str,
+        url: Option<&str>,
+        target_node: Option<usize>,
+    ) {
+        self.break_line();
+        let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
+        if self.visibility == Visibility::Visible {
+            self.display_list.push(DisplayCommand::Image {
+                x: self.left_inset,
+                y: self.next_y,
+                width: width.min(self.available_width()).max(1),
+                height: height.max(1),
+                shade: 220,
+                alt,
+                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                decoded_width: decoded_info.as_ref().map(|image| image.width),
+                decoded_height: decoded_info.as_ref().map(|image| image.height),
+                decoded_hash: decoded_info.map(|image| image.pixel_hash),
+            });
+            self.display_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        self.next_y = self.next_y.saturating_add(height.max(1));
+    }
+
+    fn cached_decoded_image_info(&mut self, source: &str, url: &str) -> Option<DecodedImageInfo> {
+        let resolved = resolve_browser_href(source, url);
+        for key in [url, resolved.as_str()] {
+            if let Some(index) = self.decoded_image_cache.get(key) {
+                return index
+                    .and_then(|index| self.decoded_images.get(index).map(DecodedImageEntry::info));
+            }
+        }
+
+        let Some(decoded) = decoded_image_entry(source, url) else {
+            self.decoded_image_cache.insert(url.to_owned(), None);
+            self.decoded_image_cache.insert(resolved, None);
+            return None;
+        };
+        let info = decoded.info();
+        let index = self.decoded_images.len();
+        self.decoded_images.push(decoded);
+        self.decoded_image_cache.insert(url.to_owned(), Some(index));
+        self.decoded_image_cache.insert(resolved, Some(index));
+        Some(info)
+    }
+
+    fn current_row(&self) -> usize {
+        self.next_y
+    }
+
+    fn box_x(&self) -> usize {
+        self.left_inset
+    }
+
+    fn available_width(&self) -> usize {
+        self.width
+            .saturating_sub(self.left_inset)
+            .saturating_sub(self.right_inset)
+            .max(1)
+    }
+
+    fn enter_inset(&mut self, border_width: usize) {
+        self.enter_insets(border_width, border_width);
+    }
+
+    fn exit_inset(&mut self, border_width: usize) {
+        self.exit_insets(border_width, border_width);
+    }
+
+    fn enter_insets(&mut self, left: usize, right: usize) {
+        self.left_inset = self.left_inset.saturating_add(left);
+        self.right_inset = self.right_inset.saturating_add(right);
+    }
+
+    fn exit_insets(&mut self, left: usize, right: usize) {
+        self.left_inset = self.left_inset.saturating_sub(left);
+        self.right_inset = self.right_inset.saturating_sub(right);
+    }
+
+    fn push_vertical_space(&mut self, rows: usize) {
+        self.break_line();
+        self.next_y = self.next_y.saturating_add(rows);
+    }
+
+    fn ensure_current_row_at_least(&mut self, row: usize) {
+        self.break_line();
+        self.next_y = self.next_y.max(row);
+    }
+
+    fn push_block_border_top(
+        &mut self,
+        x: usize,
+        width: usize,
+        border: BorderPaint,
+        target_node: Option<usize>,
+    ) {
+        if self.visibility == Visibility::Visible {
+            self.border_list.push(DisplayCommand::Rect {
+                x,
+                y: self.next_y,
+                width,
+                height: border.width,
+                shade: border.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        self.next_y = self.next_y.saturating_add(border.width);
+    }
+
+    fn push_block_border_sides(
+        &mut self,
+        x: usize,
+        width: usize,
+        start_y: usize,
+        height: usize,
+        border: BorderPaint,
+        target_node: Option<usize>,
+    ) {
+        if height == 0 {
+            return;
+        }
+        if self.visibility != Visibility::Visible {
+            return;
+        }
+        let border_width = border.width.min(width);
+        self.border_list.push(DisplayCommand::Rect {
+            x,
+            y: start_y,
+            width: border_width,
+            height,
+            shade: border.shade,
+        });
+        self.border_targets
+            .push(DisplayHitTarget::node(target_node));
+        if width > border_width {
+            self.border_list.push(DisplayCommand::Rect {
+                x: x.saturating_add(width.saturating_sub(border_width)),
+                y: start_y,
+                width: border_width,
+                height,
+                shade: border.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+    }
+
+    fn push_block_border_bottom(
+        &mut self,
+        x: usize,
+        width: usize,
+        border: BorderPaint,
+        target_node: Option<usize>,
+    ) {
+        if self.visibility == Visibility::Visible {
+            self.border_list.push(DisplayCommand::Rect {
+                x,
+                y: self.next_y,
+                width,
+                height: border.width,
+                shade: border.shade,
+            });
+            self.border_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        self.next_y = self.next_y.saturating_add(border.width);
+    }
+
+    fn push_block_background(
+        &mut self,
+        x: usize,
+        width: usize,
+        start_y: usize,
+        shade: u8,
+        target_node: Option<usize>,
+    ) {
+        if self.visibility != Visibility::Visible {
+            return;
+        }
+        let height = self.next_y.saturating_sub(start_y).max(1);
+        self.underlay_list.push(DisplayCommand::Rect {
+            x,
+            y: start_y,
+            width,
+            height,
+            shade,
+        });
+        self.underlay_targets
+            .push(DisplayHitTarget::node(target_node));
+    }
+
+    fn finish(mut self) -> FlowOutput {
+        self.break_line();
+        self.underlay_list.append(&mut self.border_list);
+        self.underlay_targets.append(&mut self.border_targets);
+        self.underlay_list.append(&mut self.display_list);
+        self.underlay_targets.append(&mut self.display_targets);
+        debug_assert_eq!(self.underlay_list.len(), self.underlay_targets.len());
+        FlowOutput {
+            text: self.lines.join("\n"),
+            display_list: self.underlay_list,
+            hit_targets: self.underlay_targets,
+            decoded_images: self.decoded_images,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FlowOutput {
+    text: String,
+    display_list: Vec<DisplayCommand>,
+    hit_targets: Vec<DisplayHitTarget>,
+    decoded_images: Vec<DecodedImageEntry>,
+}
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn chrome_version() -> Option<String> {
+    command_output("chromium", &["--version"])
+        .or_else(|| command_output("google-chrome", &["--version"]))
+        .or_else(|| {
+            command_output(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                &["--version"],
+            )
+        })
+}
+
+fn chrome_program() -> Option<String> {
+    if command_output("chromium", &["--version"]).is_some() {
+        return Some("chromium".to_owned());
+    }
+    if command_output("google-chrome", &["--version"]).is_some() {
+        return Some("google-chrome".to_owned());
+    }
+    let mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if Path::new(mac).exists() {
+        return Some(mac.to_owned());
+    }
+    None
+}
+
+pub fn ensure_static_target(target: &str) -> Result<()> {
+    if target.trim().is_empty() {
+        bail!("browser target cannot be empty");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

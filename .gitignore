@@ -1,0 +1,6 @@
+/target/
+/.brutal-index/
+*.log
+*.tmp
+.DS_Store
+

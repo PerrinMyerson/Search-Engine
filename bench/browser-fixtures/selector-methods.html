@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><title>Selector Methods Fixture</title></head>
+<body>
+  <main data-view="results">
+    <section id="result" data-kind="result">
+      <p id="target" class="title primary">Before</p>
+    </section>
+  </main>
+  <p id="state">Waiting</p>
+  <script>
+    const target = document.getElementById("target");
+    const state = document.getElementById("state");
+    state.textContent = target.matches("p.title.primary");
+    state.textContent += " ";
+    state.textContent += target.matches("section .missing");
+    state.textContent += " ";
+    state.textContent += target.closest('main[data-view="results"]').nodeName;
+    state.textContent += " ";
+    state.textContent += target.closest("section").id;
+  </script>
+</body>
+</html>

@@ -1,0 +1,820 @@
+use std::io::Write;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use anyhow::{Result, bail};
+use brutal_search::crawler::{
+    CrawlBoundary, CrawlOptions, crawl_many, domain_to_seed, load_domain_file, load_seed_file,
+};
+use brutal_search::daemon::{default_socket_path, send_request};
+use brutal_search::frontier::{FrontierStore, RecrawlPlanEntry, unix_now};
+use brutal_search::index::{
+    IndexBuildOptions, PreloadMode, SearchIndex, TermCorrection, TermSuggestion, build_from_corpus,
+    build_from_fielded_documents,
+};
+use brutal_search::protocol::{DaemonRequest, DaemonResponse};
+use brutal_search::query::{SearchOptions, SearchResult};
+use brutal_search::recrawl::{RecrawlScheduleOptions, load_recrawl_manifest_with_options};
+use brutal_search::render::render_target;
+use brutal_search::scheduler::{
+    RecrawlCrawlOptions, RecrawlRoundReport, RecrawlSchedulerOptions, run_recrawl_round,
+};
+use brutal_search::server::run_search_server;
+use brutal_search::sitemap::{
+    SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
+};
+use clap::{Parser, Subcommand, ValueEnum};
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Brutally fast static HTML text search.")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    Crawl {
+        seed_url: Option<String>,
+        #[arg(long = "domain")]
+        domains: Vec<String>,
+        #[arg(long)]
+        domain_file: Option<PathBuf>,
+        #[arg(long)]
+        seed_file: Option<PathBuf>,
+        #[arg(long = "recrawl-manifest")]
+        recrawl_manifests: Vec<PathBuf>,
+        #[arg(long)]
+        include_future_recrawls: bool,
+        #[arg(long = "sitemap")]
+        sitemaps: Vec<String>,
+        #[arg(long)]
+        discover_sitemaps: bool,
+        #[arg(long, default_value_t = 200_000)]
+        max_sitemap_urls: usize,
+        #[arg(long, default_value_t = 1024)]
+        max_sitemaps: usize,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 50_000)]
+        max_pages: usize,
+        #[arg(long, default_value_t = 6)]
+        max_depth: usize,
+        #[arg(long, default_value_t = 64)]
+        concurrency: usize,
+        #[arg(long, default_value_t = 4 * 1024 * 1024)]
+        max_bytes: usize,
+        #[arg(long)]
+        ignore_robots: bool,
+        #[arg(long)]
+        ignore_noindex: bool,
+        #[arg(long, default_value_t = 0)]
+        min_body_terms: u32,
+        #[arg(long, value_enum, default_value = "same-host")]
+        boundary: CliCrawlBoundary,
+        #[arg(long, default_value_t = 4)]
+        max_fetching_per_host: usize,
+    },
+    Index {
+        corpus_dir: PathBuf,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long)]
+        ignore_noindex: bool,
+        #[arg(long, default_value_t = 0)]
+        min_body_terms: u32,
+    },
+    Search {
+        query: String,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Suggest {
+        prefix: String,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Spell {
+        term: String,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Render {
+        target: String,
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Stats {
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    RecrawlPlan {
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
+        interval_secs: u64,
+        #[arg(long, default_value_t = 10_000)]
+        limit: usize,
+    },
+    RecrawlScheduler {
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
+        interval_secs: u64,
+        #[arg(long, default_value_t = 1000)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 300)]
+        poll_secs: u64,
+        #[arg(long)]
+        max_rounds: Option<usize>,
+        #[arg(long, default_value_t = 0)]
+        max_depth: usize,
+        #[arg(long, default_value_t = 64)]
+        concurrency: usize,
+        #[arg(long, default_value_t = 4 * 1024 * 1024)]
+        max_bytes: usize,
+        #[arg(long)]
+        ignore_robots: bool,
+        #[arg(long, value_enum, default_value = "same-host")]
+        boundary: CliCrawlBoundary,
+        #[arg(long, default_value_t = 4)]
+        max_fetching_per_host: usize,
+    },
+    Serve {
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        addr: SocketAddr,
+        #[arg(long, default_value = "aggressive")]
+        preload: PreloadMode,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Crawl {
+            seed_url,
+            domains,
+            domain_file,
+            seed_file,
+            recrawl_manifests,
+            include_future_recrawls,
+            mut sitemaps,
+            discover_sitemaps,
+            max_sitemap_urls,
+            max_sitemaps,
+            index,
+            max_pages,
+            max_depth,
+            concurrency,
+            max_bytes,
+            ignore_robots,
+            ignore_noindex,
+            min_body_terms,
+            boundary,
+            max_fetching_per_host,
+        } => {
+            let mut seeds = Vec::new();
+            let mut robots_discovery_seeds = Vec::new();
+            let mut recrawl_seeds = Vec::new();
+            let mut recrawl_sitemaps = Vec::new();
+            if let Some(seed_url) = seed_url {
+                robots_discovery_seeds.push(seed_url.clone());
+                seeds.push(seed_url);
+            }
+            for domain in domains {
+                let seed = domain_to_seed(&domain)?;
+                robots_discovery_seeds.push(seed.clone());
+                seeds.push(seed);
+            }
+            if let Some(domain_file) = domain_file.as_deref() {
+                let domain_file_seeds = load_domain_file(domain_file)?;
+                robots_discovery_seeds.extend(domain_file_seeds.iter().cloned());
+                seeds.extend(domain_file_seeds);
+            }
+            if let Some(seed_file) = seed_file.as_deref() {
+                let seed_file_seeds = load_seed_file(seed_file)?;
+                robots_discovery_seeds.extend(seed_file_seeds.iter().cloned());
+                seeds.extend(seed_file_seeds);
+            }
+            let recrawl_options = if include_future_recrawls {
+                RecrawlScheduleOptions::include_all()
+            } else {
+                RecrawlScheduleOptions::due_at(unix_now())
+            };
+            for recrawl_manifest in recrawl_manifests {
+                let recrawl =
+                    load_recrawl_manifest_with_options(&recrawl_manifest, recrawl_options)?;
+                if recrawl.skipped_future > 0 {
+                    eprintln!(
+                        "recrawl manifest {} skipped {} future entries",
+                        recrawl_manifest.display(),
+                        recrawl.skipped_future
+                    );
+                }
+                recrawl_seeds.extend(recrawl.seeds.iter().cloned());
+                robots_discovery_seeds.extend(recrawl.seeds.iter().cloned());
+                seeds.extend(recrawl.seeds);
+                recrawl_sitemaps.extend(recrawl.sitemaps);
+            }
+            if discover_sitemaps {
+                sitemaps.extend(
+                    discover_sitemap_sources_from_robots(
+                        robots_discovery_seeds.iter().map(String::as_str),
+                        max_bytes,
+                    )
+                    .await?,
+                );
+            }
+            if !recrawl_sitemaps.is_empty() {
+                let recrawl_sitemap_seeds = load_sitemap_seeds(
+                    recrawl_sitemaps.iter().map(String::as_str),
+                    SitemapLoadOptions {
+                        max_sitemaps,
+                        max_urls: max_sitemap_urls,
+                        max_bytes,
+                    },
+                )
+                .await?;
+                recrawl_seeds.extend(recrawl_sitemap_seeds.iter().cloned());
+                seeds.extend(recrawl_sitemap_seeds);
+            }
+            if !sitemaps.is_empty() {
+                seeds.extend(
+                    load_sitemap_seeds(
+                        sitemaps.iter().map(String::as_str),
+                        SitemapLoadOptions {
+                            max_sitemaps,
+                            max_urls: max_sitemap_urls,
+                            max_bytes,
+                        },
+                    )
+                    .await?,
+                );
+            }
+            if seeds.is_empty() {
+                bail!(
+                    "provide a seed URL, --domain, --domain-file, --seed-file, --recrawl-manifest, or --sitemap"
+                );
+            }
+
+            let frontier_path = index.join("frontier.bin");
+            let document_snapshot_path = index.join("crawl-docs.jsonl");
+            let docs = crawl_many(
+                seeds.iter().map(String::as_str),
+                CrawlOptions {
+                    max_pages,
+                    max_depth,
+                    concurrency,
+                    max_bytes,
+                    ignore_robots,
+                    boundary: boundary.into(),
+                    frontier_path: Some(frontier_path),
+                    document_snapshot_path: Some(document_snapshot_path),
+                    max_fetching_per_host,
+                    recrawl_seeds,
+                },
+            )
+            .await?;
+            let stats = build_from_fielded_documents(
+                docs,
+                index,
+                build_options(ignore_noindex, min_body_terms),
+            )?;
+            print_build_stats(&stats);
+        }
+        Command::Index {
+            corpus_dir,
+            index,
+            ignore_noindex,
+            min_body_terms,
+        } => {
+            let stats = build_from_corpus(
+                corpus_dir,
+                index,
+                build_options(ignore_noindex, min_body_terms),
+            )?;
+            print_build_stats(&stats);
+        }
+        Command::Search {
+            query,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let results = if !no_daemon {
+                match try_daemon_search(&index, socket.as_deref(), &query, limit).await {
+                    Ok(Some(results)) => results,
+                    Ok(None) => one_shot_search(&index, &query, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_search(&index, &query, limit)?
+                    }
+                }
+            } else {
+                one_shot_search(&index, &query, limit)?
+            };
+            print_results(&results);
+        }
+        Command::Suggest {
+            prefix,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let suggestions = if !no_daemon {
+                match try_daemon_suggest(&index, socket.as_deref(), &prefix, limit).await {
+                    Ok(Some(suggestions)) => suggestions,
+                    Ok(None) => one_shot_suggest(&index, &prefix, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_suggest(&index, &prefix, limit)?
+                    }
+                }
+            } else {
+                one_shot_suggest(&index, &prefix, limit)?
+            };
+            print_suggestions(&suggestions);
+        }
+        Command::Spell {
+            term,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let corrections = if !no_daemon {
+                match try_daemon_spell(&index, socket.as_deref(), &term, limit).await {
+                    Ok(Some(corrections)) => corrections,
+                    Ok(None) => one_shot_spell(&index, &term, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_spell(&index, &term, limit)?
+                    }
+                }
+            } else {
+                one_shot_spell(&index, &term, limit)?
+            };
+            print_corrections(&corrections);
+        }
+        Command::Render {
+            target,
+            index,
+            socket,
+            no_daemon,
+        } => {
+            let text = if !no_daemon {
+                match try_daemon_render(&index, socket.as_deref(), &target).await {
+                    Ok(Some(text)) => text,
+                    Ok(None) => one_shot_render(&index, &target)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_render(&index, &target)?
+                    }
+                }
+            } else {
+                one_shot_render(&index, &target)?
+            };
+            println!("{text}");
+        }
+        Command::Stats {
+            index,
+            socket,
+            no_daemon,
+        } => {
+            if !no_daemon {
+                match try_daemon_stats(&index, socket.as_deref()).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(error) => eprintln!("daemon unavailable: {error:#}"),
+                }
+            }
+            let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+            let manifest = index.manifest();
+            println!("docs: {}", manifest.doc_count);
+            println!("terms: {}", manifest.term_count);
+            println!("total_terms: {}", manifest.total_terms);
+            println!("avg_doc_len: {:.2}", manifest.avg_doc_len);
+            println!("duplicate_clusters: {}", manifest.duplicate_cluster_count);
+            println!("duplicate_docs: {}", manifest.duplicate_doc_count);
+            println!("skipped_noindex: {}", manifest.skipped_noindex_count);
+            println!("skipped_thin: {}", manifest.skipped_thin_count);
+            println!("max_authority_score: {:.4}", manifest.max_authority_score);
+            println!("corpus_hash: {}", manifest.corpus_hash);
+        }
+        Command::RecrawlPlan {
+            index,
+            output,
+            interval_secs,
+            limit,
+        } => {
+            let frontier = FrontierStore::open(index.join("frontier.bin"))?;
+            let plan = frontier.recrawl_plan(unix_now(), interval_secs, limit);
+            write_recrawl_plan(output.as_deref(), &plan)?;
+            eprintln!("recrawl plan entries: {}", plan.len());
+        }
+        Command::RecrawlScheduler {
+            index,
+            interval_secs,
+            batch_size,
+            poll_secs,
+            max_rounds,
+            max_depth,
+            concurrency,
+            max_bytes,
+            ignore_robots,
+            boundary,
+            max_fetching_per_host,
+        } => {
+            let options = RecrawlSchedulerOptions {
+                index,
+                interval_secs,
+                batch_size,
+                poll_secs,
+                max_rounds,
+                crawl: RecrawlCrawlOptions {
+                    max_depth,
+                    concurrency,
+                    max_bytes,
+                    ignore_robots,
+                    boundary: boundary.into(),
+                    max_fetching_per_host,
+                },
+            };
+            run_recrawl_scheduler_cli(options).await?;
+        }
+        Command::Serve {
+            index,
+            addr,
+            preload,
+        } => {
+            run_search_server(index, addr, preload).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliCrawlBoundary {
+    SameHost,
+    AnyDomain,
+}
+
+impl From<CliCrawlBoundary> for CrawlBoundary {
+    fn from(value: CliCrawlBoundary) -> Self {
+        match value {
+            CliCrawlBoundary::SameHost => CrawlBoundary::SameHost,
+            CliCrawlBoundary::AnyDomain => CrawlBoundary::AnyDomain,
+        }
+    }
+}
+
+fn build_options(ignore_noindex: bool, min_body_terms: u32) -> IndexBuildOptions {
+    IndexBuildOptions {
+        respect_noindex: !ignore_noindex,
+        min_body_terms,
+        ..IndexBuildOptions::default()
+    }
+}
+
+async fn try_daemon_search(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    query: &str,
+    limit: usize,
+) -> Result<Option<Vec<SearchResult>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Search {
+            query: query.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Search { results } => Ok(Some(results)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_spell(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    term: &str,
+    limit: usize,
+) -> Result<Option<Vec<TermCorrection>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Spell {
+            term: term.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Spell { corrections } => Ok(Some(corrections)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_suggest(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    prefix: &str,
+    limit: usize,
+) -> Result<Option<Vec<TermSuggestion>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Suggest {
+            prefix: prefix.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Suggest { suggestions } => Ok(Some(suggestions)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_render(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    target: &str,
+) -> Result<Option<String>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Render {
+            target: target.to_owned(),
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Render { text } => Ok(Some(text)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_stats(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+) -> Result<bool> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(false);
+    }
+
+    match send_request(&socket, &DaemonRequest::Stats).await? {
+        DaemonResponse::Stats {
+            doc_count,
+            term_count,
+            total_terms,
+            avg_doc_len,
+            duplicate_cluster_count,
+            duplicate_doc_count,
+            skipped_noindex_count,
+            skipped_thin_count,
+            max_authority_score,
+            corpus_hash,
+        } => {
+            println!("docs: {doc_count}");
+            println!("terms: {term_count}");
+            println!("total_terms: {total_terms}");
+            println!("avg_doc_len: {avg_doc_len:.2}");
+            println!("duplicate_clusters: {duplicate_cluster_count}");
+            println!("duplicate_docs: {duplicate_doc_count}");
+            println!("skipped_noindex: {skipped_noindex_count}");
+            println!("skipped_thin: {skipped_thin_count}");
+            println!("max_authority_score: {max_authority_score:.4}");
+            println!("corpus_hash: {corpus_hash}");
+            Ok(true)
+        }
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+fn one_shot_search(
+    index: &std::path::Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    index.search(query, SearchOptions { limit })
+}
+
+fn one_shot_suggest(
+    index: &std::path::Path,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<TermSuggestion>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    Ok(index.suggest(prefix, limit))
+}
+
+fn one_shot_spell(
+    index: &std::path::Path,
+    term: &str,
+    limit: usize,
+) -> Result<Vec<TermCorrection>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    Ok(index.spellcheck(term, limit))
+}
+
+fn one_shot_render(index: &std::path::Path, target: &str) -> Result<String> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    render_target(&index, target)
+}
+
+fn print_suggestions(suggestions: &[TermSuggestion]) {
+    for suggestion in suggestions {
+        println!(
+            "{}\tdf={}\tcf={}",
+            suggestion.term, suggestion.doc_freq, suggestion.collection_freq
+        );
+    }
+}
+
+fn print_corrections(corrections: &[TermCorrection]) {
+    for correction in corrections {
+        println!(
+            "{}\tdistance={}\tdf={}\tcf={}",
+            correction.term, correction.distance, correction.doc_freq, correction.collection_freq
+        );
+    }
+}
+
+fn print_results(results: &[SearchResult]) {
+    for (rank, result) in results.iter().enumerate() {
+        println!(
+            "{}. [{}] {:.4} {}",
+            rank + 1,
+            result.doc_id,
+            result.score,
+            result.url
+        );
+        if result.authority_score > 0.0 {
+            println!("   authority: {:.4}", result.authority_score);
+        }
+        if let Some(language) = &result.language {
+            println!("   language: {language}");
+        }
+        if let Some(fetched_at_unix) = result.fetched_at_unix {
+            println!("   fetched_at_unix: {fetched_at_unix}");
+        }
+        if !result.title.is_empty() {
+            println!("   {}", result.title);
+        }
+        if !result.snippet.is_empty() {
+            println!("   {}", result.snippet);
+        }
+        if result.duplicate_count > 1 {
+            println!(
+                "   duplicate cluster: {} docs (representative {})",
+                result.duplicate_count, result.duplicate_of
+            );
+        }
+    }
+}
+
+fn print_build_stats(stats: &brutal_search::BuildStats) {
+    println!("docs: {}", stats.doc_count);
+    println!("terms: {}", stats.term_count);
+    println!("total_terms: {}", stats.total_terms);
+    println!("avg_doc_len: {:.2}", stats.avg_doc_len);
+    println!("duplicate_clusters: {}", stats.duplicate_cluster_count);
+    println!("duplicate_docs: {}", stats.duplicate_doc_count);
+    println!("skipped_noindex: {}", stats.skipped_noindex_count);
+    println!("skipped_thin: {}", stats.skipped_thin_count);
+    println!("max_authority_score: {:.4}", stats.max_authority_score);
+    println!("corpus_hash: {}", stats.corpus_hash);
+}
+
+async fn run_recrawl_scheduler_cli(options: RecrawlSchedulerOptions) -> Result<()> {
+    let mut round = 0usize;
+    loop {
+        if options.max_rounds == Some(0) {
+            return Ok(());
+        }
+
+        round += 1;
+        let report = run_recrawl_round(&options, round).await?;
+        print_scheduler_report(&report)?;
+
+        if options
+            .max_rounds
+            .is_some_and(|max_rounds| round >= max_rounds)
+        {
+            return Ok(());
+        }
+
+        if options.poll_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(options.poll_secs)).await;
+        }
+    }
+}
+
+fn print_scheduler_report(report: &RecrawlRoundReport) -> Result<()> {
+    println!("{}", serde_json::to_string(report)?);
+    std::io::stdout().lock().flush()?;
+    Ok(())
+}
+
+fn write_recrawl_plan(output: Option<&std::path::Path>, plan: &[RecrawlPlanEntry]) -> Result<()> {
+    if let Some(path) = output {
+        let mut file = std::fs::File::create(path)?;
+        write_recrawl_plan_entries(&mut file, plan)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        write_recrawl_plan_entries(&mut stdout, plan)?;
+    }
+
+    Ok(())
+}
+
+fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry]) -> Result<()> {
+    for entry in plan {
+        serde_json::to_writer(
+            &mut *writer,
+            &serde_json::json!({
+                "url": entry.url.as_str(),
+                "priority": entry.priority,
+                "recrawl_after": entry.recrawl_after.to_string(),
+                "last_fetched_at": entry.last_fetched_at,
+                "age_secs": entry.age_secs,
+            }),
+        )?;
+        (*writer).write_all(b"\n")?;
+    }
+    (*writer).flush()?;
+    Ok(())
+}

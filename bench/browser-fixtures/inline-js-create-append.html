@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Runtime Create</title>
+</head>
+<body>
+  <main id="app"></main>
+  <script>
+    const heading = document.createElement("h1");
+    heading.textContent = "Created heading";
+    document.getElementById("app").appendChild(heading);
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "Created paragraph";
+    document.getElementById("app").appendChild(paragraph);
+  </script>
+</body>
+</html>

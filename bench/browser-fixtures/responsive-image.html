@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Responsive Image Fixture</title>
+  </head>
+  <body>
+    <p>Before responsive</p>
+    <picture>
+      <source srcset="missing-small.svg 16w, simple-image.svg 80w">
+      <img src="missing-fallback.svg" alt="Responsive tile" width="80" height="24">
+    </picture>
+    <p>After responsive</p>
+  </body>
+</html>

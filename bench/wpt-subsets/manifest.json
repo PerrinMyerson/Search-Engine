@@ -1,0 +1,117 @@
+{
+  "name": "local-wpt-compatibility-scaffold",
+  "description": "Tiny local WPT-subset/compatibility scaffold backed by bench/browser-fixtures; this is not a full upstream WPT import.",
+  "expectations": "expectations.jsonl",
+  "fixtures": [
+    {
+      "id": "html-static-text-display-none",
+      "name": "HTML static text and display none",
+      "subsystem": "html",
+      "path": "../browser-fixtures/static-text.html",
+      "width": 80,
+      "expected_title": "Static Text Fixture",
+      "expected_text": "Static Text Fixture\nVisible words render plainly.\nNext page"
+    },
+    {
+      "id": "dom-inline-text-mutation",
+      "name": "DOM inline script text mutation",
+      "subsystem": "dom",
+      "path": "../browser-fixtures/inline-js-dom-text.html",
+      "width": 80,
+      "expected_title": "Inline JS Fixture",
+      "expected_text": "Hydrated from inline script\nStatic sibling"
+    },
+    {
+      "id": "css-text-color",
+      "name": "CSS text color display list",
+      "subsystem": "css",
+      "path": "../browser-fixtures/text-color.html",
+      "width": 40,
+      "expected_title": "Text Color Fixture",
+      "expected_text": "Muted text",
+      "expected_display_list": [
+        {"command": "styled_text", "x": 0, "y": 0, "text": "Muted text", "shade": 128}
+      ]
+    },
+    {
+      "id": "rendering-rect-paint",
+      "name": "Rendering rectangle paint command",
+      "subsystem": "rendering",
+      "path": "../browser-fixtures/paint-rect.html",
+      "width": 40,
+      "expected_title": "Paint Rect Fixture",
+      "expected_text": "Above rule\nBelow rule",
+      "expected_display_list": [
+        {"command": "text", "x": 0, "y": 0, "text": "Above rule"},
+        {"command": "rect", "x": 0, "y": 1, "width": 40, "height": 1, "shade": 96},
+        {"command": "text", "x": 0, "y": 2, "text": "Below rule"}
+      ],
+      "expected_raster_hash": "006ba751090ee4f8077b067d7c5b2d83e865ab2e18d35623748e098f4850cbe0"
+    },
+    {
+      "id": "rendering-display-list-hit-test",
+      "name": "Rendering display-list hit test",
+      "subsystem": "rendering",
+      "path": "../browser-fixtures/background-paint.html",
+      "width": 40,
+      "expected_title": "Background Paint Fixture",
+      "expected_text": "Background card\nStill text first",
+      "expected_hit_tests": [
+        {"x": 1, "y": 0, "expected": {"kind": "text", "text": "Background card"}},
+        {"x": 30, "y": 0, "expected": {"kind": "rect", "shade": 208}},
+        {"x": 40, "y": 0, "expected": null}
+      ],
+      "expected_raster_hash": "14594532705fa108c3200ddebe69690a85e7df81716c2e2c2a8c181a23e8a36c"
+    },
+    {
+      "id": "rendering-layer-tree-snapshot",
+      "name": "Rendering layer-tree snapshot",
+      "subsystem": "rendering",
+      "path": "../browser-fixtures/image-placeholder.html",
+      "width": 40,
+      "expected_title": "Image Placeholder Fixture",
+      "expected_text": "Before image\nAfter image",
+      "expected_layers": [
+        {"id": 0, "parent": null, "kind": "root", "reason": "document-root", "x": 0, "y": 0, "width": 40, "height": 4, "paint_order": 0, "command_indices": [0, 2]},
+        {"id": 1, "parent": 0, "kind": "image", "reason": "image-replaced-element", "x": 0, "y": 1, "width": 10, "height": 2, "paint_order": 1, "command_indices": [1]}
+      ],
+      "expected_raster_hash": "bda76c1a50338bedea2d5bab7a1a856aaa18af8432a3ca8d713ecee56b4de8bd"
+    },
+    {
+      "id": "rendering-viewport-raster-culling",
+      "name": "Rendering viewport raster culling",
+      "subsystem": "rendering",
+      "path": "../browser-fixtures/viewport-scroll.html",
+      "width": 24,
+      "expected_title": "Viewport Raster Fixture",
+      "expected_text": "Zero row\nOne row\nTwo row\nThree row\nFour row",
+      "expected_display_list": [
+        {"command": "text", "x": 0, "y": 0, "text": "Zero row"},
+        {"command": "text", "x": 0, "y": 1, "text": "One row"},
+        {"command": "text", "x": 0, "y": 2, "text": "Two row"},
+        {"command": "text", "x": 0, "y": 3, "text": "Three row"},
+        {"command": "text", "x": 0, "y": 4, "text": "Four row"}
+      ],
+      "raster_viewport_y": 1,
+      "raster_viewport_height": 2,
+      "expected_visible_command_count": 2,
+      "expected_culled_command_count": 3,
+      "expected_raster_hash": "7875d5aa49a34c3fc9f7b6239e871011b31c4b0193bc04999b44b83fc534d2dc"
+    },
+    {
+      "id": "images-responsive-selection",
+      "name": "Images responsive source selection",
+      "subsystem": "images",
+      "path": "../browser-fixtures/responsive-image.html",
+      "width": 40,
+      "expected_title": "Responsive Image Fixture",
+      "expected_text": "Before responsive\nAfter responsive",
+      "expected_display_list": [
+        {"command": "text", "x": 0, "y": 0, "text": "Before responsive"},
+        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Responsive tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
+        {"command": "text", "x": 0, "y": 3, "text": "After responsive"}
+      ],
+      "expected_raster_hash": "98e878ba7473ade89d67a90fb32c8cd05dedac86cc313ca5ea5c82b526773e2a"
+    }
+  ]
+}
