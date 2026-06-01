@@ -886,13 +886,14 @@ mod native {
                 let target = browser_window_location_text(mode)
                     .unwrap_or_default()
                     .to_owned();
+                if target.trim().is_empty() {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 *mode = BrowserWindowMode::Page;
-                if !target.trim().is_empty() {
-                    if modifiers.alt {
-                        app.apply_action(BrowserAppAction::NewTab(target)).await?;
-                    } else {
-                        app.apply_action(BrowserAppAction::Open(target)).await?;
-                    }
+                if modifiers.alt {
+                    app.apply_action(BrowserAppAction::NewTab(target)).await?;
+                } else {
+                    app.apply_action(BrowserAppAction::Open(target)).await?;
                 }
                 Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -3339,6 +3340,53 @@ mod native {
             .unwrap();
             assert!(click.dirty);
             assert_eq!(browser_window_location_text(&mode), Some(""));
+        }
+
+        #[tokio::test]
+        async fn browser_window_empty_location_enter_keeps_prompt_focused() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewBlankTab)
+                .await
+                .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: String::new(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!result.dirty);
+            assert!(!result.close);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                BROWSER_ABOUT_BLANK_TARGET
+            );
         }
 
         #[tokio::test]
