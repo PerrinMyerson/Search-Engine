@@ -9307,13 +9307,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         };
         match name.trim().to_ascii_lowercase().as_str() {
             "display" => {
-                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
-                    "none" => Some(Display::None),
-                    "block" => Some(Display::Block),
-                    "inline" => Some(Display::Inline),
-                    "list-item" => Some(Display::ListItem),
-                    _ => declarations.display,
-                };
+                declarations.display = parse_css_display(value).or(declarations.display);
             }
             "background" | "background-color" => {
                 declarations.background_shade =
@@ -9475,6 +9469,19 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
     declarations.padding = padding.finish();
     declarations.margin = margin.finish();
     declarations
+}
+
+fn parse_css_display(value: &str) -> Option<Display> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    match value.as_str() {
+        "none" => Some(Display::None),
+        "block" | "flow-root" => Some(Display::Block),
+        "inline" | "inline-block" | "inline-table" => Some(Display::Inline),
+        "list-item" => Some(Display::ListItem),
+        "inline flow" | "inline flow-root" | "inline ruby" => Some(Display::Inline),
+        "block flow" | "block flow-root" => Some(Display::Block),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -392,6 +392,36 @@ fn css_display_list_item_controls_marker_generation() {
 }
 
 #[test]
+fn css_inline_block_display_values_stay_in_inline_flow() {
+    let render = render_html(
+        "mem://css-inline-block-display",
+        br#"
+            <html><body>
+              <p>Lead <div style="display:inline-block">One</div><div style="display:inline-table">Two</div><span style="display:inline flow-root">Three</span> Tail</p>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Lead One Two Three Tail\nAfter");
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { x, y, text } => Some((*x, *y, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![(0, 0, "Lead One Two Three Tail"), (0, 1, "After")]
+    );
+}
+
+#[test]
 fn indents_nested_list_markers() {
     let render = render_html(
         "mem://nested-lists",
