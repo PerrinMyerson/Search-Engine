@@ -748,7 +748,7 @@ mod native {
             }
         }
 
-        if key == Key::F6 {
+        if key == Key::F6 || (key == Key::F4 && !modifiers.command && !modifiers.alt) {
             let source = current_browser_window_source(app)?;
             begin_browser_window_location_input(mode, &source);
             return Ok(BrowserWindowKeyResult {
@@ -3274,6 +3274,18 @@ mod native {
             .await
             .unwrap();
             assert!(f6.dirty);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
+
+            mode = BrowserWindowMode::Page;
+            let f4 = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::F4,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(f4.dirty);
             assert_eq!(browser_window_location_text(&mode), Some(""));
 
             mode = BrowserWindowMode::Page;
