@@ -1795,3 +1795,81 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
     assert_eq!(hit_test_target_node(&render, 14, 0), None);
     assert!(hit_test_target_node(&render, 15, 0).is_some());
 }
+
+#[test]
+fn fieldset_renders_as_bordered_block_by_default() {
+    let render = render_html(
+        "mem://fieldset-default-rendering",
+        br#"
+            <html><body>
+              <fieldset>
+                <legend>Contact</legend>
+                <p>Name</p>
+              </fieldset>
+              <fieldset style="border:none; padding:0">
+                <p>Plain</p>
+              </fieldset>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Contact\nName\nPlain\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 1,
+                shade: 128,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 1,
+                width: 1,
+                height: 4,
+                shade: 128,
+            },
+            DisplayCommand::Rect {
+                x: 19,
+                y: 1,
+                width: 1,
+                height: 4,
+                shade: 128,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 5,
+                width: 20,
+                height: 1,
+                shade: 128,
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 2,
+                text: "Contact".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 3,
+                text: "Name".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Plain".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}

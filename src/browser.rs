@@ -1177,6 +1177,7 @@ struct CssDeclarations {
     box_sizing: Option<BoxSizing>,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
+    border_disabled: bool,
     padding: Option<BoxSpacing>,
     margin: Option<BoxSpacing>,
     width: Option<usize>,
@@ -9374,12 +9375,19 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             }
             "border" => {
                 let border = parse_css_border(value);
+                if border.disabled {
+                    declarations.border_disabled = true;
+                }
                 border_enabled |= border.enabled;
                 border_width = border.width.or(border_width);
                 border_shade = border.shade.or(border_shade);
             }
             "border-style" => {
-                border_enabled |= parse_css_border_style_enabled(value);
+                if parse_css_border_style_disabled(value) {
+                    declarations.border_disabled = true;
+                } else {
+                    border_enabled |= parse_css_border_style_enabled(value);
+                }
             }
             "border-width" => {
                 border_width = parse_css_border_width(value).or(border_width);
@@ -9672,6 +9680,7 @@ fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ParsedBorder {
     enabled: bool,
+    disabled: bool,
     width: Option<usize>,
     shade: Option<u8>,
 }
@@ -9680,13 +9689,22 @@ fn parse_css_border(value: &str) -> ParsedBorder {
     let mut border = ParsedBorder::default();
     for token in value.split_ascii_whitespace() {
         if token.eq_ignore_ascii_case("none") || token.eq_ignore_ascii_case("hidden") {
-            return ParsedBorder::default();
+            return ParsedBorder {
+                disabled: true,
+                ..ParsedBorder::default()
+            };
         }
         border.enabled |= parse_css_border_style_enabled(token);
         border.width = parse_css_border_width(token).or(border.width);
         border.shade = parse_css_color_shade(token).or(border.shade);
     }
     border
+}
+
+fn parse_css_border_style_disabled(value: &str) -> bool {
+    value
+        .split_ascii_whitespace()
+        .any(|token| matches!(token.to_ascii_lowercase().as_str(), "none" | "hidden"))
 }
 
 fn parse_css_border_style_enabled(value: &str) -> bool {
@@ -10856,8 +10874,8 @@ fn computed_style(
     let mut line_height = None;
     let mut box_sizing = BoxSizing::ContentBox;
     let mut list_style_type = None;
-    let mut border = None;
-    let mut padding = BoxSpacing::default();
+    let mut border = default_border(&element.tag);
+    let mut padding = default_padding(&element.tag);
     let mut margin = default_margin(&element.tag);
     let mut width = None;
     let mut max_width = None;
@@ -10995,6 +11013,10 @@ fn computed_style(
                 border = Some(rule_border);
                 border_specificity = rule_specificity;
             }
+            if rule.declarations.border_disabled && rule_specificity >= border_specificity {
+                border = None;
+                border_specificity = rule_specificity;
+            }
             if let Some(rule_padding) = rule.declarations.padding
                 && rule_specificity >= padding_specificity
             {
@@ -11106,6 +11128,9 @@ fn computed_style(
         if let Some(inline_border) = inline.border {
             border = Some(inline_border);
         }
+        if inline.border_disabled {
+            border = None;
+        }
         if let Some(inline_padding) = inline.padding {
             padding = inline_padding;
         }
@@ -11175,11 +11200,33 @@ fn default_display(tag: &str) -> Display {
     match tag {
         "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
-        | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
-        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
-        | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
+        | "dl" | "dt" | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
+        | "h3" | "h4" | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p"
+        | "pre" | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
         "li" | "summary" => Display::ListItem,
         _ => Display::Inline,
+    }
+}
+
+fn default_border(tag: &str) -> Option<BorderPaint> {
+    match tag {
+        "fieldset" => Some(BorderPaint {
+            width: 1,
+            shade: 128,
+        }),
+        _ => None,
+    }
+}
+
+fn default_padding(tag: &str) -> BoxSpacing {
+    match tag {
+        "fieldset" => BoxSpacing {
+            top: 1,
+            right: 1,
+            bottom: 1,
+            left: 1,
+        },
+        _ => BoxSpacing::default(),
     }
 }
 
