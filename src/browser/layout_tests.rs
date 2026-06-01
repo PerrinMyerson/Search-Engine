@@ -1505,6 +1505,76 @@ Tail"
 }
 
 #[test]
+fn css_overflow_hidden_clips_paint_and_flow_extent() {
+    let render = render_html(
+        "mem://overflow-hidden",
+        br#"
+            <html><body>
+              <div style="height:12px; overflow:hidden; background-color:#d0d0d0">
+                <p>Visible</p>
+                <p>Hidden</p>
+                <img alt="late image" width="80" height="24">
+              </div>
+              <p>After fixed</p>
+              <div style="max-height:12px; overflow:hidden">
+                <p>Max visible</p>
+                <p>Max hidden</p>
+              </div>
+              <p>Tail</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 1,
+                shade: 208,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Visible".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "After fixed".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Max visible".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Tail".to_owned(),
+            },
+        ]
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 40,
+            height: 5,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert!(!viewport.lines.join("\n").contains("Hidden"));
+    assert_eq!(viewport.document_height, 4);
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",

@@ -1105,6 +1105,18 @@ enum Visibility {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overflow {
+    Visible,
+    Clip,
+}
+
+impl Overflow {
+    fn clips(self) -> bool {
+        matches!(self, Self::Clip)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoxSizing {
     ContentBox,
     BorderBox,
@@ -1130,6 +1142,7 @@ struct ComputedStyle {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    overflow: Overflow,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -1166,6 +1179,7 @@ struct CssDeclarations {
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
+    overflow: Option<Overflow>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -3454,6 +3468,28 @@ fn union_display_bounds(
         width: max_x.saturating_sub(min_x),
         height: max_y.saturating_sub(min_y),
     }
+}
+
+fn intersect_display_bounds(
+    left: DisplayCommandBounds,
+    right: DisplayCommandBounds,
+) -> Option<DisplayCommandBounds> {
+    let x = left.x.max(right.x);
+    let y = left.y.max(right.y);
+    let end_x = left
+        .x
+        .saturating_add(left.width)
+        .min(right.x.saturating_add(right.width));
+    let end_y = left
+        .y
+        .saturating_add(left.height)
+        .min(right.y.saturating_add(right.height));
+    (end_x > x && end_y > y).then_some(DisplayCommandBounds {
+        x,
+        y,
+        width: end_x.saturating_sub(x),
+        height: end_y.saturating_sub(y),
+    })
 }
 
 fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
@@ -9328,6 +9364,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "visibility" => {
                 declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
             }
+            "overflow" | "overflow-x" | "overflow-y" => {
+                declarations.overflow = parse_css_overflow(value).or(declarations.overflow);
+            }
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
@@ -9768,6 +9807,25 @@ fn parse_css_visibility(value: &str) -> Option<Visibility> {
         "hidden" | "collapse" => Some(Visibility::Hidden),
         _ => None,
     }
+}
+
+fn parse_css_overflow(value: &str) -> Option<Overflow> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    let mut saw_value = false;
+    let mut clips = false;
+    for token in value.split_whitespace().take(2) {
+        saw_value = true;
+        match token {
+            "visible" => {}
+            "hidden" | "clip" | "auto" | "scroll" => clips = true,
+            _ => return None,
+        }
+    }
+    saw_value.then_some(if clips {
+        Overflow::Clip
+    } else {
+        Overflow::Visible
+    })
 }
 
 fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
@@ -10444,6 +10502,25 @@ fn render_node(
                     .background_shade
                     .map(|shade| (box_x, box_width, start_y, shade))
             });
+            let overflow_clip_height = match (style.height, style.max_height) {
+                (Some(height), Some(max_height)) => Some(height.min(max_height)),
+                (Some(height), None) => Some(height),
+                (None, Some(max_height)) => Some(max_height),
+                (None, None) => None,
+            };
+            let overflow_clip_entered = if style.display.is_block_flow() && style.overflow.clips() {
+                let clip_y = renderer.current_row();
+                renderer.enter_clip(DisplayCommandBounds {
+                    x: renderer.box_x(),
+                    y: clip_y,
+                    width: renderer.available_width(),
+                    height: overflow_clip_height
+                        .unwrap_or_else(|| usize::MAX.saturating_sub(clip_y)),
+                });
+                Some((clip_y, style.height.is_some(), overflow_clip_height))
+            } else {
+                None
+            };
             if let Some(text_align) = text_align_entered {
                 renderer.enter_text_align(text_align);
             }
@@ -10546,6 +10623,20 @@ fn render_node(
             }
             if style.display.is_block_flow() {
                 renderer.break_line();
+            }
+            match overflow_clip_entered {
+                Some((clip_y, fixed_height, clip_height)) => {
+                    if let Some(clip_height) = clip_height {
+                        let clip_end = clip_y.saturating_add(clip_height);
+                        if fixed_height {
+                            renderer.set_current_row(clip_end);
+                        } else {
+                            renderer.cap_current_row(clip_end);
+                        }
+                    }
+                    renderer.exit_clip();
+                }
+                None => {}
             }
             if text_indent_block_entered {
                 renderer.exit_block_text_indent();
@@ -10818,6 +10909,7 @@ fn computed_style(
             text_shade: None,
             text_align: None,
             visibility: None,
+            overflow: Overflow::Visible,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -10846,6 +10938,7 @@ fn computed_style(
     let mut text_shade = None;
     let mut text_align = None;
     let mut visibility = None;
+    let mut overflow = Overflow::Visible;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -10872,6 +10965,7 @@ fn computed_style(
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
+    let mut overflow_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
@@ -10928,6 +11022,12 @@ fn computed_style(
             {
                 visibility = Some(rule_visibility);
                 visibility_specificity = rule_specificity;
+            }
+            if let Some(rule_overflow) = rule.declarations.overflow
+                && rule_specificity >= overflow_specificity
+            {
+                overflow = rule_overflow;
+                overflow_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
                 && rule_specificity >= white_space_specificity
@@ -11073,6 +11173,9 @@ fn computed_style(
         if let Some(inline_visibility) = inline.visibility {
             visibility = Some(inline_visibility);
         }
+        if let Some(inline_overflow) = inline.overflow {
+            overflow = inline_overflow;
+        }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
         }
@@ -11143,6 +11246,7 @@ fn computed_style(
         text_shade,
         text_align,
         visibility,
+        overflow,
         white_space,
         text_transform,
         letter_spacing,
@@ -11642,6 +11746,33 @@ fn push_text_hit_target_run(
     });
 }
 
+fn text_char_slice(text: &str, start: usize, width: usize) -> String {
+    text.chars().skip(start).take(width).collect()
+}
+
+fn clip_text_hit_target_runs(
+    runs: &[TextHitTargetRun],
+    start: usize,
+    width: usize,
+) -> Vec<TextHitTargetRun> {
+    let end = start.saturating_add(width);
+    let mut clipped = Vec::new();
+    for run in runs {
+        let run_start = run.start;
+        let run_end = run.start.saturating_add(run.width);
+        let clipped_start = run_start.max(start);
+        let clipped_end = run_end.min(end);
+        if clipped_end > clipped_start {
+            clipped.push(TextHitTargetRun {
+                start: clipped_start.saturating_sub(start),
+                width: clipped_end.saturating_sub(clipped_start),
+                target_node: run.target_node,
+            });
+        }
+    }
+    clipped
+}
+
 #[derive(Debug)]
 struct FlowRenderer {
     width: usize,
@@ -11685,6 +11816,8 @@ struct FlowRenderer {
     border_targets: Vec<DisplayHitTarget>,
     display_list: Vec<DisplayCommand>,
     display_targets: Vec<DisplayHitTarget>,
+    active_clip: Option<DisplayCommandBounds>,
+    clip_stack: Vec<Option<DisplayCommandBounds>>,
     decoded_images: Vec<DecodedImageEntry>,
     decoded_image_cache: HashMap<String, Option<usize>>,
 }
@@ -11733,6 +11866,8 @@ impl FlowRenderer {
             border_targets: Vec::new(),
             display_list: Vec::new(),
             display_targets: Vec::new(),
+            active_clip: None,
+            clip_stack: Vec::new(),
             decoded_images: Vec::new(),
             decoded_image_cache: HashMap::new(),
         }
@@ -11745,6 +11880,139 @@ impl FlowRenderer {
             self.decoded_image_cache
                 .insert(image.url.clone(), Some(index));
         }
+    }
+
+    fn enter_clip(&mut self, clip: DisplayCommandBounds) {
+        let active = self
+            .active_clip
+            .and_then(|current| intersect_display_bounds(current, clip))
+            .or_else(|| {
+                self.active_clip
+                    .is_none()
+                    .then_some(clip)
+                    .or(Some(DisplayCommandBounds {
+                        x: clip.x,
+                        y: clip.y,
+                        width: 0,
+                        height: 0,
+                    }))
+            });
+        self.clip_stack.push(self.active_clip);
+        self.active_clip = active;
+    }
+
+    fn exit_clip(&mut self) {
+        self.active_clip = self.clip_stack.pop().unwrap_or(None);
+    }
+
+    fn clipped_bounds(&self, bounds: DisplayCommandBounds) -> Option<DisplayCommandBounds> {
+        match self.active_clip {
+            Some(clip) => intersect_display_bounds(bounds, clip),
+            None => Some(bounds),
+        }
+    }
+
+    fn push_text_display_command(
+        &mut self,
+        x: usize,
+        y: usize,
+        text: String,
+        shade: u8,
+        target_runs: Vec<TextHitTargetRun>,
+    ) {
+        let bounds = DisplayCommandBounds {
+            x,
+            y,
+            width: text.chars().count(),
+            height: 1,
+        };
+        let Some(clipped) = self.clipped_bounds(bounds) else {
+            return;
+        };
+        let start = clipped.x.saturating_sub(x);
+        let text = text_char_slice(&text, start, clipped.width);
+        if text.is_empty() {
+            return;
+        }
+        if shade == 0 {
+            self.display_list.push(DisplayCommand::Text {
+                x: clipped.x,
+                y: clipped.y,
+                text,
+            });
+        } else {
+            self.display_list.push(DisplayCommand::StyledText {
+                x: clipped.x,
+                y: clipped.y,
+                text,
+                shade,
+            });
+        }
+        self.display_targets
+            .push(DisplayHitTarget::text(clip_text_hit_target_runs(
+                &target_runs,
+                start,
+                clipped.width,
+            )));
+    }
+
+    fn clipped_rect_command(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shade: u8,
+    ) -> Option<DisplayCommand> {
+        let clipped = self.clipped_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        })?;
+        Some(DisplayCommand::Rect {
+            x: clipped.x,
+            y: clipped.y,
+            width: clipped.width,
+            height: clipped.height,
+            shade,
+        })
+    }
+
+    fn clipped_image_command(&self, command: DisplayCommand) -> Option<DisplayCommand> {
+        let DisplayCommand::Image {
+            x,
+            y,
+            width,
+            height,
+            shade,
+            alt,
+            url,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+        } = command
+        else {
+            return None;
+        };
+        let clipped = self.clipped_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        })?;
+        Some(DisplayCommand::Image {
+            x: clipped.x,
+            y: clipped.y,
+            width: clipped.width,
+            height: clipped.height,
+            shade,
+            alt,
+            url,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+        })
     }
 
     fn push_text(&mut self, text: &str, target_node: Option<usize>) {
@@ -11937,26 +12205,12 @@ impl FlowRenderer {
                 .offset(self.available_width(), self.current_width);
             let mut run_x = self.left_inset.saturating_add(align_offset);
             let mut text = String::new();
-            for run in self.current_runs.drain(..) {
+            let runs = std::mem::take(&mut self.current_runs);
+            for run in runs {
                 let run_width = run.text.chars().count();
                 if run.visible {
                     text.push_str(&run.text);
-                    if run.shade == 0 {
-                        self.display_list.push(DisplayCommand::Text {
-                            x: run_x,
-                            y,
-                            text: run.text,
-                        });
-                    } else {
-                        self.display_list.push(DisplayCommand::StyledText {
-                            x: run_x,
-                            y,
-                            text: run.text,
-                            shade: run.shade,
-                        });
-                    }
-                    self.display_targets
-                        .push(DisplayHitTarget::text(run.target_runs));
+                    self.push_text_display_command(run_x, y, run.text, run.shade, run.target_runs);
                 } else {
                     text.push_str(&" ".repeat(run_width));
                 }
@@ -12341,15 +12595,11 @@ impl FlowRenderer {
     fn push_horizontal_rule(&mut self, target_node: Option<usize>) {
         self.break_line();
         if self.visibility == Visibility::Visible {
-            self.display_list.push(DisplayCommand::Rect {
-                x: 0,
-                y: self.next_y,
-                width: self.width,
-                height: 1,
-                shade: 96,
-            });
-            self.display_targets
-                .push(DisplayHitTarget::node(target_node));
+            if let Some(command) = self.clipped_rect_command(0, self.next_y, self.width, 1, 96) {
+                self.display_list.push(command);
+                self.display_targets
+                    .push(DisplayHitTarget::node(target_node));
+            }
         }
         self.next_y += 1;
     }
@@ -12366,7 +12616,7 @@ impl FlowRenderer {
         self.break_line();
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
         if self.visibility == Visibility::Visible {
-            self.display_list.push(DisplayCommand::Image {
+            let command = DisplayCommand::Image {
                 x: self.left_inset,
                 y: self.next_y,
                 width: width.min(self.available_width()).max(1),
@@ -12377,9 +12627,12 @@ impl FlowRenderer {
                 decoded_width: decoded_info.as_ref().map(|image| image.width),
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
-            });
-            self.display_targets
-                .push(DisplayHitTarget::node(target_node));
+            };
+            if let Some(command) = self.clipped_image_command(command) {
+                self.display_list.push(command);
+                self.display_targets
+                    .push(DisplayHitTarget::node(target_node));
+            }
         }
         self.next_y = self.next_y.saturating_add(height.max(1));
     }
@@ -12449,6 +12702,16 @@ impl FlowRenderer {
         self.next_y = self.next_y.max(row);
     }
 
+    fn set_current_row(&mut self, row: usize) {
+        self.break_line();
+        self.next_y = row;
+    }
+
+    fn cap_current_row(&mut self, row: usize) {
+        self.break_line();
+        self.next_y = self.next_y.min(row);
+    }
+
     fn push_block_border_top(
         &mut self,
         x: usize,
@@ -12457,15 +12720,13 @@ impl FlowRenderer {
         target_node: Option<usize>,
     ) {
         if self.visibility == Visibility::Visible {
-            self.border_list.push(DisplayCommand::Rect {
-                x,
-                y: self.next_y,
-                width,
-                height: border.width,
-                shade: border.shade,
-            });
-            self.border_targets
-                .push(DisplayHitTarget::node(target_node));
+            if let Some(command) =
+                self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
+            {
+                self.border_list.push(command);
+                self.border_targets
+                    .push(DisplayHitTarget::node(target_node));
+            }
         }
         self.next_y = self.next_y.saturating_add(border.width);
     }
@@ -12486,25 +12747,25 @@ impl FlowRenderer {
             return;
         }
         let border_width = border.width.min(width);
-        self.border_list.push(DisplayCommand::Rect {
-            x,
-            y: start_y,
-            width: border_width,
-            height,
-            shade: border.shade,
-        });
-        self.border_targets
-            .push(DisplayHitTarget::node(target_node));
-        if width > border_width {
-            self.border_list.push(DisplayCommand::Rect {
-                x: x.saturating_add(width.saturating_sub(border_width)),
-                y: start_y,
-                width: border_width,
-                height,
-                shade: border.shade,
-            });
+        if let Some(command) =
+            self.clipped_rect_command(x, start_y, border_width, height, border.shade)
+        {
+            self.border_list.push(command);
             self.border_targets
                 .push(DisplayHitTarget::node(target_node));
+        }
+        if width > border_width {
+            if let Some(command) = self.clipped_rect_command(
+                x.saturating_add(width.saturating_sub(border_width)),
+                start_y,
+                border_width,
+                height,
+                border.shade,
+            ) {
+                self.border_list.push(command);
+                self.border_targets
+                    .push(DisplayHitTarget::node(target_node));
+            }
         }
     }
 
@@ -12516,15 +12777,13 @@ impl FlowRenderer {
         target_node: Option<usize>,
     ) {
         if self.visibility == Visibility::Visible {
-            self.border_list.push(DisplayCommand::Rect {
-                x,
-                y: self.next_y,
-                width,
-                height: border.width,
-                shade: border.shade,
-            });
-            self.border_targets
-                .push(DisplayHitTarget::node(target_node));
+            if let Some(command) =
+                self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
+            {
+                self.border_list.push(command);
+                self.border_targets
+                    .push(DisplayHitTarget::node(target_node));
+            }
         }
         self.next_y = self.next_y.saturating_add(border.width);
     }
@@ -12541,15 +12800,11 @@ impl FlowRenderer {
             return;
         }
         let height = self.next_y.saturating_sub(start_y).max(1);
-        self.underlay_list.push(DisplayCommand::Rect {
-            x,
-            y: start_y,
-            width,
-            height,
-            shade,
-        });
-        self.underlay_targets
-            .push(DisplayHitTarget::node(target_node));
+        if let Some(command) = self.clipped_rect_command(x, start_y, width, height, shade) {
+            self.underlay_list.push(command);
+            self.underlay_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
     }
 
     fn finish(mut self) -> FlowOutput {
