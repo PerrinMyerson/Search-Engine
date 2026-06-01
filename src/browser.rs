@@ -10843,7 +10843,7 @@ fn computed_style(
     }
     let mut display = default_display(&element.tag);
     let mut background_shade = None;
-    let mut text_shade = None;
+    let mut text_shade = default_text_shade(element);
     let mut text_align = None;
     let mut visibility = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
@@ -11165,6 +11165,10 @@ fn computed_style(
         margin_right_auto,
         min_height,
     }
+}
+
+fn default_text_shade(element: &ElementData) -> Option<u8> {
+    (element.tag == "a" && element.href.is_some()).then(|| rgb_to_luma(0, 0, 255))
 }
 
 fn default_display(tag: &str) -> Display {

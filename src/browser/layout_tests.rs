@@ -1454,6 +1454,50 @@ fn indents_blockquotes_and_definition_descriptions_by_default() {
 }
 
 #[test]
+fn links_have_default_text_shade_with_css_override() {
+    let render = render_html(
+        "mem://default-link-text-shade",
+        br#"
+            <html><head><style>
+              a.override { color: red }
+            </style></head><body>
+              <p><a href="/profile">Profile <span>details</span></a></p>
+              <p><a name="anchor">Anchor only</a></p>
+              <p><a class="override" href="/alert">Alert</a></p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Profile details\nAnchor only\nAlert");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 0,
+                text: "Profile details".to_owned(),
+                shade: 28,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Anchor only".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 2,
+                text: "Alert".to_owned(),
+                shade: 76,
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_visibility_hidden_reserves_layout_without_painting() {
     let render = render_html(
         "mem://visibility-hidden",
