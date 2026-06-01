@@ -392,6 +392,38 @@ fn css_display_list_item_controls_marker_generation() {
 }
 
 #[test]
+fn css_display_contents_flattens_wrapper_without_painting_box() {
+    let render = render_html(
+        "mem://css-display-contents",
+        br#"
+            <html><body>
+              Before <div style="display: contents; padding-left: 10px; border: 2px solid black; background: black">Middle <span>Inner</span></div> After
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before Middle Inner After");
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "Before Middle Inner After".to_owned(),
+        }]
+    );
+    assert!(
+        !render
+            .layout_boxes
+            .iter()
+            .any(|layout_box| layout_box.tag == "div")
+    );
+}
+
+#[test]
 fn indents_nested_list_markers() {
     let render = render_html(
         "mem://nested-lists",

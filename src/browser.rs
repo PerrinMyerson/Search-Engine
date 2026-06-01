@@ -1039,6 +1039,7 @@ enum Display {
     Inline,
     Block,
     ListItem,
+    Contents,
 }
 
 impl Display {
@@ -3514,8 +3515,11 @@ fn collect_layout_boxes(
             else {
                 continue;
             };
+            let style = computed_style(dom, node_id, element, css_cascade);
+            if style.display == Display::Contents {
+                continue;
+            }
             let entry_index = *node_to_index.entry(node_id).or_insert_with(|| {
-                let style = computed_style(dom, node_id, element, css_cascade);
                 let kind = layout_box_kind(dom, node_id, element, style);
                 let index = accumulators.len();
                 accumulators.push(LayoutBoxAccumulator {
@@ -3624,6 +3628,7 @@ fn layout_box_kind(
             Display::Block => "block".to_owned(),
             Display::ListItem => "list-item".to_owned(),
             Display::Inline => "inline".to_owned(),
+            Display::Contents => "contents".to_owned(),
             Display::None => "none".to_owned(),
         }
     }
@@ -9310,6 +9315,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     "block" => Some(Display::Block),
                     "inline" => Some(Display::Inline),
                     "list-item" => Some(Display::ListItem),
+                    "contents" => Some(Display::Contents),
                     _ => declarations.display,
                 };
             }
@@ -10278,6 +10284,18 @@ fn render_node(
             if style.display == Display::None {
                 return;
             }
+            if style.display == Display::Contents {
+                render_contents_node(
+                    dom,
+                    node_id,
+                    source,
+                    css_cascade,
+                    renderer,
+                    layout_box_count,
+                    style,
+                );
+                return;
+            }
             *layout_box_count += 1;
 
             let visibility_entered = style.visibility;
@@ -10618,6 +10636,104 @@ fn render_node(
                 renderer.exit_table();
             }
         }
+    }
+}
+
+fn render_contents_node(
+    dom: &Dom,
+    node_id: usize,
+    source: &str,
+    css_cascade: &CssCascade,
+    renderer: &mut FlowRenderer,
+    layout_box_count: &mut usize,
+    style: ComputedStyle,
+) {
+    let visibility_entered = style.visibility;
+    if let Some(visibility) = visibility_entered {
+        renderer.enter_visibility(visibility);
+    }
+    let text_shade_entered = style.text_shade;
+    if let Some(text_shade) = text_shade_entered {
+        renderer.enter_text_shade(text_shade);
+    }
+    let text_align_entered = style.text_align;
+    if let Some(text_align) = text_align_entered {
+        renderer.enter_text_align(text_align);
+    }
+    let white_space_entered = style.white_space;
+    if let Some(white_space) = white_space_entered {
+        renderer.enter_white_space(white_space);
+    }
+    let text_transform_entered = style.text_transform;
+    if let Some(text_transform) = text_transform_entered {
+        renderer.enter_text_transform(text_transform);
+    }
+    let letter_spacing_entered = style.letter_spacing;
+    if let Some(letter_spacing) = letter_spacing_entered {
+        renderer.enter_letter_spacing(letter_spacing);
+    }
+    let word_spacing_entered = style.word_spacing;
+    if let Some(word_spacing) = word_spacing_entered {
+        renderer.enter_word_spacing(word_spacing);
+    }
+    let overflow_wrap_entered = style.overflow_wrap;
+    if let Some(overflow_wrap) = overflow_wrap_entered {
+        renderer.enter_overflow_wrap(overflow_wrap);
+    }
+    let word_break_entered = style.word_break;
+    if let Some(word_break) = word_break_entered {
+        renderer.enter_word_break(word_break);
+    }
+    let text_indent_entered = style.text_indent;
+    if let Some(text_indent) = text_indent_entered {
+        renderer.enter_text_indent(text_indent);
+    }
+    let line_height_entered = style.line_height;
+    if let Some(line_height) = line_height_entered {
+        renderer.enter_line_height(line_height);
+    }
+
+    render_children(
+        dom,
+        node_id,
+        source,
+        css_cascade,
+        renderer,
+        layout_box_count,
+    );
+
+    if line_height_entered.is_some() {
+        renderer.exit_line_height();
+    }
+    if text_indent_entered.is_some() {
+        renderer.exit_text_indent();
+    }
+    if word_break_entered.is_some() {
+        renderer.exit_word_break();
+    }
+    if overflow_wrap_entered.is_some() {
+        renderer.exit_overflow_wrap();
+    }
+    if word_spacing_entered.is_some() {
+        renderer.exit_word_spacing();
+    }
+    if letter_spacing_entered.is_some() {
+        renderer.exit_letter_spacing();
+    }
+    if text_transform_entered.is_some() {
+        renderer.exit_text_transform();
+    }
+    if white_space_entered.is_some() {
+        renderer.exit_white_space();
+    }
+    if text_align_entered.is_some() {
+        renderer.exit_text_align();
+    }
+    if text_shade_entered.is_some() {
+        renderer.exit_text_shade();
+    }
+    if visibility_entered.is_some() {
+        renderer.exit_visibility();
     }
 }
 
