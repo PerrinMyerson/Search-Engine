@@ -1145,9 +1145,11 @@ mod native {
         hit: BrowserAppWindowHit,
     ) -> Result<Option<String>> {
         let status = match hit {
-            BrowserAppWindowHit::BackButton => browser_window_history_target_status(app, true)?
+            BrowserAppWindowHit::BackButton => browser_window_history_target(app, true)?
+                .map(|target| target.status)
                 .unwrap_or_else(|| "Back unavailable".to_owned()),
-            BrowserAppWindowHit::ForwardButton => browser_window_history_target_status(app, false)?
+            BrowserAppWindowHit::ForwardButton => browser_window_history_target(app, false)?
+                .map(|target| target.status)
                 .unwrap_or_else(|| "Forward unavailable".to_owned()),
             BrowserAppWindowHit::ReloadButton => {
                 format!("Reload {}", browser_window_active_status_label(app)?)
@@ -1183,10 +1185,15 @@ mod native {
         Ok(Some(status))
     }
 
-    fn browser_window_history_target_status(
+    struct BrowserWindowHistoryTarget {
+        source: String,
+        status: String,
+    }
+
+    fn browser_window_history_target(
         app: &BrowserApp,
         backwards: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<BrowserWindowHistoryTarget>> {
         let history = app.active_session()?.snapshot();
         let Some(current_index) = history.current_index else {
             return Ok(None);
@@ -1204,10 +1211,14 @@ mod native {
             return Ok(None);
         };
         let label = browser_window_status_label(&entry.title, &entry.source);
-        Ok(Some(if backwards {
+        let status = if backwards {
             format!("Back to {label}")
         } else {
             format!("Forward to {label}")
+        };
+        Ok(Some(BrowserWindowHistoryTarget {
+            source: entry.source.clone(),
+            status,
         }))
     }
 
@@ -1306,6 +1317,22 @@ mod native {
                     .await?;
                 Ok(BrowserWindowKeyResult {
                     dirty: app.tab_count() != before_tabs,
+                    close: false,
+                })
+            }
+            BrowserAppWindowHit::BackButton | BrowserAppWindowHit::ForwardButton => {
+                *mode = BrowserWindowMode::Page;
+                let backwards = matches!(hit, BrowserAppWindowHit::BackButton);
+                let Some(target) = browser_window_history_target(app, backwards)? else {
+                    return Ok(BrowserWindowKeyResult::default());
+                };
+                let active_tab = app.active_tab();
+                app.apply_action(BrowserAppAction::NewTab(target.source))
+                    .await?;
+                app.apply_action(BrowserAppAction::SwitchTab(active_tab))
+                    .await?;
+                Ok(BrowserWindowKeyResult {
+                    dirty: true,
                     close: false,
                 })
             }
@@ -2348,6 +2375,103 @@ mod native {
             assert!(!close_window.dirty);
             assert!(close_window.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_history_buttons_open_background_tabs() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                first.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(
+                second.to_string_lossy().into_owned(),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let back = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::BackButton,
+            )
+            .await
+            .unwrap();
+
+            assert!(back.dirty);
+            assert!(!back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+            app.apply_action(BrowserAppAction::SwitchTab(1))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            app.apply_action(BrowserAppAction::SwitchTab(0))
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::Back).await.unwrap();
+            let forward = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::ForwardButton,
+            )
+            .await
+            .unwrap();
+
+            assert!(forward.dirty);
+            assert!(!forward.close);
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+            app.apply_action(BrowserAppAction::SwitchTab(2))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
         }
 
         #[tokio::test]
