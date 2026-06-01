@@ -1048,6 +1048,12 @@ impl Display {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloatSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextAlign {
     Start,
     Center,
@@ -1126,6 +1132,7 @@ pub(super) enum CssListStyleType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ComputedStyle {
     display: Display,
+    float: Option<FloatSide>,
     background_shade: Option<u8>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
@@ -1162,6 +1169,7 @@ struct CssRule {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct CssDeclarations {
     display: Option<Display>,
+    float: Option<Option<FloatSide>>,
     background_shade: Option<u8>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
@@ -9315,6 +9323,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     _ => declarations.display,
                 };
             }
+            "float" => {
+                declarations.float = parse_css_float(value).or(declarations.float);
+            }
             "background" | "background-color" => {
                 declarations.background_shade =
                     parse_css_color_shade(value).or(declarations.background_shade);
@@ -9766,6 +9777,20 @@ fn parse_css_visibility(value: &str) -> Option<Visibility> {
     {
         "visible" => Some(Visibility::Visible),
         "hidden" | "collapse" => Some(Visibility::Hidden),
+        _ => None,
+    }
+}
+
+fn parse_css_float(value: &str) -> Option<Option<FloatSide>> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => Some(None),
+        "left" | "inline-start" => Some(Some(FloatSide::Left)),
+        "right" | "inline-end" => Some(Some(FloatSide::Right)),
         _ => None,
     }
 }
@@ -10316,14 +10341,26 @@ fn render_node(
                 let (image_width, image_height) =
                     image_placeholder_extent(element, &style, renderer);
                 let image_source = image_render_source(dom, node_id, element);
-                renderer.push_image_placeholder(
-                    image_width,
-                    image_height,
-                    element.alt.clone(),
-                    source,
-                    image_source.as_deref(),
-                    Some(node_id),
-                );
+                if let Some(float_side) = style.float {
+                    renderer.push_floating_image_placeholder(
+                        float_side,
+                        image_width,
+                        image_height,
+                        element.alt.clone(),
+                        source,
+                        image_source.as_deref(),
+                        Some(node_id),
+                    );
+                } else {
+                    renderer.push_image_placeholder(
+                        image_width,
+                        image_height,
+                        element.alt.clone(),
+                        source,
+                        image_source.as_deref(),
+                        Some(node_id),
+                    );
+                }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
                 }
@@ -10814,6 +10851,7 @@ fn computed_style(
     if element.hidden || default_display(&element.tag) == Display::None {
         return ComputedStyle {
             display: Display::None,
+            float: None,
             background_shade: None,
             text_shade: None,
             text_align: None,
@@ -10842,6 +10880,7 @@ fn computed_style(
         };
     }
     let mut display = default_display(&element.tag);
+    let mut float = None;
     let mut background_shade = None;
     let mut text_shade = None;
     let mut text_align = None;
@@ -10868,6 +10907,7 @@ fn computed_style(
     let mut margin_right_auto = false;
     let mut min_height = 0usize;
     let mut display_specificity = 0u32;
+    let mut float_specificity = 0u32;
     let mut background_specificity = 0u32;
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
@@ -10904,6 +10944,12 @@ fn computed_style(
             {
                 display = rule_display;
                 display_specificity = rule_specificity;
+            }
+            if let Some(rule_float) = rule.declarations.float
+                && rule_specificity >= float_specificity
+            {
+                float = rule_float;
+                float_specificity = rule_specificity;
             }
             if let Some(rule_background) = rule.declarations.background_shade
                 && rule_specificity >= background_specificity
@@ -11061,6 +11107,9 @@ fn computed_style(
         if let Some(inline_display) = inline.display {
             display = inline_display;
         }
+        if let Some(inline_float) = inline.float {
+            float = inline_float;
+        }
         if let Some(inline_background) = inline.background_shade {
             background_shade = Some(inline_background);
         }
@@ -11139,6 +11188,7 @@ fn computed_style(
     }
     ComputedStyle {
         display,
+        float,
         background_shade,
         text_shade,
         text_align,
@@ -11585,6 +11635,13 @@ struct TableCellFlow {
     start_width: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ActiveFloat {
+    side: FloatSide,
+    width: usize,
+    bottom_y: usize,
+}
+
 fn table_spanned_column_width(
     column_widths: &[usize],
     active_cell: TableCellFlow,
@@ -11679,6 +11736,7 @@ struct FlowRenderer {
     line_height: usize,
     line_height_stack: Vec<usize>,
     table_stack: Vec<TableFlow>,
+    active_floats: Vec<ActiveFloat>,
     underlay_list: Vec<DisplayCommand>,
     underlay_targets: Vec<DisplayHitTarget>,
     border_list: Vec<DisplayCommand>,
@@ -11727,6 +11785,7 @@ impl FlowRenderer {
             line_height: 1,
             line_height_stack: Vec::new(),
             table_stack: Vec::new(),
+            active_floats: Vec::new(),
             underlay_list: Vec::new(),
             underlay_targets: Vec::new(),
             border_list: Vec::new(),
@@ -11759,8 +11818,8 @@ impl FlowRenderer {
     }
 
     fn push_wrapped_text(&mut self, text: &str, target_node: Option<usize>) {
-        let available_width = self.available_width();
         for word in text.split_whitespace() {
+            let available_width = self.available_width();
             let word_width = self.letter_spaced_text_width(word);
             if self.current_width == 0 {
                 self.soft_break_opportunity = false;
@@ -11873,10 +11932,10 @@ impl FlowRenderer {
     }
 
     fn push_breakable_text_segment(&mut self, text: &str, target_node: Option<usize>) {
-        let available_width = self.available_width();
         let mut start = 0usize;
         let mut char_count = 0usize;
         for (index, _) in text.char_indices() {
+            let available_width = self.available_width();
             let next_width = self.letter_spaced_char_count_width(char_count.saturating_add(1));
             if self.effective_current_width().saturating_add(next_width) > available_width {
                 if char_count > 0 {
@@ -11935,7 +11994,7 @@ impl FlowRenderer {
             let align_offset = self
                 .text_align
                 .offset(self.available_width(), self.current_width);
-            let mut run_x = self.left_inset.saturating_add(align_offset);
+            let mut run_x = self.box_x().saturating_add(align_offset);
             let mut text = String::new();
             for run in self.current_runs.drain(..) {
                 let run_width = run.text.chars().count();
@@ -12384,6 +12443,59 @@ impl FlowRenderer {
         self.next_y = self.next_y.saturating_add(height.max(1));
     }
 
+    fn push_floating_image_placeholder(
+        &mut self,
+        side: FloatSide,
+        width: usize,
+        height: usize,
+        alt: Option<String>,
+        source: &str,
+        url: Option<&str>,
+        target_node: Option<usize>,
+    ) {
+        self.break_line();
+        let (left_float, right_float) = self.active_float_offsets();
+        let available_width = self
+            .width
+            .saturating_sub(self.left_inset)
+            .saturating_sub(self.right_inset)
+            .saturating_sub(left_float)
+            .saturating_sub(right_float)
+            .max(1);
+        let image_width = width.min(available_width).max(1);
+        let image_height = height.max(1);
+        let x = match side {
+            FloatSide::Left => self.left_inset.saturating_add(left_float),
+            FloatSide::Right => self
+                .left_inset
+                .saturating_add(left_float)
+                .saturating_add(available_width.saturating_sub(image_width)),
+        };
+        let y = self.next_y;
+        let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
+        if self.visibility == Visibility::Visible {
+            self.display_list.push(DisplayCommand::Image {
+                x,
+                y,
+                width: image_width,
+                height: image_height,
+                shade: 220,
+                alt,
+                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                decoded_width: decoded_info.as_ref().map(|image| image.width),
+                decoded_height: decoded_info.as_ref().map(|image| image.height),
+                decoded_hash: decoded_info.map(|image| image.pixel_hash),
+            });
+            self.display_targets
+                .push(DisplayHitTarget::node(target_node));
+        }
+        self.active_floats.push(ActiveFloat {
+            side,
+            width: image_width,
+            bottom_y: y.saturating_add(image_height),
+        });
+    }
+
     fn cached_decoded_image_info(&mut self, source: &str, url: &str) -> Option<DecodedImageInfo> {
         let resolved = resolve_browser_href(source, url);
         for key in [url, resolved.as_str()] {
@@ -12411,14 +12523,33 @@ impl FlowRenderer {
     }
 
     fn box_x(&self) -> usize {
-        self.left_inset
+        let (left_float, _) = self.active_float_offsets();
+        self.left_inset.saturating_add(left_float)
     }
 
     fn available_width(&self) -> usize {
+        let (left_float, right_float) = self.active_float_offsets();
         self.width
             .saturating_sub(self.left_inset)
             .saturating_sub(self.right_inset)
+            .saturating_sub(left_float)
+            .saturating_sub(right_float)
             .max(1)
+    }
+
+    fn active_float_offsets(&self) -> (usize, usize) {
+        let mut left = 0usize;
+        let mut right = 0usize;
+        for active_float in &self.active_floats {
+            if self.next_y >= active_float.bottom_y {
+                continue;
+            }
+            match active_float.side {
+                FloatSide::Left => left = left.saturating_add(active_float.width),
+                FloatSide::Right => right = right.saturating_add(active_float.width),
+            }
+        }
+        (left, right)
     }
 
     fn enter_inset(&mut self, border_width: usize) {
