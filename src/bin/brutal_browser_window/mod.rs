@@ -3471,16 +3471,21 @@ mod native {
             )
             .await
             .unwrap();
-            app.apply_action(BrowserAppAction::DuplicateTab)
-                .await
-                .unwrap();
-            app.apply_action(BrowserAppAction::DuplicateTab)
+            app.apply_action(BrowserAppAction::NewTab(
+                "list-marker-types.html".to_owned(),
+            ))
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::NewBlankTab)
                 .await
                 .unwrap();
             assert_eq!(app.tab_count(), 3);
             assert_eq!(app.active_tab(), 2);
 
-            let mut mode = BrowserWindowMode::Page;
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
             let modifiers = BrowserWindowModifiers {
                 command: true,
                 shift: false,
@@ -3491,24 +3496,43 @@ mod native {
                 .unwrap();
             assert!(first_tab.dirty);
             assert_eq!(app.active_tab(), 0);
+            assert_eq!(
+                browser_window_location_text(&mode),
+                Some("bench/browser-fixtures/static-text.html")
+            );
 
             let second_tab = handle_browser_window_key(&mut app, &mut mode, Key::Key2, modifiers)
                 .await
                 .unwrap();
             assert!(second_tab.dirty);
             assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                browser_window_location_text(&mode),
+                Some("bench/browser-fixtures/list-marker-types.html")
+            );
 
             let last_tab = handle_browser_window_key(&mut app, &mut mode, Key::Key9, modifiers)
                 .await
                 .unwrap();
             assert!(last_tab.dirty);
             assert_eq!(app.active_tab(), 2);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                BROWSER_ABOUT_BLANK_TARGET
+            );
 
             let missing_tab = handle_browser_window_key(&mut app, &mut mode, Key::Key8, modifiers)
                 .await
                 .unwrap();
             assert!(!missing_tab.dirty);
             assert_eq!(app.active_tab(), 2);
+            assert_eq!(browser_window_location_text(&mode), Some(""));
         }
 
         #[test]
