@@ -828,6 +828,7 @@ mod native {
             }),
             Key::PageUp => Some(browser_window_page_scroll_action(app, -1)?),
             Key::PageDown => Some(browser_window_page_scroll_action(app, 1)?),
+            Key::Home | Key::End if app.active_session()?.focused_control().is_some() => None,
             Key::Home => Some(BrowserAppAction::SetViewportOrigin { x: 0, y: 0 }),
             Key::End => Some(browser_window_document_end_action(app)?),
             _ => None,
@@ -1413,6 +1414,89 @@ mod native {
             .unwrap();
             assert!(home.dirty);
             assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_home_end_noop_when_form_control_focused() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("focused-home-end.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Focused Keys</title></head>
+<body>
+<form><input id="q" name="q" value="filled"></form>
+<p>line 1</p>
+<p>line 2</p>
+<p>line 3</p>
+<p>line 4</p>
+<p>line 5</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 2,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Focus("#q".to_owned()))
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 2 })
+                .await
+                .unwrap();
+            let scrolled_y = app.active_viewport().unwrap().y;
+            assert!(scrolled_y > 0);
+            let mut mode = BrowserWindowMode::Page;
+
+            let home = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Home,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!home.dirty);
+            assert!(!home.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, scrolled_y);
+
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 0 })
+                .await
+                .unwrap();
+            let end = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::End,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!end.dirty);
+            assert!(!end.close);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .name,
+                "q"
+            );
         }
 
         #[tokio::test]
