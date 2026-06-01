@@ -1308,6 +1308,14 @@ mod native {
                     close: false,
                 })
             }
+            BrowserAppWindowHit::NewTabButton => {
+                app.apply_action(BrowserAppAction::NewBlankTab).await?;
+                begin_browser_window_blank_location_input(mode);
+                Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                })
+            }
             _ => Ok(BrowserWindowKeyResult::default()),
         }
     }
@@ -2279,6 +2287,57 @@ mod native {
             assert!(!close_window.dirty);
             assert!(close_window.close);
             assert_eq!(app.tab_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_new_tab_button_opens_blank_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "old prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::NewTabButton,
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                BROWSER_ABOUT_BLANK_TARGET
+            );
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: String::new(),
+                    replace_on_input: false,
+                }
+            );
         }
 
         #[tokio::test]
