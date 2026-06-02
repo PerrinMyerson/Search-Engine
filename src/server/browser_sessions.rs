@@ -4772,7 +4772,7 @@ fn attach_browser_session_registry_state(
     payload.bookmarks = browser_session_bookmarks(bookmarks, payload);
     payload.profile_tabs_clear_url = profile_enabled
         .then(|| browser_session_action_href(&payload.id, "clear-profile-tabs", &[], payload));
-    payload.profile_history_clear_url = profile_enabled
+    payload.profile_history_clear_url = (!profile_history.is_empty())
         .then(|| browser_session_action_href(&payload.id, "clear-profile-history", &[], payload));
     payload.profile_history = browser_session_profile_history(profile_history, payload);
     payload.tab_search_results =
