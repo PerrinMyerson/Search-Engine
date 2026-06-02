@@ -1159,7 +1159,14 @@ mod native {
                     format!("Switch to tab {}: {label}", index + 1)
                 }
             }
-            BrowserAppWindowHit::LocationBar => "Edit address".to_owned(),
+            BrowserAppWindowHit::LocationBar => {
+                let source = current_browser_window_source(app)?;
+                if source.trim().is_empty() {
+                    "Edit address".to_owned()
+                } else {
+                    format!("Edit address: {source}")
+                }
+            }
             BrowserAppWindowHit::PageViewport { x, y } => {
                 let Some(target) = app.active_link_target_at_viewport(x, y)? else {
                     return Ok(None);
@@ -2072,7 +2079,7 @@ mod native {
             );
             assert_eq!(
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::LocationBar).unwrap(),
-                Some("Edit address".to_owned())
+                Some(format!("Edit address: {}", first.to_string_lossy()))
             );
 
             app.apply_action(BrowserAppAction::Open(
