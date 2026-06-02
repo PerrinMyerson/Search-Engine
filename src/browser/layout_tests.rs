@@ -437,6 +437,38 @@ fn css_modern_display_values_map_to_flow_and_suppress_markers() {
 }
 
 #[test]
+fn css_display_contents_flattens_wrapper_without_painting_box() {
+    let render = render_html(
+        "mem://css-display-contents",
+        br#"
+            <html><body>
+              Before <div style="display: contents; text-transform: uppercase; padding-left: 10px; border: 2px solid black; background: black">Middle <span>Inner</span></div> After
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before MIDDLE INNER After");
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "Before MIDDLE INNER After".to_owned(),
+        }]
+    );
+    assert!(
+        !render
+            .layout_boxes
+            .iter()
+            .any(|layout_box| layout_box.tag == "div")
+    );
+}
+
+#[test]
 fn indents_nested_list_markers() {
     let render = render_html(
         "mem://nested-lists",
