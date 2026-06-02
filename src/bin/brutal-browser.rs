@@ -1132,8 +1132,14 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 println!(
-                    "resources: total={} fetched={} cached={} failed={} skipped={}",
-                    report.total, report.fetched, report.cached, report.failed, report.skipped
+                    "resources: total={} fetched={} cached={} failed={} skipped={} cached_resource_count={} cached_resource_bytes={}",
+                    report.total,
+                    report.fetched,
+                    report.cached,
+                    report.failed,
+                    report.skipped,
+                    report.cached_resource_count,
+                    report.cached_resource_bytes
                 );
                 for resource in &report.resources {
                     let source = resource.source.as_deref().unwrap_or("-");

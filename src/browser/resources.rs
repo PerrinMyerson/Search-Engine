@@ -34,6 +34,10 @@ pub struct BrowserResourceFetchReport {
     pub cached: usize,
     pub failed: usize,
     pub skipped: usize,
+    #[serde(default)]
+    pub cached_resource_count: usize,
+    #[serde(default)]
+    pub cached_resource_bytes: usize,
     pub resources: Vec<BrowserResourceFetch>,
 }
 
@@ -53,6 +57,10 @@ pub struct BrowserStylesheetRenderReport {
     pub stylesheet_count: usize,
     pub applied: usize,
     pub failed: usize,
+    #[serde(default)]
+    pub cached_resource_count: usize,
+    #[serde(default)]
+    pub cached_resource_bytes: usize,
     pub fetches: Vec<BrowserResourceFetch>,
 }
 
@@ -62,6 +70,10 @@ pub struct BrowserScriptRenderReport {
     pub script_count: usize,
     pub applied: usize,
     pub failed: usize,
+    #[serde(default)]
+    pub cached_resource_count: usize,
+    #[serde(default)]
+    pub cached_resource_bytes: usize,
     pub fetches: Vec<BrowserResourceFetch>,
 }
 
@@ -71,6 +83,12 @@ pub struct BrowserImageRenderReport {
     pub image_count: usize,
     pub decoded: usize,
     pub failed: usize,
+    #[serde(default)]
+    pub cached_resource_count: usize,
+    #[serde(default)]
+    pub cached_resource_bytes: usize,
+    #[serde(default)]
+    pub decoded_image_bytes: usize,
     pub fetches: Vec<BrowserResourceFetch>,
 }
 
@@ -87,6 +105,17 @@ struct BrowserCachedResource {
 }
 
 impl BrowserResourceCache {
+    pub(super) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(super) fn total_bytes(&self) -> usize {
+        self.entries
+            .values()
+            .map(|resource| resource.bytes.len())
+            .sum()
+    }
+
     pub(super) fn cached_bytes(&self, url: &str) -> Option<&[u8]> {
         self.entries
             .get(url)
