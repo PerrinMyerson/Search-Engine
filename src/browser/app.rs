@@ -589,6 +589,7 @@ impl BrowserApp {
                 self.tabs.len()
             );
         }
+        let closed_active_tab = index == self.active_tab;
         let mut closed_tab = self.tabs.remove(index);
         closed_tab.last_presented_viewport = None;
         closed_tab.content_dirty = true;
@@ -600,6 +601,9 @@ impl BrowserApp {
             self.active_tab -= 1;
         } else if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len().saturating_sub(1);
+        }
+        if closed_active_tab {
+            self.mark_active_content_dirty()?;
         }
         Ok(())
     }
@@ -1955,6 +1959,48 @@ mod tests {
         assert_eq!(report.tabs.len(), 2);
         assert!(report.tabs[0].active);
         assert_eq!(report.tabs[1].viewport.y, 1);
+    }
+
+    #[tokio::test]
+    async fn browser_app_close_active_tab_forces_full_frame_repaint() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.html");
+        let second = dir.path().join("second.html");
+        fs::write(
+            &first,
+            r#"<html><head><title>First</title></head><body>First tab</body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            r#"<html><head><title>Second</title></head><body>Second tab</body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&first.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        let first_frame = app.present_frame().unwrap();
+        assert!(first_frame.report.viewport.full_repaint);
+
+        app.apply_action(BrowserAppAction::NewTab(
+            second.to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+        let second_frame = app.present_frame().unwrap();
+        assert!(second_frame.report.viewport.full_repaint);
+        assert_eq!(second_frame.report.viewport.title, "Second");
+
+        app.apply_action(BrowserAppAction::CloseTab(None))
+            .await
+            .unwrap();
+        let revealed_frame = app.present_frame().unwrap();
+
+        assert_eq!(app.tab_count(), 1);
+        assert_eq!(app.active_tab(), 0);
+        assert!(revealed_frame.report.viewport.full_repaint);
+        assert_eq!(revealed_frame.report.viewport.title, "First");
     }
 
     #[tokio::test]
