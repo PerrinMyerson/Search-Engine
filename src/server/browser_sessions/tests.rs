@@ -8501,6 +8501,7 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
             .unwrap()
             .contains("clear-resource-report")
     );
+    assert!(exported["action_urls"]["load_images"].is_null());
 
     let clear_report = RequestTarget {
         path: "/browser".to_owned(),

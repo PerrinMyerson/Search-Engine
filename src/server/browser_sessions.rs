@@ -790,7 +790,7 @@ struct BrowserSessionStateExportActionUrls {
     fetch_resources: String,
     apply_stylesheets: String,
     run_scripts: String,
-    load_images: String,
+    load_images: Option<String>,
     clear_resource_report: Option<String>,
 }
 
@@ -9108,7 +9108,11 @@ fn browser_session_state_action_urls(
         fetch_resources: browser_session_action_href(&payload.id, "fetch-resources", &[], payload),
         apply_stylesheets: browser_session_action_href(&payload.id, "apply-styles", &[], payload),
         run_scripts: browser_session_action_href(&payload.id, "run-scripts", &[], payload),
-        load_images: browser_session_action_href(&payload.id, "load-images", &[], payload),
+        load_images: payload
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "image")
+            .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
         clear_resource_report: payload.resource_report.as_ref().map(|_| {
             browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
         }),
