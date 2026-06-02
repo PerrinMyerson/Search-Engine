@@ -8412,6 +8412,8 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert!(html.contains("format=viewport-text"));
     assert!(html.contains("format=page-text"));
     assert!(html.contains("Resources (2)"));
+    assert!(html.contains("Resources JSON"));
+    assert!(html.contains("format=resources-json"));
     assert!(html.contains("Resources CSV"));
     assert!(html.contains("format=resources-csv"));
     assert!(html.contains("resource-actions"));
@@ -8449,6 +8451,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("forms_csv", "forms-csv"),
         ("history_csv", "history-csv"),
         ("profile_history_csv", "profile-history-csv"),
+        ("resources_json", "resources-json"),
         ("resources_csv", "resources-csv"),
         ("resource_report_json", "resource-report-json"),
         ("resource_report_csv", "resource-report-csv"),
@@ -8571,6 +8574,52 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert_eq!(image["kind"], "image");
     assert_eq!(image["alt"], "Logo");
     assert_eq!(image["details"], "alt=Logo");
+
+    let resources_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resources-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resources_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_resources: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_resources["format"], "browser-resources");
+    assert_eq!(exported_resources["id"], payload.id);
+    assert_eq!(exported_resources["resource_count"], 2);
+    assert_eq!(exported_resources["resources"].as_array().unwrap().len(), 2);
+    assert!(
+        exported_resources["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["url"] == "/app.css"
+                && resource["kind"] == "stylesheet"
+                && resource["media"] == "screen")
+    );
+    assert!(
+        exported_resources["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["url"] == "/logo.png"
+                && resource["kind"] == "image"
+                && resource["alt"] == "Logo")
+    );
+    assert!(
+        exported_resources["csv_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=resources-csv")
+    );
+    assert!(
+        exported_resources["session_state_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=session-state")
+    );
 
     let state_csv_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
