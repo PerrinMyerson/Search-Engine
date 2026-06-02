@@ -11139,6 +11139,8 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         .iter()
         .filter(|resource| resource.kind == "script")
         .count();
+    let summarized_count = image_count + stylesheet_count + script_count;
+    let other_count = payload.resources.len().saturating_sub(summarized_count);
     let image_count_label = browser_resource_count_label(image_count, "image", "images");
     let mut resource_summary = vec![image_count_label.clone()];
     if stylesheet_count > 0 {
@@ -11153,6 +11155,13 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             script_count,
             "script",
             "scripts",
+        ));
+    }
+    if other_count > 0 {
+        resource_summary.push(browser_resource_count_label(
+            other_count,
+            "other resource",
+            "other resources",
         ));
     }
     let resource_summary = resource_summary.join(", ");
