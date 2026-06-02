@@ -805,6 +805,10 @@ mod native {
             });
         }
 
+        if browser_window_focused_text_control_owns_navigation_key(app, key)? {
+            return Ok(BrowserWindowKeyResult::default());
+        }
+
         let action = match key {
             Key::Escape => None,
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
@@ -1100,6 +1104,24 @@ mod native {
                         | "textarea"
                 )
             }))
+    }
+
+    fn browser_window_focused_text_control_owns_navigation_key(
+        app: &BrowserApp,
+        key: Key,
+    ) -> Result<bool> {
+        Ok(browser_window_focused_control_accepts_text_input(app)?
+            && matches!(
+                key,
+                Key::Up
+                    | Key::Down
+                    | Key::Left
+                    | Key::Right
+                    | Key::PageUp
+                    | Key::PageDown
+                    | Key::Home
+                    | Key::End
+            ))
     }
 
     fn browser_window_has_focusable_controls(app: &BrowserApp) -> Result<bool> {
@@ -3269,6 +3291,79 @@ mod native {
                     .value,
                 "rust/"
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_text_control_navigation_keys_do_not_scroll_page() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("long-form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Long Form</title></head><body>
+<form><input name="q" value="rust"></form>
+<p>line 1</p><p>line 2</p><p>line 3</p><p>line 4</p><p>line 5</p>
+<p>line 6</p><p>line 7</p><p>line 8</p><p>line 9</p><p>line 10</p>
+</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            app.apply_action(BrowserAppAction::Scroll {
+                delta_x: 0,
+                delta_y: 5,
+            })
+            .await
+            .unwrap();
+            let scrolled_viewport = app.active_viewport().unwrap();
+            assert!(scrolled_viewport.y > 0);
+            let mut mode = BrowserWindowMode::Page;
+
+            for key in [
+                Key::Up,
+                Key::Down,
+                Key::Left,
+                Key::Right,
+                Key::PageUp,
+                Key::PageDown,
+                Key::Home,
+                Key::End,
+            ] {
+                let before = app.active_viewport().unwrap();
+                let result = handle_browser_window_key(
+                    &mut app,
+                    &mut mode,
+                    key,
+                    BrowserWindowModifiers::default(),
+                )
+                .await
+                .unwrap();
+
+                assert!(!result.dirty, "{key:?} should not repaint");
+                assert!(!result.close);
+                assert_eq!(app.active_viewport().unwrap(), before);
+                assert_eq!(mode, BrowserWindowMode::Page);
+                assert_eq!(
+                    app.active_session()
+                        .unwrap()
+                        .focused_control()
+                        .unwrap()
+                        .value,
+                    "rust"
+                );
+            }
         }
 
         #[tokio::test]
