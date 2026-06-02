@@ -1357,6 +1357,71 @@ fn decodes_data_url_jpeg_image_into_rendered_image_command() {
 }
 
 #[tokio::test]
+async fn session_render_images_decodes_data_url_image_resource() {
+    let data_url = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAAAAAAAAAAAFklEQVR4AWNgYGD4//8/438GBkaG/wAh9gT+AAAAAAAAAABJRU5EAAAAAA=="
+    );
+    let expected_hash = decode_image_reference("mem://page", data_url)
+        .unwrap()
+        .pixel_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    fs::write(
+        &page,
+        format!(
+            r#"<html><body><p>Before inline</p><img src="{data_url}" alt="Inline PNG" width="16" height="24"><p>After inline</p></body></html>"#
+        ),
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 1);
+    assert_eq!(report.fetches[0].status, "cached");
+    assert_eq!(report.fetches[0].content_type.as_deref(), Some("image/png"));
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before inline".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("Inline PNG".to_owned()),
+                url: Some(data_url.to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(expected_hash)
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "After inline".to_owned()
+            },
+        ]
+    );
+}
+
+#[tokio::test]
 async fn session_render_images_decodes_http_resource_cache_pixels() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

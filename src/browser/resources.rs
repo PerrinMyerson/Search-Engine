@@ -114,17 +114,6 @@ pub(super) async fn fetch_resource_with_cache(
     cookie_jar: &mut BrowserCookieJar,
     cache: &mut BrowserResourceCache,
 ) -> BrowserResourceFetch {
-    if unsupported_resource_target(&resource.resolved) {
-        return BrowserResourceFetch {
-            resource,
-            status: "skipped".to_owned(),
-            source: None,
-            bytes: 0,
-            content_type: None,
-            error: Some("unsupported resource scheme".to_owned()),
-        };
-    }
-
     if let Some(cached) = cache.entries.get(&resource.resolved) {
         return BrowserResourceFetch {
             resource,
@@ -133,6 +122,49 @@ pub(super) async fn fetch_resource_with_cache(
             bytes: cached.bytes.len(),
             content_type: cached.content_type.clone(),
             error: None,
+        };
+    }
+
+    if resource.resolved.starts_with("data:") {
+        return match load_data_url_resource(&resource.resolved, max_resource_bytes) {
+            Ok((source, bytes, content_type)) => {
+                let byte_len = bytes.len();
+                cache.entries.insert(
+                    resource.resolved.clone(),
+                    BrowserCachedResource {
+                        source: source.clone(),
+                        bytes,
+                        content_type: Some(content_type.clone()),
+                    },
+                );
+                BrowserResourceFetch {
+                    resource,
+                    status: "cached".to_owned(),
+                    source: Some(source),
+                    bytes: byte_len,
+                    content_type: Some(content_type),
+                    error: None,
+                }
+            }
+            Err(error) => BrowserResourceFetch {
+                resource,
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some(error.to_string()),
+            },
+        };
+    }
+
+    if unsupported_resource_target(&resource.resolved) {
+        return BrowserResourceFetch {
+            resource,
+            status: "skipped".to_owned(),
+            source: None,
+            bytes: 0,
+            content_type: None,
+            error: Some("unsupported resource scheme".to_owned()),
         };
     }
 
@@ -164,6 +196,113 @@ pub(super) async fn fetch_resource_with_cache(
             content_type: None,
             error: Some(error.to_string()),
         },
+    }
+}
+
+fn load_data_url_resource(target: &str, max_bytes: usize) -> Result<(String, Vec<u8>, String)> {
+    let payload = target
+        .strip_prefix("data:")
+        .with_context(|| format!("parse data URL {target}"))?;
+    let (metadata, data) = payload
+        .split_once(',')
+        .with_context(|| format!("parse data URL metadata for {target}"))?;
+    let mut content_type = "text/plain".to_owned();
+    let mut base64 = false;
+    for (index, part) in metadata.split(';').enumerate() {
+        if index == 0 && !part.is_empty() {
+            content_type = part.to_owned();
+        } else if part.eq_ignore_ascii_case("base64") {
+            base64 = true;
+        }
+    }
+    let bytes = if base64 {
+        decode_base64_data_url_payload(data)?
+    } else {
+        percent_decode_data_url_payload(data)?
+    };
+    ensure!(
+        bytes.len() <= max_bytes,
+        "resource exceeds byte cap: {} > {}",
+        bytes.len(),
+        max_bytes
+    );
+    Ok((target.to_owned(), bytes, content_type))
+}
+
+fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len().saturating_mul(3) / 4);
+    let mut block = [0u8; 4];
+    let mut block_len = 0usize;
+    let mut padding = 0usize;
+
+    for byte in input.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                0
+            }
+            _ => anyhow::bail!("invalid base64 data URL byte: 0x{byte:02x}"),
+        };
+        ensure!(
+            padding == 0 || byte == b'=',
+            "invalid base64 data URL padding"
+        );
+        block[block_len] = value;
+        block_len += 1;
+        if block_len == 4 {
+            out.push((block[0] << 2) | (block[1] >> 4));
+            if padding < 2 {
+                out.push((block[1] << 4) | (block[2] >> 2));
+            }
+            if padding == 0 {
+                out.push((block[2] << 6) | block[3]);
+            }
+            block_len = 0;
+            padding = 0;
+        }
+    }
+
+    ensure!(block_len == 0, "truncated base64 data URL payload");
+    Ok(out)
+}
+
+fn percent_decode_data_url_payload(input: &str) -> Result<Vec<u8>> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = data_url_hex_value(
+                *bytes
+                    .get(index + 1)
+                    .context("truncated percent escape in data URL")?,
+            )?;
+            let low = data_url_hex_value(
+                *bytes
+                    .get(index + 2)
+                    .context("truncated percent escape in data URL")?,
+            )?;
+            out.push((high << 4) | low);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(out)
+}
+
+fn data_url_hex_value(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => anyhow::bail!("invalid percent escape in data URL"),
     }
 }
 
