@@ -392,6 +392,51 @@ fn css_display_list_item_controls_marker_generation() {
 }
 
 #[test]
+fn css_modern_display_values_map_to_flow_and_suppress_markers() {
+    let render = render_html(
+        "mem://css-modern-display-values",
+        br#"
+            <html><body>
+              <ul>
+                <li style="display:flex">Flex item</li>
+                <li style="display:grid">Grid item</li>
+                <li style="display:inline-flex">Inline flex item</li>
+                <li>Default marker</li>
+              </ul>
+              <div style="display:flow-root">Flow root block</div>
+              <span style="display:inline-grid">Inline grid</span><span>after</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Flex item\nGrid item\nInline flex item\n- Default marker\nFlow root block\nInline gridafter"
+    );
+    assert_eq!(
+        render
+            .layout_boxes
+            .iter()
+            .filter(|layout_box| matches!(layout_box.tag.as_str(), "li" | "div" | "span"))
+            .map(|layout_box| (layout_box.tag.as_str(), layout_box.kind.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("li", "flex"),
+            ("li", "grid"),
+            ("li", "inline-flex"),
+            ("li", "list-item"),
+            ("div", "flow-root"),
+            ("span", "inline-grid"),
+            ("span", "inline"),
+        ]
+    );
+}
+
+#[test]
 fn indents_nested_list_markers() {
     let render = render_html(
         "mem://nested-lists",
