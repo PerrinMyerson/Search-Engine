@@ -520,8 +520,24 @@ fn push_png_grayscale_pixels(row: &[u8], color_type: u8, pixels: &mut Vec<u8>) {
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
+    decode_jpeg_with_max_side(bytes, MAX_DECODED_IMAGE_SIDE)
+}
+
+fn decode_jpeg_with_max_side(bytes: &[u8], max_side: usize) -> Option<DecodedImage> {
+    let max_side = max_side.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut decoder = JpegDecoder::new(bytes);
     decoder.set_max_decoding_buffer_size(MAX_JPEG_DECODED_BYTES);
+    decoder.read_info().ok()?;
+    let info = decoder.info()?;
+    let width = usize::from(info.width);
+    let height = usize::from(info.height);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if width > max_side || height > max_side {
+        let max_side = u16::try_from(max_side).ok()?;
+        decoder.scale(max_side, max_side).ok()?;
+    }
     let decoded = decoder.decode().ok()?;
     let orientation = decoder
         .exif_data()
@@ -530,11 +546,7 @@ fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     let info = decoder.info()?;
     let width = usize::from(info.width);
     let height = usize::from(info.height);
-    if width == 0
-        || height == 0
-        || width > MAX_DECODED_IMAGE_SIDE
-        || height > MAX_DECODED_IMAGE_SIDE
-    {
+    if width == 0 || height == 0 || width > max_side || height > max_side {
         return None;
     }
     let pixel_count = width.checked_mul(height)?;
@@ -941,6 +953,15 @@ mod tests {
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.pixels, vec![0, 255, 76, 29]);
+    }
+
+    #[test]
+    fn downscales_jpeg_before_decode_when_pixel_buffer_would_exceed_limit() {
+        let decoded = decode_jpeg_with_max_side(&tiny_test_jpeg_bytes(), 1).unwrap();
+
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.pixels.len(), 1);
     }
 
     #[test]
