@@ -472,12 +472,12 @@ mod native {
             }
 
             if let Some((scroll_x, scroll_y)) = window.get_scroll_wheel() {
-                if let Some(action) =
-                    browser_window_wheel_scroll_action(scroll_x, scroll_y, modifiers)
-                {
-                    app.apply_action(action).await?;
-                    dirty = true;
-                }
+                let result = handle_browser_window_wheel_scroll(
+                    &mut app, &mut mode, scroll_x, scroll_y, modifiers,
+                )
+                .await?;
+                dirty |= result.dirty;
+                close_requested |= result.close;
             }
 
             let left_down = window.get_mouse_down(MouseButton::Left);
@@ -987,6 +987,24 @@ mod native {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    async fn handle_browser_window_wheel_scroll(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        scroll_x: f32,
+        scroll_y: f32,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<BrowserWindowKeyResult> {
+        let Some(action) = browser_window_wheel_scroll_action(scroll_x, scroll_y, modifiers) else {
+            return Ok(BrowserWindowKeyResult::default());
+        };
+        *mode = BrowserWindowMode::Page;
+        app.apply_action(action).await?;
+        Ok(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        })
     }
 
     fn current_browser_window_source(app: &BrowserApp) -> Result<String> {
@@ -2572,6 +2590,63 @@ mod native {
                     delta_y: 0,
                 })
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_wheel_scroll_dismisses_transient_prompts() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/list-marker-types.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let modifiers = BrowserWindowModifiers::default();
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+
+            let no_scroll =
+                handle_browser_window_wheel_scroll(&mut app, &mut mode, 0.0, 0.0, modifiers)
+                    .await
+                    .unwrap();
+            assert!(!no_scroll.dirty);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: "stale location".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+
+            let scroll_down =
+                handle_browser_window_wheel_scroll(&mut app, &mut mode, 0.0, -2.0, modifiers)
+                    .await
+                    .unwrap();
+            assert!(scroll_down.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            let scrolled_y = app.active_viewport().unwrap().y;
+            assert!(scrolled_y > 0);
+
+            mode = BrowserWindowMode::Find {
+                text: "stale find".to_owned(),
+                replace_on_input: false,
+            };
+            let scroll_up =
+                handle_browser_window_wheel_scroll(&mut app, &mut mode, 0.0, 2.0, modifiers)
+                    .await
+                    .unwrap();
+            assert!(scroll_up.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_viewport().unwrap().y < scrolled_y);
         }
 
         #[tokio::test]
