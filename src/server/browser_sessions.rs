@@ -571,6 +571,21 @@ struct BrowserSessionFormsExportPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct BrowserSessionFindExportPayload<'a> {
+    format: &'static str,
+    id: &'a str,
+    title: &'a str,
+    source: &'a str,
+    query: &'a str,
+    match_count: usize,
+    current_index: Option<usize>,
+    current_line: Option<usize>,
+    matches: &'a [BrowserSessionFindMatchPayload],
+    csv_url: String,
+    session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
 struct BrowserSessionStateExportViewport {
     width: usize,
     height: usize,
@@ -680,6 +695,7 @@ struct BrowserSessionStateExportUrls {
     resources_csv: String,
     resource_report_json: String,
     resource_report_csv: String,
+    find_json: String,
     find_csv: String,
     tab_search_csv: String,
     viewport_text: String,
@@ -1021,6 +1037,7 @@ fn browser_session_api_response(
         | "resource_report_csv"
         | "resources-report-csv"
         | "resources_report_csv" => browser_session_resource_report_csv_response(payload),
+        "find-json" | "find_json" => browser_session_find_json_response(payload),
         "find-csv" | "find_csv" => browser_session_find_csv_response(payload),
         "tab-search-csv" | "tab_search_csv" | "tabs-search-csv" | "tabs_search_csv" => {
             browser_session_tab_search_csv_response(payload)
@@ -8623,6 +8640,7 @@ fn browser_session_state_export_payload(
                 "resource-report-csv",
                 payload,
             ),
+            find_json: browser_session_api_href(&payload.id, "find-json", payload),
             find_csv: browser_session_api_href(&payload.id, "find-csv", payload),
             tab_search_csv: browser_session_api_href(&payload.id, "tab-search-csv", payload),
             viewport_text: browser_session_api_href(&payload.id, "viewport-text", payload),
@@ -8677,6 +8695,24 @@ fn browser_session_forms_export_payload(
         form_count: payload.form_count,
         forms: &payload.forms,
         csv_url: browser_session_api_href(&payload.id, "forms-csv", payload),
+        session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
+    }
+}
+
+fn browser_session_find_export_payload(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionFindExportPayload<'_> {
+    BrowserSessionFindExportPayload {
+        format: "browser-find",
+        id: &payload.id,
+        title: &payload.title,
+        source: &payload.source,
+        query: &payload.find_query,
+        match_count: payload.find_match_count,
+        current_index: payload.find_current_index,
+        current_line: payload.find_current_line,
+        matches: &payload.find_matches,
+        csv_url: browser_session_api_href(&payload.id, "find-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
     }
 }
@@ -9998,6 +10034,10 @@ fn browser_session_find_csv_response(payload: &BrowserSessionPayload) -> HttpRes
     }
 }
 
+fn browser_session_find_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
+    json_response(200, "OK", &browser_session_find_export_payload(payload))
+}
+
 fn browser_session_find_csv(payload: &BrowserSessionPayload) -> String {
     let mut csv = String::new();
     browser_session_push_csv_row(
@@ -10111,6 +10151,7 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
         let previous_href = browser_session_action_href(&payload.id, "find-prev", &[], payload);
         let next_href = browser_session_action_href(&payload.id, "find-next", &[], payload);
         let clear_href = browser_session_action_href(&payload.id, "clear-find", &[], payload);
+        let json_href = browser_session_api_href(&payload.id, "find-json", payload);
         let csv_href = browser_session_api_href(&payload.id, "find-csv", payload);
         let bulk_actions = if payload.find_matches.iter().any(|match_| !match_.current) {
             let open_tabs_href = browser_session_action_href(
@@ -10136,9 +10177,10 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
         };
         let matches = render_browser_session_find_match_links(payload);
         format!(
-            r#"<a href="{previous_href}">Previous</a><a href="{next_href}">Next</a><a href="{csv_href}">Find CSV</a>{bulk_actions}<a href="{clear_href}">Clear</a>{matches}"#,
+            r#"<a href="{previous_href}">Previous</a><a href="{next_href}">Next</a><a href="{json_href}">Find JSON</a><a href="{csv_href}">Find CSV</a>{bulk_actions}<a href="{clear_href}">Clear</a>{matches}"#,
             previous_href = html_escape::encode_double_quoted_attribute(&previous_href),
             next_href = html_escape::encode_double_quoted_attribute(&next_href),
+            json_href = html_escape::encode_double_quoted_attribute(&json_href),
             csv_href = html_escape::encode_double_quoted_attribute(&csv_href),
             bulk_actions = bulk_actions,
             clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
