@@ -4829,24 +4829,34 @@ fn browser_session_summaries(
                     &[("session", id.clone())],
                     href_source,
                 ),
-                clear_label_url: browser_session_action_href(
-                    current_id,
-                    "clear-tab-label",
-                    &[("session", id.clone())],
-                    href_source,
-                ),
-                move_left_url: browser_session_action_href(
-                    current_id,
-                    "move-tab-left",
-                    &[("session", id.clone())],
-                    href_source,
-                ),
-                move_right_url: browser_session_action_href(
-                    current_id,
-                    "move-tab-right",
-                    &[("session", id.clone())],
-                    href_source,
-                ),
+                clear_label_url: session.tab_label.as_ref().map_or_else(String::new, |_| {
+                    browser_session_action_href(
+                        current_id,
+                        "clear-tab-label",
+                        &[("session", id.clone())],
+                        href_source,
+                    )
+                }),
+                move_left_url: (index > 0)
+                    .then(|| {
+                        browser_session_action_href(
+                            current_id,
+                            "move-tab-left",
+                            &[("session", id.clone())],
+                            href_source,
+                        )
+                    })
+                    .unwrap_or_default(),
+                move_right_url: (index + 1 < ordered_ids.len())
+                    .then(|| {
+                        browser_session_action_href(
+                            current_id,
+                            "move-tab-right",
+                            &[("session", id.clone())],
+                            href_source,
+                        )
+                    })
+                    .unwrap_or_default(),
                 pin_url: browser_session_action_href(
                     current_id,
                     "pin-tab",
@@ -4859,14 +4869,19 @@ fn browser_session_summaries(
                     &[("session", id.clone())],
                     href_source,
                 ),
-                close_url: close_href_source.map_or_else(String::new, |source| {
-                    browser_session_action_href(
-                        current_id,
-                        "close-session",
-                        &[("close_id", id.clone())],
-                        source,
-                    )
-                }),
+                close_url: (can_close)
+                    .then(|| {
+                        close_href_source.map(|source| {
+                            browser_session_action_href(
+                                current_id,
+                                "close-session",
+                                &[("close_id", id.clone())],
+                                source,
+                            )
+                        })
+                    })
+                    .flatten()
+                    .unwrap_or_default(),
                 current: id == current_id,
                 can_close,
                 can_move_left: index > 0,
