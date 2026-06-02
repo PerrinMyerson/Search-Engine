@@ -1073,6 +1073,42 @@ fn selects_srcset_image_candidate_for_static_render() {
 }
 
 #[test]
+fn selects_data_url_jpeg_srcset_candidate_for_static_render() {
+    let data_url = tiny_test_jpeg_data_url();
+    let expected_hash = decode_image_reference("mem://srcset-jpeg", &data_url)
+        .unwrap()
+        .pixel_hash();
+    let html = format!(
+        r#"<html><body><img src="fallback.jpg" srcset="{data_url} 80w" alt="Data JPEG" width="80" height="24"></body></html>"#
+    );
+    let render = render_html(
+        "mem://srcset-jpeg",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Data JPEG".to_owned()),
+            url: Some(data_url),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(expected_hash),
+        }]
+    );
+}
+
+#[test]
 fn selects_picture_source_srcset_before_img_src() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
@@ -3079,6 +3115,32 @@ fn discovers_static_subresources() {
     }));
     assert!(render.resources.iter().any(|resource| {
         resource.kind == "object" && resource.resolved == "https://example.com/app/thing.swf"
+    }));
+}
+
+#[test]
+fn discovers_data_url_srcset_resource_without_truncating_payload() {
+    let data_url = tiny_test_jpeg_data_url();
+    let html = format!(
+        r#"<html><body><img src="fallback.jpg" srcset="{data_url} 2x, photo.jpg 1x" alt="Hero"></body></html>"#
+    );
+    let render = render_html(
+        "https://example.com/app/page.html",
+        html.as_bytes(),
+        BrowserRenderOptions::default(),
+    );
+
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.url == data_url
+            && resource.resolved == data_url
+    }));
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.resolved == "https://example.com/app/photo.jpg"
+    }));
+    assert!(!render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate" && resource.url == "data:image/jpeg;base64"
     }));
 }
 

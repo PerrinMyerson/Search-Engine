@@ -11,7 +11,7 @@ use reqwest::header::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::images::image_render_source;
+use super::images::{image_render_source, srcset_candidate_urls};
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -696,13 +696,8 @@ fn push_srcset_resources(
     let Some(srcset) = element.srcset.as_deref() else {
         return;
     };
-    for candidate in srcset.split(',') {
-        let Some(url) = candidate.split_whitespace().next() else {
-            continue;
-        };
-        if !url.is_empty() {
-            push_resource(resources, source, element, kind, &element.tag, url);
-        }
+    for url in srcset_candidate_urls(srcset) {
+        push_resource(resources, source, element, kind, &element.tag, &url);
     }
 }
 
