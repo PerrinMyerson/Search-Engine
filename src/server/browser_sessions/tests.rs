@@ -2524,6 +2524,9 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .contains("action=move-tab-left")
     );
     assert!(exported["action_urls"]["move_tab_right"].is_null());
+    let exported_close_tab_url = exported["action_urls"]["close_tab"].as_str().unwrap();
+    assert!(exported_close_tab_url.contains("action=close-session"));
+    assert!(exported_close_tab_url.contains(&format!("close_id={second_id}")));
     assert!(
         exported["action_urls"]["clear_tab_search"]
             .as_str()
@@ -2666,7 +2669,21 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(!payload.sessions[2].current);
     assert!(payload.viewport.contains("second session"));
 
-    let close_second_href = payload.sessions[1].close_url.clone();
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    let close_second_href = exported["action_urls"]["close_tab"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(close_second_href.contains("action=close-session"));
+    assert!(close_second_href.contains(&format!("close_id={second_id}")));
     let close_second = RequestTarget {
         path: "/browser".to_owned(),
         params: form_urlencoded::parse(
