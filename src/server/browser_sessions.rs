@@ -11129,11 +11129,33 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         .iter()
         .filter(|resource| resource.kind == "image")
         .count();
-    let image_count_label = if image_count == 1 {
-        "1 image".to_owned()
-    } else {
-        format!("{image_count} images")
-    };
+    let stylesheet_count = payload
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == "stylesheet")
+        .count();
+    let script_count = payload
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == "script")
+        .count();
+    let image_count_label = browser_resource_count_label(image_count, "image", "images");
+    let mut resource_summary = vec![image_count_label.clone()];
+    if stylesheet_count > 0 {
+        resource_summary.push(browser_resource_count_label(
+            stylesheet_count,
+            "stylesheet",
+            "stylesheets",
+        ));
+    }
+    if script_count > 0 {
+        resource_summary.push(browser_resource_count_label(
+            script_count,
+            "script",
+            "scripts",
+        ));
+    }
+    let resource_summary = resource_summary.join(", ");
     let load_images_label = if image_count == 0 {
         "Load images".to_owned()
     } else {
@@ -11212,9 +11234,9 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{image_count_label}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">{load_images_label}</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">{load_images_label}</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
-        image_count_label = html_escape::encode_text(&image_count_label),
+        resource_summary = html_escape::encode_text(&resource_summary),
         load_images_label = html_escape::encode_text(&load_images_label),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
@@ -11226,6 +11248,14 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         clear_report = clear_report,
         report = report,
     )
+}
+
+fn browser_resource_count_label(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
 }
 
 fn render_browser_session_resource_report(
