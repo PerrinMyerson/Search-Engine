@@ -649,6 +649,29 @@ fn css_white_space_nowrap_suppresses_soft_wrapping() {
 }
 
 #[test]
+fn inline_text_spacing_preserves_punctuation_boundaries() {
+    let render = render_html(
+        "mem://inline-punctuation-spacing",
+        br##"
+            <html><body>
+              <p>The <a href="/war">Baptist War</a>, broke out.[<a href="#cite">59</a>]</p>
+              <p><span>Alpha</span><span>Beta</span><span> Gamma</span><span> Delta</span></p>
+              <p><span>[</span><a href="#ref">12</a><span>]</span> marker</p>
+            </body></html>
+            "##,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "The Baptist War, broke out.[59]\nAlphaBeta Gamma Delta\n[12] marker"
+    );
+}
+
+#[test]
 fn css_white_space_pre_line_preserves_newlines_and_wraps() {
     let render = render_html(
         "mem://pre-line",
