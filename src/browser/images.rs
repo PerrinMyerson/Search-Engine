@@ -545,7 +545,7 @@ pub(super) fn image_render_source(
         .attrs
         .get("width")
         .and_then(|value| parse_css_pixel_dimension(value));
-    picture_source_srcset(dom, node_id)
+    let selected_source = picture_source_srcset(dom, node_id)
         .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         .or_else(|| {
             element
@@ -553,10 +553,30 @@ pub(super) fn image_render_source(
                 .as_deref()
                 .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         })
-        .or_else(|| element.src.clone())
+        .or_else(|| element.src.clone());
+    if selected_source
+        .as_deref()
+        .is_none_or(is_lazy_svg_placeholder_src)
+        && let Some(lazy_source) = lazy_image_render_source(dom, node_id, element, desired_width)
+    {
+        return Some(lazy_source);
+    }
+    selected_source
 }
 
 fn picture_source_srcset(dom: &Dom, img_node_id: usize) -> Option<&str> {
+    picture_source_attr(dom, img_node_id, &["srcset"])
+}
+
+fn picture_source_lazy_srcset(dom: &Dom, img_node_id: usize) -> Option<&str> {
+    picture_source_attr(dom, img_node_id, &["data-srcset", "data-lazy-srcset"])
+}
+
+fn picture_source_attr<'a>(
+    dom: &'a Dom,
+    img_node_id: usize,
+    attr_names: &[&str],
+) -> Option<&'a str> {
     let parent = dom.nodes.get(img_node_id)?.parent?;
     let parent_node = dom.nodes.get(parent)?;
     if !matches!(&parent_node.kind, NodeKind::Element(element) if element.tag == "picture") {
@@ -570,15 +590,47 @@ fn picture_source_srcset(dom: &Dom, img_node_id: usize) -> Option<&str> {
         if let Some(NodeKind::Element(element)) = dom.nodes.get(child).map(|node| &node.kind)
             && element.tag == "source"
             && picture_source_media_matches(element.media.as_deref())
-            && let Some(srcset) = element
-                .srcset
-                .as_deref()
-                .filter(|srcset| !srcset.trim().is_empty())
+            && let Some(srcset) = first_non_empty_attr(element, attr_names)
         {
             return Some(srcset);
         }
     }
     None
+}
+
+fn lazy_image_render_source(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    desired_width: Option<usize>,
+) -> Option<String> {
+    picture_source_lazy_srcset(dom, node_id)
+        .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
+        .or_else(|| {
+            first_non_empty_attr(element, &["data-srcset", "data-lazy-srcset"])
+                .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
+        })
+        .or_else(|| {
+            first_non_empty_attr(element, &["data-src", "data-lazy-src", "data-original"])
+                .map(str::to_owned)
+        })
+}
+
+fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Option<&'a str> {
+    attr_names.iter().find_map(|attr_name| {
+        if *attr_name == "srcset" {
+            element.srcset.as_deref()
+        } else {
+            element.attrs.get(*attr_name).map(String::as_str)
+        }
+        .filter(|value| !value.trim().is_empty())
+    })
+}
+
+fn is_lazy_svg_placeholder_src(src: &str) -> bool {
+    src.trim_start()
+        .to_ascii_lowercase()
+        .starts_with("data:image/svg+xml")
 }
 
 fn picture_source_media_matches(media: Option<&str>) -> bool {

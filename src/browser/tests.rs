@@ -1071,6 +1071,52 @@ fn selects_picture_source_srcset_before_img_src() {
 }
 
 #[test]
+fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
+    let data_url = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAAAAAAAAAAAFklEQVR4AWNgYGD4//8/438GBkaG/wAh9gT+AAAAAAAAAABJRU5EAAAAAA=="
+    );
+    let decoded = decode_image_reference("mem://lazy-image", data_url).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let html = format!(
+        r#"<html><body><img src="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20640%20480'%3E%3C/svg%3E" data-lazy-src="{data_url}" alt="Cat" width="80" height="48"><p>After</p></body></html>"#
+    );
+    let render = render_html(
+        "mem://lazy-image",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("Cat".to_owned()),
+                url: Some(data_url.to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(expected_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn decodes_data_url_png_image_into_raster_pixels() {
     let data_url = concat!(
         "data:image/png;base64,",
