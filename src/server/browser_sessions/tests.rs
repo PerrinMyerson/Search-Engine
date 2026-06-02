@@ -2352,6 +2352,59 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .contains("action=close-session")
     );
     assert!(
+        exported_tab_search["action_urls"]["reload_tab_search_results"]
+            .as_str()
+            .unwrap()
+            .contains("action=reload-tab-search-results")
+    );
+    assert!(
+        exported_tab_search["action_urls"]["duplicate_tab_search_results"]
+            .as_str()
+            .unwrap()
+            .contains("action=duplicate-tab-search-results")
+    );
+    assert!(exported_tab_search["action_urls"]["move_tab_search_results_front"].is_null());
+    assert!(
+        exported_tab_search["action_urls"]["move_tab_search_results_back"]
+            .as_str()
+            .unwrap()
+            .contains("action=move-tab-search-results-back")
+    );
+    assert!(
+        exported_tab_search["action_urls"]["bookmark_tab_search_results"]
+            .as_str()
+            .unwrap()
+            .contains("action=bookmark-tab-search-results")
+    );
+    assert!(exported_tab_search["action_urls"]["remove_tab_search_bookmarks"].is_null());
+    assert!(
+        exported_tab_search["action_urls"]["clear_tab_search"]
+            .as_str()
+            .unwrap()
+            .contains("action=clear-tab-search")
+    );
+    assert!(exported_tab_search["action_urls"]["close_tab_search_results"].is_null());
+    assert!(exported_tab_search["action_urls"]["close_tab_search_nonmatches"].is_null());
+    assert!(exported_tab_search["action_urls"]["pin_tab_search_results"].is_null());
+    assert!(
+        exported_tab_search["action_urls"]["unpin_tab_search_results"]
+            .as_str()
+            .unwrap()
+            .contains("action=unpin-tab-search-results")
+    );
+    assert!(
+        exported_tab_search["action_urls"]["label_tab_search_results"]
+            .as_str()
+            .unwrap()
+            .contains("action=label-tab-search-results")
+    );
+    assert!(
+        exported_tab_search["action_urls"]["clear_tab_search_labels"]
+            .as_str()
+            .unwrap()
+            .contains("action=clear-tab-search-labels")
+    );
+    assert!(
         exported_tab_search["csv_url"]
             .as_str()
             .unwrap()
@@ -2605,6 +2658,21 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     let (payload, _) = registry.apply_target(&clear_tab_search).await.unwrap();
     assert!(payload.tab_search_query.is_empty());
     assert!(payload.tab_search_results.is_empty());
+    let cleared_tab_search_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "tab-search-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&cleared_tab_search_json_export, &payload);
+    let exported_tab_search: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_tab_search["query"], "");
+    assert_eq!(exported_tab_search["result_count"], 0);
+    assert!(exported_tab_search["action_urls"]["clear_tab_search"].is_null());
+    assert!(exported_tab_search["action_urls"]["reload_tab_search_results"].is_null());
+    assert!(exported_tab_search["action_urls"]["duplicate_tab_search_results"].is_null());
+    assert!(exported_tab_search["action_urls"]["label_tab_search_results"].is_null());
 
     let jump_label = RequestTarget {
         path: "/browser".to_owned(),

@@ -594,8 +594,26 @@ struct BrowserSessionTabSearchExportPayload<'a> {
     query: &'a str,
     result_count: usize,
     results: &'a [BrowserSessionTabSearchResultPayload],
+    action_urls: BrowserSessionTabSearchExportActionUrls,
     csv_url: String,
     session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BrowserSessionTabSearchExportActionUrls {
+    move_tab_search_results_front: Option<String>,
+    move_tab_search_results_back: Option<String>,
+    duplicate_tab_search_results: Option<String>,
+    bookmark_tab_search_results: Option<String>,
+    remove_tab_search_bookmarks: Option<String>,
+    clear_tab_search: Option<String>,
+    reload_tab_search_results: Option<String>,
+    close_tab_search_results: Option<String>,
+    close_tab_search_nonmatches: Option<String>,
+    pin_tab_search_results: Option<String>,
+    unpin_tab_search_results: Option<String>,
+    label_tab_search_results: Option<String>,
+    clear_tab_search_labels: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8760,8 +8778,30 @@ fn browser_session_tab_search_export_payload(
         query: &payload.tab_search_query,
         result_count: payload.tab_search_results.len(),
         results: &payload.tab_search_results,
+        action_urls: browser_session_tab_search_export_action_urls(payload),
         csv_url: browser_session_api_href(&payload.id, "tab-search-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
+    }
+}
+
+fn browser_session_tab_search_export_action_urls(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionTabSearchExportActionUrls {
+    let action_urls = browser_session_state_action_urls(payload);
+    BrowserSessionTabSearchExportActionUrls {
+        move_tab_search_results_front: action_urls.move_tab_search_results_front,
+        move_tab_search_results_back: action_urls.move_tab_search_results_back,
+        duplicate_tab_search_results: action_urls.duplicate_tab_search_results,
+        bookmark_tab_search_results: action_urls.bookmark_tab_search_results,
+        remove_tab_search_bookmarks: action_urls.remove_tab_search_bookmarks,
+        clear_tab_search: action_urls.clear_tab_search,
+        reload_tab_search_results: action_urls.reload_tab_search_results,
+        close_tab_search_results: action_urls.close_tab_search_results,
+        close_tab_search_nonmatches: action_urls.close_tab_search_nonmatches,
+        pin_tab_search_results: action_urls.pin_tab_search_results,
+        unpin_tab_search_results: action_urls.unpin_tab_search_results,
+        label_tab_search_results: action_urls.label_tab_search_results,
+        clear_tab_search_labels: action_urls.clear_tab_search_labels,
     }
 }
 
