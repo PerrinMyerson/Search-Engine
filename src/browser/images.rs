@@ -767,7 +767,7 @@ pub(super) fn image_render_source(
         .or_else(|| element.src.clone());
     if selected_source
         .as_deref()
-        .is_none_or(is_lazy_svg_placeholder_src)
+        .is_none_or(is_lazy_data_image_placeholder_src)
         && let Some(lazy_source) =
             lazy_image_render_source(dom, node_id, element, desired_width, viewport_width_css_px)
     {
@@ -855,10 +855,11 @@ fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Op
     })
 }
 
-fn is_lazy_svg_placeholder_src(src: &str) -> bool {
-    src.trim_start()
-        .to_ascii_lowercase()
-        .starts_with("data:image/svg+xml")
+fn is_lazy_data_image_placeholder_src(src: &str) -> bool {
+    let src = src.trim_start().to_ascii_lowercase();
+    src.starts_with("data:image/svg+xml")
+        || src.starts_with("data:image/png")
+        || src.starts_with("data:image/gif")
 }
 
 #[cfg(test)]
