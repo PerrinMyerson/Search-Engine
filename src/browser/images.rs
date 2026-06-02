@@ -141,8 +141,8 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
     match image_type.as_str() {
         "svg" | "image/svg+xml" => decode_simple_svg(bytes),
         "png" | "image/png" => decode_simple_png(bytes),
-        "jpg" | "jpeg" | "jpe" | "image/jpeg" | "image/jpg" | "image/jpe" | "image/pjpeg"
-        | "image/x-jpeg" => decode_jpeg(bytes),
+        "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
+        | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
         _ => None,
     }
 }
@@ -835,6 +835,16 @@ fn test_jpeg_data_url_with_mime_type(mime_type: &str) -> String {
 }
 
 #[cfg(test)]
+fn progressive_test_jpeg_bytes() -> Vec<u8> {
+    decode_base64(PROGRESSIVE_TEST_JPEG_BASE64).unwrap()
+}
+
+#[cfg(test)]
+fn grayscale_test_jpeg_bytes() -> Vec<u8> {
+    decode_base64(GRAYSCALE_TEST_JPEG_BASE64).unwrap()
+}
+
+#[cfg(test)]
 fn jpeg_with_exif_orientation(bytes: &[u8], orientation: u16) -> Vec<u8> {
     assert!(is_jpeg_bytes(bytes));
     assert!((1..=8).contains(&orientation));
@@ -879,6 +889,36 @@ const TINY_TEST_JPEG_BASE64: &str = concat!(
 );
 
 #[cfg(test)]
+const PROGRESSIVE_TEST_JPEG_BASE64: &str = concat!(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAME",
+    "BgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUD",
+    "AwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoK",
+    "CgoKCgr/wgARCAACAAMDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAAB//EABUB",
+    "AQEAAAAAAAAAAAAAAAAAAAYH/9oADAMBAAIQAxAAAAEhoTL/xAAWEAEBAQAAAAAAAAAA",
+    "AAAAAAAEBQb/2gAIAQEAAQUC0dB8pP8A/8QAHREBAQACAgMBAAAAAAAAAAAAAQIDBQQG",
+    "ACEiUf/aAAgBAwEBPwHUdc69udZi5ew4eLNlQG7xxdJPzI1QvzISfgAejz//xAAeEQAB",
+    "AwQDAAAAAAAAAAAAAAABAgNBAAQFBiEjQ//aAAgBAgEBPwHKavrLmXuyqyZPc75ohxQE",
+    "QOK//8QAHBAAAgICAwAAAAAAAAAAAAAAAQIDBAAFEVFx/9oACAEBAAY/AqlLV3Za0I0u",
+    "vYRQSFFBanCzHgdkk+nP/8QAGBABAAMBAAAAAAAAAAAAAAAAAQARIUH/2gAIAQEAAT8h",
+    "J/a8oChah6i6z//aAAwDAQACAAMAAAAQH//EABYRAQEBAAAAAAAAAAAAAAAAAAERIf/a",
+    "AAgBAwEBPxDf4cIiCg6snQB//8QAGBEBAAMBAAAAAAAAAAAAAAAAAREhMQD/2gAIAQIB",
+    "AT8QQuAyswMvIAMAAo7/xAAVEAEBAAAAAAAAAAAAAAAAAAABEf/aAAgBAQABPxAfuFoA",
+    "In8WzIv/2Q==",
+);
+
+#[cfg(test)]
+const GRAYSCALE_TEST_JPEG_BASE64: &str = concat!(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAME",
+    "BgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/wAALCAACAAMBAREA",
+    "/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA",
+    "AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJico",
+    "KSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKT",
+    "lJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo",
+    "6erx8vP09fb3+Pn6/9oACAEBAAA/APkv/gsR4i8Qfs//APBQfxf8I/gPrl54J8KaR4f",
+    "8Lf2V4Y8I3T6bp1l5vhzTJpfKtrcpFHvlkkkbao3PIzHJYk//2Q==",
+);
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -896,8 +936,41 @@ mod tests {
         let bytes = tiny_test_jpeg_bytes();
 
         assert!(decode_image_bytes("jpe", &bytes).is_some());
+        assert!(decode_image_bytes("jfif", &bytes).is_some());
+        assert!(decode_image_bytes("pjpeg", &bytes).is_some());
+        assert!(decode_image_bytes("pjp", &bytes).is_some());
         assert!(decode_image_bytes("image/pjpeg", &bytes).is_some());
         assert!(decode_image_bytes("image/x-jpeg", &bytes).is_some());
+    }
+
+    #[test]
+    fn decodes_progressive_jpeg_into_grayscale_pixels() {
+        let decoded = decode_image_bytes("image/jpeg", &progressive_test_jpeg_bytes()).unwrap();
+
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels.len(), 6);
+        assert!(decoded.pixels[0] <= 8);
+        assert!((70..=85).contains(&decoded.pixels[1]));
+        assert!((140..=160).contains(&decoded.pixels[2]));
+        assert!((20..=40).contains(&decoded.pixels[3]));
+        assert!(decoded.pixels[4] >= 245);
+        assert!((45..=65).contains(&decoded.pixels[5]));
+    }
+
+    #[test]
+    fn decodes_grayscale_jpeg_without_rgb_conversion() {
+        let decoded = decode_image_bytes("image/jpeg", &grayscale_test_jpeg_bytes()).unwrap();
+
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels.len(), 6);
+        assert!(decoded.pixels[0] <= 4);
+        assert!((58..=68).contains(&decoded.pixels[1]));
+        assert!((124..=134).contains(&decoded.pixels[2]));
+        assert!((186..=196).contains(&decoded.pixels[3]));
+        assert!(decoded.pixels[4] >= 250);
+        assert!((24..=34).contains(&decoded.pixels[5]));
     }
 
     #[test]
@@ -912,6 +985,19 @@ mod tests {
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.pixels, vec![0, 255, 76, 29]);
+    }
+
+    #[test]
+    fn decodes_cached_jfif_resource_by_extension() {
+        let decoded = decode_cached_resource_image(
+            "https://example.test/photo.jfif",
+            None,
+            &tiny_test_jpeg_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
     }
 
     #[test]
