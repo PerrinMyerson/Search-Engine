@@ -100,6 +100,7 @@ use resources::{
 };
 
 const TABLE_COLUMN_GAP_CELLS: usize = 2;
+const FORM_METER_BAR_CELLS: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserRenderOptions {
@@ -10740,6 +10741,8 @@ fn image_placeholder_extent(
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
     match element.tag.as_str() {
         "input" => input_render_text(element),
+        "meter" => Some(meter_render_text(element)),
+        "progress" => Some(progress_render_text(element)),
         "select" => Some(select_render_text(dom, node_id)),
         "textarea" => Some(format!(
             "[{}]",
@@ -10750,6 +10753,40 @@ fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) ->
         )),
         _ => None,
     }
+}
+
+fn meter_render_text(element: &ElementData) -> String {
+    let min = numeric_attr(element, "min").unwrap_or(0.0);
+    let max = numeric_attr(element, "max").unwrap_or(1.0);
+    let (min, max) = if max > min { (min, max) } else { (0.0, 1.0) };
+    let value = numeric_attr(element, "value")
+        .unwrap_or(min)
+        .clamp(min, max);
+    ratio_bar((value - min) / (max - min))
+}
+
+fn progress_render_text(element: &ElementData) -> String {
+    let Some(value) = numeric_attr(element, "value") else {
+        return "[progress]".to_owned();
+    };
+    let max = numeric_attr(element, "max")
+        .filter(|max| *max > 0.0)
+        .unwrap_or(1.0);
+    ratio_bar(value.clamp(0.0, max) / max)
+}
+
+fn ratio_bar(ratio: f64) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * FORM_METER_BAR_CELLS as f64).round() as usize;
+    let empty = FORM_METER_BAR_CELLS.saturating_sub(filled);
+    format!("[{}{}]", "#".repeat(filled), "-".repeat(empty))
+}
+
+fn numeric_attr(element: &ElementData, name: &str) -> Option<f64> {
+    element
+        .attrs
+        .get(name)
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite())
 }
 
 fn input_render_text(element: &ElementData) -> Option<String> {

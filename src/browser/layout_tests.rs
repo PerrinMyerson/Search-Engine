@@ -1863,3 +1863,43 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
     assert_eq!(hit_test_target_node(&render, 14, 0), None);
     assert!(hit_test_target_node(&render, 15, 0).is_some());
 }
+
+#[test]
+fn renders_progress_and_meter_as_visible_inline_widgets() {
+    let render = render_html(
+        "mem://progress-meter-controls",
+        br#"
+            <html><body>
+              <p>
+                Loading <progress value="3" max="10">fallback</progress>
+                Unknown <progress>fallback</progress>
+                Fuel <meter min="0" max="10" value="7">fallback</meter>
+                Clamped <meter min="0" max="10" value="20">fallback</meter>
+              </p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 120,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Loading [###-------] Unknown [progress] Fuel [#######---] Clamped [##########]"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "Loading [###-------] Unknown [progress] Fuel [#######---] Clamped [##########]"
+                .to_owned(),
+        }]
+    );
+    assert!(hit_test_target_node(&render, 9, 0).is_some());
+    assert_eq!(hit_test_target_node(&render, 7, 0), None);
+    assert!(hit_test_target_node(&render, 30, 0).is_some());
+    assert!(hit_test_target_node(&render, 46, 0).is_some());
+    assert!(hit_test_target_node(&render, 67, 0).is_some());
+}
