@@ -294,7 +294,7 @@ fn clear_browser_window_prompt_text(mode: &mut BrowserWindowMode) -> bool {
     }
 }
 
-#[cfg(any(test, feature = "native-window"))]
+#[cfg(test)]
 fn browser_window_frame_options(mode: &BrowserWindowMode) -> BrowserAppWindowFrameOptions {
     browser_window_frame_options_with_status(mode, None)
 }
