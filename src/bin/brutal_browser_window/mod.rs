@@ -781,6 +781,7 @@ mod native {
         }
 
         let action = match key {
+            Key::Escape if app.active_session()?.focused_control().is_some() => None,
             Key::Escape => {
                 return Ok(BrowserWindowKeyResult {
                     dirty: false,
@@ -3137,6 +3138,48 @@ mod native {
 
             assert!(toggle.dirty);
             assert!(app.report().unwrap().text.contains("[x]"));
+        }
+
+        #[tokio::test]
+        async fn browser_window_escape_does_not_close_with_focused_control() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value="filled"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
+            let mut mode = BrowserWindowMode::Page;
+
+            let escape = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!escape.dirty);
+            assert!(!escape.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_session().unwrap().focused_control().is_some());
         }
 
         #[tokio::test]
