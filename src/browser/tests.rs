@@ -2678,6 +2678,59 @@ async fn external_stylesheets_can_rerender_current_page() {
 }
 
 #[tokio::test]
+async fn external_stylesheets_skip_non_screen_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let screen_stylesheet = dir.path().join("screen.css");
+    let print_stylesheet = dir.path().join("print.css");
+    fs::write(&screen_stylesheet, ".screen-hidden { display:none }").unwrap();
+    fs::write(&print_stylesheet, ".print-hidden { display:none }").unwrap();
+    fs::write(
+        &page,
+        r#"
+            <html><head>
+              <link rel="stylesheet" href="print.css" media="print">
+              <link rel="stylesheet" href="screen.css" media="screen">
+            </head>
+            <body>
+              <p>Visible</p>
+              <p class="screen-hidden">Screen hidden</p>
+              <p class="print-hidden">Print hidden</p>
+            </body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    assert!(session.current().unwrap().text.contains("Screen hidden"));
+    assert!(session.current().unwrap().text.contains("Print hidden"));
+
+    let report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(report.stylesheet_count, 2);
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.failed, 1);
+    assert!(report.fetches.iter().any(|fetch| {
+        fetch.status == "skipped"
+            && fetch.resource.media.as_deref() == Some("print")
+            && fetch
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("media"))
+    }));
+    assert!(report.fetches.iter().any(|fetch| {
+        matches!(fetch.status.as_str(), "fetched" | "cached")
+            && fetch.resource.media.as_deref() == Some("screen")
+    }));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Visible"));
+    assert!(!render.text.contains("Screen hidden"));
+    assert!(render.text.contains("Print hidden"));
+    assert_eq!(render.css_rule_count, 1);
+}
+
+#[tokio::test]
 async fn external_scripts_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

@@ -2703,6 +2703,10 @@ impl BrowserSession {
         let mut stylesheet_text = Vec::new();
 
         for resource in stylesheet_resources {
+            if !stylesheet_media_applies_to_screen(resource.media.as_deref()) {
+                fetches.push(skipped_stylesheet_media_fetch(resource));
+                continue;
+            }
             let fetch = fetch_resource_with_cache(
                 resource,
                 max_resource_bytes,
@@ -2853,6 +2857,43 @@ impl BrowserSession {
             entry.render = render;
         }
     }
+}
+
+fn skipped_stylesheet_media_fetch(resource: BrowserResource) -> BrowserResourceFetch {
+    BrowserResourceFetch {
+        resource,
+        status: "skipped".to_owned(),
+        source: None,
+        bytes: 0,
+        content_type: None,
+        error: Some("stylesheet media does not apply to screen".to_owned()),
+    }
+}
+
+fn stylesheet_media_applies_to_screen(media: Option<&str>) -> bool {
+    media.is_none_or(|media| {
+        media.split(',').any(|query| {
+            let query = query.trim().to_ascii_lowercase();
+            if query.is_empty() {
+                return true;
+            }
+            let mut tokens = query
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+                .filter(|token| !token.is_empty());
+            let first = tokens.next();
+            let media_type = match first {
+                Some("not") | Some("only") => tokens.next(),
+                other => other,
+            };
+            match (first, media_type) {
+                (Some("not"), Some("screen")) => false,
+                (Some("not"), Some(_)) => true,
+                (_, Some("print")) => false,
+                (_, Some("screen" | "all")) => true,
+                _ => true,
+            }
+        })
+    })
 }
 
 fn set_live_form_value(dom: &mut Dom, node_id: usize, kind: &str, value: &str) {
