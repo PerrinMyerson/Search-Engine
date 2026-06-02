@@ -10822,7 +10822,8 @@ fn computed_style(
     element: &ElementData,
     css_cascade: &CssCascade,
 ) -> ComputedStyle {
-    if element.hidden || default_display(&element.tag) == Display::None {
+    let default_display = default_display_for_element(element);
+    if element.hidden || default_display == Display::None {
         return ComputedStyle {
             display: Display::None,
             background_shade: None,
@@ -10852,7 +10853,7 @@ fn computed_style(
             min_height: 0,
         };
     }
-    let mut display = default_display(&element.tag);
+    let mut display = default_display;
     let mut background_shade = None;
     let mut text_shade = default_text_shade(element);
     let mut text_align = None;
@@ -11182,13 +11183,21 @@ fn default_text_shade(element: &ElementData) -> Option<u8> {
     (element.tag == "a" && element.href.is_some()).then(|| rgb_to_luma(0, 0, 255))
 }
 
+fn default_display_for_element(element: &ElementData) -> Display {
+    if element.tag == "dialog" && !element.attrs.contains_key("open") {
+        Display::None
+    } else {
+        default_display(&element.tag)
+    }
+}
+
 fn default_display(tag: &str) -> Display {
     match tag {
         "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
-        | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
-        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
-        | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
+        | "dialog" | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2"
+        | "h3" | "h4" | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p"
+        | "pre" | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
         "li" | "summary" => Display::ListItem,
         _ => Display::Inline,
     }

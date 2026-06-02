@@ -1752,6 +1752,35 @@ fn css_box_sizing_content_box_keeps_width_as_content_width() {
 }
 
 #[test]
+fn dialog_without_open_is_hidden_and_open_dialog_is_block() {
+    let render = render_html(
+        "mem://dialog-default",
+        br#"
+            <html><body>
+              <dialog>Closed dialog</dialog>
+              <dialog open>Open dialog</dialog>
+              <span>After</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Open dialog\nAfter");
+    assert_eq!(
+        render
+            .layout_boxes
+            .iter()
+            .filter(|layout_box| layout_box.tag == "dialog")
+            .map(|layout_box| layout_box.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["block"]
+    );
+}
+
+#[test]
 fn details_summary_hides_closed_content_and_marks_state() {
     let render = render_html(
         "mem://details-summary",
