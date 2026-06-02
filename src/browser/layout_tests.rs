@@ -1191,6 +1191,51 @@ fn flows_simple_table_cells_across_rows() {
 }
 
 #[test]
+fn css_table_display_values_use_table_flow() {
+    let render = render_html(
+        "mem://css-table-display",
+        br#"
+            <html><head>
+              <style>
+                .table { display: table }
+                .row { display: table-row }
+                .cell { display: table-cell }
+              </style>
+            </head><body>
+              <div class="table">
+                <div class="row"><span class="cell">Name</span><span class="cell">Status</span></div>
+                <div class="row"><span class="cell">Parser</span><span class="cell">running</span></div>
+              </div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Name    Status\nParser  running\nAfter");
+    assert_eq!(
+        render
+            .layout_boxes
+            .iter()
+            .filter(|layout_box| layout_box.kind == "table-cell")
+            .map(|layout_box| (layout_box.tag.as_str(), layout_box.kind.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("span", "table-cell"),
+            ("span", "table-cell"),
+            ("span", "table-cell"),
+            ("span", "table-cell"),
+        ]
+    );
+    assert!(hit_test_target_node(&render, 0, 1).is_some());
+    assert_eq!(hit_test_target_node(&render, 6, 1), None);
+    assert!(hit_test_target_node(&render, 8, 1).is_some());
+}
+
+#[test]
 fn table_colspan_spans_multiple_columns() {
     let render = render_html(
         "mem://table-colspan",

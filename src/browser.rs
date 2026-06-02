@@ -1039,11 +1039,17 @@ enum Display {
     Inline,
     Block,
     ListItem,
+    Table,
+    TableRow,
+    TableCell,
 }
 
 impl Display {
     fn is_block_flow(self) -> bool {
-        matches!(self, Self::Block | Self::ListItem)
+        matches!(
+            self,
+            Self::Block | Self::ListItem | Self::Table | Self::TableRow
+        )
     }
 }
 
@@ -3625,6 +3631,9 @@ fn layout_box_kind(
         match style.display {
             Display::Block => "block".to_owned(),
             Display::ListItem => "list-item".to_owned(),
+            Display::Table => "table".to_owned(),
+            Display::TableRow => "table-row".to_owned(),
+            Display::TableCell => "table-cell".to_owned(),
             Display::Inline => "inline".to_owned(),
             Display::None => "none".to_owned(),
         }
@@ -9312,6 +9321,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     "block" => Some(Display::Block),
                     "inline" => Some(Display::Inline),
                     "list-item" => Some(Display::ListItem),
+                    "table" | "inline-table" => Some(Display::Table),
+                    "table-row" => Some(Display::TableRow),
+                    "table-cell" => Some(Display::TableCell),
                     _ => declarations.display,
                 };
             }
@@ -10477,28 +10489,27 @@ fn render_node(
             } else {
                 false
             };
-            let table_entered = if element.tag == "table" {
+            let table_entered = if is_table_layout_container(element, style) {
                 renderer.enter_table(table_column_widths(dom, node_id, css_cascade));
                 true
             } else {
                 false
             };
-            let table_row_entered = if element.tag == "tr" {
+            let table_row_entered = if is_table_layout_row(element, style) {
                 renderer.enter_table_row(table_row_cell_count(dom, node_id, css_cascade));
                 true
             } else {
                 false
             };
-            let table_cell_entered =
-                if is_table_cell_tag(&element.tag) && style.display == Display::Inline {
-                    renderer.enter_table_cell(
-                        table_cell_colspan(dom, node_id),
-                        table_cell_rowspan(dom, node_id),
-                    );
-                    true
-                } else {
-                    false
-                };
+            let table_cell_entered = if is_table_layout_cell_for_flow(element, style) {
+                renderer.enter_table_cell(
+                    table_cell_colspan(dom, node_id),
+                    table_cell_rowspan(dom, node_id),
+                );
+                true
+            } else {
+                false
+            };
             let list_indent = if style.display.is_block_flow() {
                 nested_list_indent(dom, node_id)
             } else {
@@ -11202,6 +11213,23 @@ fn is_table_cell_tag(tag: &str) -> bool {
     matches!(tag, "td" | "th")
 }
 
+fn is_table_layout_container(element: &ElementData, style: ComputedStyle) -> bool {
+    element.tag == "table" || style.display == Display::Table
+}
+
+fn is_table_layout_row(element: &ElementData, style: ComputedStyle) -> bool {
+    element.tag == "tr" || style.display == Display::TableRow
+}
+
+fn is_table_layout_cell_for_flow(element: &ElementData, style: ComputedStyle) -> bool {
+    (is_table_cell_tag(&element.tag) && style.display == Display::Inline)
+        || style.display == Display::TableCell
+}
+
+fn is_table_layout_cell_for_collection(element: &ElementData, style: ComputedStyle) -> bool {
+    is_table_cell_tag(&element.tag) || style.display == Display::TableCell
+}
+
 fn table_column_widths(dom: &Dom, table_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
     let mut widths = table_column_width_hints(dom, table_id, css_cascade);
     let mut rowspans = Vec::new();
@@ -11325,13 +11353,14 @@ fn collect_table_rows(
         return;
     };
     if let NodeKind::Element(element) = &node.kind {
-        if computed_style(dom, node_id, element, css_cascade).display == Display::None {
+        let style = computed_style(dom, node_id, element, css_cascade);
+        if style.display == Display::None {
             return;
         }
-        if node_id != table_id && element.tag == "table" {
+        if node_id != table_id && is_table_layout_container(element, style) {
             return;
         }
-        if element.tag == "tr" {
+        if is_table_layout_row(element, style) {
             rows.push(node_id);
             return;
         }
@@ -11358,8 +11387,8 @@ fn table_row_cells(dom: &Dom, row_id: usize, css_cascade: &CssCascade) -> Vec<us
             else {
                 return false;
             };
-            is_table_cell_tag(&element.tag)
-                && computed_style(dom, child_id, element, css_cascade).display != Display::None
+            let style = computed_style(dom, child_id, element, css_cascade);
+            style.display != Display::None && is_table_layout_cell_for_collection(element, style)
         })
         .collect()
 }
