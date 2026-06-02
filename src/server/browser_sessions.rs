@@ -559,6 +559,18 @@ struct BrowserSessionResourcesExportPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct BrowserSessionFormsExportPayload<'a> {
+    format: &'static str,
+    id: &'a str,
+    title: &'a str,
+    source: &'a str,
+    form_count: usize,
+    forms: &'a [BrowserSessionFormPayload],
+    csv_url: String,
+    session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
 struct BrowserSessionStateExportViewport {
     width: usize,
     height: usize,
@@ -660,6 +672,7 @@ struct BrowserSessionStateExportUrls {
     bookmarks_csv: String,
     anchors_csv: String,
     links_csv: String,
+    forms_json: String,
     forms_csv: String,
     history_csv: String,
     profile_history_csv: String,
@@ -992,6 +1005,7 @@ fn browser_session_api_response(
             browser_session_anchors_csv_response(payload)
         }
         "links-csv" | "links_csv" => browser_session_links_csv_response(payload),
+        "forms-json" | "forms_json" => browser_session_forms_json_response(payload),
         "forms-csv" | "forms_csv" => browser_session_forms_csv_response(payload),
         "history-csv" | "history_csv" => browser_session_history_csv_response(payload),
         "profile-history-csv" | "profile_history_csv" => {
@@ -8059,6 +8073,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let find_controls = render_browser_session_find_controls(payload);
     let viewport = render_browser_session_viewport(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
+    let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
     let links_csv_href = browser_session_api_href(&payload.id, "links-csv", payload);
     let links_background_control = payload
@@ -8377,7 +8392,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <div class="browser-actions">{click_controls}</div>
 <h2>Keyboard</h2>
 <div class="keyboard-actions">{keyboard_controls}</div>
-<div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div>
+<div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div>
 <div class="browser-forms">{form_rows}</div>
 <h2>Inspector</h2>
 <div class="browser-inspector">{inspector}</div>
@@ -8434,6 +8449,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         nodes = payload.dom_node_count,
         links = payload.link_count,
         anchors = payload.anchor_count,
+        forms_json_href = html_escape::encode_double_quoted_attribute(&forms_json_href),
         forms_csv_href = html_escape::encode_double_quoted_attribute(&forms_csv_href),
         links_csv_href = html_escape::encode_double_quoted_attribute(&links_csv_href),
         links_new_sessions_control = links_new_sessions_control,
@@ -8587,6 +8603,7 @@ fn browser_session_state_export_payload(
             bookmarks_csv: browser_session_api_href(&payload.id, "bookmarks-csv", payload),
             anchors_csv: browser_session_api_href(&payload.id, "anchors-csv", payload),
             links_csv: browser_session_api_href(&payload.id, "links-csv", payload),
+            forms_json: browser_session_api_href(&payload.id, "forms-json", payload),
             forms_csv: browser_session_api_href(&payload.id, "forms-csv", payload),
             history_csv: browser_session_api_href(&payload.id, "history-csv", payload),
             profile_history_csv: browser_session_api_href(
@@ -8645,6 +8662,21 @@ fn browser_session_resources_export_payload(
         resource_count: payload.resource_count,
         resources: &payload.resources,
         csv_url: browser_session_api_href(&payload.id, "resources-csv", payload),
+        session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
+    }
+}
+
+fn browser_session_forms_export_payload(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionFormsExportPayload<'_> {
+    BrowserSessionFormsExportPayload {
+        format: "browser-forms",
+        id: &payload.id,
+        title: &payload.title,
+        source: &payload.source,
+        form_count: payload.form_count,
+        forms: &payload.forms,
+        csv_url: browser_session_api_href(&payload.id, "forms-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
     }
 }
@@ -9697,6 +9729,10 @@ fn browser_session_history_csv(payload: &BrowserSessionPayload) -> String {
         );
     }
     csv
+}
+
+fn browser_session_forms_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
+    json_response(200, "OK", &browser_session_forms_export_payload(payload))
 }
 
 fn browser_session_forms_csv_response(payload: &BrowserSessionPayload) -> HttpResponse {
