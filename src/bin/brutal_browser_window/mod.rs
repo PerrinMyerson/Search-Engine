@@ -543,6 +543,9 @@ mod native {
     ) -> Result<BrowserWindowKeyResult> {
         if modifiers.command {
             if let Some(index) = browser_window_tab_shortcut_index(key, app.tab_count()) {
+                if index == app.active_tab() {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -609,21 +612,27 @@ mod native {
                         close: false,
                     });
                 }
-                Key::LeftBracket if modifiers.shift && app.tab_count() > 0 => {
-                    app.apply_action(browser_window_tab_cycle_action(app, true)?)
-                        .await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                Key::LeftBracket if modifiers.shift => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(browser_window_tab_cycle_action(app, true)?)
+                            .await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult::default());
                 }
-                Key::RightBracket if modifiers.shift && app.tab_count() > 0 => {
-                    app.apply_action(browser_window_tab_cycle_action(app, false)?)
-                        .await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                Key::RightBracket if modifiers.shift => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(browser_window_tab_cycle_action(app, false)?)
+                            .await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult::default());
                 }
                 Key::Left | Key::LeftBracket => {
                     *mode = BrowserWindowMode::Page;
@@ -690,29 +699,38 @@ mod native {
                         close: true,
                     });
                 }
-                Key::Tab if app.tab_count() > 0 => {
-                    app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
-                        .await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                Key::Tab => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
+                            .await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult::default());
                 }
-                Key::PageUp if app.tab_count() > 0 => {
-                    app.apply_action(browser_window_tab_cycle_action(app, true)?)
-                        .await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                Key::PageUp => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(browser_window_tab_cycle_action(app, true)?)
+                            .await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult::default());
                 }
-                Key::PageDown if app.tab_count() > 0 => {
-                    app.apply_action(browser_window_tab_cycle_action(app, false)?)
-                        .await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                Key::PageDown => {
+                    if app.tab_count() > 1 {
+                        app.apply_action(browser_window_tab_cycle_action(app, false)?)
+                            .await?;
+                        return Ok(BrowserWindowKeyResult {
+                            dirty: true,
+                            close: false,
+                        });
+                    }
+                    return Ok(BrowserWindowKeyResult::default());
                 }
                 _ => {}
             }
@@ -2542,6 +2560,77 @@ mod native {
                 .unwrap();
             assert!(!missing_tab.dirty);
             assert_eq!(app.active_tab(), 2);
+        }
+
+        #[tokio::test]
+        async fn browser_window_tab_shortcuts_noop_without_target_change() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale address".to_owned(),
+                replace_on_input: false,
+            };
+            let command = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            for key in [Key::Tab, Key::PageUp, Key::PageDown] {
+                let result = handle_browser_window_key(&mut app, &mut mode, key, command)
+                    .await
+                    .unwrap();
+                assert!(!result.dirty);
+                assert!(!result.close);
+                assert_eq!(app.active_tab(), 0);
+                assert_eq!(browser_window_location_text(&mode), Some("stale address"));
+            }
+
+            let shift_bracket = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::LeftBracket,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(!shift_bracket.dirty);
+            assert!(!shift_bracket.close);
+            assert_eq!(app.active_tab(), 0);
+            assert_eq!(browser_window_location_text(&mode), Some("stale address"));
+
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.active_tab(), 1);
+            mode = BrowserWindowMode::Find {
+                text: "stale find".to_owned(),
+                replace_on_input: false,
+            };
+
+            let active_number = handle_browser_window_key(&mut app, &mut mode, Key::Key2, command)
+                .await
+                .unwrap();
+            assert!(!active_number.dirty);
+            assert!(!active_number.close);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(browser_window_find_text(&mode), Some("stale find"));
         }
 
         #[test]
