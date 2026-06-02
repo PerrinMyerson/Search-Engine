@@ -625,6 +625,24 @@ mod native {
                         close: false,
                     });
                 }
+                Key::Left if modifiers.alt && app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_tab_cycle_action(app, true)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
+                Key::Right if modifiers.alt && app.tab_count() > 0 => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_tab_cycle_action(app, false)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::Left | Key::LeftBracket => {
                     *mode = BrowserWindowMode::Page;
                     app.apply_action(BrowserAppAction::Back).await?;
@@ -1896,6 +1914,55 @@ mod native {
             assert_eq!(app.active_tab(), 1);
 
             let next = handle_browser_window_key(&mut app, &mut mode, Key::PageDown, modifiers)
+                .await
+                .unwrap();
+            assert!(next.dirty);
+            assert_eq!(app.active_tab(), 2);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_alt_arrows_cycle_tabs() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
+
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale address".to_owned(),
+                replace_on_input: false,
+            };
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: true,
+            };
+
+            let previous = handle_browser_window_key(&mut app, &mut mode, Key::Left, modifiers)
+                .await
+                .unwrap();
+            assert!(previous.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_tab(), 1);
+
+            let next = handle_browser_window_key(&mut app, &mut mode, Key::Right, modifiers)
                 .await
                 .unwrap();
             assert!(next.dirty);
