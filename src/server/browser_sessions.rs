@@ -11134,6 +11134,11 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     } else {
         format!("{image_count} images")
     };
+    let load_images_label = if image_count == 0 {
+        "Load images".to_owned()
+    } else {
+        format!("Load {image_count_label}")
+    };
     let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
     let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
     let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
@@ -11207,9 +11212,10 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{image_count_label}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">Load images</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{image_count_label}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">{load_images_label}</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
         image_count_label = html_escape::encode_text(&image_count_label),
+        load_images_label = html_escape::encode_text(&load_images_label),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
         open_resource_controls = open_resource_controls,

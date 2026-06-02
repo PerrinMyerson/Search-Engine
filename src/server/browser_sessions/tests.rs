@@ -8349,7 +8349,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(payload.resources[0].alt.as_deref(), Some("Tile image"));
     assert!(payload.resource_report.is_none());
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains("Load images"));
+    assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
 
@@ -8557,6 +8557,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert!(html.contains("format=resources-csv"));
     assert!(html.contains("resource-actions"));
     assert!(html.contains("action=resource"));
+    assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains("action=resource-new-session"));
     assert!(html.contains("New session"));
 
