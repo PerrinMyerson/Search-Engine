@@ -1834,6 +1834,45 @@ Tail"
 }
 
 #[test]
+fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
+    let render = render_html(
+        "mem://positioned-out-of-flow",
+        br#"
+            <html><body>
+              <p>Before</p>
+              <div style="position:absolute">Overlay</div>
+              <p>After</p>
+              <div style="position:fixed">Pinned</div>
+              <p>Tail</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nAfter\nTail");
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { x, y, text } => Some((*x, *y, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 0, "Before"),
+            (0, 1, "Overlay"),
+            (0, 1, "After"),
+            (0, 2, "Pinned"),
+            (0, 2, "Tail"),
+        ]
+    );
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
