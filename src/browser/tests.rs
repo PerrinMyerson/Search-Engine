@@ -1186,6 +1186,62 @@ fn decodes_data_url_png_image_into_raster_pixels() {
     assert!(raster.non_background_pixels() > 2 * 2);
 }
 
+#[test]
+fn decodes_data_url_jpeg_image_into_rendered_image_command() {
+    let data_url = tiny_test_jpeg_data_url();
+    let decoded = decode_image_reference("mem://page", &data_url).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+
+    let html = format!(
+        r#"<html><body><p>Before jpeg</p><img src="{data_url}" alt="Data JPEG" width="16" height="24"><p>After jpeg</p></body></html>"#
+    );
+    let render = render_html(
+        "mem://page",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before jpeg\nAfter jpeg");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].width, 2);
+    assert_eq!(render.decoded_images[0].height, 2);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before jpeg".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("Data JPEG".to_owned()),
+                url: Some(data_url),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(expected_hash)
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "After jpeg".to_owned()
+            },
+        ]
+    );
+    let raster = rasterize_render(&render, BrowserRasterOptions::default()).unwrap();
+    assert!(raster.non_background_pixels() > 2 * 2);
+}
+
 #[tokio::test]
 async fn session_render_images_decodes_http_resource_cache_pixels() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

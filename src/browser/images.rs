@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use flate2::read::ZlibDecoder;
+use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat as JpegPixelFormat};
 use memchr::memchr;
 use url::Url;
 
@@ -11,6 +12,9 @@ use super::{
     Dom, ElementData, NodeKind, TagKind, parse_attributes, parse_css_color_shade, parse_tag,
     resolve_browser_href,
 };
+
+const MAX_DECODED_IMAGE_SIDE: usize = 4096;
+const MAX_JPEG_DECODED_BYTES: usize = MAX_DECODED_IMAGE_SIDE * MAX_DECODED_IMAGE_SIDE * 4;
 
 #[derive(Debug, Clone)]
 pub(super) struct DecodedImage {
@@ -134,6 +138,7 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
     match image_type.as_str() {
         "svg" | "image/svg+xml" => decode_simple_svg(bytes),
         "png" | "image/png" => decode_simple_png(bytes),
+        "jpg" | "jpeg" | "image/jpeg" | "image/jpg" => decode_jpeg(bytes),
         _ => None,
     }
 }
@@ -286,8 +291,8 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         cursor = tag_end + 1;
     }
 
-    let width = width?.clamp(1, 4096);
-    let height = height?.clamp(1, 4096);
+    let width = width?.clamp(1, MAX_DECODED_IMAGE_SIDE);
+    let height = height?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut pixels = vec![255u8; width.checked_mul(height)?];
     for rect in rects {
         let Some(fill) = rect
@@ -375,7 +380,11 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
 
     let width = usize::try_from(width?).ok()?;
     let height = usize::try_from(height?).ok()?;
-    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+    if width == 0
+        || height == 0
+        || width > MAX_DECODED_IMAGE_SIDE
+        || height > MAX_DECODED_IMAGE_SIDE
+    {
         return None;
     }
     if bit_depth? != 8 || compression_method? != 0 || filter_method? != 0 || interlace_method? != 0
@@ -497,8 +506,66 @@ fn push_png_grayscale_pixels(row: &[u8], color_type: u8, pixels: &mut Vec<u8>) {
     }
 }
 
+fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
+    let mut decoder = JpegDecoder::new(bytes);
+    decoder.set_max_decoding_buffer_size(MAX_JPEG_DECODED_BYTES);
+    let decoded = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    let width = usize::from(info.width);
+    let height = usize::from(info.height);
+    if width == 0
+        || height == 0
+        || width > MAX_DECODED_IMAGE_SIDE
+        || height > MAX_DECODED_IMAGE_SIDE
+    {
+        return None;
+    }
+    let pixel_count = width.checked_mul(height)?;
+    let expected_len = pixel_count.checked_mul(info.pixel_format.pixel_bytes())?;
+    if decoded.len() != expected_len {
+        return None;
+    }
+    let pixels = jpeg_pixels_to_grayscale(&decoded, info.pixel_format, pixel_count)?;
+    Some(DecodedImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn jpeg_pixels_to_grayscale(
+    decoded: &[u8],
+    pixel_format: JpegPixelFormat,
+    pixel_count: usize,
+) -> Option<Vec<u8>> {
+    let mut pixels = Vec::with_capacity(pixel_count);
+    match pixel_format {
+        JpegPixelFormat::L8 => pixels.extend_from_slice(decoded),
+        JpegPixelFormat::RGB24 => {
+            for rgb in decoded.chunks_exact(3) {
+                pixels.push(rgb_to_gray(rgb[0], rgb[1], rgb[2]));
+            }
+        }
+        JpegPixelFormat::CMYK32 => {
+            for cmyk in decoded.chunks_exact(4) {
+                let key = cmyk[3];
+                let red = multiply_u8(cmyk[0], key);
+                let green = multiply_u8(cmyk[1], key);
+                let blue = multiply_u8(cmyk[2], key);
+                pixels.push(rgb_to_gray(red, green, blue));
+            }
+        }
+        JpegPixelFormat::L16 => return None,
+    }
+    (pixels.len() == pixel_count).then_some(pixels)
+}
+
 fn rgb_to_gray(red: u8, green: u8, blue: u8) -> u8 {
     (((red as u16 * 77) + (green as u16 * 150) + (blue as u16 * 29) + 128) >> 8) as u8
+}
+
+fn multiply_u8(a: u8, b: u8) -> u8 {
+    ((a as u16 * b as u16 + 127) / 255) as u8
 }
 
 fn blend_gray_over_white(gray: u8, alpha: u8) -> u8 {
@@ -631,6 +698,65 @@ fn is_lazy_svg_placeholder_src(src: &str) -> bool {
     src.trim_start()
         .to_ascii_lowercase()
         .starts_with("data:image/svg+xml")
+}
+
+#[cfg(test)]
+pub(super) fn tiny_test_jpeg_bytes() -> Vec<u8> {
+    decode_base64(TINY_TEST_JPEG_BASE64).unwrap()
+}
+
+#[cfg(test)]
+pub(super) fn tiny_test_jpeg_data_url() -> String {
+    format!("data:image/jpeg;base64,{TINY_TEST_JPEG_BASE64}")
+}
+
+#[cfg(test)]
+const TINY_TEST_JPEG_BASE64: &str = concat!(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEB",
+    "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/",
+    "wAARCAACAAIDAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8",
+    "QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM",
+    "2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4",
+    "eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19j",
+    "Z2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcI",
+    "CQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCS",
+    "MzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hp",
+    "anN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyM",
+    "nK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD+dK9/4KC/t7fD",
+    "a8u/h18O/wBt39rzwD8PvANzP4L8C+BfBf7Snxm8LeDvBfg7wtK+h+GPCfhPwxofjSw0Tw",
+    "54Z8OaJY2Oj6DoOj2NnpekaXZ2un6fa29pbwwp/wBcn0Mfo2fR14p+h79FDififwD8FeI+",
+    "JOI/o1eBWfcQ8Q594WcDZvnme55m/hdwtmGbZznObZhkWIx+aZrmmPxGIx2Y5jjsRXxmNx",
+    "leticTWq1qs5y836WlSfDf0qfpMcO8OznkPD+Q/SC8ZslyPI8lk8ryfJcnyvxG4kwOWZTl",
+    "OWYF0MFl2WZdgqFDB4DAYOhRwuEwtGlh8PSp0qcIL//Z",
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_jpeg_bytes_into_grayscale_pixels() {
+        let decoded = decode_image_bytes("jpg", &tiny_test_jpeg_bytes()).unwrap();
+
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels, vec![0, 255, 76, 29]);
+    }
+
+    #[test]
+    fn decodes_cached_jpeg_resource_by_content_type() {
+        let decoded = decode_cached_resource_image(
+            "https://example.test/image.bin",
+            Some("image/jpeg; charset=binary"),
+            &tiny_test_jpeg_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels, vec![0, 255, 76, 29]);
+    }
 }
 
 fn picture_source_media_matches(media: Option<&str>) -> bool {
