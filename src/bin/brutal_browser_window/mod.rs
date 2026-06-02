@@ -1340,10 +1340,12 @@ mod native {
         if let Some(query) = browser_window_find_text(mode) {
             return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Find: {query}");
         }
-        if frame.report.title.trim().is_empty() {
-            BROWSER_WINDOW_TITLE_PREFIX.to_owned()
-        } else {
+        if !frame.report.title.trim().is_empty() {
             format!("{BROWSER_WINDOW_TITLE_PREFIX} - {}", frame.report.title)
+        } else if !frame.report.source.trim().is_empty() {
+            format!("{BROWSER_WINDOW_TITLE_PREFIX} - {}", frame.report.source)
+        } else {
+            BROWSER_WINDOW_TITLE_PREFIX.to_owned()
         }
     }
 
@@ -3384,6 +3386,9 @@ mod native {
 
         #[tokio::test]
         async fn browser_window_title_uses_blackium_starium_brand() {
+            let dir = tempfile::tempdir().unwrap();
+            let untitled = dir.path().join("untitled.html");
+            std::fs::write(&untitled, r#"<html><body>Untitled page</body></html>"#).unwrap();
             let mut app = BrowserApp::open(
                 "bench/browser-fixtures/static-text.html",
                 BrowserAppOptions {
@@ -3423,6 +3428,26 @@ mod native {
                     },
                 ),
                 "Blackium Starium✴ - Find: needle"
+            );
+
+            let mut untitled_app = BrowserApp::open(
+                &untitled.to_string_lossy(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let untitled_frame = untitled_app.present_window_frame().unwrap();
+            assert_eq!(
+                browser_window_title(&untitled_frame, &BrowserWindowMode::Page),
+                format!("Blackium Starium✴ - {}", untitled.to_string_lossy())
             );
         }
     }
