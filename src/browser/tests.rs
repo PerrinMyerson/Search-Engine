@@ -1270,6 +1270,54 @@ fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
 }
 
 #[test]
+fn lazy_png_placeholder_img_uses_real_jpeg_data_source_for_rendering() {
+    let placeholder = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAAAAAAAAAAAFklEQVR4AWNgYGD4//8/438GBkaG/wAh9gT+AAAAAAAAAABJRU5EAAAAAA=="
+    );
+    let data_url = tiny_test_jpeg_data_url();
+    let expected_hash = decode_image_reference("mem://lazy-png-image", &data_url)
+        .unwrap()
+        .pixel_hash();
+    let html = format!(
+        r#"<html><body><img src="{placeholder}" data-src="{data_url}" alt="Lazy JPEG" width="80" height="48"><p>After</p></body></html>"#
+    );
+    let render = render_html(
+        "mem://lazy-png-image",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("Lazy JPEG".to_owned()),
+                url: Some(data_url),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(expected_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn decodes_data_url_png_image_into_raster_pixels() {
     let data_url = concat!(
         "data:image/png;base64,",
