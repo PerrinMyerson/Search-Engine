@@ -437,6 +437,40 @@ fn css_modern_display_values_map_to_flow_and_suppress_markers() {
 }
 
 #[test]
+fn css_flex_container_lays_out_block_children_in_row() {
+    let render = render_html(
+        "mem://css-flex-row-children",
+        br#"
+            <html><body>
+              <nav style="display:flex"><div>Data</div><div>Intelligence</div><div style="display:contents"><div>Evidence</div></div><div>Customers</div></nav>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Data Intelligence Evidence Customers\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Data Intelligence Evidence Customers".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_display_contents_flattens_wrapper_without_painting_box() {
     let render = render_html(
         "mem://css-display-contents",
