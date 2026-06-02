@@ -791,6 +791,20 @@ mod native {
             BrowserWindowMode::Page => {}
         }
 
+        if matches!(key, Key::Slash)
+            && !modifiers.command
+            && !modifiers.shift
+            && !modifiers.alt
+            && app.active_session()?.focused_control().is_none()
+        {
+            let current_query = app.active_find_state()?.map(|find| find.query);
+            begin_browser_window_find_input(mode, current_query.as_deref());
+            return Ok(BrowserWindowKeyResult {
+                dirty: true,
+                close: false,
+            });
+        }
+
         let action = match key {
             Key::Escape => None,
             Key::Backspace if app.active_session()?.focused_control().is_some() => {
@@ -3172,6 +3186,88 @@ mod native {
                     .unwrap()
                     .value,
                 ""
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_slash_opens_find_without_focused_text_control() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let open_find = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Slash,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(open_find.dirty);
+            assert!(!open_find.close);
+            assert_eq!(browser_window_find_text(&mode), Some(""));
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value="rust"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            assert!(
+                apply_browser_window_text_input(&mut app, &mut mode, "/")
+                    .await
+                    .unwrap()
+            );
+            let typed_slash = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Slash,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!typed_slash.dirty);
+            assert!(!typed_slash.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "rust/"
             );
         }
 
