@@ -8044,10 +8044,43 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Apply styles: total=1 fetched=1 cached=0 failed=0 skipped=0 applied=1"));
     assert!(html.contains("text/css"));
+    assert!(html.contains("Report JSON"));
+    assert!(html.contains("format=resource-report-json"));
     assert!(html.contains("Report CSV"));
     assert!(html.contains("format=resource-report-csv"));
     assert!(html.contains("Clear report"));
     assert!(html.contains("action=clear-resource-report"));
+    let resource_report_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resource-report-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resource_report_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_report: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_report["format"], "browser-resource-report");
+    assert_eq!(exported_report["id"], payload.id);
+    assert_eq!(exported_report["resource_report"]["action"], "Apply styles");
+    assert_eq!(exported_report["resource_report"]["applied"], 1);
+    assert_eq!(
+        exported_report["resource_report"]["resources"][0]["kind"],
+        "stylesheet"
+    );
+    assert!(
+        exported_report["csv_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=resource-report-csv")
+    );
+    assert!(
+        exported_report["clear_url"]
+            .as_str()
+            .unwrap()
+            .contains("clear-resource-report")
+    );
     let resource_report_csv_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
         params: vec![
@@ -8216,7 +8249,32 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
     assert!(html.contains("image/svg+xml"));
+    assert!(html.contains("Report JSON"));
+    assert!(html.contains("format=resource-report-json"));
     assert!(html.contains("Report CSV"));
+
+    let resource_report_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resource-report-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resource_report_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_report: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_report["format"], "browser-resource-report");
+    assert_eq!(exported_report["resource_report"]["action"], "Load images");
+    assert_eq!(exported_report["resource_report"]["decoded"], 1);
+    assert_eq!(
+        exported_report["resource_report"]["resources"][0]["kind"],
+        "image"
+    );
+    assert_eq!(
+        exported_report["resource_report"]["resources"][0]["content_type"],
+        "image/svg+xml"
+    );
 
     let resource_report_csv_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -8392,6 +8450,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("history_csv", "history-csv"),
         ("profile_history_csv", "profile-history-csv"),
         ("resources_csv", "resources-csv"),
+        ("resource_report_json", "resource-report-json"),
         ("resource_report_csv", "resource-report-csv"),
         ("find_csv", "find-csv"),
         ("tab_search_csv", "tab-search-csv"),

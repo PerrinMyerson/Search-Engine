@@ -536,6 +536,17 @@ struct BrowserSessionStateExportPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct BrowserSessionResourceReportExportPayload<'a> {
+    format: &'static str,
+    id: &'a str,
+    title: &'a str,
+    source: &'a str,
+    resource_report: Option<&'a BrowserSessionResourceReportPayload>,
+    csv_url: String,
+    clear_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct BrowserSessionStateExportViewport {
     width: usize,
     height: usize,
@@ -641,6 +652,7 @@ struct BrowserSessionStateExportUrls {
     history_csv: String,
     profile_history_csv: String,
     resources_csv: String,
+    resource_report_json: String,
     resource_report_csv: String,
     find_csv: String,
     tab_search_csv: String,
@@ -973,6 +985,10 @@ fn browser_session_api_response(
             browser_session_profile_history_csv_response(payload)
         }
         "resources-csv" | "resources_csv" => browser_session_resources_csv_response(payload),
+        "resource-report-json"
+        | "resource_report_json"
+        | "resources-report-json"
+        | "resources_report_json" => browser_session_resource_report_json_response(payload),
         "resource-report-csv"
         | "resource_report_csv"
         | "resources-report-csv"
@@ -8565,6 +8581,11 @@ fn browser_session_state_export_payload(
                 payload,
             ),
             resources_csv: browser_session_api_href(&payload.id, "resources-csv", payload),
+            resource_report_json: browser_session_api_href(
+                &payload.id,
+                "resource-report-json",
+                payload,
+            ),
             resource_report_csv: browser_session_api_href(
                 &payload.id,
                 "resource-report-csv",
@@ -8579,6 +8600,22 @@ fn browser_session_state_export_payload(
         cookies: &payload.cookies,
         local_storage: &payload.local_storage,
         session_storage: &payload.session_storage,
+    }
+}
+
+fn browser_session_resource_report_export_payload(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionResourceReportExportPayload<'_> {
+    BrowserSessionResourceReportExportPayload {
+        format: "browser-resource-report",
+        id: &payload.id,
+        title: &payload.title,
+        source: &payload.source,
+        resource_report: payload.resource_report.as_ref(),
+        csv_url: browser_session_api_href(&payload.id, "resource-report-csv", payload),
+        clear_url: payload.resource_report.as_ref().map(|_| {
+            browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
+        }),
     }
 }
 
@@ -9783,6 +9820,14 @@ fn browser_session_resources_csv(payload: &BrowserSessionPayload) -> String {
     csv
 }
 
+fn browser_session_resource_report_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
+    json_response(
+        200,
+        "OK",
+        &browser_session_resource_report_export_payload(payload),
+    )
+}
+
 fn browser_session_resource_report_csv_response(payload: &BrowserSessionPayload) -> HttpResponse {
     HttpResponse {
         status: 200,
@@ -10952,10 +10997,13 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         .map_or_else(String::new, |_| {
             let clear_href =
                 browser_session_action_href(&payload.id, "clear-resource-report", &[], payload);
+            let report_json_href =
+                browser_session_api_href(&payload.id, "resource-report-json", payload);
             let report_csv_href =
                 browser_session_api_href(&payload.id, "resource-report-csv", payload);
             format!(
-                r#"<a class="clear-link" href="{report_csv_href}">Report CSV</a><a class="clear-link" href="{clear_href}">Clear report</a>"#,
+                r#"<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{report_csv_href}">Report CSV</a><a class="clear-link" href="{clear_href}">Clear report</a>"#,
+                report_json_href = html_escape::encode_double_quoted_attribute(&report_json_href),
                 report_csv_href = html_escape::encode_double_quoted_attribute(&report_csv_href),
                 clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
             )
