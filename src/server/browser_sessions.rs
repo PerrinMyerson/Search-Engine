@@ -8859,8 +8859,14 @@ fn browser_session_state_action_urls(
         duplicate_tab_search_results: (!payload.tab_search_results.is_empty()).then(|| {
             browser_session_action_href(&payload.id, "duplicate-tab-search-results", &[], payload)
         }),
-        close_tab: (payload.sessions.len() > 1)
-            .then(|| browser_session_action_href(&payload.id, "close-session", &[], payload)),
+        close_tab: (payload.sessions.len() > 1).then(|| {
+            browser_session_action_href(
+                &payload.id,
+                "close-session",
+                &[("close_id", payload.id.clone())],
+                payload,
+            )
+        }),
         close_other_tabs: (payload.sessions.len() > 1)
             .then(|| browser_session_action_href(&payload.id, "close-other-tabs", &[], payload)),
         close_unpinned_tabs: payload
