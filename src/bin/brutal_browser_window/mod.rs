@@ -465,8 +465,18 @@ mod native {
                 hover_status_text = next_hover_status_text;
                 dirty = true;
             }
-            for key in window.get_keys_pressed(KeyRepeat::No) {
+            let pressed_keys = window.get_keys_pressed(KeyRepeat::No);
+            for key in pressed_keys.iter().copied() {
                 let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers).await?;
+                dirty |= result.dirty;
+                close_requested |= result.close;
+            }
+            for key in window.get_keys_pressed(KeyRepeat::Yes) {
+                if pressed_keys.contains(&key) {
+                    continue;
+                }
+                let result =
+                    handle_browser_window_repeated_key(&mut app, &mut mode, key, modifiers).await?;
                 dirty |= result.dirty;
                 close_requested |= result.close;
             }
@@ -533,6 +543,36 @@ mod native {
         }
 
         Ok(())
+    }
+
+    async fn handle_browser_window_repeated_key(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        key: Key,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<BrowserWindowKeyResult> {
+        if !browser_window_key_can_repeat(app, mode, key, modifiers)? {
+            return Ok(BrowserWindowKeyResult::default());
+        }
+        handle_browser_window_key(app, mode, key, modifiers).await
+    }
+
+    fn browser_window_key_can_repeat(
+        app: &BrowserApp,
+        mode: &BrowserWindowMode,
+        key: Key,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<bool> {
+        if modifiers.command || modifiers.alt || !matches!(mode, BrowserWindowMode::Page) {
+            return Ok(false);
+        }
+        if app.active_session()?.focused_control().is_some() {
+            return Ok(false);
+        }
+        Ok(matches!(
+            key,
+            Key::Up | Key::Down | Key::Left | Key::Right | Key::PageUp | Key::PageDown | Key::Space
+        ))
     }
 
     async fn handle_browser_window_key(
@@ -1458,6 +1498,99 @@ mod native {
             .unwrap();
             assert!(space_up.dirty);
             assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_repeated_page_scroll_keys_are_filtered() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/list-marker-types.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let repeated_down = handle_browser_window_repeated_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(repeated_down.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, 3);
+
+            let repeated_command_w = handle_browser_window_repeated_key(
+                &mut app,
+                &mut mode,
+                Key::W,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!repeated_command_w.dirty);
+            assert!(!repeated_command_w.close);
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("form.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Form</title></head><body><form><input name="q" value="filled"></form></body></html>"#,
+            )
+            .unwrap();
+            let mut form_app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            form_app
+                .apply_action(BrowserAppAction::FocusNext)
+                .await
+                .unwrap();
+            let mut form_mode = BrowserWindowMode::Page;
+            let repeated_space = handle_browser_window_repeated_key(
+                &mut form_app,
+                &mut form_mode,
+                Key::Space,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!repeated_space.dirty);
+            assert_eq!(
+                form_app
+                    .active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "filled"
+            );
         }
 
         #[tokio::test]
