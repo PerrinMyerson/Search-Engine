@@ -315,6 +315,30 @@ fn css_and_inline_display_none_hide_content() {
 }
 
 #[test]
+fn css_comments_do_not_suppress_layout_rules() {
+    let render = render_html(
+        "mem://css-comments",
+        br#"
+        <html><head><style>
+          /* reset comments should not become part of the selector */
+          .hide { display: none; /* comments should not become part of the value */ }
+          /* comments between rules should be ignored */
+          .shown { display: block; }
+        </style></head>
+        <body>
+          <p class="hide">Hidden by stylesheet comment handling</p>
+          <p class="shown">Visible comment rule</p>
+          <p style="/* inline comment */ display:none">Hidden by inline comment handling</p>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(render.text, "Visible comment rule");
+    assert_eq!(render.css_rule_count, 2);
+}
+
+#[test]
 fn compound_child_and_descendant_css_selectors_hide_content() {
     let render = render_html(
         "mem://page",
