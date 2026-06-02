@@ -157,6 +157,7 @@ impl UnorderedListMarkerStyle {
             CssListStyleType::Square => Some(Self::Square),
             CssListStyleType::NoMarker
             | CssListStyleType::Decimal
+            | CssListStyleType::DecimalLeadingZero
             | CssListStyleType::LowerAlpha
             | CssListStyleType::UpperAlpha
             | CssListStyleType::LowerRoman
@@ -176,6 +177,7 @@ impl UnorderedListMarkerStyle {
 #[derive(Debug, Clone, Copy)]
 enum OrderedListMarkerStyle {
     Decimal,
+    DecimalLeadingZero,
     LowerAlpha,
     UpperAlpha,
     LowerRoman,
@@ -207,6 +209,7 @@ impl OrderedListMarkerStyle {
     fn from_css_list_style_type(value: CssListStyleType) -> Option<Self> {
         match value {
             CssListStyleType::Decimal => Some(Self::Decimal),
+            CssListStyleType::DecimalLeadingZero => Some(Self::DecimalLeadingZero),
             CssListStyleType::LowerAlpha => Some(Self::LowerAlpha),
             CssListStyleType::UpperAlpha => Some(Self::UpperAlpha),
             CssListStyleType::LowerRoman => Some(Self::LowerRoman),
@@ -221,6 +224,7 @@ impl OrderedListMarkerStyle {
     fn marker(self, value: i64) -> String {
         let marker = match self {
             Self::Decimal => value.to_string(),
+            Self::DecimalLeadingZero => decimal_leading_zero_marker(value),
             Self::LowerAlpha => alpha_marker(value, false).unwrap_or_else(|| value.to_string()),
             Self::UpperAlpha => alpha_marker(value, true).unwrap_or_else(|| value.to_string()),
             Self::LowerRoman => roman_marker(value, false).unwrap_or_else(|| value.to_string()),
@@ -232,6 +236,16 @@ impl OrderedListMarkerStyle {
 
 fn parse_list_counter_value(value: &str) -> Option<i64> {
     value.trim().parse::<i64>().ok()
+}
+
+fn decimal_leading_zero_marker(value: i64) -> String {
+    if (0..10).contains(&value) {
+        format!("0{value}")
+    } else if (-9..0).contains(&value) {
+        format!("-0{}", value.abs())
+    } else {
+        value.to_string()
+    }
 }
 
 fn alpha_marker(value: i64, uppercase: bool) -> Option<String> {

@@ -328,6 +328,54 @@ fn css_list_style_type_controls_markers() {
 }
 
 #[test]
+fn css_decimal_leading_zero_list_style_pads_single_digit_markers() {
+    let render = render_html(
+        "mem://css-decimal-leading-zero",
+        br#"
+            <html><body>
+              <ol style="list-style-type: decimal-leading-zero" start="8">
+                <li>Eight</li>
+                <li>Nine</li>
+                <li>Ten</li>
+              </ol>
+              <ol style="list-style: decimal-leading-zero inside" start="-2">
+                <li>Negative two</li>
+                <li>Negative one</li>
+                <li>Zero</li>
+              </ol>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "08. Eight\n09. Nine\n10. Ten\n-02. Negative two\n-01. Negative one\n00. Zero"
+    );
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "08. Eight",
+            "09. Nine",
+            "10. Ten",
+            "-02. Negative two",
+            "-01. Negative one",
+            "00. Zero",
+        ]
+    );
+}
+
+#[test]
 fn css_display_list_item_controls_marker_generation() {
     let render = render_html(
         "mem://css-display-list-item",
