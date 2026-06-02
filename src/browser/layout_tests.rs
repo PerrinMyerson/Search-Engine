@@ -1522,6 +1522,65 @@ fn indents_blockquotes_and_definition_descriptions_by_default() {
 }
 
 #[test]
+fn figure_uses_default_prose_margins() {
+    let render = render_html(
+        "mem://figure-default-margin",
+        br#"
+            <html><body>
+              <p>Before figure</p>
+              <figure>
+                <p>Diagram text</p>
+                <figcaption>Caption text</figcaption>
+              </figure>
+              <p>After figure</p>
+              <figure style="margin:0">
+                <figcaption>Flush caption</figcaption>
+              </figure>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Before figure\nDiagram text\nCaption text\nAfter figure\nFlush caption"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before figure".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 4,
+                y: 2,
+                text: "Diagram text".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 4,
+                y: 3,
+                text: "Caption text".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "After figure".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Flush caption".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn links_have_default_text_shade_with_css_override() {
     let render = render_html(
         "mem://default-link-text-shade",

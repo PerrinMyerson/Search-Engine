@@ -11205,6 +11205,12 @@ fn default_margin(tag: &str) -> BoxSpacing {
             left: 4,
             ..BoxSpacing::default()
         },
+        "figure" => BoxSpacing {
+            top: 1,
+            right: 4,
+            bottom: 1,
+            left: 4,
+        },
         _ => BoxSpacing::default(),
     }
 }
