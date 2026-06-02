@@ -11261,7 +11261,9 @@ fn default_text_shade(element: &ElementData) -> Option<u8> {
 
 fn default_display(tag: &str) -> Display {
     match tag {
-        "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
+        "area" | "base" | "basefont" | "datalist" | "head" | "link" | "meta" | "noembed"
+        | "noframes" | "param" | "rp" | "script" | "source" | "style" | "template" | "title"
+        | "track" | "svg" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
         | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
         | "h5" | "h6" | "header" | "hgroup" | "hr" | "html" | "main" | "nav" | "ol" | "p"
