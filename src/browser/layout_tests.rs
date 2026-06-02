@@ -862,6 +862,50 @@ fn css_line_height_adds_visual_row_spacing() {
 }
 
 #[test]
+fn css_font_shorthand_line_height_adds_visual_row_spacing() {
+    let render = render_html(
+        "mem://font-line-height",
+        br#"
+            <html><head><style>
+              .ratio { font: italic 700 16px/2 Arial; }
+              .spaced { font: 16px / 24px sans-serif; }
+              .normal { font: 16px/3 serif; line-height: normal; }
+            </style></head><body>
+              <p class="ratio">Ratio line</p>
+              <p class="spaced">Pixel line</p>
+              <p class="normal">Normal line</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Ratio line\n\nPixel line\n\nNormal line");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Ratio line".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Pixel line".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Normal line".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
     let render = render_html(
         "mem://text-indent",

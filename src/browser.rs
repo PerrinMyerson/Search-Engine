@@ -9371,6 +9371,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.line_height =
                     parse_css_line_height(value).or(declarations.line_height);
             }
+            "font" => {
+                declarations.line_height =
+                    parse_css_font_line_height(value).or(declarations.line_height);
+            }
             "box-sizing" => {
                 declarations.box_sizing = parse_css_box_sizing(value).or(declarations.box_sizing);
             }
@@ -9899,6 +9903,31 @@ fn parse_css_line_height(value: &str) -> Option<usize> {
     (rows > 0.0)
         .then(|| rows.ceil() as usize)
         .map(|rows| rows.clamp(1, 16))
+}
+
+fn parse_css_font_line_height(value: &str) -> Option<usize> {
+    let mut pending_line_height = false;
+    for token in value.split_ascii_whitespace() {
+        let token = token.trim_matches(',');
+        if pending_line_height {
+            return parse_css_line_height(token);
+        }
+        if token == "/" {
+            pending_line_height = true;
+            continue;
+        }
+        if let Some((_, line_height)) = token.split_once('/') {
+            if line_height.is_empty() {
+                pending_line_height = true;
+                continue;
+            }
+            return parse_css_line_height(line_height);
+        }
+        if token.ends_with('/') {
+            pending_line_height = true;
+        }
+    }
+    None
 }
 
 fn parse_css_list_style(value: &str) -> Option<CssListStyleType> {
