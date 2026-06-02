@@ -1409,6 +1409,115 @@ async fn session_render_images_sniffs_http_jpeg_resource_pixels() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            let (content_type, body) = if first_line.contains(" /tile.png ") {
+                ("image/png", png_bytes.clone())
+            } else {
+                (
+                    "text/html",
+                    br#"<html><body><p>Before network</p><img src="/tile.png" alt="Network PNG"><p>After network</p></body></html>"#.to_vec(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session
+        .navigate(&format!("http://{addr}/page.html"))
+        .await
+        .unwrap();
+
+    let initial_render = session.current().unwrap();
+    assert_eq!(
+        initial_render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before network".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("Network PNG".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "After network".to_owned()
+            },
+        ]
+    );
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before network".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 1,
+                height: 1,
+                shade: 220,
+                alt: Some("Network PNG".to_owned()),
+                url: Some(format!("http://{addr}/tile.png")),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(expected_hash)
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "After network".to_owned()
+            },
+        ]
+    );
+    server.await.unwrap();
+}
+
 fn tiny_test_png_rgb_with_sub_filter() -> Vec<u8> {
     let filtered_scanlines = [0, 0, 0, 0, 255, 255, 255, 1, 255, 0, 0, 1, 0, 255];
     encode_test_png(2, 2, 2, &filtered_scanlines)

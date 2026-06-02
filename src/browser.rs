@@ -10532,9 +10532,11 @@ fn render_node(
                 return;
             }
             if element.tag == "img" {
-                let (image_width, image_height) =
-                    image_placeholder_extent(element, &style, renderer);
                 let image_source = image_render_source(dom, node_id, element);
+                let intrinsic_size =
+                    renderer.decoded_image_intrinsic_size(source, image_source.as_deref());
+                let (image_width, image_height) =
+                    image_placeholder_extent(element, &style, renderer, intrinsic_size);
                 renderer.push_image_placeholder(
                     image_width,
                     image_height,
@@ -10934,6 +10936,7 @@ fn image_placeholder_extent(
     element: &ElementData,
     style: &ComputedStyle,
     renderer: &FlowRenderer,
+    intrinsic_size: Option<(usize, usize)>,
 ) -> (usize, usize) {
     let attr_width = element
         .attrs
@@ -10943,29 +10946,61 @@ fn image_placeholder_extent(
         .attrs
         .get("height")
         .and_then(|value| parse_pixel_dimension_cells(value, 12));
+    let (decoded_width, decoded_height) = intrinsic_size.unzip();
+    let (ratio_width, ratio_height) = match (attr_width, attr_height) {
+        (Some(width), Some(height)) => (Some(width), Some(height)),
+        _ => (decoded_width, decoded_height),
+    };
     let (mut width, mut height) = match (style.width, style.height) {
         (Some(width), Some(height)) => (width, height),
         (Some(width), None) => {
             let width = constrain_image_width(width, style);
-            let height = attr_width
-                .zip(attr_height)
+            let height = ratio_width
+                .zip(ratio_height)
                 .and_then(|(intrinsic_width, intrinsic_height)| {
                     scale_image_dimension(width, intrinsic_height, intrinsic_width)
                 })
-                .unwrap_or_else(|| attr_height.unwrap_or(4));
+                .or(attr_height)
+                .or(decoded_height)
+                .unwrap_or(4);
             (width, height)
         }
         (None, Some(height)) => {
             let height = constrain_image_height(height, style);
-            let width = attr_width
-                .zip(attr_height)
+            let width = ratio_width
+                .zip(ratio_height)
                 .and_then(|(intrinsic_width, intrinsic_height)| {
                     scale_image_dimension(height, intrinsic_width, intrinsic_height)
                 })
-                .unwrap_or_else(|| attr_width.unwrap_or(10));
+                .or(attr_width)
+                .or(decoded_width)
+                .unwrap_or(10);
             (width, height)
         }
-        (None, None) => (attr_width.unwrap_or(10), attr_height.unwrap_or(4)),
+        (None, None) => match (attr_width, attr_height) {
+            (Some(width), Some(height)) => (width, height),
+            (Some(width), None) => {
+                let height = decoded_width
+                    .zip(decoded_height)
+                    .and_then(|(intrinsic_width, intrinsic_height)| {
+                        scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                    })
+                    .or(decoded_height)
+                    .unwrap_or(4);
+                (width, height)
+            }
+            (None, Some(height)) => {
+                let width = decoded_width
+                    .zip(decoded_height)
+                    .and_then(|(intrinsic_width, intrinsic_height)| {
+                        scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                    })
+                    .or(decoded_width)
+                    .unwrap_or(10);
+                (width, height)
+            }
+            (None, None) => (decoded_width.unwrap_or(10), decoded_height.unwrap_or(4)),
+        },
     };
     width = constrain_image_width(width, style);
     height = constrain_image_height(height, style);
@@ -11014,7 +11049,7 @@ fn replaced_media_placeholder_extent(
     style: &ComputedStyle,
     renderer: &FlowRenderer,
 ) -> (usize, usize) {
-    let (width, height) = image_placeholder_extent(element, style, renderer);
+    let (width, height) = image_placeholder_extent(element, style, renderer, None);
     let has_explicit_height = style.height.is_some() || element.attrs.contains_key("height");
     if element.tag == "audio" && !has_explicit_height {
         return (width, 1usize.max(style.min_height).clamp(1, 24));
@@ -12100,6 +12135,18 @@ impl FlowRenderer {
             self.decoded_image_cache
                 .insert(image.url.clone(), Some(index));
         }
+    }
+
+    fn decoded_image_intrinsic_size(
+        &mut self,
+        source: &str,
+        url: Option<&str>,
+    ) -> Option<(usize, usize)> {
+        let info = self.cached_decoded_image_info(source, url?)?;
+        Some((
+            info.width.div_ceil(8).max(1),
+            info.height.div_ceil(12).max(1),
+        ))
     }
 
     fn push_text(&mut self, text: &str, target_node: Option<usize>) {
