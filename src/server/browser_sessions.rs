@@ -787,9 +787,9 @@ struct BrowserSessionStateExportActionUrls {
     unpin_tab_search_results: Option<String>,
     label_tab_search_results: Option<String>,
     clear_tab_search_labels: Option<String>,
-    fetch_resources: String,
-    apply_stylesheets: String,
-    run_scripts: String,
+    fetch_resources: Option<String>,
+    apply_stylesheets: Option<String>,
+    run_scripts: Option<String>,
     load_images: Option<String>,
     clear_resource_report: Option<String>,
 }
@@ -9105,18 +9105,25 @@ fn browser_session_state_action_urls(
             .then(|| {
                 browser_session_action_href(&payload.id, "clear-tab-search-labels", &[], payload)
             }),
-        fetch_resources: browser_session_action_href(&payload.id, "fetch-resources", &[], payload),
-        apply_stylesheets: browser_session_action_href(&payload.id, "apply-styles", &[], payload),
-        run_scripts: browser_session_action_href(&payload.id, "run-scripts", &[], payload),
-        load_images: payload
-            .resources
-            .iter()
-            .any(|resource| resource.kind == "image")
+        fetch_resources: (payload.resource_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
+        apply_stylesheets: browser_session_has_resource_kind(payload, "stylesheet")
+            .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
+        run_scripts: browser_session_has_resource_kind(payload, "script")
+            .then(|| browser_session_action_href(&payload.id, "run-scripts", &[], payload)),
+        load_images: browser_session_has_resource_kind(payload, "image")
             .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
         clear_resource_report: payload.resource_report.as_ref().map(|_| {
             browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
         }),
     }
+}
+
+fn browser_session_has_resource_kind(payload: &BrowserSessionPayload, kind: &str) -> bool {
+    payload
+        .resources
+        .iter()
+        .any(|resource| resource.kind == kind)
 }
 
 fn browser_tab_search_results_can_move(payload: &BrowserSessionPayload, to_front: bool) -> bool {
@@ -11251,9 +11258,33 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         ));
     }
     let resource_summary = resource_summary.join(", ");
-    let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
-    let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
-    let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
+    let fetch_control = if payload.resource_count == 0 {
+        String::new()
+    } else {
+        let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
+        format!(
+            r#"<a class="clear-link" href="{fetch_href}">Fetch</a>"#,
+            fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
+        )
+    };
+    let styles_control = if stylesheet_count == 0 {
+        String::new()
+    } else {
+        let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
+        format!(
+            r#"<a class="clear-link" href="{styles_href}">Apply styles</a>"#,
+            styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
+        )
+    };
+    let scripts_control = if script_count == 0 {
+        String::new()
+    } else {
+        let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
+        format!(
+            r#"<a class="clear-link" href="{scripts_href}">Run scripts</a>"#,
+            scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
+        )
+    };
     let load_images_control = if image_count == 0 {
         String::new()
     } else {
@@ -11334,15 +11365,15 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a>{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}{fetch_control}{styles_control}{scripts_control}{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
         resource_summary = html_escape::encode_text(&resource_summary),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
         open_resource_controls = open_resource_controls,
-        fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
-        styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
-        scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
+        fetch_control = fetch_control,
+        styles_control = styles_control,
+        scripts_control = scripts_control,
         load_images_control = load_images_control,
         clear_report = clear_report,
         report = report,
