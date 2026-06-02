@@ -80,6 +80,18 @@ fn browser_window_app_options(args: &BrowserWindowCli) -> BrowserAppOptions {
 
 #[cfg(any(test, feature = "native-window"))]
 const BROWSER_WINDOW_TITLE_PREFIX: &str = "Blackium Starium✴";
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_MIN_CELL_WIDTH: usize = 4;
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_MIN_CELL_HEIGHT: usize = 6;
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_MAX_CELL_WIDTH: usize = 32;
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_MAX_CELL_HEIGHT: usize = 48;
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_CELL_WIDTH_ZOOM_STEP: usize = 2;
+#[cfg(any(test, feature = "native-window"))]
+const BROWSER_WINDOW_CELL_HEIGHT_ZOOM_STEP: usize = 3;
 
 #[cfg(any(test, feature = "native-window"))]
 fn rgba_to_native_window_buffer(raster: &BrowserRgbaRaster) -> Result<Vec<u32>> {
@@ -340,6 +352,55 @@ fn browser_viewport_size_for_window_pixels(
     (viewport_width.max(1), viewport_height.max(1))
 }
 
+#[cfg(any(test, feature = "native-window"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserWindowZoom {
+    In,
+    Out,
+    Reset,
+}
+
+#[cfg(any(test, feature = "native-window"))]
+fn browser_window_zoom_raster_options(
+    mut raster: BrowserRasterOptions,
+    zoom: BrowserWindowZoom,
+) -> BrowserRasterOptions {
+    match zoom {
+        BrowserWindowZoom::In => {
+            raster.cell_width = raster
+                .cell_width
+                .saturating_add(BROWSER_WINDOW_CELL_WIDTH_ZOOM_STEP)
+                .clamp(BROWSER_WINDOW_MIN_CELL_WIDTH, BROWSER_WINDOW_MAX_CELL_WIDTH);
+            raster.cell_height = raster
+                .cell_height
+                .saturating_add(BROWSER_WINDOW_CELL_HEIGHT_ZOOM_STEP)
+                .clamp(
+                    BROWSER_WINDOW_MIN_CELL_HEIGHT,
+                    BROWSER_WINDOW_MAX_CELL_HEIGHT,
+                );
+        }
+        BrowserWindowZoom::Out => {
+            raster.cell_width = raster
+                .cell_width
+                .saturating_sub(BROWSER_WINDOW_CELL_WIDTH_ZOOM_STEP)
+                .clamp(BROWSER_WINDOW_MIN_CELL_WIDTH, BROWSER_WINDOW_MAX_CELL_WIDTH);
+            raster.cell_height = raster
+                .cell_height
+                .saturating_sub(BROWSER_WINDOW_CELL_HEIGHT_ZOOM_STEP)
+                .clamp(
+                    BROWSER_WINDOW_MIN_CELL_HEIGHT,
+                    BROWSER_WINDOW_MAX_CELL_HEIGHT,
+                );
+        }
+        BrowserWindowZoom::Reset => {
+            let default = BrowserRasterOptions::default();
+            raster.cell_width = default.cell_width;
+            raster.cell_height = default.cell_height;
+        }
+    }
+    raster
+}
+
 #[cfg(feature = "native-window")]
 mod native {
     use std::cell::RefCell;
@@ -382,7 +443,7 @@ mod native {
 
     pub(super) async fn run_native_browser_window(args: BrowserWindowCli) -> Result<()> {
         let options = browser_window_app_options(&args);
-        let raster_options = options.raster;
+        let mut raster_options = options.raster;
         let initial_cookie_jar = args
             .cookie_jar
             .as_deref()
@@ -466,6 +527,19 @@ mod native {
                 dirty = true;
             }
             for key in window.get_keys_pressed(KeyRepeat::No) {
+                if let Some(result) = handle_browser_window_zoom_key(
+                    &mut app,
+                    &mut raster_options,
+                    window_size,
+                    key,
+                    modifiers,
+                )
+                .await?
+                {
+                    dirty |= result.dirty;
+                    close_requested |= result.close;
+                    continue;
+                }
                 let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers).await?;
                 dirty |= result.dirty;
                 close_requested |= result.close;
@@ -841,6 +915,49 @@ mod native {
             })
         } else {
             Ok(BrowserWindowKeyResult::default())
+        }
+    }
+
+    async fn handle_browser_window_zoom_key(
+        app: &mut BrowserApp,
+        raster_options: &mut BrowserRasterOptions,
+        window_size: (usize, usize),
+        key: Key,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<Option<BrowserWindowKeyResult>> {
+        if !modifiers.command {
+            return Ok(None);
+        }
+        let Some(zoom) = browser_window_zoom_for_key(key) else {
+            return Ok(None);
+        };
+        let next_raster = browser_window_zoom_raster_options(*raster_options, zoom);
+        if next_raster == *raster_options {
+            return Ok(Some(BrowserWindowKeyResult::default()));
+        }
+
+        *raster_options = next_raster;
+        app.set_raster_options(next_raster);
+        let (viewport_width, viewport_height) =
+            browser_viewport_size_for_window_pixels(window_size.0, window_size.1, next_raster);
+        app.apply_action(BrowserAppAction::SetViewport {
+            width: viewport_width,
+            height: viewport_height,
+        })
+        .await?;
+
+        Ok(Some(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        }))
+    }
+
+    fn browser_window_zoom_for_key(key: Key) -> Option<BrowserWindowZoom> {
+        match key {
+            Key::Equal | Key::NumPadPlus => Some(BrowserWindowZoom::In),
+            Key::Minus | Key::NumPadMinus => Some(BrowserWindowZoom::Out),
+            Key::Key0 | Key::NumPad0 => Some(BrowserWindowZoom::Reset),
+            _ => None,
         }
     }
 
@@ -1413,6 +1530,81 @@ mod native {
             .unwrap();
             assert!(home.dirty);
             assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_zoom_updates_raster_and_viewport() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut raster_options = app.raster_options();
+            let window_size = (328, 76);
+            let command = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let zoom_in = handle_browser_window_zoom_key(
+                &mut app,
+                &mut raster_options,
+                window_size,
+                Key::Equal,
+                command,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert!(zoom_in.dirty);
+            assert_eq!(raster_options.cell_width, 10);
+            assert_eq!(raster_options.cell_height, 15);
+            assert_eq!(app.raster_options(), raster_options);
+            let expected_viewport = browser_viewport_size_for_window_pixels(
+                window_size.0,
+                window_size.1,
+                raster_options,
+            );
+            let viewport = app.active_viewport().unwrap();
+            assert_eq!((viewport.width, viewport.height), expected_viewport);
+
+            let reset = handle_browser_window_zoom_key(
+                &mut app,
+                &mut raster_options,
+                window_size,
+                Key::Key0,
+                command,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            assert!(reset.dirty);
+            assert_eq!(raster_options, BrowserRasterOptions::default());
+            assert_eq!(app.raster_options(), BrowserRasterOptions::default());
+
+            let noop_reset = handle_browser_window_zoom_key(
+                &mut app,
+                &mut raster_options,
+                window_size,
+                Key::Key0,
+                command,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(!noop_reset.dirty);
         }
 
         #[tokio::test]

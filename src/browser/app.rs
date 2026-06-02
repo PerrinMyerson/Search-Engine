@@ -278,6 +278,21 @@ impl BrowserApp {
         Ok(self.active_tab_ref()?.viewport)
     }
 
+    pub fn raster_options(&self) -> BrowserRasterOptions {
+        self.options.raster
+    }
+
+    pub fn set_raster_options(&mut self, raster: BrowserRasterOptions) {
+        if self.options.raster == raster {
+            return;
+        }
+        self.options.raster = raster;
+        for tab in &mut self.tabs {
+            tab.last_presented_viewport = None;
+            tab.content_dirty = true;
+        }
+    }
+
     pub fn active_find_state(&self) -> Result<Option<BrowserAppFindState>> {
         Ok(self.active_tab_ref()?.find.clone())
     }
