@@ -562,8 +562,13 @@ mod native {
                         BrowserWindowMode::Location { .. } | BrowserWindowMode::Find { .. }
                     ) =>
                 {
+                    let clearing_find = matches!(mode, BrowserWindowMode::Find { .. });
+                    let mut dirty = clear_browser_window_prompt_text(mode);
+                    if clearing_find {
+                        dirty |= app.clear_active_find_state()?;
+                    }
                     return Ok(BrowserWindowKeyResult {
-                        dirty: clear_browser_window_prompt_text(mode),
+                        dirty,
                         close: false,
                     });
                 }
@@ -928,6 +933,8 @@ mod native {
                         app.apply_action(BrowserAppAction::FindText { query, next: false })
                             .await?;
                     }
+                } else {
+                    app.clear_active_find_state()?;
                 }
                 Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -3010,6 +3017,77 @@ mod native {
                     .unwrap()
             );
             assert_eq!(browser_window_find_text(&find_mode), Some("Hidden"));
+        }
+
+        #[tokio::test]
+        async fn browser_window_clearing_find_prompt_clears_active_find_state() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FindText {
+                query: "Visible".to_owned(),
+                next: false,
+            })
+            .await
+            .unwrap();
+            assert!(app.active_find_state().unwrap().is_some());
+            let mut mode = BrowserWindowMode::Find {
+                text: "Visible".to_owned(),
+                replace_on_input: false,
+            };
+            let command_delete = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Delete,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(command_delete.dirty);
+            assert!(!command_delete.close);
+            assert_eq!(browser_window_find_text(&mode), Some(""));
+            assert!(app.active_find_state().unwrap().is_none());
+
+            app.apply_action(BrowserAppAction::FindText {
+                query: "Visible".to_owned(),
+                next: false,
+            })
+            .await
+            .unwrap();
+            assert!(app.active_find_state().unwrap().is_some());
+            mode = BrowserWindowMode::Find {
+                text: "".to_owned(),
+                replace_on_input: false,
+            };
+            let empty_enter = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(empty_enter.dirty);
+            assert!(!empty_enter.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_find_state().unwrap().is_none());
         }
 
         #[tokio::test]

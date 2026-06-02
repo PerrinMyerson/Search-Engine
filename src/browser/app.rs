@@ -282,6 +282,16 @@ impl BrowserApp {
         Ok(self.active_tab_ref()?.find.clone())
     }
 
+    pub fn clear_active_find_state(&mut self) -> Result<bool> {
+        let tab = self.active_tab_mut()?;
+        if tab.find.is_none() {
+            return Ok(false);
+        }
+        tab.find = None;
+        tab.content_dirty = true;
+        Ok(true)
+    }
+
     pub fn active_link_target_at_viewport(&self, x: usize, y: usize) -> Result<Option<String>> {
         let tab = self.active_tab_ref()?;
         let document_x = tab.viewport.x.saturating_add(x);
