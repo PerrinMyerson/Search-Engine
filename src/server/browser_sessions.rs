@@ -11470,6 +11470,19 @@ fn render_browser_session_control(
     }
 
     if !control.options.is_empty() {
+        if control.disabled {
+            let value = if control.value.trim().is_empty() {
+                "-"
+            } else {
+                control.value.as_str()
+            };
+            return format!(
+                r#"<div class="control"><label>{label}</label><div class="details">{kind} · {value} disabled</div><div class="resource-actions"><span class="details">read-only</span></div></div>"#,
+                label = html_escape::encode_text(&label),
+                kind = html_escape::encode_text(&control.kind),
+                value = html_escape::encode_text(value),
+            );
+        }
         let mut options = String::new();
         for option in &control.options {
             let selected = if option.selected { " selected" } else { "" };
