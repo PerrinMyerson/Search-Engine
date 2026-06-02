@@ -21,6 +21,7 @@ const DEFAULT_MIN_LOCAL_RESULTS: usize = 20;
 pub struct WebSearchConfig {
     provider: ThirdPartySearchProvider,
     cache_path: PathBuf,
+    result_log_path: PathBuf,
     cache_ttl_secs: u64,
     min_local_results: usize,
     max_results: usize,
@@ -76,6 +77,19 @@ struct CachedWebSearch {
     results: Vec<WebSearchResult>,
 }
 
+#[derive(Debug, Serialize)]
+struct WebSearchResultLogEntry<'a> {
+    query: &'a str,
+    normalized_query: &'a str,
+    provider: &'a str,
+    fetched_at_unix: u64,
+    rank: usize,
+    title: &'a str,
+    url: &'a str,
+    snippet: &'a str,
+    score: f32,
+}
+
 #[derive(Debug, Deserialize)]
 struct BraveSearchResponse {
     web: Option<BraveWebResults>,
@@ -112,6 +126,9 @@ impl WebSearchService {
         let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| index_dir.join("web-cache.jsonl"));
+        let result_log_path = env::var_os("BRUTAL_WEB_RESULT_LOG_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
         let provider = match api_key {
             Some(api_key) => ThirdPartySearchProvider::Brave { api_key },
             None if cache_path.exists() => ThirdPartySearchProvider::CacheOnly,
@@ -141,6 +158,7 @@ impl WebSearchService {
             config: WebSearchConfig {
                 provider,
                 cache_path,
+                result_log_path,
                 cache_ttl_secs,
                 min_local_results,
                 max_results,
@@ -218,12 +236,19 @@ impl WebSearchService {
             let mut cache = self.cache.lock().await;
             cache.store(
                 query.to_owned(),
-                normalized_query,
+                normalized_query.clone(),
                 self.provider_name().to_owned(),
                 results.clone(),
                 now_unix(),
             )?;
         }
+        append_result_log(
+            &self.config.result_log_path,
+            query,
+            &normalized_query,
+            self.provider_name(),
+            &results,
+        )?;
 
         Ok(WebSearchLookup {
             provider: self.provider_name(),
@@ -483,6 +508,46 @@ fn append_cache_entry(path: &Path, entry: &CachedWebSearch) -> Result<()> {
         .with_context(|| format!("open web search cache {}", path.display()))?;
     serde_json::to_writer(&mut file, entry)?;
     file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+fn append_result_log(
+    path: &Path,
+    query: &str,
+    normalized_query: &str,
+    provider: &str,
+    results: &[WebSearchResult],
+) -> Result<()> {
+    if results.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create web search result log parent {}", parent.display()))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open web search result log {}", path.display()))?;
+    for (index, result) in results.iter().enumerate() {
+        let entry = WebSearchResultLogEntry {
+            query,
+            normalized_query,
+            provider,
+            fetched_at_unix: result.fetched_at_unix,
+            rank: index + 1,
+            title: &result.title,
+            url: &result.url,
+            snippet: &result.snippet,
+            score: result.score,
+        };
+        serde_json::to_writer(&mut file, &entry)?;
+        file.write_all(b"\n")?;
+    }
     file.flush()?;
     Ok(())
 }
@@ -778,6 +843,32 @@ mod tests {
         assert!(!lines.contains("https://example.com/old-fresh"));
     }
 
+    #[test]
+    fn append_result_log_writes_one_line_per_returned_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        append_result_log(
+            &path,
+            "Query",
+            "query",
+            "brave",
+            &[
+                web_result("https://example.com/one", 100),
+                web_result("https://example.com/two", 101),
+            ],
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert!(lines.contains(r#""query":"Query""#));
+        assert!(lines.contains(r#""normalized_query":"query""#));
+        assert!(lines.contains(r#""rank":1"#));
+        assert!(lines.contains("https://example.com/one"));
+        assert!(lines.contains(r#""rank":2"#));
+        assert!(lines.contains("https://example.com/two"));
+    }
+
     #[tokio::test]
     async fn cache_only_provider_serves_cached_results_without_fetching() {
         let dir = tempfile::tempdir().unwrap();
@@ -800,6 +891,7 @@ mod tests {
             config: WebSearchConfig {
                 provider: ThirdPartySearchProvider::CacheOnly,
                 cache_path: path.clone(),
+                result_log_path: dir.path().join("brave-results.jsonl"),
                 cache_ttl_secs: 60,
                 min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
                 max_results: DEFAULT_MAX_WEB_RESULTS,
