@@ -7133,9 +7133,23 @@ async fn browser_session_registry_clears_saved_profile_tabs() {
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect(),
     };
-    let (payload, _) = registry.apply_target(&clear).await.unwrap();
+    let (payload, back_href) = registry.apply_target(&clear).await.unwrap();
     assert_eq!(payload.title, "Saved Two");
     assert_eq!(payload.sessions.len(), 2);
+    assert!(payload.profile_tabs_clear_url.is_none());
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(!html.contains("action=clear-profile-tabs"));
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert!(exported["clear_urls"]["profile_tabs"].is_null());
     assert!(
         load_browser_session_profile(&profile)
             .unwrap()

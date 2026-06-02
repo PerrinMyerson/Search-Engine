@@ -4661,6 +4661,7 @@ impl BrowserSessionRegistry {
         bookmarks: &[BrowserStoredBookmark],
         current_id: &str,
     ) {
+        let profile_tabs = self.profile_tabs.lock().await;
         let profile_history = self.profile_history.lock().await;
         let profile_closed_sessions = self.profile_closed_sessions.lock().await;
         let profile_error = self.profile_error.lock().await;
@@ -4671,6 +4672,7 @@ impl BrowserSessionRegistry {
             bookmarks,
             self.profile_path.is_some(),
             profile_error.clone(),
+            &profile_tabs,
             &profile_history,
             &profile_closed_sessions,
             current_id,
@@ -4745,6 +4747,7 @@ fn attach_browser_session_registry_state(
     bookmarks: &[BrowserStoredBookmark],
     profile_enabled: bool,
     profile_error: Option<String>,
+    profile_tabs: &[BrowserStoredProfileTab],
     profile_history: &[BrowserStoredProfileEntry],
     profile_closed_sessions: &[BrowserStoredClosedSession],
     current_id: &str,
@@ -4770,7 +4773,7 @@ fn attach_browser_session_registry_state(
         )
     });
     payload.bookmarks = browser_session_bookmarks(bookmarks, payload);
-    payload.profile_tabs_clear_url = profile_enabled
+    payload.profile_tabs_clear_url = (!profile_tabs.is_empty())
         .then(|| browser_session_action_href(&payload.id, "clear-profile-tabs", &[], payload));
     payload.profile_history_clear_url = (!profile_history.is_empty())
         .then(|| browser_session_action_href(&payload.id, "clear-profile-history", &[], payload));
