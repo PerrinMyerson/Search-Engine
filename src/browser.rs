@@ -1244,6 +1244,8 @@ struct CompoundSelector {
     classes: Vec<String>,
     attributes: Vec<AttributeSelector>,
     not_selectors: Vec<CompoundSelector>,
+    is_selectors: Vec<Vec<CompoundSelector>>,
+    where_selectors: Vec<Vec<CompoundSelector>>,
     universal: bool,
 }
 
@@ -9319,6 +9321,8 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
     let mut classes = Vec::new();
     let mut attributes = Vec::new();
     let mut not_selectors = Vec::new();
+    let mut is_selectors = Vec::new();
+    let mut where_selectors = Vec::new();
     let mut universal = false;
     let mut i = 0usize;
 
@@ -9351,6 +9355,18 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             i = next;
             continue;
         }
+        if selector[i..].starts_with(":is(") {
+            let (selectors, next) = parse_functional_compound_selector(selector, i, ":is(")?;
+            is_selectors.push(selectors);
+            i = next;
+            continue;
+        }
+        if selector[i..].starts_with(":where(") {
+            let (selectors, next) = parse_functional_compound_selector(selector, i, ":where(")?;
+            where_selectors.push(selectors);
+            i = next;
+            continue;
+        }
         if !matches!(prefix, b'#' | b'.') {
             return None;
         }
@@ -9376,25 +9392,42 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         }
     }
 
-    (universal || tag.is_some() || id.is_some() || !classes.is_empty() || !attributes.is_empty())
-        .then_some(CompoundSelector {
-            tag,
-            id,
-            classes,
-            attributes,
-            not_selectors,
-            universal,
-        })
+    (universal
+        || tag.is_some()
+        || id.is_some()
+        || !classes.is_empty()
+        || !attributes.is_empty()
+        || !not_selectors.is_empty()
+        || !is_selectors.is_empty()
+        || !where_selectors.is_empty())
+    .then_some(CompoundSelector {
+        tag,
+        id,
+        classes,
+        attributes,
+        not_selectors,
+        is_selectors,
+        where_selectors,
+        universal,
+    })
 }
 
 fn parse_not_selector(selector: &str, start: usize) -> Option<(Vec<CompoundSelector>, usize)> {
+    parse_functional_compound_selector(selector, start, ":not(")
+}
+
+fn parse_functional_compound_selector(
+    selector: &str,
+    start: usize,
+    prefix: &str,
+) -> Option<(Vec<CompoundSelector>, usize)> {
     let bytes = selector.as_bytes();
-    if !selector[start..].starts_with(":not(") {
+    if !selector[start..].starts_with(prefix) {
         return None;
     }
     let mut depth = 1usize;
     let mut quote = None;
-    let mut i = start + ":not(".len();
+    let mut i = start + prefix.len();
     let content_start = i;
     while i < bytes.len() {
         let byte = bytes[i];
@@ -9410,7 +9443,7 @@ fn parse_not_selector(selector: &str, start: usize) -> Option<(Vec<CompoundSelec
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
                         let content = &selector[content_start..i];
-                        let selectors = parse_not_selector_list(content)?;
+                        let selectors = parse_compound_selector_list(content)?;
                         return Some((selectors, i + 1));
                     }
                 }
@@ -9422,7 +9455,7 @@ fn parse_not_selector(selector: &str, start: usize) -> Option<(Vec<CompoundSelec
     None
 }
 
-fn parse_not_selector_list(content: &str) -> Option<Vec<CompoundSelector>> {
+fn parse_compound_selector_list(content: &str) -> Option<Vec<CompoundSelector>> {
     let mut selectors = Vec::new();
     for selector in split_css_selector_list(content) {
         let selector = selector.trim();
@@ -11816,6 +11849,19 @@ fn compound_specificity(compound: &CompoundSelector) -> u32 {
             .map(compound_specificity)
             .max()
             .unwrap_or(0)
+        + compound
+            .is_selectors
+            .iter()
+            .map(|selectors| selector_list_specificity(selectors))
+            .sum::<u32>()
+}
+
+fn selector_list_specificity(selectors: &[CompoundSelector]) -> u32 {
+    selectors
+        .iter()
+        .map(compound_specificity)
+        .max()
+        .unwrap_or(0)
 }
 
 fn selector_matches(selector: &CssSelector, dom: &Dom, node_id: usize) -> bool {
@@ -11900,12 +11946,38 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
     {
         return false;
     }
+    if !compound
+        .is_selectors
+        .iter()
+        .all(|selectors| compound_selector_list_matches(selectors, dom, node_id))
+    {
+        return false;
+    }
+    if !compound
+        .where_selectors
+        .iter()
+        .all(|selectors| compound_selector_list_matches(selectors, dom, node_id))
+    {
+        return false;
+    }
     compound.universal
         || compound.tag.is_some()
         || compound.id.is_some()
         || !compound.classes.is_empty()
         || !compound.attributes.is_empty()
         || !compound.not_selectors.is_empty()
+        || !compound.is_selectors.is_empty()
+        || !compound.where_selectors.is_empty()
+}
+
+fn compound_selector_list_matches(
+    selectors: &[CompoundSelector],
+    dom: &Dom,
+    node_id: usize,
+) -> bool {
+    selectors
+        .iter()
+        .any(|selector| compound_selector_matches(selector, dom, node_id))
 }
 
 #[derive(Debug)]

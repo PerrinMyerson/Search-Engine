@@ -453,6 +453,38 @@ fn css_not_pseudo_selectors_filter_rendered_layout_rules() {
 }
 
 #[test]
+fn css_is_and_where_pseudo_selectors_match_layout_rules() {
+    let render = render_html(
+        "mem://is-where-selectors",
+        br#"
+        <html><head><style>
+          .flag { text-transform: lowercase }
+          :is(#boost, .flag) { text-transform: uppercase }
+          .tone { text-transform: lowercase }
+          :where(.tone) { text-transform: uppercase }
+          :is(article.card, section.panel) > :where(p.lead, h2.title) {
+            text-transform: uppercase;
+          }
+        </style></head>
+        <body>
+          <p class="flag">boosted</p>
+          <p class="tone">KEPT LOWER</p>
+          <article class="card"><p class="lead">scoped match</p><p>plain</p></article>
+          <section class="panel"><h2 class="title">heading match</h2></section>
+          <p class="lead">outside</p>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(
+        render.text,
+        "BOOSTED\nkept lower\nSCOPED MATCH\nplain\nHEADING MATCH\noutside"
+    );
+    assert_eq!(render.css_rule_count, 5);
+}
+
+#[test]
 fn indexed_css_cascade_preserves_specificity_and_source_order() {
     let render = render_html(
         "mem://page",
