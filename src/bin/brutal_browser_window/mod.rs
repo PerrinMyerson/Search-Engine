@@ -851,13 +851,19 @@ mod native {
     ) -> Result<BrowserWindowKeyResult> {
         if let Some(find) = app.active_find_state()? {
             if backwards {
-                app.apply_action(BrowserAppAction::FindTextPrevious { query: find.query })
-                    .await?;
+                apply_browser_window_find_action(
+                    app,
+                    BrowserAppAction::FindTextPrevious { query: find.query },
+                )
+                .await?;
             } else {
-                app.apply_action(BrowserAppAction::FindText {
-                    query: find.query,
-                    next: true,
-                })
+                apply_browser_window_find_action(
+                    app,
+                    BrowserAppAction::FindText {
+                        query: find.query,
+                        next: true,
+                    },
+                )
                 .await?;
             }
         } else {
@@ -919,14 +925,16 @@ mod native {
                 let query = browser_window_find_text(mode)
                     .unwrap_or_default()
                     .to_owned();
-                *mode = BrowserWindowMode::Page;
-                if !query.trim().is_empty() {
-                    if modifiers.shift {
-                        app.apply_action(BrowserAppAction::FindTextPrevious { query })
-                            .await?;
+                if query.trim().is_empty() {
+                    *mode = BrowserWindowMode::Page;
+                } else {
+                    let action = if modifiers.shift {
+                        BrowserAppAction::FindTextPrevious { query }
                     } else {
-                        app.apply_action(BrowserAppAction::FindText { query, next: false })
-                            .await?;
+                        BrowserAppAction::FindText { query, next: false }
+                    };
+                    if apply_browser_window_find_action(app, action).await? {
+                        *mode = BrowserWindowMode::Page;
                     }
                 }
                 Ok(BrowserWindowKeyResult {
@@ -947,6 +955,21 @@ mod native {
             }),
             _ => Ok(BrowserWindowKeyResult::default()),
         }
+    }
+
+    async fn apply_browser_window_find_action(
+        app: &mut BrowserApp,
+        action: BrowserAppAction,
+    ) -> Result<bool> {
+        match app.apply_action(action).await {
+            Ok(()) => Ok(true),
+            Err(error) if browser_window_is_text_not_found_error(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn browser_window_is_text_not_found_error(error: &anyhow::Error) -> bool {
+        error.to_string().starts_with("text not found:")
     }
 
     fn browser_window_tab_shortcut_index(key: Key, tab_count: usize) -> Option<usize> {
@@ -2672,6 +2695,43 @@ mod native {
             let find = app.active_find_state().unwrap().unwrap();
             assert_eq!(find.query, "Visible");
             assert_eq!(find.active_match_index, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_find_mode_no_match_keeps_prompt_open() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "definitely missing".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Enter,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(browser_window_find_text(&mode), Some("definitely missing"));
+            assert!(app.active_find_state().unwrap().is_none());
+            assert_eq!(app.active_viewport().unwrap().y, 0);
         }
 
         #[tokio::test]
