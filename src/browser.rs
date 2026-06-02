@@ -9538,6 +9538,47 @@ enum CssAxis {
     Vertical,
 }
 
+fn css_axis_cell_px(axis: CssAxis) -> f32 {
+    match axis {
+        CssAxis::Horizontal => 8.0,
+        CssAxis::Vertical => 12.0,
+    }
+}
+
+fn parse_css_length_pixels(value: &str) -> Option<f32> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value.contains('%')
+        || value.starts_with('-')
+        || value == "auto"
+        || value == "inherit"
+        || value == "initial"
+    {
+        return None;
+    }
+    let (numeric, multiplier) = if let Some(numeric) = value.strip_suffix("rem") {
+        (numeric, 16.0)
+    } else if let Some(numeric) = value.strip_suffix("em") {
+        (numeric, 16.0)
+    } else if let Some(numeric) = value.strip_suffix("ch") {
+        (numeric, 8.0)
+    } else if let Some(numeric) = value.strip_suffix("px") {
+        (numeric, 1.0)
+    } else {
+        (value.as_str(), 1.0)
+    };
+    let pixels = numeric.parse::<f32>().ok()? * multiplier;
+    pixels.is_finite().then_some(pixels)
+}
+
+fn css_length_cells(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
+    let pixels = parse_css_length_pixels(value)?;
+    if pixels == 0.0 {
+        return Some(0);
+    }
+    let cells = (pixels / css_axis_cell_px(axis)).ceil() as usize;
+    Some(cells.clamp(1, max_cells))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ParsedMargin {
     spacing: PartialBoxSpacing,
@@ -9636,50 +9677,11 @@ fn parse_css_margin_length(value: &str, axis: CssAxis) -> Option<usize> {
 }
 
 fn parse_css_box_spacing_length(value: &str, axis: CssAxis) -> Option<usize> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%') || value.starts_with('-') {
-        return None;
-    }
-    let numeric = value.strip_suffix("px").unwrap_or(&value);
-    let pixels = numeric
-        .split_once('.')
-        .map_or(numeric, |(whole, _)| whole)
-        .parse::<usize>()
-        .ok()?;
-    if pixels == 0 {
-        return Some(0);
-    }
-    let cell_px = match axis {
-        CssAxis::Horizontal => 8,
-        CssAxis::Vertical => 12,
-    };
-    Some(pixels.div_ceil(cell_px).clamp(0, 8))
+    css_length_cells(value, axis, 8)
 }
 
 fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%')
-        || value.starts_with('-')
-        || value == "auto"
-        || value == "inherit"
-        || value == "initial"
-    {
-        return None;
-    }
-    let numeric = value.strip_suffix("px").unwrap_or(&value);
-    let pixels = numeric
-        .split_once('.')
-        .map_or(numeric, |(whole, _)| whole)
-        .parse::<usize>()
-        .ok()?;
-    if pixels == 0 {
-        return Some(0);
-    }
-    let cell_px = match axis {
-        CssAxis::Horizontal => 8,
-        CssAxis::Vertical => 12,
-    };
-    Some(pixels.div_ceil(cell_px).clamp(1, 512))
+    css_length_cells(value, axis, 512)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -9719,14 +9721,11 @@ fn parse_css_border_width(value: &str) -> Option<usize> {
             "thick" => return Some(2),
             _ => {}
         }
-        if let Some(px) = token
-            .strip_suffix("px")
-            .and_then(|value| value.parse::<usize>().ok())
-        {
-            if px == 0 {
+        if let Some(pixels) = parse_css_length_pixels(&token) {
+            if pixels == 0.0 {
                 continue;
             }
-            return Some(px.div_ceil(8).clamp(1, 4));
+            return Some(((pixels / 8.0).ceil() as usize).clamp(1, 4));
         }
     }
     None
@@ -9887,13 +9886,15 @@ fn parse_css_line_height(value: &str) -> Option<usize> {
     if value.starts_with('-') || value == "inherit" || value == "initial" {
         return None;
     }
-    if value.ends_with("px") {
-        return parse_css_dimension_length(&value, CssAxis::Vertical);
+    if value.ends_with("px")
+        || value.ends_with("rem")
+        || value.ends_with("em")
+        || value.ends_with("ch")
+    {
+        return parse_css_dimension_length(&value, CssAxis::Vertical).map(|rows| rows.clamp(1, 16));
     }
     let rows = if let Some(percent) = value.strip_suffix('%') {
         percent.parse::<f32>().ok()? / 100.0
-    } else if let Some(em) = value.strip_suffix("em") {
-        em.parse::<f32>().ok()?
     } else {
         value.parse::<f32>().ok()?
     };

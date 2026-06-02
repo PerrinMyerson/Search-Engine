@@ -901,6 +901,72 @@ fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
 }
 
 #[test]
+fn css_relative_length_units_affect_layout_text_metrics() {
+    let render = render_html(
+        "mem://relative-length-units",
+        br#"
+            <html><body>
+              <div style="width:4rem; padding-left:1em; margin-left:1rem">Alpha Beta</div>
+              <p style="text-indent:2em">Indented words</p>
+              <p style="word-spacing:1ch">Wide gap</p>
+              <p style="letter-spacing:0.5rem">AB</p>
+              <p style="line-height:1rem">Tall</p>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Alpha\nBeta\n    Indented words\nWide  gap\nA B\nTall\n\nAfter"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 4,
+                y: 0,
+                text: "Alpha".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 4,
+                y: 1,
+                text: "Beta".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "    Indented words".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Wide  gap".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "A B".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Tall".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_overflow_wrap_break_word_breaks_long_words() {
     let render = render_html(
         "mem://overflow-wrap",
