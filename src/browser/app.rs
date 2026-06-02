@@ -1632,6 +1632,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_app_clicking_active_tab_reports_no_applied_action() {
+        let mut app = BrowserApp::open("bench/browser-fixtures/static-text.html", app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::NewTab("max-width-layout.html".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(app.active_tab(), 1);
+        let window = app.present_window_frame().unwrap();
+        let tabs = app.tab_summaries();
+        let inactive_segment_columns = browser_app_window_tab_segment(&tabs[0]).chars().count();
+        let active_tab_column = WINDOW_CHROME_TAB_START_COLUMN
+            .saturating_add(inactive_segment_columns)
+            .saturating_add(1);
+        let active_tab_x = window
+            .report
+            .page
+            .padding_x
+            .saturating_add(active_tab_column.saturating_mul(window.report.page.cell_width))
+            .saturating_add(1);
+        let active_tab_y = window.report.page.padding_y + 2;
+
+        let active_tab_click = app.click_window(active_tab_x, active_tab_y).await.unwrap();
+
+        assert_eq!(active_tab_click.hit, BrowserAppWindowHit::Tab { index: 1 });
+        assert_eq!(active_tab_click.action, None);
+        assert!(!active_tab_click.applied);
+        assert_eq!(app.active_tab(), 1);
+    }
+
+    #[tokio::test]
     async fn browser_app_clicks_links_and_resets_to_full_frame() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("first.html");
