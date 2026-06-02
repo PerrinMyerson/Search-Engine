@@ -794,6 +794,20 @@ mod native {
             return Ok(BrowserWindowKeyResult::default());
         }
 
+        if matches!(key, Key::Up | Key::Down)
+            && browser_window_focused_control_accepts_select_input(app)?
+        {
+            let direction = if key == Key::Up { -1 } else { 1 };
+            if let Some(action) = browser_window_focused_select_step_action(app, direction)? {
+                app.apply_action(action).await?;
+                return Ok(BrowserWindowKeyResult {
+                    dirty: true,
+                    close: false,
+                });
+            }
+            return Ok(BrowserWindowKeyResult::default());
+        }
+
         let action = match key {
             Key::Escape if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::BlurFocused)
@@ -1154,6 +1168,67 @@ mod native {
                         | "textarea"
                 )
             }))
+    }
+
+    fn browser_window_focused_control_accepts_select_input(app: &BrowserApp) -> Result<bool> {
+        Ok(app
+            .active_session()?
+            .focused_control()
+            .is_some_and(|control| control.kind.eq_ignore_ascii_case("select")))
+    }
+
+    fn browser_window_focused_select_step_action(
+        app: &BrowserApp,
+        direction: isize,
+    ) -> Result<Option<BrowserAppAction>> {
+        let session = app.active_session()?;
+        let Some(focused) = session.focused_control() else {
+            return Ok(None);
+        };
+        if !focused.kind.eq_ignore_ascii_case("select") {
+            return Ok(None);
+        }
+
+        let Some(control) = session
+            .current_forms()
+            .get(focused.form_index)
+            .and_then(|form| form.controls.get(focused.control_index))
+        else {
+            return Ok(None);
+        };
+        if control.disabled || !control.kind.eq_ignore_ascii_case("select") {
+            return Ok(None);
+        }
+
+        let enabled_options = control
+            .options
+            .iter()
+            .filter(|option| !option.disabled)
+            .collect::<Vec<_>>();
+        if enabled_options.is_empty() {
+            return Ok(None);
+        }
+
+        let current_index = enabled_options
+            .iter()
+            .position(|option| option.value == focused.value)
+            .or_else(|| enabled_options.iter().position(|option| option.selected));
+        let next_index = match (direction.signum(), current_index) {
+            (-1, Some(index)) if index > 0 => Some(index - 1),
+            (-1, None) => enabled_options.len().checked_sub(1),
+            (1, Some(index)) if index + 1 < enabled_options.len() => Some(index + 1),
+            (1, None) => Some(0),
+            _ => None,
+        };
+        let Some(next_index) = next_index else {
+            return Ok(None);
+        };
+
+        let next_value = enabled_options[next_index].value.clone();
+        if next_value == focused.value {
+            return Ok(None);
+        }
+        Ok(Some(BrowserAppAction::SelectFocused(next_value)))
     }
 
     fn browser_window_focused_text_control_owns_navigation_key(
@@ -3259,6 +3334,112 @@ mod native {
             .unwrap();
             assert!(page_arrow.dirty);
             assert!(app.active_viewport().unwrap().y > 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_arrow_keys_step_focused_select_without_scrolling() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("select-arrow.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Select Arrow Fixture</title></head>
+<body>
+<form>
+  <select name="kind">
+    <option value="alpha">Alpha</option>
+    <option value="beta" disabled>Beta</option>
+    <option value="gamma">Gamma</option>
+  </select>
+</form>
+<p>ordinary page text</p>
+<p>middle</p>
+<p>bottom</p>
+<p>after bottom</p>
+<p>final line</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+
+            let focused = app.active_session().unwrap().focused_control().unwrap();
+            assert_eq!(focused.kind, "select");
+            assert_eq!(focused.value, "alpha");
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let mut mode = BrowserWindowMode::Page;
+            let down = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(down.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "gamma"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let bottom_down = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!bottom_down.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "gamma"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let up = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Up,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(up.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "alpha"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
         }
 
         #[tokio::test]
