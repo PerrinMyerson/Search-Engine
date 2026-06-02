@@ -1421,12 +1421,13 @@ mod native {
                 })
             }
             BrowserAppWindowHit::PageViewport { x, y } => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
                 app.apply_action(BrowserAppAction::OpenClickInBackgroundTab { x, y })
                     .await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: app.tab_count() != before_tabs,
+                    dirty: dismissed_prompt || app.tab_count() != before_tabs,
                     close: false,
                 })
             }
@@ -2861,6 +2862,42 @@ mod native {
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_middle_click_dismisses_prompt_on_non_link_page() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let result = handle_browser_window_middle_click(
+                &mut app,
+                &mut mode,
+                BrowserAppWindowHit::PageViewport { x: 20, y: 0 },
+            )
+            .await
+            .unwrap();
+
+            assert!(result.dirty);
+            assert!(!result.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.active_tab(), 0);
         }
 
         #[tokio::test]
