@@ -9014,6 +9014,7 @@ fn is_void_tag(tag: &str) -> bool {
 }
 
 fn parse_css(css: &str) -> CssCascade {
+    let css = strip_css_comments(css);
     let mut cascade = CssCascade {
         rules: Vec::new(),
         id_rules: HashMap::new(),
@@ -9042,6 +9043,21 @@ fn parse_css(css: &str) -> CssCascade {
     }
 
     cascade
+}
+
+fn strip_css_comments(css: &str) -> String {
+    let mut stripped = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        stripped.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("*/") else {
+            return stripped;
+        };
+        rest = &after_start[end + 2..];
+    }
+    stripped.push_str(rest);
+    stripped
 }
 
 impl CssCascade {
@@ -9305,6 +9321,7 @@ fn is_selector_ident_continue(byte: u8) -> bool {
 }
 
 fn parse_css_declarations(style: &str) -> CssDeclarations {
+    let style = strip_css_comments(style);
     let mut declarations = CssDeclarations::default();
     let mut border_width = None;
     let mut border_shade = None;
