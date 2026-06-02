@@ -8381,6 +8381,10 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
+    assert!(html.contains("<th>Source</th>"));
+    assert!(html.contains("<th>Content Type</th>"));
+    assert!(html.contains("<th>Error</th>"));
+    assert!(html.contains(&format!("http://{addr}/tile.svg")));
     assert!(html.contains("image/svg+xml"));
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));

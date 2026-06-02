@@ -11231,34 +11231,34 @@ fn render_browser_session_resource_report(
 
     let mut rows = String::new();
     for resource in report.resources.iter().take(20) {
-        let detail = resource
-            .error
-            .as_deref()
-            .or(resource.content_type.as_deref())
-            .unwrap_or("-");
+        let source = resource.source.as_deref().unwrap_or("-");
+        let content_type = resource.content_type.as_deref().unwrap_or("-");
+        let error = resource.error.as_deref().unwrap_or("-");
         let _ = write!(
             rows,
-            r#"<tr><td>{status}</td><td>{kind}</td><td>{bytes}</td><td>{url}</td><td>{detail}</td></tr>"#,
+            r#"<tr><td>{status}</td><td>{kind}</td><td>{bytes}</td><td>{source}</td><td>{url}</td><td>{content_type}</td><td>{error}</td></tr>"#,
             status = html_escape::encode_text(&resource.status),
             kind = html_escape::encode_text(&resource.kind),
             bytes = resource.bytes,
+            source = html_escape::encode_text(source),
             url = html_escape::encode_text(&resource.resolved),
-            detail = html_escape::encode_text(detail),
+            content_type = html_escape::encode_text(content_type),
+            error = html_escape::encode_text(error),
         );
     }
     if report.resources.len() > 20 {
         let _ = write!(
             rows,
-            r#"<tr><td colspan="5">{count} more resource results omitted.</td></tr>"#,
+            r#"<tr><td colspan="7">{count} more resource results omitted.</td></tr>"#,
             count = report.resources.len() - 20,
         );
     }
     if rows.is_empty() {
-        rows.push_str(r#"<tr><td colspan="5">No resource results.</td></tr>"#);
+        rows.push_str(r#"<tr><td colspan="7">No resource results.</td></tr>"#);
     }
 
     format!(
-        r#"<div class="resource-report"><div class="resource-report-summary">{summary}</div><table><thead><tr><th>Status</th><th>Kind</th><th>Bytes</th><th>Resolved</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table></div>"#,
+        r#"<div class="resource-report"><div class="resource-report-summary">{summary}</div><table><thead><tr><th>Status</th><th>Kind</th><th>Bytes</th><th>Source</th><th>Resolved</th><th>Content Type</th><th>Error</th></tr></thead><tbody>{rows}</tbody></table></div>"#,
         summary = html_escape::encode_text(&status),
         rows = rows,
     )
