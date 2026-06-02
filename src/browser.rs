@@ -10523,6 +10523,13 @@ fn render_node(
                     renderer.push_text(&marker, Some(node_id));
                 }
             }
+            if style.display == Display::Inline {
+                match element.tag.as_str() {
+                    "sup" => renderer.push_text("^", Some(node_id)),
+                    "sub" => renderer.push_text("_", Some(node_id)),
+                    _ => {}
+                }
+            }
 
             if element.tag == "details" {
                 render_details_children(

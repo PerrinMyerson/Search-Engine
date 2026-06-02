@@ -794,34 +794,68 @@ fn wbr_creates_zero_width_soft_break_opportunity() {
         "mem://wbr",
         br#"
             <html><body>
-              <p>Alpha<wbr>Beta Gamma</p>
+              <p>AlphaAlphaAlpha<wbr>BetaBeta Gamma</p>
               <p>Fit<wbr>Here</p>
             </body></html>
             "#,
         BrowserRenderOptions {
-            width: 9,
+            width: 20,
             ..BrowserRenderOptions::default()
         },
     );
 
-    assert_eq!(render.text, "AlphaBeta\nGamma\nFitHere");
+    assert_eq!(render.text, "AlphaAlphaAlpha\nBetaBeta Gamma\nFitHere");
     assert_eq!(
         render.display_list,
         vec![
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
-                text: "AlphaBeta".to_owned(),
+                text: "AlphaAlphaAlpha".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 1,
-                text: "Gamma".to_owned(),
+                text: "BetaBeta Gamma".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 2,
                 text: "FitHere".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn sup_and_sub_render_with_text_mode_default_markers() {
+    let render = render_html(
+        "mem://sup-sub-defaults",
+        br#"
+            <html><body>
+              <p>E = mc<sup>2</sup> and H<sub>2</sub>O</p>
+              <p>Reference<sup>[12]</sup></p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "E = mc^2 and H_2O\nReference^[12]");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "E = mc^2 and H_2O".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Reference^[12]".to_owned(),
             },
         ]
     );
