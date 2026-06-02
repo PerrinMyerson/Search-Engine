@@ -849,7 +849,24 @@ mod native {
         mode: &mut BrowserWindowMode,
         backwards: bool,
     ) -> Result<BrowserWindowKeyResult> {
-        if let Some(find) = app.active_find_state()? {
+        if let Some(query) = browser_window_find_text(mode)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+        {
+            let active_find = app.active_find_state()?;
+            if backwards {
+                app.apply_action(BrowserAppAction::FindTextPrevious {
+                    query: query.to_owned(),
+                })
+                .await?;
+            } else {
+                app.apply_action(BrowserAppAction::FindText {
+                    query: query.to_owned(),
+                    next: active_find.is_some_and(|find| find.query == query),
+                })
+                .await?;
+            }
+        } else if let Some(find) = app.active_find_state()? {
             if backwards {
                 app.apply_action(BrowserAppAction::FindTextPrevious { query: find.query })
                     .await?;
@@ -2903,6 +2920,49 @@ mod native {
             let restored_find = app.active_find_state().unwrap().unwrap();
             assert_eq!(restored_find.active_match_index, 0);
             assert_eq!(app.active_viewport().unwrap().y, first_find.line);
+        }
+
+        #[tokio::test]
+        async fn browser_window_f3_applies_typed_find_prompt_query() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "Visible".to_owned(),
+                replace_on_input: false,
+            };
+
+            let find = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::F3,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(find.dirty);
+            assert_eq!(
+                browser_window_find_text(&mode),
+                Some("Visible"),
+                "F3 should not clear the typed find prompt"
+            );
+            let find = app.active_find_state().unwrap().unwrap();
+            assert_eq!(find.query, "Visible");
+            assert_eq!(find.active_match_index, 0);
+            assert_eq!(app.active_viewport().unwrap().y, find.line);
+            assert!(app.active_viewport().unwrap().y > 0);
         }
 
         #[tokio::test]
