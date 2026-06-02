@@ -8086,6 +8086,31 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert_eq!(exported["resource_report"]["failed"], 0);
     assert_eq!(exported["resource_report"]["applied"], 1);
     assert_eq!(exported["resource_report"]["resources"], 1);
+    assert_eq!(
+        exported["resource_report"]["fetches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["status"],
+        "fetched"
+    );
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["kind"],
+        "stylesheet"
+    );
+    assert!(
+        exported["resource_report"]["fetches"][0]["resolved"]
+            .as_str()
+            .unwrap()
+            .ends_with("/app.css")
+    );
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["content_type"],
+        "text/css"
+    );
     assert!(
         exported["resource_report"]["csv_url"]
             .as_str()
@@ -8225,6 +8250,28 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(exported["resource_report"]["decoded"], 1);
     assert!(exported["resource_report"]["applied"].is_null());
     assert_eq!(exported["resource_report"]["resources"], 1);
+    assert_eq!(
+        exported["resource_report"]["fetches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["status"],
+        "fetched"
+    );
+    assert_eq!(exported["resource_report"]["fetches"][0]["kind"], "image");
+    assert!(
+        exported["resource_report"]["fetches"][0]["resolved"]
+            .as_str()
+            .unwrap()
+            .ends_with("/tile.svg")
+    );
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["content_type"],
+        "image/svg+xml"
+    );
     assert!(
         exported["action_urls"]["load_images"]
             .as_str()
