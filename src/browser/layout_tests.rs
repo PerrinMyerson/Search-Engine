@@ -392,6 +392,34 @@ fn css_display_list_item_controls_marker_generation() {
 }
 
 #[test]
+fn css_display_flow_root_creates_block_flow() {
+    let render = render_html(
+        "mem://css-display-flow-root",
+        br#"
+            <html><body>
+              <p>Before <span style="display: flow-root">Flow root</span> After</p>
+              <span style="display: block flow-root">Block root</span><span>Tail</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nFlow root\nAfter\nBlock root\nTail");
+    assert_eq!(
+        render
+            .layout_boxes
+            .iter()
+            .filter(|layout_box| layout_box.tag == "span")
+            .map(|layout_box| layout_box.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["block", "block", "inline"]
+    );
+}
+
+#[test]
 fn indents_nested_list_markers() {
     let render = render_html(
         "mem://nested-lists",

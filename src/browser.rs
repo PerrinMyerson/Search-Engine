@@ -9307,13 +9307,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         };
         match name.trim().to_ascii_lowercase().as_str() {
             "display" => {
-                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
-                    "none" => Some(Display::None),
-                    "block" => Some(Display::Block),
-                    "inline" => Some(Display::Inline),
-                    "list-item" => Some(Display::ListItem),
-                    _ => declarations.display,
-                };
+                declarations.display = parse_css_display(value).or(declarations.display);
             }
             "background" | "background-color" => {
                 declarations.background_shade =
@@ -9674,6 +9668,16 @@ struct ParsedBorder {
     enabled: bool,
     width: Option<usize>,
     shade: Option<u8>,
+}
+
+fn parse_css_display(value: &str) -> Option<Display> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(Display::None),
+        "block" | "flow-root" | "block flow-root" => Some(Display::Block),
+        "inline" => Some(Display::Inline),
+        "list-item" => Some(Display::ListItem),
+        _ => None,
+    }
 }
 
 fn parse_css_border(value: &str) -> ParsedBorder {
