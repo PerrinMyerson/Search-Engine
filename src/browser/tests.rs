@@ -1110,6 +1110,43 @@ fn selects_picture_source_srcset_before_img_src() {
 }
 
 #[test]
+fn selects_picture_source_matching_screen_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let png = dir.path().join("screen.png");
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    fs::write(&png, &png_bytes).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "screen.png").unwrap().info();
+    let render = render_html(
+            &source,
+            br#"<html><body><picture><source srcset="print.png 80w" media="print"><source srcset="screen.png 80w" media="screen and (min-width: 1px)"><img src="fallback.png" alt="Picture" width="80" height="24"></picture></body></html>"#,
+            BrowserRenderOptions {
+                width: 40,
+                ..BrowserRenderOptions::default()
+            },
+        );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Picture".to_owned()),
+            url: Some("screen.png".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash)
+        }]
+    );
+}
+
+#[test]
 fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
     let data_url = concat!(
         "data:image/png;base64,",

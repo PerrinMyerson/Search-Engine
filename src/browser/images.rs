@@ -634,7 +634,32 @@ fn is_lazy_svg_placeholder_src(src: &str) -> bool {
 }
 
 fn picture_source_media_matches(media: Option<&str>) -> bool {
-    media.is_none_or(|media| media.trim().is_empty() || media.trim() == "all")
+    media.is_none_or(|media| media.split(',').any(picture_source_media_query_matches))
+}
+
+fn picture_source_media_query_matches(query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let mut tokens = query
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .filter(|token| !token.is_empty());
+    let first = tokens.next();
+    let (negated, media_type) = match first {
+        Some("not") => (true, tokens.next()),
+        Some("only") => (false, tokens.next()),
+        other => (false, other),
+    };
+    let applies = match media_type {
+        Some("screen" | "all") => true,
+        Some(
+            "print" | "speech" | "aural" | "braille" | "embossed" | "handheld" | "projection"
+            | "tty" | "tv",
+        ) => false,
+        _ => true,
+    };
+    if negated { !applies } else { applies }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
