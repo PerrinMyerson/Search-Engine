@@ -869,26 +869,54 @@ fn grayscale_test_jpeg_bytes() -> Vec<u8> {
 }
 
 #[cfg(test)]
-fn jpeg_with_exif_orientation(bytes: &[u8], orientation: u16) -> Vec<u8> {
+fn jpeg_with_app_segment(bytes: &[u8], marker: u8, payload: &[u8]) -> Vec<u8> {
     assert!(is_jpeg_bytes(bytes));
-    assert!((1..=8).contains(&orientation));
-
-    let mut payload = b"Exif\0\0II*\0\x08\0\0\0\x01\0".to_vec();
-    payload.extend_from_slice(&0x0112u16.to_le_bytes());
-    payload.extend_from_slice(&3u16.to_le_bytes());
-    payload.extend_from_slice(&1u32.to_le_bytes());
-    payload.extend_from_slice(&orientation.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    assert!((0xe0..=0xef).contains(&marker));
 
     let segment_len = u16::try_from(payload.len() + 2).unwrap();
-    let mut with_exif = Vec::with_capacity(bytes.len() + payload.len() + 4);
-    with_exif.extend_from_slice(&bytes[..2]);
-    with_exif.extend_from_slice(&[0xff, 0xe1]);
-    with_exif.extend_from_slice(&segment_len.to_be_bytes());
-    with_exif.extend_from_slice(&payload);
-    with_exif.extend_from_slice(&bytes[2..]);
-    with_exif
+    let mut with_segment = Vec::with_capacity(bytes.len() + payload.len() + 4);
+    with_segment.extend_from_slice(&bytes[..2]);
+    with_segment.extend_from_slice(&[0xff, marker]);
+    with_segment.extend_from_slice(&segment_len.to_be_bytes());
+    with_segment.extend_from_slice(payload);
+    with_segment.extend_from_slice(&bytes[2..]);
+    with_segment
+}
+
+#[cfg(test)]
+fn jpeg_with_exif_tiff(bytes: &[u8], tiff: &[u8]) -> Vec<u8> {
+    let mut payload = b"Exif\0\0".to_vec();
+    payload.extend_from_slice(tiff);
+    jpeg_with_app_segment(bytes, 0xe1, &payload)
+}
+
+#[cfg(test)]
+fn jpeg_with_exif_orientation(bytes: &[u8], orientation: u16) -> Vec<u8> {
+    assert!((1..=8).contains(&orientation));
+
+    let mut tiff = b"II*\0\x08\0\0\0\x01\0".to_vec();
+    tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+    tiff.extend_from_slice(&3u16.to_le_bytes());
+    tiff.extend_from_slice(&1u32.to_le_bytes());
+    tiff.extend_from_slice(&orientation.to_le_bytes());
+    tiff.extend_from_slice(&0u16.to_le_bytes());
+    tiff.extend_from_slice(&0u32.to_le_bytes());
+
+    jpeg_with_exif_tiff(bytes, &tiff)
+}
+
+#[cfg(test)]
+fn big_endian_exif_orientation_tiff(orientation: u16) -> Vec<u8> {
+    assert!((1..=8).contains(&orientation));
+
+    let mut tiff = b"MM\0*\0\0\0\x08\0\x01".to_vec();
+    tiff.extend_from_slice(&0x0112u16.to_be_bytes());
+    tiff.extend_from_slice(&3u16.to_be_bytes());
+    tiff.extend_from_slice(&1u32.to_be_bytes());
+    tiff.extend_from_slice(&orientation.to_be_bytes());
+    tiff.extend_from_slice(&0u16.to_be_bytes());
+    tiff.extend_from_slice(&0u32.to_be_bytes());
+    tiff
 }
 
 #[cfg(test)]
@@ -1091,6 +1119,23 @@ mod tests {
     }
 
     #[test]
+    fn decodes_jpeg_metadata_app_segments_without_changing_pixels() {
+        let bytes = tiny_test_jpeg_bytes();
+        let baseline = decode_image_bytes("image/jpeg", &bytes).unwrap();
+        let mut icc_payload = b"ICC_PROFILE\0\x01\x01".to_vec();
+        icc_payload.extend_from_slice(b"deterministic-test-profile");
+        let xmp_payload = b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta>search-engine</x:xmpmeta>";
+        let bytes = jpeg_with_app_segment(&bytes, 0xe2, &icc_payload);
+        let bytes = jpeg_with_app_segment(&bytes, 0xe1, xmp_payload);
+        let decoded = decode_image_bytes("image/jpeg", &bytes).unwrap();
+
+        assert_eq!(decoded.width, baseline.width);
+        assert_eq!(decoded.height, baseline.height);
+        assert_eq!(decoded.pixels, baseline.pixels);
+        assert_eq!(decoded.pixel_hash(), baseline.pixel_hash());
+    }
+
+    #[test]
     fn applies_all_exif_orientation_transforms_to_decoded_pixels() {
         let source = DecodedImage {
             width: 2,
@@ -1130,6 +1175,35 @@ mod tests {
         assert_eq!(oriented.width, expected.width);
         assert_eq!(oriented.height, expected.height);
         assert_eq!(oriented.pixels, expected.pixels);
+    }
+
+    #[test]
+    fn applies_big_endian_exif_orientation_to_jpeg_decode_output() {
+        let bytes = tiny_test_jpeg_bytes();
+        let baseline = decode_image_bytes("image/jpeg", &bytes).unwrap();
+        let tiff = big_endian_exif_orientation_tiff(6);
+        let oriented_bytes = jpeg_with_exif_tiff(&bytes, &tiff);
+        let oriented = decode_image_bytes("image/jpeg", &oriented_bytes).unwrap();
+        let mut expected = baseline;
+        apply_exif_orientation(&mut expected, 6).unwrap();
+
+        assert_eq!(oriented.width, expected.width);
+        assert_eq!(oriented.height, expected.height);
+        assert_eq!(oriented.pixels, expected.pixels);
+    }
+
+    #[test]
+    fn reads_out_of_line_exif_orientation_value() {
+        let mut tiff = b"II*\0\x08\0\0\0\x01\0".to_vec();
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&2u32.to_le_bytes());
+        tiff.extend_from_slice(&26u32.to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        tiff.extend_from_slice(&8u16.to_le_bytes());
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+
+        assert_eq!(exif_orientation_from_tiff(&tiff), Some(8));
     }
 }
 
