@@ -111,6 +111,17 @@ fn wheel_delta_to_scroll_cells(delta: f32) -> isize {
 }
 
 #[cfg(any(test, feature = "native-window"))]
+fn wheel_delta_to_scroll_cells_with_remainder(delta: f32, remainder: &mut f32) -> isize {
+    if delta.abs() < f32::EPSILON {
+        return 0;
+    }
+    let scaled = (delta * 3.0).clamp(-24.0, 24.0);
+    let cells = (*remainder + scaled).trunc().clamp(-24.0, 24.0) as isize;
+    *remainder += scaled - cells as f32;
+    cells
+}
+
+#[cfg(any(test, feature = "native-window"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BrowserWindowMode {
     Page,
@@ -366,6 +377,37 @@ mod native {
         close: bool,
     }
 
+    #[derive(Debug, Default)]
+    struct BrowserWindowWheelScrollState {
+        horizontal_remainder: f32,
+        vertical_remainder: f32,
+    }
+
+    impl BrowserWindowWheelScrollState {
+        fn action(
+            &mut self,
+            scroll_x: f32,
+            scroll_y: f32,
+            modifiers: BrowserWindowModifiers,
+        ) -> Option<BrowserAppAction> {
+            let (delta_x, delta_y) = if modifiers.shift && scroll_x.abs() < f32::EPSILON {
+                (-self.horizontal_cells(scroll_y), 0)
+            } else {
+                (-self.horizontal_cells(scroll_x), -self.vertical_cells(scroll_y))
+            };
+            (delta_x != 0 || delta_y != 0)
+                .then_some(BrowserAppAction::Scroll { delta_x, delta_y })
+        }
+
+        fn horizontal_cells(&mut self, delta: f32) -> isize {
+            wheel_delta_to_scroll_cells_with_remainder(delta, &mut self.horizontal_remainder)
+        }
+
+        fn vertical_cells(&mut self, delta: f32) -> isize {
+            wheel_delta_to_scroll_cells_with_remainder(delta, &mut self.vertical_remainder)
+        }
+    }
+
     struct BrowserWindowInputCapture {
         chars: Rc<RefCell<Vec<char>>>,
     }
@@ -434,6 +476,7 @@ mod native {
         }));
         let mut previous_left_down = false;
         let mut previous_middle_down = false;
+        let mut wheel_scroll_state = BrowserWindowWheelScrollState::default();
         let mut previous_window_size = window.get_size();
         let mut close_requested = false;
 
@@ -473,7 +516,7 @@ mod native {
 
             if let Some((scroll_x, scroll_y)) = window.get_scroll_wheel() {
                 if let Some(action) =
-                    browser_window_wheel_scroll_action(scroll_x, scroll_y, modifiers)
+                    wheel_scroll_state.action(scroll_x, scroll_y, modifiers)
                 {
                     app.apply_action(action).await?;
                     dirty = true;
@@ -1034,15 +1077,7 @@ mod native {
         scroll_y: f32,
         modifiers: BrowserWindowModifiers,
     ) -> Option<BrowserAppAction> {
-        let (delta_x, delta_y) = if modifiers.shift && scroll_x.abs() < f32::EPSILON {
-            (-wheel_delta_to_scroll_cells(scroll_y), 0)
-        } else {
-            (
-                -wheel_delta_to_scroll_cells(scroll_x),
-                -wheel_delta_to_scroll_cells(scroll_y),
-            )
-        };
-        (delta_x != 0 || delta_y != 0).then_some(BrowserAppAction::Scroll { delta_x, delta_y })
+        BrowserWindowWheelScrollState::default().action(scroll_x, scroll_y, modifiers)
     }
 
     fn browser_window_focused_control_accepts_space_toggle(app: &BrowserApp) -> Result<bool> {
@@ -2569,6 +2604,52 @@ mod native {
                 ),
                 Some(BrowserAppAction::Scroll {
                     delta_x: 6,
+                    delta_y: 0,
+                })
+            );
+        }
+
+        #[test]
+        fn browser_window_wheel_scroll_state_accumulates_fractional_deltas() {
+            let mut scroll_state = BrowserWindowWheelScrollState::default();
+
+            assert_eq!(
+                scroll_state.action(0.0, 0.1, BrowserWindowModifiers::default()),
+                None
+            );
+            assert_eq!(
+                scroll_state.action(0.0, 0.1, BrowserWindowModifiers::default()),
+                None
+            );
+            assert_eq!(
+                scroll_state.action(0.0, 0.1, BrowserWindowModifiers::default()),
+                None
+            );
+            assert_eq!(
+                scroll_state.action(0.0, 0.1, BrowserWindowModifiers::default()),
+                Some(BrowserAppAction::Scroll {
+                    delta_x: 0,
+                    delta_y: -1,
+                })
+            );
+            assert_eq!(
+                scroll_state.action(0.0, -0.1, BrowserWindowModifiers::default()),
+                None
+            );
+
+            let mut shifted_scroll_state = BrowserWindowWheelScrollState::default();
+            let shift = BrowserWindowModifiers {
+                command: false,
+                shift: true,
+                alt: false,
+            };
+            assert_eq!(shifted_scroll_state.action(0.0, 0.1, shift), None);
+            assert_eq!(shifted_scroll_state.action(0.0, 0.1, shift), None);
+            assert_eq!(shifted_scroll_state.action(0.0, 0.1, shift), None);
+            assert_eq!(
+                shifted_scroll_state.action(0.0, 0.1, shift),
+                Some(BrowserAppAction::Scroll {
+                    delta_x: -1,
                     delta_y: 0,
                 })
             );
