@@ -1211,11 +1211,11 @@ mod native {
             return Ok(None);
         }
         let Some((x, y)) = window.get_unscaled_mouse_pos(MouseMode::Discard) else {
-            return Ok(None);
+            return browser_window_viewport_status_text(app);
         };
         let (x, y) = browser_window_mouse_position_to_pixels(x, y);
         let hit = app.hit_test_window(x, y)?;
-        browser_window_hover_status_text(app, hit)
+        browser_window_page_status_for_hit(app, hit)
     }
 
     fn browser_window_mouse_position_to_pixels(x: f32, y: f32) -> (usize, usize) {
@@ -1273,6 +1273,33 @@ mod native {
             | BrowserAppWindowHit::Outside => return Ok(None),
         };
         Ok(Some(status))
+    }
+
+    fn browser_window_page_status_for_hit(
+        app: &BrowserApp,
+        hit: BrowserAppWindowHit,
+    ) -> Result<Option<String>> {
+        let fallback_to_viewport = matches!(hit, BrowserAppWindowHit::PageViewport { .. });
+        let status = browser_window_hover_status_text(app, hit)?;
+        if status.is_some() {
+            return Ok(status);
+        }
+        if fallback_to_viewport {
+            browser_window_viewport_status_text(app)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn browser_window_viewport_status_text(app: &BrowserApp) -> Result<Option<String>> {
+        let viewport = app.active_viewport()?;
+        if viewport.x == 0 && viewport.y == 0 {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Viewport {}x{} at {},{}",
+            viewport.width, viewport.height, viewport.x, viewport.y
+        )))
     }
 
     fn browser_window_history_target_status(
@@ -2455,6 +2482,62 @@ mod native {
                 )
                 .unwrap(),
                 None
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_page_status_reports_scrolled_viewport() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("wide-page.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Wide Page</title></head><body>
+<p>top</p>
+<pre>wide-line-000000000011111111112222222222333333333344444444445555555555</pre>
+<p>bottom</p>
+</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 10,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 10,
+                    viewport_height: 2,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(browser_window_viewport_status_text(&app).unwrap(), None);
+            assert_eq!(
+                browser_window_page_status_for_hit(
+                    &app,
+                    BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+                )
+                .unwrap(),
+                None
+            );
+
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 20, y: 1 })
+                .await
+                .unwrap();
+
+            assert_eq!(
+                browser_window_viewport_status_text(&app).unwrap(),
+                Some("Viewport 10x2 at 20,1".to_owned())
+            );
+            assert_eq!(
+                browser_window_page_status_for_hit(
+                    &app,
+                    BrowserAppWindowHit::PageViewport { x: 0, y: 0 },
+                )
+                .unwrap(),
+                Some("Viewport 10x2 at 20,1".to_owned())
             );
         }
 
