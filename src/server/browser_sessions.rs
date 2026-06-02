@@ -10,9 +10,10 @@ use url::form_urlencoded;
 
 use crate::browser::{
     BrowserCookie, BrowserFocusedControl, BrowserForm, BrowserImageRenderReport,
-    BrowserLocalStorageEntry, BrowserRenderOptions, BrowserResourceFetch,
-    BrowserResourceFetchReport, BrowserScriptRenderReport, BrowserSession,
+    BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender, BrowserRenderOptions,
+    BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport, BrowserSession,
     BrowserStylesheetRenderReport, BrowserTextViewportOptions, browser_text_viewport,
+    rasterize_render_rgba,
 };
 
 use super::{
@@ -184,6 +185,10 @@ struct BrowserSessionPayload {
     history: Vec<BrowserSessionHistoryEntryPayload>,
     viewport: String,
     #[serde(skip)]
+    viewport_image: Option<BrowserSessionViewportImagePayload>,
+    #[serde(skip)]
+    viewport_image_error: Option<String>,
+    #[serde(skip)]
     page_text: String,
     focused: Option<BrowserFocusedControl>,
     anchors: Vec<BrowserSessionAnchorPayload>,
@@ -196,6 +201,13 @@ struct BrowserSessionPayload {
     resource_count: usize,
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserSessionViewportImagePayload {
+    data_url: String,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -7725,6 +7737,16 @@ fn browser_session_payload(
                 height: web_session.height,
             },
         );
+        let (viewport_image, viewport_image_error) = match browser_session_viewport_image(
+            render,
+            viewport.x,
+            viewport.y,
+            viewport.width,
+            viewport.height,
+        ) {
+            Ok(image) => (Some(image), None),
+            Err(error) => (None, Some(error)),
+        };
         let history = web_session.session.snapshot();
         let find_matches = browser_find_matches(&render.text, &web_session.find_query);
         let find_current = browser_find_active_match(&find_matches, web_session.find_active_line)
@@ -8112,6 +8134,8 @@ fn browser_session_payload(
             profile_history: Vec::new(),
             history: history_entries,
             viewport: viewport.lines.join("\n"),
+            viewport_image,
+            viewport_image_error,
             page_text: render.text.clone(),
             focused: web_session.session.focused_control(),
             anchors,
@@ -8129,6 +8153,56 @@ fn browser_session_payload(
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
     Ok(payload)
+}
+
+fn browser_session_viewport_image(
+    render: &BrowserRender,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+) -> Result<BrowserSessionViewportImagePayload, String> {
+    let raster = rasterize_render_rgba(
+        render,
+        BrowserRasterOptions {
+            viewport_x: Some(x),
+            viewport_y: Some(y),
+            viewport_width: Some(width.max(1)),
+            viewport_height: Some(height.max(1)),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let png = raster.encode_png().map_err(|error| error.to_string())?;
+    Ok(BrowserSessionViewportImagePayload {
+        data_url: format!("data:image/png;base64,{}", browser_base64_encode(&png)),
+        width: raster.width,
+        height: raster.height,
+    })
+}
+
+fn browser_base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().saturating_add(2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+
+        encoded.push(TABLE[(first >> 2) as usize] as char);
+        encoded.push(TABLE[(((first & 0b0000_0011) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(TABLE[(((second & 0b0000_1111) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(TABLE[(third & 0b0011_1111) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str) -> String {
@@ -8168,6 +8242,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let profile_history = render_browser_session_profile_history(payload);
     let find_controls = render_browser_session_find_controls(payload);
     let viewport = render_browser_session_viewport(payload);
+    let viewport_image = render_browser_session_viewport_image(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
@@ -8431,6 +8506,12 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .meta {{ color: #5d636b; font-size: 13px; overflow-wrap: anywhere; line-height: 1.45; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
+.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; }}
+.browser-raster {{ display: block; max-width: 100%; height: auto; }}
+.browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
+.viewport-text {{ margin-top: 10px; }}
+.viewport-text summary {{ cursor: pointer; color: #3a3f45; font-size: 13px; font-weight: 700; }}
+.viewport-text pre {{ margin-top: 8px; }}
 ol {{ list-style: none; margin: 0; padding: 0; }}
 li {{ display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px 10px; padding: 10px 0; border-top: 1px solid #dfe2e6; }}
 li span {{ color: #6b717a; font-size: 12px; padding-top: 3px; text-align: right; }}
@@ -8495,7 +8576,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <div class="meta">{source}</div>
 <div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>
 {find_controls}
-<pre>{viewport}</pre>
+{viewport_image}
+<details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
 <h2>Click</h2>
 <div class="browser-actions">{click_controls}</div>
 <h2>Keyboard</h2>
@@ -8568,6 +8650,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         history_index = payload.current_history_index.map_or(0, |index| index + 1),
         history_len = payload.history_len,
         viewport_jump = viewport_jump,
+        viewport_image = viewport_image,
         viewport = viewport,
         click_controls = click_controls,
         keyboard_controls = keyboard_controls,
@@ -8581,6 +8664,24 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         link_controls = link_controls,
         link_rows = link_rows,
     )
+}
+
+fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
+    if let Some(image) = &payload.viewport_image {
+        return format!(
+            r#"<div class="browser-raster-shell"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>"#,
+            src = html_escape::encode_double_quoted_attribute(&image.data_url),
+            width = image.width,
+            height = image.height,
+        );
+    }
+    if let Some(error) = &payload.viewport_image_error {
+        return format!(
+            r#"<div class="browser-raster-error">Viewport image unavailable: {error}</div>"#,
+            error = html_escape::encode_text(error),
+        );
+    }
+    String::new()
 }
 
 fn browser_session_state_export_payload(
