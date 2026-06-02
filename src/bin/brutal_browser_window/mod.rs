@@ -728,6 +728,24 @@ mod native {
                         close: false,
                     });
                 }
+                Key::Up => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_page_scroll_action(app, -1)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
+                Key::Down => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(browser_window_page_scroll_action(app, 1)?)
+                        .await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::Left => {
                     *mode = BrowserWindowMode::Page;
                     app.apply_action(BrowserAppAction::Back).await?;
@@ -1726,6 +1744,51 @@ mod native {
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_alt_up_down_scroll_by_viewport() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/list-marker-types.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+            let modifiers = BrowserWindowModifiers {
+                command: false,
+                shift: false,
+                alt: true,
+            };
+
+            let down = handle_browser_window_key(&mut app, &mut mode, Key::Down, modifiers)
+                .await
+                .unwrap();
+            assert!(down.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, 3);
+
+            mode = BrowserWindowMode::Find {
+                text: "stale find".to_owned(),
+                replace_on_input: false,
+            };
+            let up = handle_browser_window_key(&mut app, &mut mode, Key::Up, modifiers)
+                .await
+                .unwrap();
+            assert!(up.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
         }
 
         #[tokio::test]
