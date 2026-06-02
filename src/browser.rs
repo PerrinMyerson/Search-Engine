@@ -4489,8 +4489,14 @@ pub fn browser_text_viewport(
             DisplayCommand::Rect { .. } => {
                 fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '#')
             }
-            DisplayCommand::Image { .. } => {
-                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@')
+            DisplayCommand::Image { alt, .. } => {
+                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@');
+                overlay_text_viewport_image_alt(
+                    &mut cells,
+                    viewport,
+                    visible_bounds,
+                    alt.as_deref(),
+                );
             }
         }
     }
@@ -4537,6 +4543,48 @@ fn fill_text_viewport_cells(
                     *cell = ch;
                 }
             }
+        }
+    }
+}
+
+fn overlay_text_viewport_image_alt(
+    cells: &mut [Vec<char>],
+    viewport: RasterViewport,
+    bounds: DisplayCommandBounds,
+    alt: Option<&str>,
+) {
+    let Some(alt) = alt
+        .map(collapse_ascii_whitespace)
+        .filter(|alt| !alt.is_empty())
+    else {
+        return;
+    };
+    if bounds.width == 0 || bounds.height == 0 {
+        return;
+    }
+
+    let row = bounds
+        .y
+        .saturating_add(bounds.height / 2)
+        .saturating_sub(viewport.y);
+    let Some(line) = cells.get_mut(row) else {
+        return;
+    };
+
+    let horizontal_padding = usize::from(bounds.width > 2);
+    let available_width = bounds
+        .width
+        .saturating_sub(horizontal_padding.saturating_mul(2));
+    if available_width == 0 {
+        return;
+    }
+    let start_x = bounds
+        .x
+        .saturating_sub(viewport.x)
+        .saturating_add(horizontal_padding);
+    for (offset, ch) in alt.chars().take(available_width).enumerate() {
+        if let Some(cell) = line.get_mut(start_x.saturating_add(offset)) {
+            *cell = ch;
         }
     }
 }

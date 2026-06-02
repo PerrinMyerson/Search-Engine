@@ -359,7 +359,46 @@ fn text_viewport_clips_display_list_for_browser_shell() {
     assert_eq!(viewport.layout_box_count, 0);
     assert_eq!(viewport.visible_layout_box_count, 0);
     assert_eq!(viewport.culled_layout_box_count, 0);
-    assert_eq!(viewport.lines, vec!["one", "####", " @@@"]);
+    assert_eq!(viewport.lines, vec!["one", "####", " @t@"]);
+}
+
+#[test]
+fn text_viewport_overlays_image_alt_on_placeholder_cells() {
+    let render = render_from_display_list(
+        "mem://viewport-alt-image",
+        12,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("Hero art".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "After".to_owned(),
+            },
+        ],
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 3,
+        },
+    );
+
+    assert_eq!(viewport.lines, vec!["@@@@@@@@@@", "@Hero art@", "After"]);
 }
 
 #[test]
