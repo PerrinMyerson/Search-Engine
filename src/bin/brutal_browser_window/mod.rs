@@ -642,20 +642,24 @@ mod native {
                     });
                 }
                 Key::Up => {
+                    let mode_changed = !matches!(mode, BrowserWindowMode::Page);
                     *mode = BrowserWindowMode::Page;
-                    app.apply_action(browser_window_document_start_action(app)?)
-                        .await?;
+                    let action = browser_window_document_start_action(app)?;
+                    let dirty =
+                        mode_changed || apply_browser_window_key_action(app, action).await?;
                     return Ok(BrowserWindowKeyResult {
-                        dirty: true,
+                        dirty,
                         close: false,
                     });
                 }
                 Key::Down => {
+                    let mode_changed = !matches!(mode, BrowserWindowMode::Page);
                     *mode = BrowserWindowMode::Page;
-                    app.apply_action(browser_window_document_end_action(app)?)
-                        .await?;
+                    let action = browser_window_document_end_action(app)?;
+                    let dirty =
+                        mode_changed || apply_browser_window_key_action(app, action).await?;
                     return Ok(BrowserWindowKeyResult {
-                        dirty: true,
+                        dirty,
                         close: false,
                     });
                 }
@@ -834,14 +838,37 @@ mod native {
         };
 
         if let Some(action) = action {
-            app.apply_action(action).await?;
+            let dirty = apply_browser_window_key_action(app, action).await?;
             Ok(BrowserWindowKeyResult {
-                dirty: true,
+                dirty,
                 close: false,
             })
         } else {
             Ok(BrowserWindowKeyResult::default())
         }
+    }
+
+    async fn apply_browser_window_key_action(
+        app: &mut BrowserApp,
+        action: BrowserAppAction,
+    ) -> Result<bool> {
+        let before_viewport = if browser_window_action_tracks_viewport(&action) {
+            Some(app.active_viewport()?)
+        } else {
+            None
+        };
+        app.apply_action(action).await?;
+        Ok(before_viewport
+            .map(|before| app.active_viewport().map(|after| after != before))
+            .transpose()?
+            .unwrap_or(true))
+    }
+
+    fn browser_window_action_tracks_viewport(action: &BrowserAppAction) -> bool {
+        matches!(
+            action,
+            BrowserAppAction::Scroll { .. } | BrowserAppAction::SetViewportOrigin { .. }
+        )
     }
 
     async fn handle_browser_window_find_navigation(
@@ -1413,6 +1440,70 @@ mod native {
             .unwrap();
             assert!(home.dirty);
             assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_scroll_keys_do_not_dirty_at_viewport_edges() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/list-marker-types.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let page_up = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::PageUp,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!page_up.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let home = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Home,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!home.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let end = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::End,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(end.dirty);
+            let bottom = app.active_viewport().unwrap().y;
+            assert!(bottom > 0);
+
+            let end_again = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::End,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!end_again.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, bottom);
         }
 
         #[tokio::test]
