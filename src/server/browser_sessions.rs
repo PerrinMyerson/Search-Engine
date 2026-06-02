@@ -7926,7 +7926,9 @@ fn browser_session_payload(
                                     web_session,
                                 )
                             }),
-                            toggle_url: if form_control_is_checkable(&control.kind) {
+                            toggle_url: if !control.disabled
+                                && form_control_is_checkable(&control.kind)
+                            {
                                 Some(browser_session_action_href(
                                     id,
                                     "toggle",
@@ -11446,16 +11448,24 @@ fn render_browser_session_control(
             "unchecked"
         };
         let disabled = if control.disabled { " disabled" } else { "" };
-        let href = control.toggle_url.as_deref().unwrap_or("#");
         let focus = browser_session_control_focus_link(control);
+        let toggle = control.toggle_url.as_deref().map_or_else(
+            || r#"<span class="details">read-only</span>"#.to_owned(),
+            |href| {
+                format!(
+                    r#"<a class="small-action" href="{href}">Toggle</a>"#,
+                    href = html_escape::encode_double_quoted_attribute(href),
+                )
+            },
+        );
         return format!(
-            r#"<div class="control"><label>{label}</label><div class="details">{kind} · {state}{disabled}</div><div class="resource-actions">{focus}<a class="small-action" href="{href}">Toggle</a></div></div>"#,
+            r#"<div class="control"><label>{label}</label><div class="details">{kind} · {state}{disabled}</div><div class="resource-actions">{focus}{toggle}</div></div>"#,
             label = html_escape::encode_text(&label),
             kind = html_escape::encode_text(&control.kind),
             state = state,
             disabled = disabled,
             focus = focus,
-            href = html_escape::encode_double_quoted_attribute(href),
+            toggle = toggle,
         );
     }
 
