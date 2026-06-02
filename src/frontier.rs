@@ -10,6 +10,7 @@ use url::Url;
 use crate::urlcanon::canonicalize_url;
 
 pub const DEFAULT_MAX_FAILED_FRONTIER_RECORDS: usize = 10_000;
+pub const DEFAULT_MAX_FRONTIER_ERROR_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UrlState {
@@ -286,7 +287,10 @@ impl FrontierStore {
         };
         record.updated_at = now;
         record.next_fetch_at = now.saturating_add(retry_after_secs);
-        record.last_error = Some(error);
+        record.last_error = Some(truncate_frontier_error(
+            error,
+            DEFAULT_MAX_FRONTIER_ERROR_BYTES,
+        ));
         true
     }
 
@@ -467,6 +471,22 @@ pub fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn truncate_frontier_error(mut error: String, max_bytes: usize) -> String {
+    if error.len() <= max_bytes {
+        return error;
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut end = max_bytes;
+    while !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.truncate(end);
+    error
 }
 
 #[cfg(test)]
@@ -669,5 +689,24 @@ mod tests {
             frontier.get("https://example.com/deferred").unwrap().state,
             UrlState::Deferred
         );
+    }
+
+    #[test]
+    fn record_failed_bounds_persisted_error_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frontier.bin");
+        let mut frontier = FrontierStore::open(path).unwrap();
+        frontier.discover(Url::parse("https://example.com/a").unwrap(), 0, 10);
+        let claim = frontier.claim_next(20, 1).unwrap();
+
+        let glyph = "€";
+        let long_error = glyph.repeat(DEFAULT_MAX_FRONTIER_ERROR_BYTES);
+        assert!(frontier.record_failed(&claim.url, long_error, 0, 21));
+
+        let record = frontier.get("https://example.com/a").unwrap();
+        let stored = record.last_error.as_deref().unwrap();
+        let expected_len = (DEFAULT_MAX_FRONTIER_ERROR_BYTES / glyph.len()) * glyph.len();
+        assert_eq!(stored.len(), expected_len);
+        assert!(stored.chars().all(|ch| ch == '€'));
     }
 }
