@@ -8448,6 +8448,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("bookmarks_csv", "bookmarks-csv"),
         ("anchors_csv", "anchors-csv"),
         ("links_csv", "links-csv"),
+        ("forms_json", "forms-json"),
         ("forms_csv", "forms-csv"),
         ("history_csv", "history-csv"),
         ("profile_history_csv", "profile-history-csv"),
@@ -9005,6 +9006,8 @@ async fn browser_session_page_renders_form_controls() {
     let html = render_browser_session_page(&payload, &back_href);
 
     assert!(html.contains("<h2>Forms</h2>"));
+    assert!(html.contains("Forms JSON"));
+    assert!(html.contains("format=forms-json"));
     assert!(html.contains("Forms CSV"));
     assert!(html.contains("format=forms-csv"));
     assert!(html.contains("<h2>Sessions</h2>"));
@@ -9115,6 +9118,50 @@ async fn browser_session_page_renders_form_controls() {
             .as_str()
             .unwrap()
             .contains("action=activate-control-background-session")
+    );
+
+    let forms_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "forms-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&forms_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_forms: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_forms["format"], "browser-forms");
+    assert_eq!(exported_forms["id"], payload.id);
+    assert_eq!(exported_forms["form_count"], 1);
+    assert_eq!(exported_forms["forms"].as_array().unwrap().len(), 1);
+    assert_eq!(exported_forms["forms"][0]["method"], "GET");
+    assert_eq!(
+        exported_forms["forms"][0]["controls"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(exported_forms["forms"][0]["controls"][0]["name"], "q");
+    assert_eq!(exported_forms["forms"][0]["controls"][0]["value"], "old");
+    assert!(
+        exported_forms["forms"][0]["controls"][0]["type_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=type-control")
+    );
+    assert!(
+        exported_forms["csv_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=forms-csv")
+    );
+    assert!(
+        exported_forms["session_state_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=session-state")
     );
 
     let forms_csv_export = RequestTarget {
