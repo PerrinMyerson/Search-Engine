@@ -8491,6 +8491,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
 <html><head>
 <title>State</title>
 <link rel="stylesheet" href="/app.css" media="screen">
+<link rel="icon" href="/favicon.ico">
 <script>localStorage.setItem("theme", "dark"); sessionStorage.setItem("nonce", "abc");</script>
 </head><body><img src="/logo.png" alt="Logo"><p>state</p></body></html>"#;
         let response = format!(
@@ -8537,6 +8538,12 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             .iter()
             .any(|resource| resource.url == "/logo.png")
     );
+    assert!(
+        payload
+            .resources
+            .iter()
+            .any(|resource| resource.url == "/favicon.ico")
+    );
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Session State"));
@@ -8549,8 +8556,8 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert!(html.contains("format=session-state-csv"));
     assert!(html.contains("format=viewport-text"));
     assert!(html.contains("format=page-text"));
-    assert!(html.contains("Resources (2)"));
-    assert!(html.contains(r#"<span class="meta">1 image, 1 stylesheet</span>"#));
+    assert!(html.contains("Resources (3)"));
+    assert!(html.contains(r#"<span class="meta">1 image, 1 stylesheet, 1 other resource</span>"#));
     assert!(html.contains("Resources JSON"));
     assert!(html.contains("format=resources-json"));
     assert!(html.contains("Resources CSV"));
@@ -8683,7 +8690,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             .any(|entry| entry["key"] == "nonce" && entry["value"] == "abc")
     );
     let resources = exported["resources"].as_array().unwrap();
-    assert_eq!(resources.len(), 2);
+    assert_eq!(resources.len(), 3);
     let stylesheet = resources
         .iter()
         .find(|resource| resource["url"] == "/app.css")
@@ -8717,6 +8724,12 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert_eq!(image["kind"], "image");
     assert_eq!(image["alt"], "Logo");
     assert_eq!(image["details"], "alt=Logo");
+    let icon = resources
+        .iter()
+        .find(|resource| resource["url"] == "/favicon.ico")
+        .unwrap();
+    assert_eq!(icon["kind"], "icon");
+    assert_eq!(icon["details"], "rel=icon");
 
     let resources_json_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -8731,8 +8744,8 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     let exported_resources: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert_eq!(exported_resources["format"], "browser-resources");
     assert_eq!(exported_resources["id"], payload.id);
-    assert_eq!(exported_resources["resource_count"], 2);
-    assert_eq!(exported_resources["resources"].as_array().unwrap().len(), 2);
+    assert_eq!(exported_resources["resource_count"], 3);
+    assert_eq!(exported_resources["resources"].as_array().unwrap().len(), 3);
     assert!(
         exported_resources["resources"]
             .as_array()
@@ -8750,6 +8763,13 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             .any(|resource| resource["url"] == "/logo.png"
                 && resource["kind"] == "image"
                 && resource["alt"] == "Logo")
+    );
+    assert!(
+        exported_resources["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["url"] == "/favicon.ico" && resource["kind"] == "icon")
     );
     assert!(
         exported_resources["csv_url"]
@@ -8799,13 +8819,16 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert_eq!(response.status, 200);
     assert_eq!(response.content_type, "text/csv; charset=utf-8");
     assert!(response.body.starts_with("index,kind,initiator,url,resolved,details,open_url,new_session_url,background_session_url,session_id,source,total_resource_count\n"));
-    assert_eq!(response.body.lines().count(), 3);
+    assert_eq!(response.body.lines().count(), 4);
     assert!(response.body.contains("stylesheet"));
     assert!(response.body.contains("/app.css"));
     assert!(response.body.contains("media=screen"));
     assert!(response.body.contains("image"));
     assert!(response.body.contains("/logo.png"));
     assert!(response.body.contains("alt=Logo"));
+    assert!(response.body.contains("icon"));
+    assert!(response.body.contains("/favicon.ico"));
+    assert!(response.body.contains("rel=icon"));
     assert!(response.body.contains("action=resource"));
     assert!(response.body.contains("action=resource-new-session"));
     assert!(response.body.contains("action=resource-background-session"));
