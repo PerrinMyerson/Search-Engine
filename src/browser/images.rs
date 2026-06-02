@@ -1409,8 +1409,8 @@ fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option
 }
 
 fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
-    srcset
-        .split(',')
+    srcset_candidate_strings(srcset)
+        .into_iter()
         .enumerate()
         .filter_map(|(order, raw_candidate)| {
             let mut parts = raw_candidate.split_ascii_whitespace();
@@ -1435,6 +1435,60 @@ fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
             })
         })
         .collect()
+}
+
+pub(super) fn srcset_candidate_urls(srcset: &str) -> Vec<String> {
+    srcset_candidate_strings(srcset)
+        .into_iter()
+        .filter_map(|raw_candidate| {
+            let url = raw_candidate.split_ascii_whitespace().next()?.trim();
+            (!url.is_empty()).then(|| url.to_owned())
+        })
+        .collect()
+}
+
+fn srcset_candidate_strings(srcset: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let mut start = 0usize;
+    while start < srcset.len() {
+        let candidate_start = skip_ascii_whitespace(srcset, start);
+        if candidate_start >= srcset.len() {
+            break;
+        }
+        let is_data_url = srcset[candidate_start..]
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"));
+        let mut skipped_data_metadata_comma = !is_data_url;
+        let mut end = srcset.len();
+        for (offset, byte) in srcset.as_bytes()[candidate_start..].iter().enumerate() {
+            if *byte != b',' {
+                continue;
+            }
+            if !skipped_data_metadata_comma {
+                skipped_data_metadata_comma = true;
+                continue;
+            }
+            end = candidate_start + offset;
+            break;
+        }
+        candidates.push(&srcset[start..end]);
+        if end == srcset.len() {
+            break;
+        }
+        start = end + 1;
+    }
+    candidates
+}
+
+fn skip_ascii_whitespace(input: &str, mut index: usize) -> usize {
+    while input
+        .as_bytes()
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        index += 1;
+    }
+    index
 }
 
 fn parse_srcset_width_descriptor(descriptor: &str) -> Option<usize> {
