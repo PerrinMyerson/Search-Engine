@@ -456,7 +456,7 @@ mod native {
                 hover_status_text = next_hover_status_text;
                 dirty = true;
             }
-            for key in window.get_keys_pressed(KeyRepeat::No) {
+            for key in browser_window_pressed_keys(&window, &app, &mode, modifiers)? {
                 let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers).await?;
                 dirty |= result.dirty;
                 close_requested |= result.close;
@@ -1023,6 +1023,57 @@ mod native {
         }
     }
 
+    fn browser_window_pressed_keys(
+        window: &Window,
+        app: &BrowserApp,
+        mode: &BrowserWindowMode,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<Vec<Key>> {
+        let mut keys = window.get_keys_pressed(KeyRepeat::No);
+        for key in window.get_keys_pressed(KeyRepeat::Yes) {
+            if keys.contains(&key) {
+                continue;
+            }
+            if browser_window_key_repeat_enabled(app, mode, key, modifiers)? {
+                keys.push(key);
+            }
+        }
+        Ok(keys)
+    }
+
+    fn browser_window_key_repeat_enabled(
+        app: &BrowserApp,
+        mode: &BrowserWindowMode,
+        key: Key,
+        modifiers: BrowserWindowModifiers,
+    ) -> Result<bool> {
+        if modifiers.command || modifiers.alt {
+            return Ok(false);
+        }
+
+        match mode {
+            BrowserWindowMode::Location { .. } | BrowserWindowMode::Find { .. } => {
+                return Ok(matches!(key, Key::Backspace | Key::Delete));
+            }
+            BrowserWindowMode::Page => {}
+        }
+
+        if browser_window_focused_control_accepts_text_input(app)? {
+            return Ok(matches!(key, Key::Backspace));
+        }
+        if browser_window_focused_control_accepts_select_input(app)? {
+            return Ok(matches!(key, Key::Up | Key::Down));
+        }
+        if app.active_session()?.focused_control().is_some() {
+            return Ok(false);
+        }
+
+        Ok(matches!(
+            key,
+            Key::Up | Key::Down | Key::Left | Key::Right | Key::PageUp | Key::PageDown | Key::Space
+        ))
+    }
+
     async fn apply_browser_window_text_input(
         app: &mut BrowserApp,
         mode: &mut BrowserWindowMode,
@@ -1574,6 +1625,135 @@ mod native {
             assert_eq!(
                 browser_window_mouse_position_to_pixels(f32::INFINITY, 3.75),
                 (0, 3)
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_key_repeat_policy_limits_repeated_keys_by_context() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("repeat-policy.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Repeat Policy</title></head>
+<body>
+<form>
+  <input name="q" value="rust">
+  <select name="kind">
+    <option value="alpha">Alpha</option>
+    <option value="beta">Beta</option>
+  </select>
+</form>
+<p>line 1</p><p>line 2</p><p>line 3</p><p>line 4</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let page_mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers::default();
+
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::Down, modifiers).unwrap()
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::PageDown, modifiers)
+                    .unwrap()
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::Space, modifiers).unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &page_mode, Key::Tab, modifiers).unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(
+                    &app,
+                    &page_mode,
+                    Key::T,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                )
+                .unwrap()
+            );
+
+            let location_mode = BrowserWindowMode::Location {
+                text: "https://example.test".to_owned(),
+                replace_on_input: false,
+            };
+            assert!(
+                browser_window_key_repeat_enabled(&app, &location_mode, Key::Backspace, modifiers)
+                    .unwrap()
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &location_mode, Key::Delete, modifiers)
+                    .unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &location_mode, Key::Enter, modifiers)
+                    .unwrap()
+            );
+
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "text"
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::Backspace, modifiers)
+                    .unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &page_mode, Key::Down, modifiers).unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &page_mode, Key::Space, modifiers)
+                    .unwrap()
+            );
+
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "select"
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::Down, modifiers).unwrap()
+            );
+            assert!(
+                browser_window_key_repeat_enabled(&app, &page_mode, Key::Up, modifiers).unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &page_mode, Key::Space, modifiers)
+                    .unwrap()
+            );
+            assert!(
+                !browser_window_key_repeat_enabled(&app, &page_mode, Key::Backspace, modifiers)
+                    .unwrap()
             );
         }
 
