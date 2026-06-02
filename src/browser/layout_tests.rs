@@ -1252,36 +1252,70 @@ fn css_letter_spacing_expands_text_runs_and_wrap_width() {
         "mem://letter-spacing",
         br#"
             <html><body>
-              <p style="letter-spacing: 8px">AB CD EF</p>
-              <p style="letter-spacing: 8px">Wide <span style="letter-spacing: normal">gap ok</span> end</p>
+              <p style="letter-spacing: 8px">AB CD EF GH IJ KL</p>
+              <p style="letter-spacing: 8px">Wide <span style="letter-spacing: normal">gap ok</span> end more</p>
             </body></html>
             "#,
         BrowserRenderOptions {
-            width: 16,
+            width: 20,
             ..BrowserRenderOptions::default()
         },
     );
 
-    assert_eq!(render.text, "A B C D E F\nW i d e gap ok\ne n d");
+    assert_eq!(
+        render.text,
+        "A B C D E F G H I J\nK L\nW i d e gap ok e n d\nm o r e"
+    );
     assert_eq!(
         render.display_list,
         vec![
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
-                text: "A B C D E F".to_owned(),
+                text: "A B C D E F G H I J".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 1,
-                text: "W i d e gap ok".to_owned(),
+                text: "K L".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 2,
-                text: "e n d".to_owned(),
+                text: "W i d e gap ok e n d".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "m o r e".to_owned(),
             },
         ]
+    );
+}
+
+#[test]
+fn css_subcell_letter_spacing_accumulates_without_exploding_text_gaps() {
+    let render = render_html(
+        "mem://fractional-letter-spacing",
+        br#"
+            <html><body>
+              <p style="letter-spacing: 1px">ABCDEFGHIJKLMNOP</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "ABCDEFGH IJKLMNOP");
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "ABCDEFGH IJKLMNOP".to_owned(),
+        }]
     );
 }
 
@@ -1291,28 +1325,28 @@ fn css_letter_spacing_applies_inside_pre_wrap_segments() {
         "mem://letter-spacing-pre-wrap",
         br#"
             <html><body>
-              <p style="white-space: pre-wrap; letter-spacing: 8px">ABCD</p>
+              <p style="white-space: pre-wrap; letter-spacing: 8px">ABCDEFGHIJK</p>
             </body></html>
             "#,
         BrowserRenderOptions {
-            width: 3,
+            width: 20,
             ..BrowserRenderOptions::default()
         },
     );
 
-    assert_eq!(render.text, "A B\nC D");
+    assert_eq!(render.text, "A B C D E F G H I J\nK");
     assert_eq!(
         render.display_list,
         vec![
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
-                text: "A B".to_owned(),
+                text: "A B C D E F G H I J".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 1,
-                text: "C D".to_owned(),
+                text: "K".to_owned(),
             },
         ]
     );

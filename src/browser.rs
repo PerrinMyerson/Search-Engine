@@ -9863,6 +9863,8 @@ fn css_axis_cell_px(axis: CssAxis) -> f32 {
     }
 }
 
+const CSS_TEXT_CELL_UNITS: usize = 256;
+
 fn parse_css_length_pixels(value: &str) -> Option<f32> {
     let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
     if value.contains('%')
@@ -9895,6 +9897,15 @@ fn css_length_cells(value: &str, axis: CssAxis, max_cells: usize) -> Option<usiz
     }
     let cells = (pixels / css_axis_cell_px(axis)).ceil() as usize;
     Some(cells.clamp(1, max_cells))
+}
+
+fn css_length_cell_units(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
+    let pixels = parse_css_length_pixels(value)?;
+    if pixels == 0.0 {
+        return Some(0);
+    }
+    let units = ((pixels / css_axis_cell_px(axis)) * CSS_TEXT_CELL_UNITS as f32).round() as usize;
+    Some(units.clamp(1, max_cells.saturating_mul(CSS_TEXT_CELL_UNITS)))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -10229,7 +10240,7 @@ fn parse_css_letter_spacing(value: &str) -> Option<usize> {
     {
         return Some(0);
     }
-    parse_css_dimension_length(value, CssAxis::Horizontal)
+    css_length_cell_units(value, CssAxis::Horizontal, 512)
 }
 
 fn parse_css_word_spacing(value: &str) -> Option<usize> {
@@ -13162,10 +13173,10 @@ impl FlowRenderer {
     }
 
     fn letter_spaced_char_count_width(&self, char_count: usize) -> usize {
-        char_count.saturating_add(
-            self.letter_spacing
-                .saturating_mul(char_count.saturating_sub(1)),
-        )
+        let gap_units = self
+            .letter_spacing
+            .saturating_mul(char_count.saturating_sub(1));
+        char_count.saturating_add(gap_units / CSS_TEXT_CELL_UNITS)
     }
 
     fn apply_letter_spacing(&self, text: &str) -> String {
@@ -13178,9 +13189,14 @@ impl FlowRenderer {
         };
         let mut spaced = String::with_capacity(self.letter_spaced_text_width(text));
         spaced.push(first);
-        let gap = " ".repeat(self.letter_spacing);
+        let mut pending_units = 0usize;
         for ch in chars {
-            spaced.push_str(&gap);
+            pending_units = pending_units.saturating_add(self.letter_spacing);
+            let gap_cells = pending_units / CSS_TEXT_CELL_UNITS;
+            pending_units %= CSS_TEXT_CELL_UNITS;
+            if gap_cells > 0 {
+                spaced.push_str(&" ".repeat(gap_cells));
+            }
             spaced.push(ch);
         }
         spaced
