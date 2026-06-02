@@ -7684,6 +7684,8 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         profile_history: Vec::new(),
         history: Vec::new(),
         viewport: String::new(),
+        viewport_image: None,
+        viewport_image_error: None,
         page_text: String::new(),
         focused: None,
         anchors: Vec::new(),
@@ -8791,8 +8793,11 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(payload.resource_count, 1);
     assert_eq!(payload.resources[0].kind, "image");
     assert_eq!(payload.resources[0].alt.as_deref(), Some("Tile image"));
+    assert!(payload.viewport_image.is_some());
     assert!(payload.resource_report.is_none());
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(html.contains("data:image/png;base64,"));
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
@@ -8823,8 +8828,19 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
         report.resources[0].content_type.as_deref(),
         Some("image/svg+xml")
     );
+    let viewport_image = payload.viewport_image.as_ref().unwrap();
+    assert!(
+        viewport_image
+            .data_url
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(viewport_image.width > 0);
+    assert!(viewport_image.height > 0);
 
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains(r#"<details class="viewport-text">"#));
     assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
     assert!(html.contains("<th>Source</th>"));
     assert!(html.contains("<th>Content Type</th>"));
