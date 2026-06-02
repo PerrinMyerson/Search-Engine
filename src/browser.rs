@@ -1065,6 +1065,13 @@ impl Display {
                 | Self::TableRow
         )
     }
+
+    fn lays_out_children_in_row(self) -> bool {
+        matches!(
+            self,
+            Self::Flex | Self::Grid | Self::InlineFlex | Self::InlineGrid
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3243,6 +3250,7 @@ fn render_page_state_with_timings(
         &css_cascade,
         &mut renderer,
         &mut layout_box_count,
+        false,
     );
 
     let flow = renderer.finish();
@@ -10818,12 +10826,44 @@ fn render_children(
     css_cascade: &CssCascade,
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
+    children_are_row_items: bool,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
         return;
     };
+    let mut row_item_seen = false;
     for &child in &node.children {
-        render_node(dom, child, source, css_cascade, renderer, layout_box_count);
+        if children_are_row_items && !row_layout_child_participates(dom, child, css_cascade) {
+            continue;
+        }
+        if children_are_row_items && row_item_seen {
+            renderer.push_text(" ", None);
+        }
+        render_node(
+            dom,
+            child,
+            source,
+            css_cascade,
+            renderer,
+            layout_box_count,
+            children_are_row_items,
+        );
+        if children_are_row_items {
+            row_item_seen = true;
+        }
+    }
+}
+
+fn row_layout_child_participates(dom: &Dom, node_id: usize, css_cascade: &CssCascade) -> bool {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        NodeKind::Text(text) => !text.trim().is_empty(),
+        NodeKind::Element(element) => {
+            computed_style(dom, node_id, element, css_cascade).display != Display::None
+        }
+        NodeKind::Document | NodeKind::DocumentFragment => true,
     }
 }
 
@@ -10834,6 +10874,7 @@ fn render_node(
     css_cascade: &CssCascade,
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
+    is_row_item: bool,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
         return;
@@ -10846,6 +10887,7 @@ fn render_node(
             css_cascade,
             renderer,
             layout_box_count,
+            false,
         ),
         NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
         NodeKind::Element(element) => {
@@ -10865,6 +10907,7 @@ fn render_node(
                     renderer,
                     layout_box_count,
                     style,
+                    is_row_item,
                 );
                 return;
             }
@@ -10988,12 +11031,13 @@ fn render_node(
             let word_break_entered = style.word_break;
             let text_indent_entered = style.text_indent;
             let line_height_entered = style.line_height;
-            let margin = if style.display.is_block_flow() {
+            let block_flow = style.display.is_block_flow() && !is_row_item;
+            let margin = if block_flow {
                 style.margin
             } else {
                 BoxSpacing::default()
             };
-            if style.display.is_block_flow() {
+            if block_flow {
                 renderer.break_line();
                 if margin.top > 0 {
                     renderer.push_vertical_space(margin.top);
@@ -11002,7 +11046,7 @@ fn render_node(
                     renderer.enter_insets(margin.left, margin.right);
                 }
             }
-            let width_inset = if style.display.is_block_flow() {
+            let width_inset = if block_flow {
                 let available_width = renderer.available_width();
                 let horizontal_box_extra = style
                     .padding
@@ -11054,7 +11098,7 @@ fn render_node(
             } else {
                 (0, 0)
             };
-            let block_box = style.display.is_block_flow().then(|| {
+            let block_box = block_flow.then(|| {
                 (
                     renderer.box_x(),
                     renderer.available_width(),
@@ -11093,7 +11137,7 @@ fn render_node(
                 (None, Some(max_height)) => Some(max_height),
                 (None, None) => None,
             };
-            let overflow_clip_entered = if style.display.is_block_flow() && style.overflow.clips() {
+            let overflow_clip_entered = if block_flow && style.overflow.clips() {
                 let clip_y = renderer.current_row();
                 renderer.enter_clip(DisplayCommandBounds {
                     x: renderer.box_x(),
@@ -11106,7 +11150,7 @@ fn render_node(
             } else {
                 None
             };
-            let text_background_entered = if style.display.is_block_flow() {
+            let text_background_entered = if block_flow {
                 None
             } else {
                 style.background_shade
@@ -11141,7 +11185,7 @@ fn render_node(
             if let Some(line_height) = line_height_entered {
                 renderer.enter_line_height(line_height);
             }
-            let text_indent_block_entered = if style.display.is_block_flow() {
+            let text_indent_block_entered = if block_flow {
                 renderer.enter_block_text_indent();
                 true
             } else {
@@ -11168,7 +11212,7 @@ fn render_node(
             } else {
                 false
             };
-            let list_indent = if style.display.is_block_flow() {
+            let list_indent = if block_flow {
                 nested_list_indent(dom, node_id)
             } else {
                 0
@@ -11191,6 +11235,7 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
+                    style.display.lays_out_children_in_row(),
                 );
             } else {
                 render_children(
@@ -11200,6 +11245,7 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
+                    style.display.lays_out_children_in_row(),
                 );
             }
 
@@ -11213,7 +11259,7 @@ fn render_node(
                 renderer.break_line();
                 renderer.exit_insets(list_indent, 0);
             }
-            if style.display.is_block_flow() {
+            if block_flow {
                 renderer.break_line();
             }
             if let Some((clip_y, fixed_height, clip_height)) = overflow_clip_entered {
@@ -11296,7 +11342,7 @@ fn render_node(
                     Some(node_id),
                 );
             }
-            if style.display.is_block_flow() {
+            if block_flow {
                 if width_inset.0 > 0 || width_inset.1 > 0 {
                     renderer.exit_insets(width_inset.0, width_inset.1);
                 }
@@ -11331,6 +11377,7 @@ fn render_contents_node(
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
     style: ComputedStyle,
+    children_are_row_items: bool,
 ) {
     let visibility_entered = style.visibility;
     if let Some(visibility) = visibility_entered {
@@ -11384,6 +11431,7 @@ fn render_contents_node(
         css_cascade,
         renderer,
         layout_box_count,
+        children_are_row_items,
     );
 
     if line_height_entered.is_some() {
@@ -11429,6 +11477,7 @@ fn render_details_children(
     css_cascade: &CssCascade,
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
+    children_are_row_items: bool,
 ) {
     let is_open = element.attrs.contains_key("open");
     let summary_child = first_details_summary_child(dom, node_id, css_cascade);
@@ -11441,6 +11490,7 @@ fn render_details_children(
                 css_cascade,
                 renderer,
                 layout_box_count,
+                children_are_row_items,
             );
         } else {
             renderer.push_text("> Details", Some(node_id));
@@ -11459,6 +11509,7 @@ fn render_details_children(
         css_cascade,
         renderer,
         layout_box_count,
+        children_are_row_items,
     );
 }
 
