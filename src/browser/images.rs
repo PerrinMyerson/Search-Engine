@@ -800,6 +800,7 @@ fn picture_source_attr<'a>(
         if let Some(NodeKind::Element(element)) = dom.nodes.get(child).map(|node| &node.kind)
             && element.tag == "source"
             && picture_source_media_matches(element.media.as_deref())
+            && picture_source_type_supported(element)
             && let Some(srcset) = first_non_empty_attr(element, attr_names)
         {
             return Some(srcset);
@@ -1209,6 +1210,35 @@ mod tests {
 
 fn picture_source_media_matches(media: Option<&str>) -> bool {
     media.is_none_or(|media| media.trim().is_empty() || media.trim() == "all")
+}
+
+fn picture_source_type_supported(element: &ElementData) -> bool {
+    element
+        .attrs
+        .get("type")
+        .is_none_or(|source_type| image_mime_type_supported(source_type))
+}
+
+fn image_mime_type_supported(source_type: &str) -> bool {
+    let source_type = source_type
+        .split(';')
+        .next()
+        .unwrap_or(source_type)
+        .trim()
+        .to_ascii_lowercase();
+    if source_type.is_empty() {
+        return true;
+    }
+    matches!(
+        source_type.as_str(),
+        "image/svg+xml"
+            | "image/png"
+            | "image/jpeg"
+            | "image/jpg"
+            | "image/jpe"
+            | "image/pjpeg"
+            | "image/x-jpeg"
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
