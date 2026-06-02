@@ -436,14 +436,25 @@ impl BrowserApp {
     ) -> Result<BrowserAppWindowClickReport> {
         let hit = self.hit_test_window(x, y)?;
         let action = self.window_hit_action(&hit)?;
-        if let Some(action) = action.clone() {
-            self.apply_action(action).await?;
-        }
+        let applied = if let Some(action) = action.clone() {
+            match action {
+                BrowserAppAction::Click { x, y } => match self.click_active(x, y).await {
+                    Ok(()) => true,
+                    Err(error) if browser_app_click_missed_dom_target(&error) => false,
+                    Err(error) => return Err(error),
+                },
+                action => {
+                    self.apply_action(action).await?;
+                    true
+                }
+            }
+        } else {
+            false
+        };
         let active_tab = self.active_tab;
         let source = self
             .current_source()
             .unwrap_or_else(|| "(empty)".to_owned());
-        let applied = action.is_some();
         Ok(BrowserAppWindowClickReport {
             hit,
             action,
@@ -1009,6 +1020,12 @@ fn browser_app_select_previous_find_match(matches: &[usize], start_y: usize) -> 
     }
     let index = matches.len() - 1;
     (index, matches[index])
+}
+
+fn browser_app_click_missed_dom_target(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains("did not hit a DOM target"))
 }
 
 const WINDOW_CHROME_ROWS: usize = 3;
@@ -1595,6 +1612,42 @@ mod tests {
         let tab_click = app.click_window(first_tab_x, first_tab_y).await.unwrap();
         assert_eq!(tab_click.hit, BrowserAppWindowHit::Tab { index: 0 });
         assert_eq!(app.active_tab(), 0);
+    }
+
+    #[tokio::test]
+    async fn browser_app_window_page_click_noops_when_no_dom_target() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("blank-space.html");
+        fs::write(
+            &page,
+            r#"<html><head><title>Blank Space</title></head><body><p>Only target</p></body></html>"#,
+        )
+        .unwrap();
+
+        let mut options = app_options();
+        options.viewport_height = 4;
+        let mut app = BrowserApp::open(&page.to_string_lossy(), options)
+            .await
+            .unwrap();
+        let window = app.present_window_frame().unwrap();
+        let blank_x = window.report.page.padding_x + 1;
+        let blank_y = window
+            .report
+            .content_y
+            .saturating_add(window.report.page.padding_y)
+            .saturating_add(window.report.page.cell_height.saturating_mul(3))
+            .saturating_add(1);
+
+        let click = app.click_window(blank_x, blank_y).await.unwrap();
+
+        assert_eq!(click.hit, BrowserAppWindowHit::PageViewport { x: 0, y: 3 });
+        assert_eq!(click.action, Some(BrowserAppAction::Click { x: 0, y: 3 }));
+        assert!(!click.applied);
+        assert_eq!(click.active_tab, 0);
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Blank Space"
+        );
     }
 
     #[tokio::test]
