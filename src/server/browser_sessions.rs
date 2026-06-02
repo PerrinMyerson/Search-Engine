@@ -584,6 +584,7 @@ struct BrowserSessionStateExportResourceReport<'a> {
     applied: Option<usize>,
     decoded: Option<usize>,
     resources: usize,
+    fetches: &'a [BrowserSessionResourceFetchPayload],
     csv_url: String,
     clear_url: String,
 }
@@ -8487,6 +8488,7 @@ fn browser_session_state_export_payload(
                 applied: report.applied,
                 decoded: report.decoded,
                 resources: report.resources.len(),
+                fetches: &report.resources,
                 csv_url: browser_session_api_href(&payload.id, "resource-report-csv", payload),
                 clear_url: browser_session_action_href(
                     &payload.id,
