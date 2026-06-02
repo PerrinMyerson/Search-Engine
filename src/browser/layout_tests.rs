@@ -901,6 +901,72 @@ fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
 }
 
 #[test]
+fn css_relative_length_units_affect_layout_text_metrics() {
+    let render = render_html(
+        "mem://relative-length-units",
+        br#"
+            <html><body>
+              <div style="width:4rem; padding-left:1em; margin-left:1rem">Alpha Beta</div>
+              <p style="text-indent:2em">Indented words</p>
+              <p style="word-spacing:1ch">Wide gap</p>
+              <p style="letter-spacing:0.5rem">AB</p>
+              <p style="line-height:1rem">Tall</p>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Alpha\nBeta\n    Indented words\nWide  gap\nA B\nTall\n\nAfter"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 4,
+                y: 0,
+                text: "Alpha".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 4,
+                y: 1,
+                text: "Beta".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "    Indented words".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Wide  gap".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "A B".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Tall".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_overflow_wrap_break_word_breaks_long_words() {
     let render = render_html(
         "mem://overflow-wrap",
@@ -1566,6 +1632,57 @@ fn links_have_default_text_shade_with_css_override() {
 }
 
 #[test]
+fn search_and_hgroup_use_block_flow_by_default() {
+    let render = render_html(
+        "mem://semantic-block-defaults",
+        br#"
+            <html><body>
+              <span>Before</span>
+              <search><label>Find</label> <input value="rust"></search>
+              <hgroup><h1>Title</h1><p>Subtitle</p></hgroup>
+              <span>After</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nFind [rust]\nTitle\nSubtitle\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Find [rust]".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Title".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Subtitle".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_visibility_hidden_reserves_layout_without_painting() {
     let render = render_html(
         "mem://visibility-hidden",
@@ -1659,6 +1776,60 @@ fn css_height_controls_block_and_image_extent() {
 }
 
 #[test]
+fn css_image_single_axis_size_preserves_intrinsic_aspect_ratio() {
+    let render = render_html(
+        "mem://css-image-aspect-ratio",
+        br#"
+            <html><body>
+              <img alt="wide" width="80" height="48" style="width:24px">
+              <img alt="tall" width="80" height="48" style="height:24px">
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("wide".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 2,
+                shade: 220,
+                alt: Some("tall".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_max_height_limits_image_placeholder_extent() {
     let render = render_html(
         "mem://css-max-height-image",
@@ -1706,6 +1877,166 @@ fn css_max_height_limits_image_placeholder_extent() {
             DisplayCommand::Text {
                 x: 0,
                 y: 5,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn unresolved_image_placeholders_are_clamped_to_keep_text_visible() {
+    let render = render_html(
+        "mem://unresolved-image-placeholder-clamp",
+        br#"
+            <html><body>
+              <img alt="hero" src="https://example.invalid/hero.jpg" width="800" height="480">
+              <p>Contact details</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Contact details");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 8,
+                shade: 220,
+                alt: Some("hero".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Contact details".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn metadata_and_fallback_elements_do_not_render_in_body_flow() {
+    let render = render_html(
+        "mem://hidden-metadata-elements",
+        br#"
+            <html><body>
+              <p>Before metadata</p>
+              <title>Body title should not paint</title>
+              <datalist id="choices">
+                <option value="rust">Rust fallback option</option>
+              </datalist>
+              <noembed>Legacy fallback text</noembed>
+              <p>After metadata</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before metadata\nAfter metadata");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before metadata".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "After metadata".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn renders_replaced_media_elements_as_placeholders() {
+    let render = render_html(
+        "mem://replaced-media",
+        br#"
+            <html><body>
+              <iframe title="Map" src="https://example.test/map" width="80" height="24"></iframe>
+              <object data="chart.svg" width="40" height="12"></object>
+              <video poster="poster.png" width="64" height="24"></video>
+              <audio src="sound.mp3"></audio>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("Map".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 1,
+                shade: 220,
+                alt: Some("object".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 8,
+                height: 2,
+                shade: 220,
+                alt: Some("video".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 5,
+                width: 10,
+                height: 1,
+                shade: 220,
+                alt: Some("audio".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
                 text: "After".to_owned(),
             },
         ]

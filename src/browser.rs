@@ -100,6 +100,7 @@ use resources::{
 };
 
 const TABLE_COLUMN_GAP_CELLS: usize = 2;
+const MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserRenderOptions {
@@ -1242,6 +1243,7 @@ struct CompoundSelector {
     id: Option<String>,
     classes: Vec<String>,
     attributes: Vec<AttributeSelector>,
+    not_selectors: Vec<CompoundSelector>,
     universal: bool,
 }
 
@@ -3623,7 +3625,7 @@ fn layout_box_kind(
     element: &ElementData,
     style: ComputedStyle,
 ) -> String {
-    if element.tag == "img" {
+    if element.tag == "img" || is_replaced_media_element(&element.tag) {
         "replaced".to_owned()
     } else if form_control_render_text(dom, node_id, element).is_some() {
         "form-control".to_owned()
@@ -9013,6 +9015,7 @@ fn is_void_tag(tag: &str) -> bool {
 }
 
 fn parse_css(css: &str) -> CssCascade {
+    let css = strip_css_comments(css);
     let mut cascade = CssCascade {
         rules: Vec::new(),
         id_rules: HashMap::new(),
@@ -9030,7 +9033,7 @@ fn parse_css(css: &str) -> CssCascade {
         if declarations == CssDeclarations::default() {
             continue;
         }
-        for selector in selectors.split(',') {
+        for selector in split_css_selector_list(selectors) {
             if let Some(selector) = parse_selector(selector) {
                 cascade.push(CssRule {
                     selector,
@@ -9041,6 +9044,60 @@ fn parse_css(css: &str) -> CssCascade {
     }
 
     cascade
+}
+
+fn strip_css_comments(css: &str) -> String {
+    let mut stripped = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        stripped.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("*/") else {
+            return stripped;
+        };
+        rest = &after_start[end + 2..];
+    }
+    stripped.push_str(rest);
+    stripped
+}
+
+fn split_css_selector_list(selectors: &str) -> Vec<&str> {
+    let bytes = selectors.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b',' if bracket_depth == 0 && paren_depth == 0 => {
+                parts.push(&selectors[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&selectors[start..]);
+    parts
 }
 
 impl CssCascade {
@@ -9153,9 +9210,7 @@ fn parse_selector(selector: &str) -> Option<CssSelector> {
         }
 
         let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
-            i += 1;
-        }
+        i = compound_selector_end(selector, start);
         let compound = parse_compound_selector(&selector[start..i])?;
         let combinator = if steps.is_empty() {
             None
@@ -9175,12 +9230,47 @@ fn parse_selector(selector: &str) -> Option<CssSelector> {
     (!steps.is_empty()).then_some(CssSelector { steps })
 }
 
+fn compound_selector_end(selector: &str, start: usize) -> usize {
+    let bytes = selector.as_bytes();
+    let mut i = start;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'>' if bracket_depth == 0 && paren_depth == 0 => break,
+            _ if byte.is_ascii_whitespace() && bracket_depth == 0 && paren_depth == 0 => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
 fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
     let bytes = selector.as_bytes();
     let mut tag = None;
     let mut id = None;
     let mut classes = Vec::new();
     let mut attributes = Vec::new();
+    let mut not_selectors = Vec::new();
     let mut universal = false;
     let mut i = 0usize;
 
@@ -9204,6 +9294,12 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         if prefix == b'[' {
             let (attribute, next) = parse_attribute_selector(selector, i)?;
             attributes.push(attribute);
+            i = next;
+            continue;
+        }
+        if selector[i..].starts_with(":not(") {
+            let (negated, next) = parse_not_selector(selector, i)?;
+            not_selectors.extend(negated);
             i = next;
             continue;
         }
@@ -9238,8 +9334,56 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             id,
             classes,
             attributes,
+            not_selectors,
             universal,
         })
+}
+
+fn parse_not_selector(selector: &str, start: usize) -> Option<(Vec<CompoundSelector>, usize)> {
+    let bytes = selector.as_bytes();
+    if !selector[start..].starts_with(":not(") {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut quote = None;
+    let mut i = start + ":not(".len();
+    let content_start = i;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == active_quote {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let content = &selector[content_start..i];
+                        let selectors = parse_not_selector_list(content)?;
+                        return Some((selectors, i + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_not_selector_list(content: &str) -> Option<Vec<CompoundSelector>> {
+    let mut selectors = Vec::new();
+    for selector in split_css_selector_list(content) {
+        let selector = selector.trim();
+        if selector.is_empty() || selector.contains(char::is_whitespace) || selector.contains('>') {
+            return None;
+        }
+        selectors.push(parse_compound_selector(selector)?);
+    }
+    (!selectors.is_empty()).then_some(selectors)
 }
 
 fn parse_attribute_selector(selector: &str, start: usize) -> Option<(AttributeSelector, usize)> {
@@ -9304,6 +9448,7 @@ fn is_selector_ident_continue(byte: u8) -> bool {
 }
 
 fn parse_css_declarations(style: &str) -> CssDeclarations {
+    let style = strip_css_comments(style);
     let mut declarations = CssDeclarations::default();
     let mut border_width = None;
     let mut border_shade = None;
@@ -9314,6 +9459,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         let Some((name, value)) = declaration.split_once(':') else {
             continue;
         };
+        let value = css_declaration_value(value);
         match name.trim().to_ascii_lowercase().as_str() {
             "display" => {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
@@ -9489,6 +9635,18 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
     declarations
 }
 
+fn css_declaration_value(value: &str) -> &str {
+    let value = value.trim().trim_end_matches(';').trim();
+    let important = "!important";
+    if value.len() >= important.len()
+        && value[value.len() - important.len()..].eq_ignore_ascii_case(important)
+    {
+        value[..value.len() - important.len()].trim_end()
+    } else {
+        value
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PartialBoxSpacing {
     top: Option<usize>,
@@ -9535,6 +9693,47 @@ impl PartialBoxSpacing {
 enum CssAxis {
     Horizontal,
     Vertical,
+}
+
+fn css_axis_cell_px(axis: CssAxis) -> f32 {
+    match axis {
+        CssAxis::Horizontal => 8.0,
+        CssAxis::Vertical => 12.0,
+    }
+}
+
+fn parse_css_length_pixels(value: &str) -> Option<f32> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value.contains('%')
+        || value.starts_with('-')
+        || value == "auto"
+        || value == "inherit"
+        || value == "initial"
+    {
+        return None;
+    }
+    let (numeric, multiplier) = if let Some(numeric) = value.strip_suffix("rem") {
+        (numeric, 16.0)
+    } else if let Some(numeric) = value.strip_suffix("em") {
+        (numeric, 16.0)
+    } else if let Some(numeric) = value.strip_suffix("ch") {
+        (numeric, 8.0)
+    } else if let Some(numeric) = value.strip_suffix("px") {
+        (numeric, 1.0)
+    } else {
+        (value.as_str(), 1.0)
+    };
+    let pixels = numeric.parse::<f32>().ok()? * multiplier;
+    pixels.is_finite().then_some(pixels)
+}
+
+fn css_length_cells(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
+    let pixels = parse_css_length_pixels(value)?;
+    if pixels == 0.0 {
+        return Some(0);
+    }
+    let cells = (pixels / css_axis_cell_px(axis)).ceil() as usize;
+    Some(cells.clamp(1, max_cells))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -9635,50 +9834,11 @@ fn parse_css_margin_length(value: &str, axis: CssAxis) -> Option<usize> {
 }
 
 fn parse_css_box_spacing_length(value: &str, axis: CssAxis) -> Option<usize> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%') || value.starts_with('-') {
-        return None;
-    }
-    let numeric = value.strip_suffix("px").unwrap_or(&value);
-    let pixels = numeric
-        .split_once('.')
-        .map_or(numeric, |(whole, _)| whole)
-        .parse::<usize>()
-        .ok()?;
-    if pixels == 0 {
-        return Some(0);
-    }
-    let cell_px = match axis {
-        CssAxis::Horizontal => 8,
-        CssAxis::Vertical => 12,
-    };
-    Some(pixels.div_ceil(cell_px).clamp(0, 8))
+    css_length_cells(value, axis, 8)
 }
 
 fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%')
-        || value.starts_with('-')
-        || value == "auto"
-        || value == "inherit"
-        || value == "initial"
-    {
-        return None;
-    }
-    let numeric = value.strip_suffix("px").unwrap_or(&value);
-    let pixels = numeric
-        .split_once('.')
-        .map_or(numeric, |(whole, _)| whole)
-        .parse::<usize>()
-        .ok()?;
-    if pixels == 0 {
-        return Some(0);
-    }
-    let cell_px = match axis {
-        CssAxis::Horizontal => 8,
-        CssAxis::Vertical => 12,
-    };
-    Some(pixels.div_ceil(cell_px).clamp(1, 512))
+    css_length_cells(value, axis, 512)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -9718,14 +9878,11 @@ fn parse_css_border_width(value: &str) -> Option<usize> {
             "thick" => return Some(2),
             _ => {}
         }
-        if let Some(px) = token
-            .strip_suffix("px")
-            .and_then(|value| value.parse::<usize>().ok())
-        {
-            if px == 0 {
+        if let Some(pixels) = parse_css_length_pixels(&token) {
+            if pixels == 0.0 {
                 continue;
             }
-            return Some(px.div_ceil(8).clamp(1, 4));
+            return Some(((pixels / 8.0).ceil() as usize).clamp(1, 4));
         }
     }
     None
@@ -9886,13 +10043,15 @@ fn parse_css_line_height(value: &str) -> Option<usize> {
     if value.starts_with('-') || value == "inherit" || value == "initial" {
         return None;
     }
-    if value.ends_with("px") {
-        return parse_css_dimension_length(&value, CssAxis::Vertical);
+    if value.ends_with("px")
+        || value.ends_with("rem")
+        || value.ends_with("em")
+        || value.ends_with("ch")
+    {
+        return parse_css_dimension_length(&value, CssAxis::Vertical).map(|rows| rows.clamp(1, 16));
     }
     let rows = if let Some(percent) = value.strip_suffix('%') {
         percent.parse::<f32>().ok()? / 100.0
-    } else if let Some(em) = value.strip_suffix("em") {
-        em.parse::<f32>().ok()?
     } else {
         value.parse::<f32>().ok()?
     };
@@ -10341,6 +10500,22 @@ fn render_node(
                 }
                 return;
             }
+            if is_replaced_media_element(&element.tag) {
+                let (media_width, media_height) =
+                    replaced_media_placeholder_extent(element, &style, renderer);
+                renderer.push_image_placeholder(
+                    media_width,
+                    media_height,
+                    replaced_media_alt(element),
+                    source,
+                    replaced_media_render_source(element),
+                    Some(node_id),
+                );
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+                return;
+            }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
@@ -10716,25 +10891,104 @@ fn image_placeholder_extent(
         .attrs
         .get("width")
         .and_then(|value| parse_pixel_dimension_cells(value, 8));
-    let mut width = style.width.or(attr_width).unwrap_or(10);
-    if let Some(max_width) = style.max_width {
-        width = width.min(max_width);
-    }
-    width = width.max(style.min_width);
-    let mut height = style
-        .height
-        .or_else(|| {
-            element
-                .attrs
-                .get("height")
-                .and_then(|value| parse_pixel_dimension_cells(value, 12))
-        })
-        .unwrap_or(4);
-    if let Some(max_height) = style.max_height {
-        height = height.min(max_height);
-    }
-    height = height.max(style.min_height).clamp(1, 24);
+    let attr_height = element
+        .attrs
+        .get("height")
+        .and_then(|value| parse_pixel_dimension_cells(value, 12));
+    let (mut width, mut height) = match (style.width, style.height) {
+        (Some(width), Some(height)) => (width, height),
+        (Some(width), None) => {
+            let width = constrain_image_width(width, style);
+            let height = attr_width
+                .zip(attr_height)
+                .and_then(|(intrinsic_width, intrinsic_height)| {
+                    scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                })
+                .unwrap_or_else(|| attr_height.unwrap_or(4));
+            (width, height)
+        }
+        (None, Some(height)) => {
+            let height = constrain_image_height(height, style);
+            let width = attr_width
+                .zip(attr_height)
+                .and_then(|(intrinsic_width, intrinsic_height)| {
+                    scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                })
+                .unwrap_or_else(|| attr_width.unwrap_or(10));
+            (width, height)
+        }
+        (None, None) => (attr_width.unwrap_or(10), attr_height.unwrap_or(4)),
+    };
+    width = constrain_image_width(width, style);
+    height = constrain_image_height(height, style);
     (width.clamp(1, renderer.available_width()), height)
+}
+
+fn constrain_image_width(width: usize, style: &ComputedStyle) -> usize {
+    let width = if let Some(max_width) = style.max_width {
+        width.min(max_width)
+    } else {
+        width
+    };
+    width.max(style.min_width)
+}
+
+fn constrain_image_height(height: usize, style: &ComputedStyle) -> usize {
+    let height = if let Some(max_height) = style.max_height {
+        height.min(max_height)
+    } else {
+        height
+    };
+    height.max(style.min_height).clamp(1, 24)
+}
+
+fn scale_image_dimension(
+    source_dimension: usize,
+    target_intrinsic: usize,
+    source_intrinsic: usize,
+) -> Option<usize> {
+    if source_intrinsic == 0 {
+        return None;
+    }
+    let scaled = source_dimension
+        .saturating_mul(target_intrinsic)
+        .saturating_add(source_intrinsic.saturating_sub(1))
+        / source_intrinsic;
+    Some(scaled.max(1))
+}
+
+fn is_replaced_media_element(tag: &str) -> bool {
+    matches!(tag, "audio" | "embed" | "iframe" | "object" | "video")
+}
+
+fn replaced_media_placeholder_extent(
+    element: &ElementData,
+    style: &ComputedStyle,
+    renderer: &FlowRenderer,
+) -> (usize, usize) {
+    let (width, height) = image_placeholder_extent(element, style, renderer);
+    let has_explicit_height = style.height.is_some() || element.attrs.contains_key("height");
+    if element.tag == "audio" && !has_explicit_height {
+        return (width, 1usize.max(style.min_height).clamp(1, 24));
+    }
+    (width, height)
+}
+
+fn replaced_media_render_source(element: &ElementData) -> Option<&str> {
+    match element.tag.as_str() {
+        "object" => element.data.as_deref(),
+        "video" => element.poster.as_deref().or(element.src.as_deref()),
+        _ => element.src.as_deref(),
+    }
+}
+
+fn replaced_media_alt(element: &ElementData) -> Option<String> {
+    element
+        .attrs
+        .get("title")
+        .or(element.alt.as_ref())
+        .cloned()
+        .or_else(|| Some(element.tag.clone()))
 }
 
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
@@ -11184,11 +11438,15 @@ fn default_text_shade(element: &ElementData) -> Option<u8> {
 
 fn default_display(tag: &str) -> Display {
     match tag {
-        "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
+        "area" | "base" | "basefont" | "datalist" | "head" | "link" | "meta" | "noembed"
+        | "noframes" | "param" | "rp" | "script" | "source" | "style" | "template" | "title"
+        | "track" | "svg" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
         | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
-        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
-        | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
+        | "h5" | "h6" | "header" | "hgroup" | "hr" | "html" | "main" | "nav" | "ol" | "p"
+        | "pre" | "search" | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => {
+            Display::Block
+        }
         "li" | "summary" => Display::ListItem,
         _ => Display::Inline,
     }
@@ -11504,6 +11762,12 @@ fn compound_specificity(compound: &CompoundSelector) -> u32 {
     u32::from(compound.id.is_some()) * 100
         + (compound.classes.len() + compound.attributes.len()) as u32 * 10
         + u32::from(compound.tag.is_some())
+        + compound
+            .not_selectors
+            .iter()
+            .map(compound_specificity)
+            .max()
+            .unwrap_or(0)
 }
 
 fn selector_matches(selector: &CssSelector, dom: &Dom, node_id: usize) -> bool {
@@ -11581,11 +11845,19 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
             return false;
         }
     }
+    if compound
+        .not_selectors
+        .iter()
+        .any(|selector| compound_selector_matches(selector, dom, node_id))
+    {
+        return false;
+    }
     compound.universal
         || compound.tag.is_some()
         || compound.id.is_some()
         || !compound.classes.is_empty()
         || !compound.attributes.is_empty()
+        || !compound.not_selectors.is_empty()
 }
 
 #[derive(Debug)]
@@ -12441,12 +12713,17 @@ impl FlowRenderer {
     ) {
         self.break_line();
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
+        let placeholder_height = if decoded_info.is_some() {
+            height.max(1)
+        } else {
+            height.min(MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT).max(1)
+        };
         if self.visibility == Visibility::Visible {
             self.display_list.push(DisplayCommand::Image {
                 x: self.left_inset,
                 y: self.next_y,
                 width: width.min(self.available_width()).max(1),
-                height: height.max(1),
+                height: placeholder_height,
                 shade: 220,
                 alt,
                 url: decoded_info.as_ref().map(|image| image.url.clone()),
@@ -12457,7 +12734,7 @@ impl FlowRenderer {
             self.display_targets
                 .push(DisplayHitTarget::node(target_node));
         }
-        self.next_y = self.next_y.saturating_add(height.max(1));
+        self.next_y = self.next_y.saturating_add(placeholder_height);
     }
 
     fn cached_decoded_image_info(&mut self, source: &str, url: &str) -> Option<DecodedImageInfo> {
