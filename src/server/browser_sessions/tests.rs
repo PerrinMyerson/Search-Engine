@@ -8115,6 +8115,125 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 }
 
 #[tokio::test]
+async fn browser_session_inspector_loads_images_and_exports_decode_report() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let image_body = br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##.to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (body, content_type) = if request_line.contains(" /tile.svg ") {
+                (image_body.clone(), "image/svg+xml")
+            } else {
+                (
+                    br#"<!doctype html><title>Images</title><p>before image</p><img src="/tile.svg" alt="Tile image"><p>after image</p>"#.to_vec(),
+                    "text/html",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), format!("http://{addr}/images"))],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Images");
+    assert_eq!(payload.resource_count, 1);
+    assert_eq!(payload.resources[0].kind, "image");
+    assert_eq!(payload.resources[0].alt.as_deref(), Some("Tile image"));
+    assert!(payload.resource_report.is_none());
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("Load images"));
+    assert!(html.contains("action=load-images"));
+
+    let load_images = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "load-images".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&load_images).await.unwrap();
+    server.await.unwrap();
+
+    let report = payload.resource_report.as_ref().unwrap();
+    assert_eq!(report.action, "Load images");
+    assert_eq!(report.total, 1);
+    assert_eq!(report.fetched, 1);
+    assert_eq!(report.cached, 0);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.applied, None);
+    assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.resources.len(), 1);
+    assert_eq!(report.resources[0].status, "fetched");
+    assert_eq!(report.resources[0].kind, "image");
+    assert_eq!(
+        report.resources[0].content_type.as_deref(),
+        Some("image/svg+xml")
+    );
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
+    assert!(html.contains("image/svg+xml"));
+    assert!(html.contains("Report CSV"));
+
+    let resource_report_csv_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resource-report-csv".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resource_report_csv_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "text/csv; charset=utf-8");
+    assert_eq!(response.body.lines().count(), 2);
+    assert!(response.body.contains("Load images,"));
+    assert!(response.body.contains(",1,1,0,0,0,,1,1,fetched,image,"));
+    assert!(response.body.contains("/tile.svg"));
+    assert!(response.body.contains("image/svg+xml"));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["resource_report"]["action"], "Load images");
+    assert_eq!(exported["resource_report"]["total"], 1);
+    assert_eq!(exported["resource_report"]["fetched"], 1);
+    assert_eq!(exported["resource_report"]["decoded"], 1);
+    assert!(exported["resource_report"]["applied"].is_null());
+    assert_eq!(exported["resource_report"]["resources"], 1);
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
+    );
+}
+
+#[tokio::test]
 async fn browser_session_inspector_reports_and_clears_page_state() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
