@@ -721,10 +721,10 @@ struct BrowserSessionStateExportActionUrls {
     back: Option<String>,
     forward: Option<String>,
     reload: String,
-    top: String,
-    bottom: String,
-    scroll_up: String,
-    scroll_down: String,
+    top: Option<String>,
+    bottom: Option<String>,
+    scroll_up: Option<String>,
+    scroll_down: Option<String>,
     scroll_left: Option<String>,
     scroll_right: Option<String>,
     previous_tab: Option<String>,
@@ -8778,20 +8778,26 @@ fn browser_session_state_action_urls(
             .can_forward
             .then(|| browser_session_action_href(&payload.id, "forward", &[], payload)),
         reload: browser_session_action_href(&payload.id, "reload", &[], payload),
-        top: browser_session_action_href(&payload.id, "top", &[], payload),
-        bottom: browser_session_action_href(&payload.id, "bottom", &[], payload),
-        scroll_up: browser_session_action_href(
-            &payload.id,
-            "scroll",
-            &[("dy", format!("-{}", payload.height.max(1) / 2))],
-            payload,
-        ),
-        scroll_down: browser_session_action_href(
-            &payload.id,
-            "scroll",
-            &[("dy", (payload.height.max(1) / 2).to_string())],
-            payload,
-        ),
+        top: (payload.viewport_y > 0)
+            .then(|| browser_session_action_href(&payload.id, "top", &[], payload)),
+        bottom: (payload.viewport_y < payload.max_scroll_y)
+            .then(|| browser_session_action_href(&payload.id, "bottom", &[], payload)),
+        scroll_up: (payload.viewport_y > 0).then(|| {
+            browser_session_action_href(
+                &payload.id,
+                "scroll",
+                &[("dy", format!("-{}", payload.height.max(1) / 2))],
+                payload,
+            )
+        }),
+        scroll_down: (payload.viewport_y < payload.max_scroll_y).then(|| {
+            browser_session_action_href(
+                &payload.id,
+                "scroll",
+                &[("dy", (payload.height.max(1) / 2).to_string())],
+                payload,
+            )
+        }),
         scroll_left: (payload.viewport_x > 0).then(|| {
             browser_session_action_href(
                 &payload.id,

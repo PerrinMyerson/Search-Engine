@@ -1945,6 +1945,29 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains("<span>Up</span>"));
     assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Bottom</a>"));
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert!(exported["action_urls"]["top"].is_null());
+    assert!(exported["action_urls"]["scroll_up"].is_null());
+    assert!(
+        exported["action_urls"]["bottom"]
+            .as_str()
+            .unwrap()
+            .contains("action=bottom")
+    );
+    assert!(
+        exported["action_urls"]["scroll_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=scroll")
+    );
 
     let scroll_right = RequestTarget {
         path: "/browser".to_owned(),
@@ -1985,6 +2008,32 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"name="action" value="current""#));
     assert!(html.contains(r#"name="x" value="8""#));
     assert!(html.contains(r#"name="y" value="4""#));
+    let response = browser_session_api_response(&state_export, &payload);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert!(
+        exported["action_urls"]["top"]
+            .as_str()
+            .unwrap()
+            .contains("action=top")
+    );
+    assert!(
+        exported["action_urls"]["scroll_up"]
+            .as_str()
+            .unwrap()
+            .contains("action=scroll")
+    );
+    assert!(
+        exported["action_urls"]["bottom"]
+            .as_str()
+            .unwrap()
+            .contains("action=bottom")
+    );
+    assert!(
+        exported["action_urls"]["scroll_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=scroll")
+    );
 
     let jump_viewport = RequestTarget {
         path: "/browser".to_owned(),
@@ -1999,6 +2048,34 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert_eq!(payload.viewport_x, 12);
     assert_eq!(payload.viewport_y, 12);
 
+    let bottom = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "bottom".to_owned()),
+            ("viewport_x".to_owned(), payload.viewport_x.to_string()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&bottom).await.unwrap();
+    assert_eq!(payload.viewport_x, 12);
+    assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    let response = browser_session_api_response(&state_export, &payload);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert!(
+        exported["action_urls"]["top"]
+            .as_str()
+            .unwrap()
+            .contains("action=top")
+    );
+    assert!(
+        exported["action_urls"]["scroll_up"]
+            .as_str()
+            .unwrap()
+            .contains("action=scroll")
+    );
+    assert!(exported["action_urls"]["bottom"].is_null());
+    assert!(exported["action_urls"]["scroll_down"].is_null());
+
     let duplicate_href = browser_session_new_session_href(&payload.source, &payload);
     let duplicate = RequestTarget {
         path: "/browser".to_owned(),
@@ -2008,8 +2085,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     };
     let (duplicate_payload, _) = registry.create_target(&duplicate).await.unwrap();
     assert_ne!(duplicate_payload.id, payload.id);
-    assert_eq!(duplicate_payload.viewport_x, 12);
-    assert_eq!(duplicate_payload.viewport_y, 12);
+    assert_eq!(duplicate_payload.viewport_x, payload.viewport_x);
+    assert_eq!(duplicate_payload.viewport_y, payload.viewport_y);
     assert!(duplicate_payload.viewport.contains("JKLMNOPQRSTUVWXYZ"));
 
     let scroll_left = RequestTarget {
@@ -8634,12 +8711,12 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             .unwrap()
             .contains("action=reload")
     );
-    assert!(
-        exported["action_urls"]["scroll_down"]
-            .as_str()
-            .unwrap()
-            .contains("action=scroll")
-    );
+    assert_eq!(payload.viewport_y, 0);
+    assert_eq!(payload.max_scroll_y, 0);
+    assert!(exported["action_urls"]["top"].is_null());
+    assert!(exported["action_urls"]["bottom"].is_null());
+    assert!(exported["action_urls"]["scroll_up"].is_null());
+    assert!(exported["action_urls"]["scroll_down"].is_null());
     assert!(
         exported["action_urls"]["duplicate_tab"]
             .as_str()
