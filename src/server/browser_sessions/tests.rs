@@ -1506,6 +1506,8 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert!(payload.viewport.contains("needle first"));
     let html = render_browser_session_page(&payload, "/search?q=find");
     assert!(html.contains("<mark>needle</mark> first"));
+    assert!(html.contains(">Previous</a>"));
+    assert!(html.contains(">Next</a>"));
     assert!(html.contains("Find JSON"));
     assert!(html.contains("format=find-json"));
     assert!(html.contains("Find CSV"));
@@ -1775,6 +1777,26 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert!(payload.find_query.is_empty());
     assert_eq!(payload.find_match_count, 0);
     assert_eq!(payload.find_current_index, None);
+
+    let no_match = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "find".to_owned()),
+            ("q".to_owned(), "missing".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&no_match).await.unwrap();
+    assert_eq!(payload.find_query, "missing");
+    assert_eq!(payload.find_match_count, 0);
+    assert!(payload.find_matches.is_empty());
+    let html = render_browser_session_page(&payload, "/search?q=find");
+    assert!(html.contains("0 matches for missing"));
+    assert!(!html.contains(">Previous</a>"));
+    assert!(!html.contains(">Next</a>"));
+    assert!(html.contains("Find JSON"));
+    assert!(html.contains("Find CSV"));
+    assert!(html.contains(">Clear</a>"));
 }
 
 #[tokio::test]

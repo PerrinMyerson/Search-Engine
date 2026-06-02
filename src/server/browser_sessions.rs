@@ -10224,11 +10224,20 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
     let actions = if payload.find_query.trim().is_empty() {
         String::new()
     } else {
-        let previous_href = browser_session_action_href(&payload.id, "find-prev", &[], payload);
-        let next_href = browser_session_action_href(&payload.id, "find-next", &[], payload);
         let clear_href = browser_session_action_href(&payload.id, "clear-find", &[], payload);
         let json_href = browser_session_api_href(&payload.id, "find-json", payload);
         let csv_href = browser_session_api_href(&payload.id, "find-csv", payload);
+        let cycle_actions = if payload.find_match_count > 1 {
+            let previous_href = browser_session_action_href(&payload.id, "find-prev", &[], payload);
+            let next_href = browser_session_action_href(&payload.id, "find-next", &[], payload);
+            format!(
+                r#"<a href="{previous_href}">Previous</a><a href="{next_href}">Next</a>"#,
+                previous_href = html_escape::encode_double_quoted_attribute(&previous_href),
+                next_href = html_escape::encode_double_quoted_attribute(&next_href),
+            )
+        } else {
+            String::new()
+        };
         let bulk_actions = if payload.find_matches.iter().any(|match_| !match_.current) {
             let open_tabs_href = browser_session_action_href(
                 &payload.id,
@@ -10253,9 +10262,8 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
         };
         let matches = render_browser_session_find_match_links(payload);
         format!(
-            r#"<a href="{previous_href}">Previous</a><a href="{next_href}">Next</a><a href="{json_href}">Find JSON</a><a href="{csv_href}">Find CSV</a>{bulk_actions}<a href="{clear_href}">Clear</a>{matches}"#,
-            previous_href = html_escape::encode_double_quoted_attribute(&previous_href),
-            next_href = html_escape::encode_double_quoted_attribute(&next_href),
+            r#"{cycle_actions}<a href="{json_href}">Find JSON</a><a href="{csv_href}">Find CSV</a>{bulk_actions}<a href="{clear_href}">Clear</a>{matches}"#,
+            cycle_actions = cycle_actions,
             json_href = html_escape::encode_double_quoted_attribute(&json_href),
             csv_href = html_escape::encode_double_quoted_attribute(&csv_href),
             bulk_actions = bulk_actions,
