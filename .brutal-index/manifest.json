@@ -1,14 +1,14 @@
 {
   "format_version": 7,
-  "created_unix_seconds": 1780365652,
-  "doc_count": 37,
-  "term_count": 31204,
-  "total_terms": 501314,
-  "avg_doc_len": 13549.027,
+  "created_unix_seconds": 1780365945,
+  "doc_count": 39,
+  "term_count": 31472,
+  "total_terms": 507433,
+  "avg_doc_len": 13011.103,
   "duplicate_cluster_count": 0,
   "duplicate_doc_count": 0,
   "skipped_noindex_count": 0,
   "skipped_thin_count": 0,
   "max_authority_score": 1.0,
-  "corpus_hash": "64c8035c65a09d546ade0b9ea3354656c64f14e0194d6ef32e3b3e26ffb180b7"
+  "corpus_hash": "4dccfd07458b873b69f6c9141a378660d63eca899ea162345d4dce33d66e2ed3"
 }
