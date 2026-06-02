@@ -1335,9 +1335,15 @@ mod native {
 
     fn browser_window_title(frame: &BrowserAppWindowFrame, mode: &BrowserWindowMode) -> String {
         if let Some(location) = browser_window_location_text(mode) {
+            if location.trim().is_empty() {
+                return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Location");
+            }
             return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Location: {location}");
         }
         if let Some(query) = browser_window_find_text(mode) {
+            if query.trim().is_empty() {
+                return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Find");
+            }
             return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Find: {query}");
         }
         if frame.report.title.trim().is_empty() {
@@ -3408,11 +3414,31 @@ mod native {
                 browser_window_title(
                     &frame,
                     &BrowserWindowMode::Location {
+                        text: String::new(),
+                        replace_on_input: false,
+                    },
+                ),
+                "Blackium Starium✴ - Location"
+            );
+            assert_eq!(
+                browser_window_title(
+                    &frame,
+                    &BrowserWindowMode::Location {
                         text: "https://example.com".to_owned(),
                         replace_on_input: false,
                     },
                 ),
                 "Blackium Starium✴ - Location: https://example.com"
+            );
+            assert_eq!(
+                browser_window_title(
+                    &frame,
+                    &BrowserWindowMode::Find {
+                        text: String::new(),
+                        replace_on_input: false,
+                    },
+                ),
+                "Blackium Starium✴ - Find"
             );
             assert_eq!(
                 browser_window_title(
