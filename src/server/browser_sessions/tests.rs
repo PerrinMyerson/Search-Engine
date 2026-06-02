@@ -8214,6 +8214,16 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
         params: vec![("url".to_owned(), form_page.display().to_string())],
     };
     let (payload, _) = registry.create_target(&create).await.unwrap();
+    let html = render_browser_session_page(&payload, "");
+    assert!(html.contains(">Tab</a>"));
+    assert!(html.contains(">Shift Tab</a>"));
+    assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(r#"name="action" value="choose""#));
+    assert!(!html.contains(">Backspace</a>"));
+    assert!(!html.contains(">Clear Input</a>"));
+    assert!(!html.contains(">Enter</a>"));
+    assert!(!html.contains(">Space</a>"));
+
     let focus_select_href = payload.forms[0].controls[1].focus_url.clone().unwrap();
     assert!(focus_select_href.contains("action=focus-control"));
 
@@ -8227,6 +8237,13 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_select).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "kind");
+    let html = render_browser_session_page(&payload, "");
+    assert!(html.contains(r#"name="action" value="choose""#));
+    assert!(html.contains(">Enter</a>"));
+    assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(">Backspace</a>"));
+    assert!(!html.contains(">Clear Input</a>"));
+    assert!(!html.contains(">Space</a>"));
 
     let choose = RequestTarget {
         path: "/browser".to_owned(),
@@ -8254,6 +8271,13 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_check).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "fast");
+    let html = render_browser_session_page(&payload, "");
+    assert!(html.contains(">Space</a>"));
+    assert!(html.contains(">Enter</a>"));
+    assert!(!html.contains(r#"name="action" value="choose""#));
+    assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(">Backspace</a>"));
+    assert!(!html.contains(">Clear Input</a>"));
 
     let space = RequestTarget {
         path: "/browser".to_owned(),
@@ -8275,6 +8299,13 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_input).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "q");
+    let html = render_browser_session_page(&payload, "");
+    assert!(html.contains(r#"name="action" value="type-text""#));
+    assert!(html.contains(">Backspace</a>"));
+    assert!(html.contains(">Clear Input</a>"));
+    assert!(html.contains(">Enter</a>"));
+    assert!(!html.contains(r#"name="action" value="choose""#));
+    assert!(!html.contains(">Space</a>"));
 
     let type_text = RequestTarget {
         path: "/browser".to_owned(),
@@ -9565,8 +9596,14 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"name="action" value="click-selector""#));
     assert!(html.contains(r#"name="action" value="click-at""#));
     assert!(html.contains(r#"name="action" value="focus-selector""#));
-    assert!(html.contains(r#"name="action" value="type-text""#));
-    assert!(html.contains(r#"name="action" value="choose""#));
+    assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(r#"name="action" value="choose""#));
+    assert!(html.contains(">Tab</a>"));
+    assert!(html.contains(">Shift Tab</a>"));
+    assert!(!html.contains(">Backspace</a>"));
+    assert!(!html.contains(">Clear Input</a>"));
+    assert!(!html.contains(">Enter</a>"));
+    assert!(!html.contains(">Space</a>"));
     assert!(html.contains("action=focus-control"));
     assert!(html.contains("action=activate-control"));
     assert!(html.contains("action=activate-control-new-session"));

@@ -11025,29 +11025,91 @@ fn render_browser_session_keyboard_controls(payload: &BrowserSessionPayload) -> 
             )
         },
     );
-    let tab_href = browser_session_action_href(&payload.id, "focus-next", &[], payload);
-    let shift_tab_href = browser_session_action_href(&payload.id, "focus-prev", &[], payload);
-    let backspace_href = browser_session_action_href(
-        &payload.id,
-        "backspace",
-        &[("count", "1".to_owned())],
-        payload,
-    );
-    let clear_href = browser_session_action_href(&payload.id, "clear-input", &[], payload);
-    let enter_href = browser_session_action_href(&payload.id, "enter", &[], payload);
-    let space_href = browser_session_action_href(&payload.id, "space", &[], payload);
+    let focus_cycle_actions = if browser_session_has_focusable_controls(payload) {
+        let tab_href = browser_session_action_href(&payload.id, "focus-next", &[], payload);
+        let shift_tab_href = browser_session_action_href(&payload.id, "focus-prev", &[], payload);
+        format!(
+            r#"<a href="{tab_href}">Tab</a><a href="{shift_tab_href}">Shift Tab</a>"#,
+            tab_href = html_escape::encode_double_quoted_attribute(&tab_href),
+            shift_tab_href = html_escape::encode_double_quoted_attribute(&shift_tab_href),
+        )
+    } else {
+        String::new()
+    };
+    let focused_kind = payload
+        .focused
+        .as_ref()
+        .map(|focused| focused.kind.as_str());
+    let text_actions = if focused_kind.is_some_and(form_control_is_text_editable) {
+        let backspace_href = browser_session_action_href(
+            &payload.id,
+            "backspace",
+            &[("count", "1".to_owned())],
+            payload,
+        );
+        let clear_href = browser_session_action_href(&payload.id, "clear-input", &[], payload);
+        format!(
+            r#"<a href="{backspace_href}">Backspace</a><a href="{clear_href}">Clear Input</a>"#,
+            backspace_href = html_escape::encode_double_quoted_attribute(&backspace_href),
+            clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
+        )
+    } else {
+        String::new()
+    };
+    let enter_action = if payload.focused.is_some() {
+        let enter_href = browser_session_action_href(&payload.id, "enter", &[], payload);
+        format!(
+            r#"<a href="{enter_href}">Enter</a>"#,
+            enter_href = html_escape::encode_double_quoted_attribute(&enter_href),
+        )
+    } else {
+        String::new()
+    };
+    let space_action = if focused_kind.is_some_and(form_control_is_checkable) {
+        let space_href = browser_session_action_href(&payload.id, "space", &[], payload);
+        format!(
+            r#"<a href="{space_href}">Space</a>"#,
+            space_href = html_escape::encode_double_quoted_attribute(&space_href),
+        )
+    } else {
+        String::new()
+    };
+    let choose_form = if focused_kind.is_some_and(|kind| kind.eq_ignore_ascii_case("select")) {
+        format!(
+            r#"<form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="choose"><label for="browser-choose-value">Choose</label><input id="browser-choose-value" type="text" name="value" placeholder="option value"><button type="submit">Choose</button></form>"#,
+            common = browser_session_common_hidden_inputs(payload),
+        )
+    } else {
+        String::new()
+    };
+    let type_form = if focused_kind.is_some_and(form_control_is_text_editable) {
+        format!(
+            r#"<form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="type-text"><label for="browser-type-text">Type</label><input id="browser-type-text" type="text" name="text" placeholder="text"><button type="submit">Type</button></form>"#,
+            common = browser_session_common_hidden_inputs(payload),
+        )
+    } else {
+        String::new()
+    };
 
     format!(
-        r##"<div class="meta">{focused}</div><div class="browser-actions"><form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="focus-selector"><label for="browser-focus-selector">Focus</label><input id="browser-focus-selector" type="text" name="selector" placeholder="#field, label, button"><button type="submit">Focus</button></form><form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="type-text"><label for="browser-type-text">Type</label><input id="browser-type-text" type="text" name="text" placeholder="text"><button type="submit">Type</button></form><form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="choose"><label for="browser-choose-value">Choose</label><input id="browser-choose-value" type="text" name="value" placeholder="option value"><button type="submit">Choose</button></form></div><div class="keyboard-action-row"><a href="{tab_href}">Tab</a><a href="{shift_tab_href}">Shift Tab</a><a href="{backspace_href}">Backspace</a><a href="{clear_href}">Clear Input</a><a href="{enter_href}">Enter</a><a href="{space_href}">Space</a></div>"##,
+        r##"<div class="meta">{focused}</div><div class="browser-actions"><form class="browser-action" action="/browser" method="get">{common}<input type="hidden" name="action" value="focus-selector"><label for="browser-focus-selector">Focus</label><input id="browser-focus-selector" type="text" name="selector" placeholder="#field, label, button"><button type="submit">Focus</button></form>{type_form}{choose_form}</div><div class="keyboard-action-row">{focus_cycle_actions}{text_actions}{enter_action}{space_action}</div>"##,
         focused = html_escape::encode_text(&focused),
         common = browser_session_common_hidden_inputs(payload),
-        tab_href = html_escape::encode_double_quoted_attribute(&tab_href),
-        shift_tab_href = html_escape::encode_double_quoted_attribute(&shift_tab_href),
-        backspace_href = html_escape::encode_double_quoted_attribute(&backspace_href),
-        clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
-        enter_href = html_escape::encode_double_quoted_attribute(&enter_href),
-        space_href = html_escape::encode_double_quoted_attribute(&space_href),
+        type_form = type_form,
+        choose_form = choose_form,
+        focus_cycle_actions = focus_cycle_actions,
+        text_actions = text_actions,
+        enter_action = enter_action,
+        space_action = space_action,
     )
+}
+
+fn browser_session_has_focusable_controls(payload: &BrowserSessionPayload) -> bool {
+    payload
+        .forms
+        .iter()
+        .flat_map(|form| form.controls.iter())
+        .any(|control| control.focus_url.is_some())
 }
 
 fn render_browser_session_inspector(payload: &BrowserSessionPayload) -> String {
