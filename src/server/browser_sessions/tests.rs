@@ -8536,6 +8536,11 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("Preparing visual render"));
     assert!(html.contains("Applying styles..."));
     assert!(html.contains("sessionStorage"));
+    assert!(html.contains("Visual render is still running. Refreshing soon..."));
+    assert!(html.contains("sessionStorage.removeItem(stateKey)"));
+    assert!(html.contains("AbortController"));
+    assert!(html.contains("requestTimeoutMs"));
+    assert!(html.contains("timed out"));
     assert!(!html.contains("action=run-scripts"));
     assert!(html.contains(r#"<span class="meta">0 images, 1 stylesheet</span>"#));
     assert!(!html.contains("action=load-images"));
