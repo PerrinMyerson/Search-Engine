@@ -794,11 +794,10 @@ mod native {
             return Ok(BrowserWindowKeyResult::default());
         }
 
-        if matches!(key, Key::Up | Key::Down)
+        if matches!(key, Key::Up | Key::Down | Key::Home | Key::End)
             && browser_window_focused_control_accepts_select_input(app)?
         {
-            let direction = if key == Key::Up { -1 } else { 1 };
-            if let Some(action) = browser_window_focused_select_step_action(app, direction)? {
+            if let Some(action) = browser_window_focused_select_key_action(app, key)? {
                 app.apply_action(action).await?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -1062,7 +1061,7 @@ mod native {
             return Ok(matches!(key, Key::Backspace));
         }
         if browser_window_focused_control_accepts_select_input(app)? {
-            return Ok(matches!(key, Key::Up | Key::Down));
+            return Ok(matches!(key, Key::Up | Key::Down | Key::Home | Key::End));
         }
         if app.active_session()?.focused_control().is_some() {
             return Ok(false);
@@ -1228,9 +1227,9 @@ mod native {
             .is_some_and(|control| control.kind.eq_ignore_ascii_case("select")))
     }
 
-    fn browser_window_focused_select_step_action(
+    fn browser_window_focused_select_key_action(
         app: &BrowserApp,
-        direction: isize,
+        key: Key,
     ) -> Result<Option<BrowserAppAction>> {
         let session = app.active_session()?;
         let Some(focused) = session.focused_control() else {
@@ -1264,11 +1263,13 @@ mod native {
             .iter()
             .position(|option| option.value == focused.value)
             .or_else(|| enabled_options.iter().position(|option| option.selected));
-        let next_index = match (direction.signum(), current_index) {
-            (-1, Some(index)) if index > 0 => Some(index - 1),
-            (-1, None) => enabled_options.len().checked_sub(1),
-            (1, Some(index)) if index + 1 < enabled_options.len() => Some(index + 1),
-            (1, None) => Some(0),
+        let next_index = match (key, current_index) {
+            (Key::Up, Some(index)) if index > 0 => Some(index - 1),
+            (Key::Up, None) => enabled_options.len().checked_sub(1),
+            (Key::Down, Some(index)) if index + 1 < enabled_options.len() => Some(index + 1),
+            (Key::Down, None) => Some(0),
+            (Key::Home, _) => Some(0),
+            (Key::End, _) => enabled_options.len().checked_sub(1),
             _ => None,
         };
         let Some(next_index) = next_index else {
@@ -3611,6 +3612,118 @@ mod native {
             .await
             .unwrap();
             assert!(up.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "alpha"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_home_end_choose_focused_select_edges_without_scrolling() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("select-home-end.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Select Home End Fixture</title></head>
+<body>
+<form>
+  <select name="kind">
+    <option value="disabled-start" disabled>Disabled Start</option>
+    <option value="alpha">Alpha</option>
+    <option value="beta" selected>Beta</option>
+    <option value="gamma">Gamma</option>
+    <option value="disabled-end" disabled>Disabled End</option>
+  </select>
+</form>
+<p>ordinary page text</p>
+<p>middle</p>
+<p>bottom</p>
+<p>after bottom</p>
+<p>final line</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+
+            let focused = app.active_session().unwrap().focused_control().unwrap();
+            assert_eq!(focused.kind, "select");
+            assert_eq!(focused.value, "beta");
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let mut mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers::default();
+            assert!(browser_window_key_repeat_enabled(&app, &mode, Key::Home, modifiers).unwrap());
+            assert!(browser_window_key_repeat_enabled(&app, &mode, Key::End, modifiers).unwrap());
+
+            let end = handle_browser_window_key(&mut app, &mut mode, Key::End, modifiers)
+                .await
+                .unwrap();
+            assert!(end.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "gamma"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let repeated_end = handle_browser_window_key(&mut app, &mut mode, Key::End, modifiers)
+                .await
+                .unwrap();
+            assert!(!repeated_end.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "gamma"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let home = handle_browser_window_key(&mut app, &mut mode, Key::Home, modifiers)
+                .await
+                .unwrap();
+            assert!(home.dirty);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .value,
+                "alpha"
+            );
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let repeated_home =
+                handle_browser_window_key(&mut app, &mut mode, Key::Home, modifiers)
+                    .await
+                    .unwrap();
+            assert!(!repeated_home.dirty);
             assert_eq!(
                 app.active_session()
                     .unwrap()
