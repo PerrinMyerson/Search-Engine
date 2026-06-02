@@ -11165,15 +11165,20 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         ));
     }
     let resource_summary = resource_summary.join(", ");
-    let load_images_label = if image_count == 0 {
-        "Load images".to_owned()
-    } else {
-        format!("Load {image_count_label}")
-    };
     let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
     let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
     let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
-    let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
+    let load_images_control = if image_count == 0 {
+        String::new()
+    } else {
+        let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
+        let load_images_label = format!("Load {image_count_label}");
+        format!(
+            r#"<a class="clear-link" href="{images_href}">{load_images_label}</a>"#,
+            images_href = html_escape::encode_double_quoted_attribute(&images_href),
+            load_images_label = html_escape::encode_text(&load_images_label),
+        )
+    };
     let open_tabs_href = browser_session_action_href(
         &payload.id,
         "open-resources-new-sessions",
@@ -11243,17 +11248,16 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">{load_images_label}</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a>{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
         resource_summary = html_escape::encode_text(&resource_summary),
-        load_images_label = html_escape::encode_text(&load_images_label),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
         open_resource_controls = open_resource_controls,
         fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
         styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
         scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
-        images_href = html_escape::encode_double_quoted_attribute(&images_href),
+        load_images_control = load_images_control,
         clear_report = clear_report,
         report = report,
     )
