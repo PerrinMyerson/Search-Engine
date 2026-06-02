@@ -222,6 +222,69 @@ fn css_max_width_and_auto_margins_constrain_document_blocks() {
 }
 
 #[test]
+fn css_media_blocks_feed_applicable_rendered_layout_rules() {
+    let render = render_html(
+        "mem://media-css",
+        br#"
+        <html><head><style>
+          @media print {
+            .print-only { display: none }
+          }
+          @media screen and (min-width: 1px) {
+            .skip { display: none }
+            .card { max-width: 160px; margin: 0 auto; background-color: #d0d0d0; }
+          }
+          @media (max-width: 9999px) {
+            .feature { text-transform: uppercase }
+          }
+          .tail { color: #808080; }
+        </style></head>
+        <body>
+          <p class="skip">Skip utility text</p>
+          <main class="card"><p class="feature">media card</p></main>
+          <p class="tail">Tail</p>
+          <p class="print-only">Print visible</p>
+        </body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.css_rule_count, 4);
+    assert_eq!(render.text, "MEDIA CARD\nTail\nPrint visible");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 10,
+                y: 0,
+                width: 20,
+                height: 1,
+                shade: 208,
+            },
+            DisplayCommand::Text {
+                x: 10,
+                y: 0,
+                text: "MEDIA CARD".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 1,
+                text: "Tail".to_owned(),
+                shade: 128,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Print visible".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn style_property_mutations_feed_cascade_and_readback() {
     let render = render_html(
         "mem://page",

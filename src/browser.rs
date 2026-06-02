@@ -9022,25 +9022,104 @@ fn parse_css(css: &str) -> CssCascade {
         universal_rules: Vec::new(),
     };
 
-    for block in css.split('}') {
-        let Some((selectors, declarations)) = block.split_once('{') else {
-            continue;
-        };
-        let declarations = parse_css_declarations(declarations);
-        if declarations == CssDeclarations::default() {
-            continue;
-        }
-        for selector in selectors.split(',') {
-            if let Some(selector) = parse_selector(selector) {
-                cascade.push(CssRule {
-                    selector,
-                    declarations,
-                });
-            }
-        }
-    }
+    parse_css_blocks(css, &mut cascade);
 
     cascade
+}
+
+fn parse_css_blocks(css: &str, cascade: &mut CssCascade) {
+    let mut cursor = 0usize;
+    while cursor < css.len() {
+        let Some(open_offset) = css[cursor..].find('{') else {
+            break;
+        };
+        let open = cursor + open_offset;
+        let prelude = css_rule_prelude(&css[cursor..open]);
+        let Some(close) = matching_css_block_end(css, open) else {
+            break;
+        };
+        let body = &css[open + 1..close];
+        if prelude.starts_with("@media") {
+            if css_media_rule_applies(prelude) {
+                parse_css_blocks(body, cascade);
+            }
+        } else if !prelude.starts_with('@') {
+            push_css_style_rule(prelude, body, cascade);
+        }
+        cursor = close + 1;
+    }
+}
+
+fn css_rule_prelude(raw: &str) -> &str {
+    raw.rsplit_once(';')
+        .map_or(raw, |(_, after_semicolon)| after_semicolon)
+        .trim()
+}
+
+fn matching_css_block_end(css: &str, open: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut i = open;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn css_media_rule_applies(prelude: &str) -> bool {
+    let Some(query) = prelude.trim().strip_prefix("@media") else {
+        return false;
+    };
+    let query = query.trim();
+    query.is_empty() || query.split(',').any(css_media_query_applies)
+}
+
+fn css_media_query_applies(query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    let query = query.strip_prefix("only ").unwrap_or(&query).trim();
+    if query.starts_with("not ") || query.starts_with("print") || query.starts_with("speech") {
+        return false;
+    }
+    query.starts_with("screen") || query.starts_with("all") || query.starts_with('(')
+}
+
+fn push_css_style_rule(selectors: &str, declarations: &str, cascade: &mut CssCascade) {
+    let declarations = parse_css_declarations(declarations);
+    if declarations == CssDeclarations::default() {
+        return;
+    }
+    for selector in selectors.split(',') {
+        if let Some(selector) = parse_selector(selector) {
+            cascade.push(CssRule {
+                selector,
+                declarations,
+            });
+        }
+    }
 }
 
 impl CssCascade {
