@@ -3164,7 +3164,8 @@ fn render_page_state_with_timings(
     let collect_us = collect_start.elapsed().as_micros();
 
     let layout_start = Instant::now();
-    let mut renderer = FlowRenderer::new(options.width.max(20));
+    let render_width = options.width.max(1);
+    let mut renderer = FlowRenderer::new(render_width);
     renderer.seed_decoded_images(&page_state.cached_images);
     let mut layout_box_count = 0usize;
 
@@ -3192,7 +3193,7 @@ fn render_page_state_with_timings(
     let render = BrowserRender {
         source: source.to_owned(),
         title,
-        viewport_width: options.width.max(20),
+        viewport_width: render_width,
         dom_node_count: page_state.dom.nodes.len(),
         css_rule_count: css_cascade.rules.len(),
         layout_box_count,
@@ -10278,9 +10279,6 @@ fn render_node(
         NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
         NodeKind::Element(element) => {
             let style = computed_style(dom, node_id, element, css_cascade);
-            if source.starts_with("mem://overflow-wrap") && element.tag == "p" {
-                eprintln!("style for p: {:?}", style);
-            }
             if style.display == Display::None {
                 return;
             }
