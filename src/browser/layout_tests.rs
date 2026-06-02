@@ -446,6 +446,61 @@ fn indents_nested_list_markers() {
 }
 
 #[test]
+fn menu_defaults_to_unordered_list_block_flow() {
+    let render = render_html(
+        "mem://menu-default",
+        br#"
+            <html><body>
+              <span>Before</span>
+              <menu>
+                <li>Open</li>
+                <li>More
+                  <menu><li>Nested</li></menu>
+                </li>
+              </menu>
+              <span>After</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\n- Open\n- More\no Nested\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "- Open".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "- More".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 3,
+                text: "o Nested".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn unordered_list_markers_use_all_list_ancestor_depth() {
     let render = render_html(
         "mem://mixed-list-depth",

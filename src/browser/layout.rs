@@ -47,7 +47,7 @@ pub(super) fn list_item_marker(
             "> ".to_owned()
         });
     }
-    if parent.tag == "ul" {
+    if matches!(parent.tag.as_str(), "menu" | "ul") {
         let marker_style = item_element(dom, node_id)
             .and_then(|element| UnorderedListMarkerStyle::from_type_attr(element.attrs.get("type")))
             .or_else(|| UnorderedListMarkerStyle::from_type_attr(parent.attrs.get("type")))
@@ -311,7 +311,7 @@ fn ancestor_list_count(dom: &Dom, node_id: usize) -> usize {
 fn is_list_container(dom: &Dom, node_id: usize) -> bool {
     matches!(
         dom.nodes.get(node_id).map(|node| &node.kind),
-        Some(NodeKind::Element(element)) if matches!(element.tag.as_str(), "ol" | "ul")
+        Some(NodeKind::Element(element)) if matches!(element.tag.as_str(), "menu" | "ol" | "ul")
     )
 }
 

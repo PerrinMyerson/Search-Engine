@@ -11187,7 +11187,7 @@ fn default_display(tag: &str) -> Display {
         "head" | "script" | "style" | "template" | "svg" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
         | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
-        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "nav" | "ol" | "p" | "pre"
+        | "h5" | "h6" | "header" | "hr" | "html" | "main" | "menu" | "nav" | "ol" | "p" | "pre"
         | "section" | "table" | "tbody" | "tfoot" | "thead" | "tr" | "ul" => Display::Block,
         "li" | "summary" => Display::ListItem,
         _ => Display::Inline,
