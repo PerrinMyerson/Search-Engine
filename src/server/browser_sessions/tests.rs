@@ -7346,6 +7346,7 @@ async fn browser_session_registry_removes_and_clears_profile_history() {
     let (payload, back_href) = registry.apply_target(&clear).await.unwrap();
     assert_eq!(payload.title, "History Two");
     assert!(payload.profile_history.is_empty());
+    assert!(payload.profile_history_clear_url.is_none());
     assert!(
         load_browser_session_profile(&profile)
             .unwrap()
@@ -7355,6 +7356,19 @@ async fn browser_session_registry_removes_and_clears_profile_history() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("No profile history"));
     assert!(!html.contains("old profile page"));
+    assert!(!html.contains("action=clear-profile-history"));
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["counts"]["profile_history"], 0);
+    assert!(exported["clear_urls"]["profile_history"].is_null());
 
     assert!(html.contains("<h2>Profile history</h2>"));
 }
