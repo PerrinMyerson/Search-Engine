@@ -2833,9 +2833,14 @@ impl BrowserSession {
             bail!("cannot render with images: session has no current page");
         };
         let page_source = self.entries[current_index].render.source.clone();
+        let viewport_width_css_px = self.entries[current_index]
+            .render
+            .viewport_width
+            .saturating_mul(8);
         let image_resources = collect_selected_image_resources(
             &self.entries[current_index].page_state.dom,
             &page_source,
+            viewport_width_css_px,
         );
         let mut fetches = Vec::with_capacity(image_resources.len());
 
@@ -10634,7 +10639,8 @@ fn render_node(
                 return;
             }
             if element.tag == "img" {
-                let image_source = image_render_source(dom, node_id, element);
+                let image_source =
+                    image_render_source(dom, node_id, element, renderer.viewport_width_css_px());
                 let intrinsic_size =
                     renderer.decoded_image_intrinsic_size(source, image_source.as_deref());
                 let (image_width, image_height) =
@@ -13187,6 +13193,10 @@ impl FlowRenderer {
             .saturating_sub(left_float)
             .saturating_sub(right_float)
             .max(1)
+    }
+
+    fn viewport_width_css_px(&self) -> usize {
+        self.width.saturating_mul(8)
     }
 
     fn active_float_offsets(&self) -> (usize, usize) {

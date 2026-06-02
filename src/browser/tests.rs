@@ -1184,6 +1184,46 @@ fn selects_picture_jpeg_source_with_screen_media() {
 }
 
 #[test]
+fn selects_picture_jpeg_source_with_min_width_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let wide_jpeg = dir.path().join("wide.jpg");
+    let narrow_jpeg = dir.path().join("narrow.jpg");
+    let fallback_jpeg = dir.path().join("fallback.jpg");
+    fs::write(&wide_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&narrow_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&fallback_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "wide.jpg").unwrap().info();
+    let render = render_html(
+            &source,
+            br#"<html><body><picture><source media="(max-width: 639px)" type="image/jpeg" srcset="narrow.jpg 80w"><source media="(min-width: 640px)" type="image/jpeg" srcset="wide.jpg 80w"><img src="fallback.jpg" alt="Wide JPEG" width="80" height="24"></picture></body></html>"#,
+            BrowserRenderOptions {
+                width: 80,
+                ..BrowserRenderOptions::default()
+            },
+        );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Wide JPEG".to_owned()),
+            url: Some("wide.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash)
+        }]
+    );
+}
+
+#[test]
 fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
     let data_url = concat!(
         "data:image/png;base64,",
