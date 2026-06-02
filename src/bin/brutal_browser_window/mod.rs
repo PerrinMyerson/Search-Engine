@@ -1153,10 +1153,15 @@ mod native {
                     return Ok(None);
                 };
                 let label = browser_window_status_label(&tab.title, &tab.source);
-                if tab.active {
-                    format!("Active tab {}: {label}", index + 1)
+                let close_hint = if app.tab_count() > 1 {
+                    "middle-click closes tab"
                 } else {
-                    format!("Switch to tab {}: {label}", index + 1)
+                    "middle-click closes window"
+                };
+                if tab.active {
+                    format!("Active tab {}: {label} ({close_hint})", index + 1)
+                } else {
+                    format!("Switch to tab {}: {label} ({close_hint})", index + 1)
                 }
             }
             BrowserAppWindowHit::LocationBar => "Edit address".to_owned(),
@@ -2074,6 +2079,11 @@ mod native {
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::LocationBar).unwrap(),
                 Some("Edit address".to_owned())
             );
+            assert_eq!(
+                browser_window_hover_status_text(&app, BrowserAppWindowHit::Tab { index: 0 })
+                    .unwrap(),
+                Some("Active tab 1: First (middle-click closes window)".to_owned())
+            );
 
             app.apply_action(BrowserAppAction::Open(
                 second.to_string_lossy().into_owned(),
@@ -2101,12 +2111,12 @@ mod native {
             assert_eq!(
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::Tab { index: 0 })
                     .unwrap(),
-                Some("Switch to tab 1: First".to_owned())
+                Some("Switch to tab 1: First (middle-click closes tab)".to_owned())
             );
             assert_eq!(
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::Tab { index: 1 })
                     .unwrap(),
-                Some("Active tab 2: First".to_owned())
+                Some("Active tab 2: First (middle-click closes tab)".to_owned())
             );
             assert_eq!(
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::NewTabButton).unwrap(),
