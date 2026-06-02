@@ -4010,13 +4010,31 @@ async fn browser_session_registry_labels_and_clears_tab_search_matches() {
     };
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
-    assert!(
-        exported["action_urls"]["label_tab_search_results"]
-            .as_str()
-            .unwrap()
-            .contains("action=label-tab-search-results")
-    );
+    let label_matches_href = exported["action_urls"]["label_tab_search_results"]
+        .as_str()
+        .unwrap();
+    assert!(label_matches_href.contains("action=label-tab-search-results"));
+    assert!(label_matches_href.contains("label=group"));
     assert!(exported["action_urls"]["clear_tab_search_labels"].is_null());
+
+    let label_matches_default = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(
+            label_matches_href
+                .trim_start_matches("/browser?")
+                .as_bytes(),
+        )
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect(),
+    };
+    let (payload, _) = registry.apply_target(&label_matches_default).await.unwrap();
+    assert!(
+        payload
+            .tab_search_results
+            .iter()
+            .filter(|result| result.id == "s1" || result.id == "s2")
+            .all(|result| result.label.as_deref() == Some("group"))
+    );
 
     let label_matches = RequestTarget {
         path: "/browser".to_owned(),
@@ -4085,12 +4103,11 @@ async fn browser_session_registry_labels_and_clears_tab_search_matches() {
     assert!(!html.contains(">Clear labels</a>"));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
-    assert!(
-        exported["action_urls"]["label_tab_search_results"]
-            .as_str()
-            .unwrap()
-            .contains("action=label-tab-search-results")
-    );
+    let label_matches_href = exported["action_urls"]["label_tab_search_results"]
+        .as_str()
+        .unwrap();
+    assert!(label_matches_href.contains("action=label-tab-search-results"));
+    assert!(label_matches_href.contains("label=group"));
     assert!(exported["action_urls"]["clear_tab_search_labels"].is_null());
 }
 

@@ -8770,6 +8770,9 @@ fn browser_session_state_action_urls(
         .sessions
         .iter()
         .find(|session| session.id == payload.id);
+    let tab_search_label = (!payload.tab_search_results.is_empty())
+        .then(|| normalize_browser_tab_label_option(Some(&payload.tab_search_query)))
+        .flatten();
     BrowserSessionStateExportActionUrls {
         back: payload
             .can_back
@@ -9045,8 +9048,13 @@ fn browser_session_state_action_urls(
             .then(|| {
                 browser_session_action_href(&payload.id, "unpin-tab-search-results", &[], payload)
             }),
-        label_tab_search_results: (!payload.tab_search_results.is_empty()).then(|| {
-            browser_session_action_href(&payload.id, "label-tab-search-results", &[], payload)
+        label_tab_search_results: tab_search_label.map(|label| {
+            browser_session_action_href(
+                &payload.id,
+                "label-tab-search-results",
+                &[("label", label)],
+                payload,
+            )
         }),
         clear_tab_search_labels: payload
             .tab_search_results
