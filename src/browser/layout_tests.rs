@@ -1632,6 +1632,57 @@ fn links_have_default_text_shade_with_css_override() {
 }
 
 #[test]
+fn search_and_hgroup_use_block_flow_by_default() {
+    let render = render_html(
+        "mem://semantic-block-defaults",
+        br#"
+            <html><body>
+              <span>Before</span>
+              <search><label>Find</label> <input value="rust"></search>
+              <hgroup><h1>Title</h1><p>Subtitle</p></hgroup>
+              <span>After</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nFind [rust]\nTitle\nSubtitle\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Find [rust]".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Title".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Subtitle".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_visibility_hidden_reserves_layout_without_painting() {
     let render = render_html(
         "mem://visibility-hidden",
