@@ -516,7 +516,8 @@ impl BrowserApp {
 
     async fn reload_active_tab(&mut self) -> Result<()> {
         self.active_tab_mut()?.session.reload().await?;
-        self.reset_active_viewport_to_page_start()
+        self.mark_active_page_dirty_for_full_repaint()?;
+        self.clamp_active_viewport()
     }
 
     fn clear_active_cookies(&mut self) -> Result<()> {
@@ -859,6 +860,13 @@ impl BrowserApp {
         tab.last_presented_viewport = None;
         tab.content_dirty = true;
         tab.find = None;
+        Ok(())
+    }
+
+    fn mark_active_page_dirty_for_full_repaint(&mut self) -> Result<()> {
+        let tab = self.active_tab_mut()?;
+        tab.last_presented_viewport = None;
+        tab.content_dirty = true;
         Ok(())
     }
 
@@ -1857,6 +1865,43 @@ mod tests {
                 "          cleanly#############".to_owned()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn browser_app_reload_preserves_viewport_and_repaints_full_frame() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("reload-viewport.html");
+        fs::write(
+            &page,
+            r#"<html><head><title>Reload Viewport</title></head><body>
+<p>line one</p>
+<p>line two</p>
+<p>line three</p>
+<p>line four</p>
+<p>line five</p>
+<p>line six</p>
+</body></html>"#,
+        )
+        .unwrap();
+
+        let mut options = app_options();
+        options.viewport_height = 1;
+        let mut app = BrowserApp::open(&page.to_string_lossy(), options)
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 3 })
+            .await
+            .unwrap();
+        let before = app.present_frame().unwrap();
+        assert_eq!(before.report.viewport.viewport.y, 3);
+        assert!(before.report.viewport.full_repaint);
+
+        app.apply_action(BrowserAppAction::Reload).await.unwrap();
+        assert_eq!(app.active_viewport().unwrap().y, 3);
+        let after = app.present_frame().unwrap();
+
+        assert_eq!(after.report.viewport.viewport.y, 3);
+        assert!(after.report.viewport.full_repaint);
     }
 
     #[tokio::test]
