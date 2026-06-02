@@ -717,6 +717,29 @@ fn inline_text_spacing_preserves_punctuation_boundaries() {
 }
 
 #[test]
+fn inline_text_spacing_preserves_source_whitespace_between_elements() {
+    let render = render_html(
+        "mem://inline-element-whitespace",
+        br#"
+            <html><body>
+              <p><span>Alpha</span> <span>Beta</span>
+                 <span>Gamma</span><span>!</span></p>
+              <div>
+                <span>Block</span>
+              </div>
+              <span>Tail</span>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Alpha Beta Gamma!\nBlock\nTail");
+}
+
+#[test]
 fn css_white_space_pre_line_preserves_newlines_and_wraps() {
     let render = render_html(
         "mem://pre-line",

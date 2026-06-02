@@ -5726,7 +5726,7 @@ fn push_text(
         return;
     }
 
-    if decoded.trim().is_empty() {
+    if decoded.is_empty() {
         return;
     }
     push_node(dom, parent, NodeKind::Text(decoded));
