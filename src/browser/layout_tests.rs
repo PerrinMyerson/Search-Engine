@@ -1102,6 +1102,61 @@ fn css_relative_length_units_affect_layout_text_metrics() {
 }
 
 #[test]
+fn css_root_custom_properties_resolve_supported_layout_values() {
+    let render = render_html(
+        "mem://css-custom-properties",
+        br#"
+            <html><head><style>
+              :root {
+                --ink: blue;
+                --panel: silver;
+                --inset: 16px;
+              }
+              .card {
+                color: var(--ink);
+                background-color: var(--panel);
+                padding-left: var(--inset);
+              }
+            </style></head><body>
+              <div class="card">Tone</div>
+              <p style="color: var(--ink); text-indent: var(--inset)">Inline tone</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let blue_shade = rgb_to_luma(0, 0, 255);
+    assert_eq!(render.text, "Tone\n  Inline tone");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 1,
+                shade: 192,
+            },
+            DisplayCommand::StyledText {
+                x: 2,
+                y: 0,
+                text: "Tone".to_owned(),
+                shade: blue_shade,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 1,
+                text: "  Inline tone".to_owned(),
+                shade: blue_shade,
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_overflow_wrap_break_word_breaks_long_words() {
     let render = render_html(
         "mem://overflow-wrap",

@@ -1278,6 +1278,7 @@ struct CssCascade {
     tag_rules: HashMap<String, Vec<usize>>,
     attr_rules: HashMap<String, Vec<usize>>,
     universal_rules: Vec<usize>,
+    custom_properties: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9155,6 +9156,7 @@ fn is_void_tag(tag: &str) -> bool {
 
 fn parse_css(css: &str) -> CssCascade {
     let css = strip_css_comments(css);
+    let custom_properties = collect_root_css_custom_properties(&css);
     let mut cascade = CssCascade {
         rules: Vec::new(),
         id_rules: HashMap::new(),
@@ -9162,13 +9164,15 @@ fn parse_css(css: &str) -> CssCascade {
         tag_rules: HashMap::new(),
         attr_rules: HashMap::new(),
         universal_rules: Vec::new(),
+        custom_properties,
     };
 
     for block in css.split('}') {
         let Some((selectors, declarations)) = block.split_once('{') else {
             continue;
         };
-        let declarations = parse_css_declarations(declarations);
+        let resolved_declarations = substitute_css_vars(declarations, &cascade.custom_properties);
+        let declarations = parse_css_declarations(&resolved_declarations);
         if declarations == CssDeclarations::default() {
             continue;
         }
@@ -9183,6 +9187,155 @@ fn parse_css(css: &str) -> CssCascade {
     }
 
     cascade
+}
+
+fn collect_root_css_custom_properties(css: &str) -> HashMap<String, String> {
+    let mut custom_properties = HashMap::new();
+    for block in css.split('}') {
+        let Some((selectors, declarations)) = block.split_once('{') else {
+            continue;
+        };
+        if !split_css_selector_list(selectors)
+            .iter()
+            .any(|selector| css_selector_defines_root_custom_properties(selector))
+        {
+            continue;
+        }
+        for declaration in declarations.split(';') {
+            let Some((name, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.starts_with("--") || name.len() <= 2 {
+                continue;
+            }
+            let value = css_declaration_value(value);
+            if !value.is_empty() {
+                custom_properties.insert(name.to_ascii_lowercase(), value.to_owned());
+            }
+        }
+    }
+    custom_properties
+}
+
+fn css_selector_defines_root_custom_properties(selector: &str) -> bool {
+    matches!(
+        selector.trim().to_ascii_lowercase().as_str(),
+        ":root" | "html"
+    )
+}
+
+fn substitute_css_vars(value: &str, custom_properties: &HashMap<String, String>) -> String {
+    let mut resolved = value.to_owned();
+    for _ in 0..8 {
+        let next = substitute_css_vars_once(&resolved, custom_properties);
+        if next == resolved {
+            break;
+        }
+        resolved = next;
+    }
+    resolved
+}
+
+fn substitute_css_vars_once(value: &str, custom_properties: &HashMap<String, String>) -> String {
+    let mut resolved = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(var_start) = rest.find("var(") {
+        resolved.push_str(&rest[..var_start]);
+        let content_start = var_start + "var(".len();
+        let Some(close) = css_function_close(rest, content_start) else {
+            resolved.push_str(&rest[var_start..]);
+            return resolved;
+        };
+        let content = &rest[content_start..close];
+        if let Some(replacement) = css_var_replacement(content, custom_properties) {
+            resolved.push_str(&replacement);
+        } else {
+            resolved.push_str(&rest[var_start..=close]);
+        }
+        rest = &rest[close + 1..];
+    }
+    resolved.push_str(rest);
+    resolved
+}
+
+fn css_var_replacement(
+    content: &str,
+    custom_properties: &HashMap<String, String>,
+) -> Option<String> {
+    let (name, fallback) = split_css_var_arguments(content);
+    let name = name.trim().to_ascii_lowercase();
+    if !name.starts_with("--") {
+        return None;
+    }
+    custom_properties
+        .get(&name)
+        .cloned()
+        .or_else(|| fallback.map(|fallback| fallback.trim().to_owned()))
+}
+
+fn split_css_var_arguments(content: &str) -> (&str, Option<&str>) {
+    let bytes = content.as_bytes();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => return (&content[..i], Some(&content[i + 1..])),
+            _ => {}
+        }
+        i += 1;
+    }
+    (content, None)
+}
+
+fn css_function_close(value: &str, content_start: usize) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut depth = 1usize;
+    let mut quote = None;
+    let mut i = content_start;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn strip_css_comments(css: &str) -> String {
@@ -11846,7 +11999,10 @@ fn computed_style(
             }
         }
     }
-    if let Some(inline) = element.style.as_deref().map(parse_css_declarations) {
+    if let Some(inline_style) = element.style.as_deref() {
+        let resolved_inline_style =
+            substitute_css_vars(inline_style, &css_cascade.custom_properties);
+        let inline = parse_css_declarations(&resolved_inline_style);
         if let Some(inline_display) = inline.display {
             display = inline_display;
         }
