@@ -9277,7 +9277,7 @@ async fn browser_session_page_renders_form_controls() {
     let page = dir.path().join("form.html");
     std::fs::write(
         &page,
-        r#"<!doctype html><title>Form</title><form><input name="q" value="old"><select name="kind"><option value="docs">Docs</option><option value="news" selected>News</option></select><input type="checkbox" name="archived" disabled><button>Go</button></form>"#,
+        r#"<!doctype html><title>Form</title><form><input name="q" value="old"><select name="kind"><option value="docs">Docs</option><option value="news" selected>News</option></select><input type="checkbox" name="archived" disabled><select name="locked" disabled><option value="fixed" selected>Fixed</option><option value="open">Open</option></select><button>Go</button></form>"#,
     )
     .unwrap();
 
@@ -9326,8 +9326,10 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"name="action" value="select""#));
     assert!(html.contains("Choose Docs"));
     assert!(html.contains("checkbox · unchecked disabled"));
+    assert!(html.contains("select · fixed disabled"));
     assert!(html.contains("read-only"));
     assert!(!html.contains(r##"href="#"##));
+    assert_eq!(html.matches(r#"name="action" value="select""#).count(), 1);
     assert!(html.contains(r#"name="value" value="old""#));
     assert!(html.contains("Submit form"));
     assert!(html.contains("rust browser session"));
@@ -9366,7 +9368,7 @@ async fn browser_session_page_renders_form_controls() {
     );
     assert_eq!(
         exported["forms"][0]["controls"].as_array().unwrap().len(),
-        4
+        5
     );
     assert_eq!(exported["forms"][0]["controls"][0]["name"], "q");
     assert_eq!(exported["forms"][0]["controls"][0]["value"], "old");
@@ -9399,15 +9401,18 @@ async fn browser_session_page_renders_form_controls() {
     assert_eq!(exported["forms"][0]["controls"][2]["kind"], "checkbox");
     assert_eq!(exported["forms"][0]["controls"][2]["disabled"], true);
     assert!(exported["forms"][0]["controls"][2]["toggle_url"].is_null());
-    assert_eq!(exported["forms"][0]["controls"][3]["kind"], "submit");
+    assert_eq!(exported["forms"][0]["controls"][3]["kind"], "select");
+    assert_eq!(exported["forms"][0]["controls"][3]["disabled"], true);
+    assert!(exported["forms"][0]["controls"][3]["options"][0]["select_url"].is_null());
+    assert_eq!(exported["forms"][0]["controls"][4]["kind"], "submit");
     assert!(
-        exported["forms"][0]["controls"][3]["activate_new_session_url"]
+        exported["forms"][0]["controls"][4]["activate_new_session_url"]
             .as_str()
             .unwrap()
             .contains("action=activate-control-new-session")
     );
     assert!(
-        exported["forms"][0]["controls"][3]["activate_background_session_url"]
+        exported["forms"][0]["controls"][4]["activate_background_session_url"]
             .as_str()
             .unwrap()
             .contains("action=activate-control-background-session")
@@ -9434,7 +9439,7 @@ async fn browser_session_page_renders_form_controls() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
     assert_eq!(exported_forms["forms"][0]["controls"][0]["name"], "q");
     assert_eq!(exported_forms["forms"][0]["controls"][0]["value"], "old");
