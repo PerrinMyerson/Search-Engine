@@ -699,9 +699,9 @@ struct BrowserSessionStateExportCounts {
 
 #[derive(Debug, Serialize)]
 struct BrowserSessionStateExportClearUrls<'a> {
-    cookies: String,
-    local_storage: String,
-    session_storage: String,
+    cookies: Option<String>,
+    local_storage: Option<String>,
+    session_storage: Option<String>,
     bookmarks: Option<&'a str>,
     closed_sessions: Option<&'a str>,
     profile_tabs: Option<&'a str>,
@@ -8638,19 +8638,14 @@ fn browser_session_state_export_payload(
             session_storage: payload.session_storage.len(),
         },
         clear_urls: BrowserSessionStateExportClearUrls {
-            cookies: browser_session_action_href(&payload.id, "clear-cookies", &[], payload),
-            local_storage: browser_session_action_href(
-                &payload.id,
-                "clear-local-storage",
-                &[],
-                payload,
-            ),
-            session_storage: browser_session_action_href(
-                &payload.id,
-                "clear-session-storage",
-                &[],
-                payload,
-            ),
+            cookies: (!payload.cookies.is_empty())
+                .then(|| browser_session_action_href(&payload.id, "clear-cookies", &[], payload)),
+            local_storage: (!payload.local_storage.is_empty()).then(|| {
+                browser_session_action_href(&payload.id, "clear-local-storage", &[], payload)
+            }),
+            session_storage: (!payload.session_storage.is_empty()).then(|| {
+                browser_session_action_href(&payload.id, "clear-session-storage", &[], payload)
+            }),
             bookmarks: payload.bookmarks_clear_url.as_deref(),
             closed_sessions: payload.closed_sessions_clear_url.as_deref(),
             profile_tabs: payload.profile_tabs_clear_url.as_deref(),
@@ -11045,25 +11040,19 @@ fn render_browser_session_inspector(payload: &BrowserSessionPayload) -> String {
     let history = render_browser_session_history(payload);
     let anchors = render_browser_session_anchors(payload);
     let cookies = render_browser_session_cookies(payload);
+    let local_storage_clear_href = (!payload.local_storage.is_empty())
+        .then(|| browser_session_action_href(&payload.id, "clear-local-storage", &[], payload));
     let local_storage = render_browser_session_storage(
         "localStorage",
         &payload.local_storage,
-        Some(&browser_session_action_href(
-            &payload.id,
-            "clear-local-storage",
-            &[],
-            payload,
-        )),
+        local_storage_clear_href.as_deref(),
     );
+    let session_storage_clear_href = (!payload.session_storage.is_empty())
+        .then(|| browser_session_action_href(&payload.id, "clear-session-storage", &[], payload));
     let session_storage = render_browser_session_storage(
         "sessionStorage",
         &payload.session_storage,
-        Some(&browser_session_action_href(
-            &payload.id,
-            "clear-session-storage",
-            &[],
-            payload,
-        )),
+        session_storage_clear_href.as_deref(),
     );
     let resources = render_browser_session_resources(payload);
     format!("{state}{history}{anchors}{cookies}{local_storage}{session_storage}{resources}")
@@ -11156,7 +11145,6 @@ fn render_browser_session_anchors(payload: &BrowserSessionPayload) -> String {
 }
 
 fn render_browser_session_cookies(payload: &BrowserSessionPayload) -> String {
-    let clear_href = browser_session_action_href(&payload.id, "clear-cookies", &[], payload);
     let mut rows = String::new();
     for cookie in &payload.cookies {
         let flags = browser_cookie_flags(cookie);
@@ -11173,10 +11161,19 @@ fn render_browser_session_cookies(payload: &BrowserSessionPayload) -> String {
     if rows.is_empty() {
         rows.push_str(r#"<tr><td colspan="5">No cookies stored in this session.</td></tr>"#);
     }
+    let clear = if payload.cookies.is_empty() {
+        String::new()
+    } else {
+        let clear_href = browser_session_action_href(&payload.id, "clear-cookies", &[], payload);
+        format!(
+            r#"<a class="clear-link" href="{clear_href}">Clear</a>"#,
+            clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
+        )
+    };
     format!(
-        r#"<section><div class="section-title"><h3>Cookies ({count})</h3><a class="clear-link" href="{clear_href}">Clear</a></div><table><thead><tr><th>Name</th><th>Value</th><th>Domain</th><th>Path</th><th>Flags</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Cookies ({count})</h3>{clear}</div><table><thead><tr><th>Name</th><th>Value</th><th>Domain</th><th>Path</th><th>Flags</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.cookies.len(),
-        clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
+        clear = clear,
     )
 }
 

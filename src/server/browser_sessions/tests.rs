@@ -8557,6 +8557,9 @@ async fn browser_session_inspector_hides_empty_resource_actions() {
     assert!(!html.contains("action=run-scripts"));
     assert!(!html.contains("action=load-images"));
     assert!(!html.contains("Open resources tabs"));
+    assert!(!html.contains("action=clear-cookies"));
+    assert!(!html.contains("action=clear-local-storage"));
+    assert!(!html.contains("action=clear-session-storage"));
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -8573,6 +8576,9 @@ async fn browser_session_inspector_hides_empty_resource_actions() {
     assert!(exported["action_urls"]["apply_stylesheets"].is_null());
     assert!(exported["action_urls"]["run_scripts"].is_null());
     assert!(exported["action_urls"]["load_images"].is_null());
+    assert!(exported["clear_urls"]["cookies"].is_null());
+    assert!(exported["clear_urls"]["local_storage"].is_null());
+    assert!(exported["clear_urls"]["session_storage"].is_null());
 }
 
 #[tokio::test]
@@ -8847,6 +8853,9 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert!(html.contains("action=apply-styles"));
     assert!(html.contains("action=run-scripts"));
     assert!(html.contains(">Load 1 image</a>"));
+    assert!(html.contains("action=clear-cookies"));
+    assert!(html.contains("action=clear-local-storage"));
+    assert!(html.contains("action=clear-session-storage"));
     assert!(html.contains("action=resource-new-session"));
     assert!(html.contains("New session"));
 
@@ -8961,6 +8970,18 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             .as_str()
             .unwrap()
             .contains("clear-cookies")
+    );
+    assert!(
+        exported["clear_urls"]["local_storage"]
+            .as_str()
+            .unwrap()
+            .contains("clear-local-storage")
+    );
+    assert!(
+        exported["clear_urls"]["session_storage"]
+            .as_str()
+            .unwrap()
+            .contains("clear-session-storage")
     );
     assert!(
         exported["cookies"]
@@ -9187,8 +9208,29 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
             ("action".to_owned(), "clear-session-storage".to_owned()),
         ],
     };
-    let (payload, _) = registry.apply_target(&clear_session_storage).await.unwrap();
+    let (payload, back_href) = registry.apply_target(&clear_session_storage).await.unwrap();
     assert!(payload.session_storage.is_empty());
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(!html.contains("action=clear-cookies"));
+    assert!(!html.contains("action=clear-local-storage"));
+    assert!(!html.contains("action=clear-session-storage"));
+    let cleared_state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&cleared_state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["counts"]["cookies"], 0);
+    assert_eq!(exported["counts"]["local_storage"], 0);
+    assert_eq!(exported["counts"]["session_storage"], 0);
+    assert!(exported["clear_urls"]["cookies"].is_null());
+    assert!(exported["clear_urls"]["local_storage"].is_null());
+    assert!(exported["clear_urls"]["session_storage"].is_null());
 }
 
 #[tokio::test]
@@ -9495,7 +9537,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains("Find in page"));
     assert!(html.contains("State JSON"));
     assert!(html.contains("State CSV"));
-    assert!(html.contains("clear-cookies"));
+    assert!(!html.contains("clear-cookies"));
     assert!(html.contains("localStorage"));
     assert!(html.contains("Resources"));
     assert!(html.contains("action=history"));
