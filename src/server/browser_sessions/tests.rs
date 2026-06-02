@@ -2171,6 +2171,8 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
                 && result.text.contains("first session"))
     );
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("Tab Search JSON"));
+    assert!(html.contains("format=tab-search-json"));
     assert!(html.contains("Tab Search CSV"));
     assert!(html.contains("format=tab-search-csv"));
     assert!(html.contains("Research one"));
@@ -2180,6 +2182,79 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(html.contains(">Duplicate bg</a>"));
     assert!(html.contains(">Unpin</a>"));
     assert!(html.contains(">Close</a>"));
+
+    let tab_search_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "tab-search-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&tab_search_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_tab_search: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_tab_search["format"], "browser-tab-search");
+    assert_eq!(exported_tab_search["id"], payload.id);
+    assert_eq!(exported_tab_search["query"], "first session");
+    assert!(exported_tab_search["result_count"].as_u64().unwrap() > 0);
+    let exported_tab_search_result = exported_tab_search["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["id"] == first_id && result["field"] == "text")
+        .unwrap();
+    assert_eq!(exported_tab_search_result["title"], "Research one");
+    assert_eq!(exported_tab_search_result["page_title"], "One");
+    assert_eq!(exported_tab_search_result["pinned"], true);
+    assert!(
+        exported_tab_search_result["reload_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=reload")
+    );
+    assert!(
+        exported_tab_search_result["duplicate_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=duplicate-session")
+    );
+    assert!(
+        exported_tab_search_result["duplicate_background_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=duplicate-background-session")
+    );
+    assert!(
+        exported_tab_search_result["pin_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=pin-tab")
+    );
+    assert!(
+        exported_tab_search_result["unpin_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=unpin-tab")
+    );
+    assert!(
+        exported_tab_search_result["close_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=close-session")
+    );
+    assert!(
+        exported_tab_search["csv_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=tab-search-csv")
+    );
+    assert!(
+        exported_tab_search["session_state_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=session-state")
+    );
 
     let tab_search_csv_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -2296,6 +2371,12 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .as_str()
             .unwrap()
             .contains("action=close-session")
+    );
+    assert!(
+        exported["export_urls"]["tab_search_json"]
+            .as_str()
+            .unwrap()
+            .contains("format=tab-search-json")
     );
     assert!(
         exported["export_urls"]["tab_search_csv"]
@@ -8510,6 +8591,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("resource_report_csv", "resource-report-csv"),
         ("find_json", "find-json"),
         ("find_csv", "find-csv"),
+        ("tab_search_json", "tab-search-json"),
         ("tab_search_csv", "tab-search-csv"),
         ("viewport_text", "viewport-text"),
         ("page_text", "page-text"),

@@ -586,6 +586,19 @@ struct BrowserSessionFindExportPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct BrowserSessionTabSearchExportPayload<'a> {
+    format: &'static str,
+    id: &'a str,
+    title: &'a str,
+    source: &'a str,
+    query: &'a str,
+    result_count: usize,
+    results: &'a [BrowserSessionTabSearchResultPayload],
+    csv_url: String,
+    session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
 struct BrowserSessionStateExportViewport {
     width: usize,
     height: usize,
@@ -697,6 +710,7 @@ struct BrowserSessionStateExportUrls {
     resource_report_csv: String,
     find_json: String,
     find_csv: String,
+    tab_search_json: String,
     tab_search_csv: String,
     viewport_text: String,
     page_text: String,
@@ -1039,6 +1053,9 @@ fn browser_session_api_response(
         | "resources_report_csv" => browser_session_resource_report_csv_response(payload),
         "find-json" | "find_json" => browser_session_find_json_response(payload),
         "find-csv" | "find_csv" => browser_session_find_csv_response(payload),
+        "tab-search-json" | "tab_search_json" | "tabs-search-json" | "tabs_search_json" => {
+            browser_session_tab_search_json_response(payload)
+        }
         "tab-search-csv" | "tab_search_csv" | "tabs-search-csv" | "tabs_search_csv" => {
             browser_session_tab_search_csv_response(payload)
         }
@@ -8642,6 +8659,7 @@ fn browser_session_state_export_payload(
             ),
             find_json: browser_session_api_href(&payload.id, "find-json", payload),
             find_csv: browser_session_api_href(&payload.id, "find-csv", payload),
+            tab_search_json: browser_session_api_href(&payload.id, "tab-search-json", payload),
             tab_search_csv: browser_session_api_href(&payload.id, "tab-search-csv", payload),
             viewport_text: browser_session_api_href(&payload.id, "viewport-text", payload),
             page_text: browser_session_api_href(&payload.id, "page-text", payload),
@@ -8713,6 +8731,22 @@ fn browser_session_find_export_payload(
         current_line: payload.find_current_line,
         matches: &payload.find_matches,
         csv_url: browser_session_api_href(&payload.id, "find-csv", payload),
+        session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
+    }
+}
+
+fn browser_session_tab_search_export_payload(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionTabSearchExportPayload<'_> {
+    BrowserSessionTabSearchExportPayload {
+        format: "browser-tab-search",
+        id: &payload.id,
+        title: &payload.title,
+        source: &payload.source,
+        query: &payload.tab_search_query,
+        result_count: payload.tab_search_results.len(),
+        results: &payload.tab_search_results,
+        csv_url: browser_session_api_href(&payload.id, "tab-search-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
     }
 }
@@ -9397,6 +9431,14 @@ fn browser_session_tab_search_csv_response(payload: &BrowserSessionPayload) -> H
         content_type: "text/csv; charset=utf-8",
         body: browser_session_tab_search_csv(payload),
     }
+}
+
+fn browser_session_tab_search_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
+    json_response(
+        200,
+        "OK",
+        &browser_session_tab_search_export_payload(payload),
+    )
 }
 
 fn browser_session_tab_search_csv(payload: &BrowserSessionPayload) -> String {
@@ -10416,6 +10458,7 @@ fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
 }
 
 fn render_browser_session_tab_search(payload: &BrowserSessionPayload) -> String {
+    let search_json_href = browser_session_api_href(&payload.id, "tab-search-json", payload);
     let search_csv_href = browser_session_api_href(&payload.id, "tab-search-csv", payload);
     let clear_href = browser_session_action_href(&payload.id, "clear-tab-search", &[], payload);
     let reload_matches = if payload.tab_search_results.is_empty() {
@@ -10602,8 +10645,9 @@ fn render_browser_session_tab_search(payload: &BrowserSessionPayload) -> String 
         String::new()
     } else {
         format!(
-            r#"<div class="resource-actions"><span class="meta">{count} matches</span><a class="clear-link" href="{csv_href}">Tab Search CSV</a><a class="clear-link" href="{clear_href}">Clear</a>{reload_matches}{duplicate_matches}{move_matches_front}{move_matches_back}{bookmark_matches}{remove_bookmarks}{pin_matches}{unpin_matches}{close_matches}{close_nonmatches}{clear_labels}</div>{label_matches}<table><thead><tr><th>Tab</th><th>Field</th><th>Line</th><th>Match</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table>"#,
+            r#"<div class="resource-actions"><span class="meta">{count} matches</span><a class="clear-link" href="{json_href}">Tab Search JSON</a><a class="clear-link" href="{csv_href}">Tab Search CSV</a><a class="clear-link" href="{clear_href}">Clear</a>{reload_matches}{duplicate_matches}{move_matches_front}{move_matches_back}{bookmark_matches}{remove_bookmarks}{pin_matches}{unpin_matches}{close_matches}{close_nonmatches}{clear_labels}</div>{label_matches}<table><thead><tr><th>Tab</th><th>Field</th><th>Line</th><th>Match</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table>"#,
             count = payload.tab_search_results.len(),
+            json_href = html_escape::encode_double_quoted_attribute(&search_json_href),
             csv_href = html_escape::encode_double_quoted_attribute(&search_csv_href),
             clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
             reload_matches = reload_matches,
