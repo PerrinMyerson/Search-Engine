@@ -547,6 +547,18 @@ struct BrowserSessionResourceReportExportPayload<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct BrowserSessionResourcesExportPayload<'a> {
+    format: &'static str,
+    id: &'a str,
+    title: &'a str,
+    source: &'a str,
+    resource_count: usize,
+    resources: &'a [BrowserSessionResourcePayload],
+    csv_url: String,
+    session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
 struct BrowserSessionStateExportViewport {
     width: usize,
     height: usize,
@@ -651,6 +663,7 @@ struct BrowserSessionStateExportUrls {
     forms_csv: String,
     history_csv: String,
     profile_history_csv: String,
+    resources_json: String,
     resources_csv: String,
     resource_report_json: String,
     resource_report_csv: String,
@@ -984,6 +997,7 @@ fn browser_session_api_response(
         "profile-history-csv" | "profile_history_csv" => {
             browser_session_profile_history_csv_response(payload)
         }
+        "resources-json" | "resources_json" => browser_session_resources_json_response(payload),
         "resources-csv" | "resources_csv" => browser_session_resources_csv_response(payload),
         "resource-report-json"
         | "resource_report_json"
@@ -8580,6 +8594,7 @@ fn browser_session_state_export_payload(
                 "profile-history-csv",
                 payload,
             ),
+            resources_json: browser_session_api_href(&payload.id, "resources-json", payload),
             resources_csv: browser_session_api_href(&payload.id, "resources-csv", payload),
             resource_report_json: browser_session_api_href(
                 &payload.id,
@@ -8616,6 +8631,21 @@ fn browser_session_resource_report_export_payload(
         clear_url: payload.resource_report.as_ref().map(|_| {
             browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
         }),
+    }
+}
+
+fn browser_session_resources_export_payload(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionResourcesExportPayload<'_> {
+    BrowserSessionResourcesExportPayload {
+        format: "browser-resources",
+        id: &payload.id,
+        title: &payload.title,
+        source: &payload.source,
+        resource_count: payload.resource_count,
+        resources: &payload.resources,
+        csv_url: browser_session_api_href(&payload.id, "resources-csv", payload),
+        session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
     }
 }
 
@@ -9820,6 +9850,14 @@ fn browser_session_resources_csv(payload: &BrowserSessionPayload) -> String {
     csv
 }
 
+fn browser_session_resources_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
+    json_response(
+        200,
+        "OK",
+        &browser_session_resources_export_payload(payload),
+    )
+}
+
 fn browser_session_resource_report_json_response(payload: &BrowserSessionPayload) -> HttpResponse {
     json_response(
         200,
@@ -10990,6 +11028,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             )
         })
         .unwrap_or_default();
+    let resources_json_href = browser_session_api_href(&payload.id, "resources-json", payload);
     let resources_csv_href = browser_session_api_href(&payload.id, "resources-csv", payload);
     let clear_report = payload
         .resource_report
@@ -11036,8 +11075,9 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">Load images</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}<a class="clear-link" href="{fetch_href}">Fetch</a><a class="clear-link" href="{styles_href}">Apply styles</a><a class="clear-link" href="{scripts_href}">Run scripts</a><a class="clear-link" href="{images_href}">Load images</a>{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
+        resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
         open_resource_controls = open_resource_controls,
         fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
