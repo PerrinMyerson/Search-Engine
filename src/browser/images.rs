@@ -116,12 +116,15 @@ fn decode_cached_resource_image(
                 .map(str::to_owned)
         })
         .or_else(|| image_type_from_path(Path::new(url)));
-    image_type.and_then(|image_type| decode_image_bytes(&image_type, bytes))
+    image_type
+        .and_then(|image_type| decode_image_bytes(&image_type, bytes))
+        .or_else(|| decode_sniffed_image_bytes(bytes))
 }
 
 pub(super) fn decode_image_reference(source: &str, url: &str) -> Option<DecodedImage> {
     if let Some((mime_type, bytes)) = decode_data_url(url) {
-        return decode_image_bytes(&mime_type, &bytes);
+        return decode_image_bytes(&mime_type, &bytes)
+            .or_else(|| decode_sniffed_image_bytes(&bytes));
     }
     let resolved = resolve_browser_href(source, url);
     let path = local_browser_path(&resolved)?;
@@ -138,9 +141,18 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
     match image_type.as_str() {
         "svg" | "image/svg+xml" => decode_simple_svg(bytes),
         "png" | "image/png" => decode_simple_png(bytes),
-        "jpg" | "jpeg" | "image/jpeg" | "image/jpg" => decode_jpeg(bytes),
+        "jpg" | "jpeg" | "jpe" | "image/jpeg" | "image/jpg" | "image/jpe" | "image/pjpeg"
+        | "image/x-jpeg" => decode_jpeg(bytes),
         _ => None,
     }
+}
+
+fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
+    is_jpeg_bytes(bytes).then(|| decode_jpeg(bytes)).flatten()
+}
+
+fn is_jpeg_bytes(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xff, 0xd8, 0xff, ..])
 }
 
 fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
@@ -246,9 +258,10 @@ fn image_type_from_path(path: &Path) -> Option<String> {
 }
 
 fn decode_image_file(path: PathBuf) -> Option<DecodedImage> {
-    let extension = image_type_from_path(&path)?;
-    let bytes = fs::read(path).ok()?;
-    decode_image_bytes(&extension, &bytes)
+    let bytes = fs::read(&path).ok()?;
+    image_type_from_path(&path)
+        .and_then(|extension| decode_image_bytes(&extension, &bytes))
+        .or_else(|| decode_sniffed_image_bytes(&bytes))
 }
 
 fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
@@ -510,6 +523,10 @@ fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut decoder = JpegDecoder::new(bytes);
     decoder.set_max_decoding_buffer_size(MAX_JPEG_DECODED_BYTES);
     let decoded = decoder.decode().ok()?;
+    let orientation = decoder
+        .exif_data()
+        .and_then(exif_orientation_from_tiff)
+        .unwrap_or(1);
     let info = decoder.info()?;
     let width = usize::from(info.width);
     let height = usize::from(info.height);
@@ -526,11 +543,13 @@ fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
         return None;
     }
     let pixels = jpeg_pixels_to_grayscale(&decoded, info.pixel_format, pixel_count)?;
-    Some(DecodedImage {
+    let mut image = DecodedImage {
         width,
         height,
         pixels,
-    })
+    };
+    apply_exif_orientation(&mut image, orientation)?;
+    Some(image)
 }
 
 fn jpeg_pixels_to_grayscale(
@@ -558,6 +577,106 @@ fn jpeg_pixels_to_grayscale(
         JpegPixelFormat::L16 => return None,
     }
     (pixels.len() == pixel_count).then_some(pixels)
+}
+
+fn exif_orientation_from_tiff(tiff: &[u8]) -> Option<u16> {
+    let endian = TiffEndian::from_header(tiff)?;
+    if read_tiff_u16(tiff, 2, endian)? != 42 {
+        return None;
+    }
+    let ifd_offset = usize::try_from(read_tiff_u32(tiff, 4, endian)?).ok()?;
+    let entry_count = usize::from(read_tiff_u16(tiff, ifd_offset, endian)?);
+    let entries_offset = ifd_offset.checked_add(2)?;
+    for index in 0..entry_count {
+        let entry_offset = entries_offset.checked_add(index.checked_mul(12)?)?;
+        let tag = read_tiff_u16(tiff, entry_offset, endian)?;
+        if tag != 0x0112 {
+            continue;
+        }
+        let field_type = read_tiff_u16(tiff, entry_offset + 2, endian)?;
+        let count = read_tiff_u32(tiff, entry_offset + 4, endian)?;
+        if field_type != 3 || count == 0 {
+            return None;
+        }
+        let value_offset = entry_offset.checked_add(8)?;
+        let orientation = if count == 1 {
+            read_tiff_u16(tiff, value_offset, endian)?
+        } else {
+            let offset = usize::try_from(read_tiff_u32(tiff, value_offset, endian)?).ok()?;
+            read_tiff_u16(tiff, offset, endian)?
+        };
+        return (1..=8).contains(&orientation).then_some(orientation);
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TiffEndian {
+    Little,
+    Big,
+}
+
+impl TiffEndian {
+    fn from_header(bytes: &[u8]) -> Option<Self> {
+        match bytes.get(0..2)? {
+            b"II" => Some(Self::Little),
+            b"MM" => Some(Self::Big),
+            _ => None,
+        }
+    }
+}
+
+fn read_tiff_u16(bytes: &[u8], offset: usize, endian: TiffEndian) -> Option<u16> {
+    let bytes: [u8; 2] = bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
+    Some(match endian {
+        TiffEndian::Little => u16::from_le_bytes(bytes),
+        TiffEndian::Big => u16::from_be_bytes(bytes),
+    })
+}
+
+fn read_tiff_u32(bytes: &[u8], offset: usize, endian: TiffEndian) -> Option<u32> {
+    let bytes: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
+    Some(match endian {
+        TiffEndian::Little => u32::from_le_bytes(bytes),
+        TiffEndian::Big => u32::from_be_bytes(bytes),
+    })
+}
+
+fn apply_exif_orientation(image: &mut DecodedImage, orientation: u16) -> Option<()> {
+    if orientation == 1 {
+        return Some(());
+    }
+    let width = image.width;
+    let height = image.height;
+    let pixel_count = width.checked_mul(height)?;
+    if image.pixels.len() != pixel_count {
+        return None;
+    }
+    let swaps_axes = matches!(orientation, 5..=8);
+    let output_width = if swaps_axes { height } else { width };
+    let output_height = if swaps_axes { width } else { height };
+    let mut oriented = vec![255u8; pixel_count];
+    for y in 0..height {
+        for x in 0..width {
+            let (output_x, output_y) = match orientation {
+                2 => (width - 1 - x, y),
+                3 => (width - 1 - x, height - 1 - y),
+                4 => (x, height - 1 - y),
+                5 => (y, x),
+                6 => (height - 1 - y, x),
+                7 => (height - 1 - y, width - 1 - x),
+                8 => (y, width - 1 - x),
+                _ => return None,
+            };
+            let source_index = y.checked_mul(width)?.checked_add(x)?;
+            let output_index = output_y.checked_mul(output_width)?.checked_add(output_x)?;
+            oriented[output_index] = *image.pixels.get(source_index)?;
+        }
+    }
+    image.width = output_width;
+    image.height = output_height;
+    image.pixels = oriented;
+    Some(())
 }
 
 fn rgb_to_gray(red: u8, green: u8, blue: u8) -> u8 {
@@ -711,6 +830,34 @@ pub(super) fn tiny_test_jpeg_data_url() -> String {
 }
 
 #[cfg(test)]
+fn test_jpeg_data_url_with_mime_type(mime_type: &str) -> String {
+    format!("data:{mime_type};base64,{TINY_TEST_JPEG_BASE64}")
+}
+
+#[cfg(test)]
+fn jpeg_with_exif_orientation(bytes: &[u8], orientation: u16) -> Vec<u8> {
+    assert!(is_jpeg_bytes(bytes));
+    assert!((1..=8).contains(&orientation));
+
+    let mut payload = b"Exif\0\0II*\0\x08\0\0\0\x01\0".to_vec();
+    payload.extend_from_slice(&0x0112u16.to_le_bytes());
+    payload.extend_from_slice(&3u16.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&orientation.to_le_bytes());
+    payload.extend_from_slice(&0u16.to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    let segment_len = u16::try_from(payload.len() + 2).unwrap();
+    let mut with_exif = Vec::with_capacity(bytes.len() + payload.len() + 4);
+    with_exif.extend_from_slice(&bytes[..2]);
+    with_exif.extend_from_slice(&[0xff, 0xe1]);
+    with_exif.extend_from_slice(&segment_len.to_be_bytes());
+    with_exif.extend_from_slice(&payload);
+    with_exif.extend_from_slice(&bytes[2..]);
+    with_exif
+}
+
+#[cfg(test)]
 const TINY_TEST_JPEG_BASE64: &str = concat!(
     "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
     "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEB",
@@ -745,6 +892,15 @@ mod tests {
     }
 
     #[test]
+    fn decodes_jpeg_from_legacy_mime_aliases() {
+        let bytes = tiny_test_jpeg_bytes();
+
+        assert!(decode_image_bytes("jpe", &bytes).is_some());
+        assert!(decode_image_bytes("image/pjpeg", &bytes).is_some());
+        assert!(decode_image_bytes("image/x-jpeg", &bytes).is_some());
+    }
+
+    #[test]
     fn decodes_cached_jpeg_resource_by_content_type() {
         let decoded = decode_cached_resource_image(
             "https://example.test/image.bin",
@@ -756,6 +912,66 @@ mod tests {
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.pixels, vec![0, 255, 76, 29]);
+    }
+
+    #[test]
+    fn decodes_jpeg_by_signature_when_type_and_extension_do_not_match() {
+        let bytes = tiny_test_jpeg_bytes();
+        let decoded = decode_cached_resource_image(
+            "https://example.test/image.bin",
+            Some("application/octet-stream"),
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        let data_url = test_jpeg_data_url_with_mime_type("application/octet-stream");
+        let decoded = decode_image_reference("mem://page", &data_url).unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+    }
+
+    #[test]
+    fn applies_all_exif_orientation_transforms_to_decoded_pixels() {
+        let source = DecodedImage {
+            width: 2,
+            height: 3,
+            pixels: vec![0, 1, 2, 3, 4, 5],
+        };
+        let cases = [
+            (1, 2, 3, vec![0, 1, 2, 3, 4, 5]),
+            (2, 2, 3, vec![1, 0, 3, 2, 5, 4]),
+            (3, 2, 3, vec![5, 4, 3, 2, 1, 0]),
+            (4, 2, 3, vec![4, 5, 2, 3, 0, 1]),
+            (5, 3, 2, vec![0, 2, 4, 1, 3, 5]),
+            (6, 3, 2, vec![4, 2, 0, 5, 3, 1]),
+            (7, 3, 2, vec![5, 3, 1, 4, 2, 0]),
+            (8, 3, 2, vec![1, 3, 5, 0, 2, 4]),
+        ];
+
+        for (orientation, width, height, pixels) in cases {
+            let mut image = source.clone();
+            apply_exif_orientation(&mut image, orientation).unwrap();
+            assert_eq!(
+                (image.width, image.height, image.pixels),
+                (width, height, pixels)
+            );
+        }
+    }
+
+    #[test]
+    fn applies_exif_orientation_to_jpeg_decode_output() {
+        let bytes = tiny_test_jpeg_bytes();
+        let baseline = decode_image_bytes("image/jpeg", &bytes).unwrap();
+        let oriented_bytes = jpeg_with_exif_orientation(&bytes, 3);
+        let oriented = decode_image_bytes("image/jpeg", &oriented_bytes).unwrap();
+        let mut expected = baseline;
+        apply_exif_orientation(&mut expected, 3).unwrap();
+
+        assert_eq!(oriented.width, expected.width);
+        assert_eq!(oriented.height, expected.height);
+        assert_eq!(oriented.pixels, expected.pixels);
     }
 }
 
