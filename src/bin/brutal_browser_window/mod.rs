@@ -576,6 +576,14 @@ mod native {
                         close: false,
                     });
                 }
+                Key::D if modifiers.shift => {
+                    *mode = BrowserWindowMode::Page;
+                    app.apply_action(BrowserAppAction::DuplicateTab).await?;
+                    return Ok(BrowserWindowKeyResult {
+                        dirty: true,
+                        close: false,
+                    });
+                }
                 Key::L => {
                     let source = current_browser_window_source(app)?;
                     begin_browser_window_location_input(mode, &source);
@@ -1801,6 +1809,56 @@ mod native {
             assert!(close_tab.dirty);
             assert_eq!(app.tab_count(), 1);
             assert_eq!(app.active_tab(), 0);
+        }
+
+        #[tokio::test]
+        async fn browser_window_command_shift_d_duplicates_active_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let duplicate = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::D,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(duplicate.dirty);
+            assert!(!duplicate.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+            assert_eq!(app.active_tab(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .source
+                    .as_str(),
+                "bench/browser-fixtures/static-text.html"
+            );
         }
 
         #[tokio::test]
