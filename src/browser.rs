@@ -11683,6 +11683,7 @@ struct FlowRenderer {
     lines: Vec<String>,
     current_runs: Vec<TextRun>,
     current_width: usize,
+    pending_inter_word_space: Option<usize>,
     soft_break_opportunity: bool,
     next_y: usize,
     text_shade: u8,
@@ -11731,6 +11732,7 @@ impl FlowRenderer {
             lines: Vec::new(),
             current_runs: Vec::new(),
             current_width: 0,
+            pending_inter_word_space: None,
             soft_break_opportunity: false,
             next_y: 0,
             text_shade: 0,
@@ -11792,39 +11794,58 @@ impl FlowRenderer {
     }
 
     fn push_wrapped_text(&mut self, text: &str, target_node: Option<usize>) {
-        let available_width = self.available_width();
-        for word in text.split_whitespace() {
-            let word_width = self.letter_spaced_text_width(word);
-            if self.current_width == 0 {
-                self.soft_break_opportunity = false;
-                self.push_wrapped_word(word, target_node);
-            } else if self.soft_break_opportunity {
-                self.soft_break_opportunity = false;
-                if self.current_width.saturating_add(word_width) > available_width {
-                    self.break_line();
+        let mut token_start = None;
+        for (index, ch) in text.char_indices() {
+            if ch.is_whitespace() {
+                if let Some(start) = token_start.take() {
+                    self.push_wrapped_text_token(&text[start..index], target_node);
                 }
-                self.push_wrapped_word(word, target_node);
-            } else if self
+                if self.current_width > 0 {
+                    self.pending_inter_word_space = Some(self.inter_word_space_width());
+                }
+            } else if token_start.is_none() {
+                token_start = Some(index);
+            }
+        }
+        if let Some(start) = token_start {
+            self.push_wrapped_text_token(&text[start..], target_node);
+        }
+    }
+
+    fn push_wrapped_text_token(&mut self, word: &str, target_node: Option<usize>) {
+        let available_width = self.available_width();
+        let word_width = self.letter_spaced_text_width(word);
+        if self.current_width == 0 {
+            self.pending_inter_word_space = None;
+            self.soft_break_opportunity = false;
+            self.push_wrapped_word(word, target_node);
+        } else if self.soft_break_opportunity {
+            self.soft_break_opportunity = false;
+            self.pending_inter_word_space = None;
+            if self.current_width.saturating_add(word_width) > available_width {
+                self.break_line();
+            }
+            self.push_wrapped_word(word, target_node);
+        } else if let Some(space_width) = self.pending_inter_word_space.take() {
+            if self
                 .effective_current_width()
-                .saturating_add(self.inter_word_space_width())
+                .saturating_add(space_width)
                 .saturating_add(word_width)
                 > available_width
             {
                 if self.can_break_word()
-                    && self
-                        .effective_current_width()
-                        .saturating_add(self.inter_word_space_width())
-                        < available_width
+                    && self.effective_current_width().saturating_add(space_width) < available_width
                 {
-                    self.push_inter_word_space(target_node);
+                    self.push_inter_word_space_width(space_width, target_node);
                 } else {
                     self.break_line();
                 }
-                self.push_wrapped_word(word, target_node);
             } else {
-                self.push_inter_word_space(target_node);
-                self.push_wrapped_word(word, target_node);
+                self.push_inter_word_space_width(space_width, target_node);
             }
+            self.push_wrapped_word(word, target_node);
+        } else {
+            self.push_wrapped_word(word, target_node);
         }
     }
 
@@ -11847,20 +11868,40 @@ impl FlowRenderer {
 
     fn push_nowrap_text(&mut self, text: &str, target_node: Option<usize>) {
         self.soft_break_opportunity = false;
-        for word in text.split_whitespace() {
-            if self.current_width > 0 {
-                self.push_inter_word_space(target_node);
+        let mut token_start = None;
+        for (index, ch) in text.char_indices() {
+            if ch.is_whitespace() {
+                if let Some(start) = token_start.take() {
+                    self.push_nowrap_text_token(&text[start..index], target_node);
+                }
+                if self.current_width > 0 {
+                    self.pending_inter_word_space = Some(self.inter_word_space_width());
+                }
+            } else if token_start.is_none() {
+                token_start = Some(index);
             }
-            self.push_text_run_piece(word, target_node);
         }
+        if let Some(start) = token_start {
+            self.push_nowrap_text_token(&text[start..], target_node);
+        }
+    }
+
+    fn push_nowrap_text_token(&mut self, word: &str, target_node: Option<usize>) {
+        if self.current_width > 0 {
+            if let Some(space_width) = self.pending_inter_word_space.take() {
+                self.push_inter_word_space_width(space_width, target_node);
+            }
+        }
+        self.pending_inter_word_space = None;
+        self.push_text_run_piece(word, target_node);
     }
 
     fn inter_word_space_width(&self) -> usize {
         1usize.saturating_add(self.word_spacing)
     }
 
-    fn push_inter_word_space(&mut self, target_node: Option<usize>) {
-        self.push_text_run_piece_unspaced(&" ".repeat(self.inter_word_space_width()), target_node);
+    fn push_inter_word_space_width(&mut self, width: usize, target_node: Option<usize>) {
+        self.push_text_run_piece_unspaced(&" ".repeat(width), target_node);
     }
 
     fn push_word_break_opportunity(&mut self) {
@@ -11962,6 +12003,7 @@ impl FlowRenderer {
 
     fn break_line(&mut self) {
         self.soft_break_opportunity = false;
+        self.pending_inter_word_space = None;
         let line_height = self.line_height.max(1);
         if !self.current_runs.is_empty() {
             let y = self.next_y;
@@ -12004,6 +12046,7 @@ impl FlowRenderer {
 
     fn force_line_break(&mut self) {
         self.soft_break_opportunity = false;
+        self.pending_inter_word_space = None;
         let line_height = self.line_height.max(1);
         if self.current_runs.is_empty() {
             self.lines.push(String::new());
