@@ -1209,7 +1209,21 @@ mod tests {
 }
 
 fn picture_source_media_matches(media: Option<&str>) -> bool {
-    media.is_none_or(|media| media.trim().is_empty() || media.trim() == "all")
+    media.is_none_or(|media| media.split(',').any(media_query_matches_current_screen))
+}
+
+fn media_query_matches_current_screen(query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() || matches!(query.as_str(), "all" | "screen") {
+        return true;
+    }
+    if let Some(query) = query.strip_prefix("only ") {
+        return matches!(query.trim(), "all" | "screen");
+    }
+    if let Some(query) = query.strip_prefix("not ") {
+        return matches!(query.trim(), "print" | "speech");
+    }
+    false
 }
 
 fn picture_source_type_supported(element: &ElementData) -> bool {
