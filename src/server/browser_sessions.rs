@@ -8243,6 +8243,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let find_controls = render_browser_session_find_controls(payload);
     let viewport = render_browser_session_viewport(payload);
     let viewport_image = render_browser_session_viewport_image(payload);
+    let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
@@ -8506,6 +8507,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .meta {{ color: #5d636b; font-size: 13px; overflow-wrap: anywhere; line-height: 1.45; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
+.auto-visual-status {{ margin: 12px 0 8px; color: #5d636b; font-size: 13px; font-weight: 700; }}
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
@@ -8576,6 +8578,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <div class="meta">{source}</div>
 <div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>
 {find_controls}
+{auto_visual_bootstrap}
 {viewport_image}
 <details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
 <h2>Click</h2>
@@ -8650,6 +8653,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         history_index = payload.current_history_index.map_or(0, |index| index + 1),
         history_len = payload.history_len,
         viewport_jump = viewport_jump,
+        auto_visual_bootstrap = auto_visual_bootstrap,
         viewport_image = viewport_image,
         viewport = viewport,
         click_controls = click_controls,
@@ -8664,6 +8668,89 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         link_controls = link_controls,
         link_rows = link_rows,
     )
+}
+
+fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload) -> String {
+    if payload.resource_report.is_some() {
+        return String::new();
+    }
+
+    let action_urls = browser_session_state_action_urls(payload);
+    if action_urls.apply_stylesheets.is_none() && action_urls.load_images.is_none() {
+        return String::new();
+    }
+
+    let apply_stylesheets = action_urls.apply_stylesheets.unwrap_or_default();
+    let load_images = action_urls.load_images.unwrap_or_default();
+    let refresh_url = browser_session_action_href(&payload.id, "current", &[], payload);
+    let state_key = format!(
+        "brutal:auto-visual:{}:{}:{}:{}",
+        payload.id, payload.source, payload.viewport_x, payload.viewport_y
+    );
+
+    format!(
+        r#"<div class="auto-visual-status" data-auto-visual-status>Preparing visual render...</div>
+<script>
+(() => {{
+  const applyStylesheetsUrl = {apply_stylesheets};
+  const loadImagesUrl = {load_images};
+  const refreshUrl = {refresh_url};
+  const stateKey = {state_key};
+  const status = document.querySelector("[data-auto-visual-status]");
+  const setStatus = (message) => {{
+    if (status) {{
+      status.textContent = message;
+    }}
+  }};
+  const currentState = sessionStorage.getItem(stateKey) || "";
+  if (currentState === "done") {{
+    return;
+  }}
+  if (currentState.startsWith("running:")) {{
+    const startedAt = Number(currentState.slice("running:".length));
+    if (Number.isFinite(startedAt) && Date.now() - startedAt < 45000) {{
+      return;
+    }}
+  }}
+  sessionStorage.setItem(stateKey, `running:${{Date.now()}}`);
+  const request = async (label, url) => {{
+    if (!url) {{
+      return;
+    }}
+    setStatus(label);
+    const response = await fetch(url, {{
+      cache: "no-store",
+      credentials: "same-origin",
+    }});
+    if (!response.ok) {{
+      throw new Error(`${{label}} failed (${{response.status}})`);
+    }}
+  }};
+  (async () => {{
+    await request("Applying styles...", applyStylesheetsUrl);
+    await request("Loading images...", loadImagesUrl);
+    sessionStorage.setItem(stateKey, "done");
+    if (refreshUrl) {{
+      window.location.replace(refreshUrl);
+    }}
+  }})().catch((error) => {{
+    sessionStorage.setItem(stateKey, `failed:${{Date.now()}}`);
+    setStatus(error && error.message ? error.message : "Visual render failed");
+  }});
+}})();
+</script>"#,
+        apply_stylesheets = browser_json_script_string(&apply_stylesheets),
+        load_images = browser_json_script_string(&load_images),
+        refresh_url = browser_json_script_string(&refresh_url),
+        state_key = browser_json_script_string(&state_key),
+    )
+}
+
+fn browser_json_script_string(value: &str) -> String {
+    let json = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {

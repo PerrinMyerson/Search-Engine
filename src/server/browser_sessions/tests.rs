@@ -8532,6 +8532,10 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("action=fetch-resources"));
     assert!(html.contains("action=apply-styles"));
+    assert!(html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains("Preparing visual render"));
+    assert!(html.contains("Applying styles..."));
+    assert!(html.contains("sessionStorage"));
     assert!(!html.contains("action=run-scripts"));
     assert!(html.contains(r#"<span class="meta">0 images, 1 stylesheet</span>"#));
     assert!(!html.contains("action=load-images"));
@@ -8558,6 +8562,7 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Apply styles: total=1 fetched=1 cached=0 failed=0 skipped=0 applied=1"));
+    assert!(!html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains("text/css"));
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));
@@ -8801,6 +8806,10 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
+    assert!(html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains("Preparing visual render"));
+    assert!(html.contains("Loading images..."));
+    assert!(html.contains("sessionStorage"));
 
     let load_images = RequestTarget {
         path: "/browser".to_owned(),
@@ -8841,6 +8850,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(r#"<img class="browser-raster""#));
     assert!(html.contains("data:image/png;base64,"));
     assert!(html.contains(r#"<details class="viewport-text">"#));
+    assert!(!html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
     assert!(html.contains("<th>Source</th>"));
     assert!(html.contains("<th>Content Type</th>"));
