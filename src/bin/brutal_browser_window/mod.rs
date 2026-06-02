@@ -1212,10 +1212,14 @@ mod native {
 
     fn browser_window_status_label(title: &str, source: &str) -> String {
         let title = title.trim();
-        if title.is_empty() {
-            source.to_owned()
+        if !title.is_empty() {
+            return title.to_owned();
+        }
+        let source = source.trim();
+        if source.is_empty() {
+            "untitled page".to_owned()
         } else {
-            title.to_owned()
+            source.to_owned()
         }
     }
 
@@ -1350,6 +1354,19 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn browser_window_status_label_trims_title_and_source_fallback() {
+            assert_eq!(
+                browser_window_status_label("  Padded Title  ", "  file.html  "),
+                "Padded Title"
+            );
+            assert_eq!(
+                browser_window_status_label("  ", "  file.html  "),
+                "file.html"
+            );
+            assert_eq!(browser_window_status_label("  ", " \t "), "untitled page");
+        }
 
         #[tokio::test]
         async fn browser_window_page_keys_use_viewport_sized_scrolls_and_end() {
