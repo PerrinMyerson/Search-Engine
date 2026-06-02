@@ -574,8 +574,11 @@ impl BrowserApp {
                 self.tabs.len()
             );
         }
+        if index == self.active_tab {
+            return Ok(());
+        }
         self.active_tab = index;
-        Ok(())
+        self.mark_active_content_dirty()
     }
 
     fn close_tab(&mut self, index: Option<usize>) -> Result<()> {
@@ -1955,6 +1958,46 @@ mod tests {
         assert_eq!(report.tabs.len(), 2);
         assert!(report.tabs[0].active);
         assert_eq!(report.tabs[1].viewport.y, 1);
+    }
+
+    #[tokio::test]
+    async fn browser_app_switch_tab_forces_full_frame_repaint() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.html");
+        let second = dir.path().join("second.html");
+        fs::write(
+            &first,
+            r#"<html><head><title>First</title></head><body>First tab</body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            r#"<html><head><title>Second</title></head><body>Second tab</body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&first.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        let first_frame = app.present_frame().unwrap();
+        assert!(first_frame.report.viewport.full_repaint);
+
+        app.apply_action(BrowserAppAction::NewTab(
+            second.to_string_lossy().into_owned(),
+        ))
+        .await
+        .unwrap();
+        let second_frame = app.present_frame().unwrap();
+        assert!(second_frame.report.viewport.full_repaint);
+        assert_eq!(second_frame.report.viewport.title, "Second");
+
+        app.apply_action(BrowserAppAction::SwitchTab(0))
+            .await
+            .unwrap();
+        let switched_frame = app.present_frame().unwrap();
+
+        assert!(switched_frame.report.viewport.full_repaint);
+        assert_eq!(switched_frame.report.viewport.title, "First");
     }
 
     #[tokio::test]
