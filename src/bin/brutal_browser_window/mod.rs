@@ -795,6 +795,9 @@ mod native {
         }
 
         let action = match key {
+            Key::Escape if app.active_session()?.focused_control().is_some() => {
+                Some(BrowserAppAction::BlurFocused)
+            }
             Key::Escape => None,
             Key::Backspace if browser_window_focused_control_accepts_text_input(app)? => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
@@ -3119,6 +3122,77 @@ mod native {
                     delta_y: 0,
                 })
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_escape_blurs_focused_control_for_page_navigation() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("escape-blur.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Escape Blur Fixture</title></head>
+<body>
+<form><input name="q" value="search"></form>
+<p>top</p>
+<p>middle</p>
+<p>bottom</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 1,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
+
+            let mut mode = BrowserWindowMode::Page;
+            let focused_arrow = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!focused_arrow.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            let blur = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Escape,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(blur.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert!(app.active_session().unwrap().focused_control().is_none());
+
+            let page_arrow = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(page_arrow.dirty);
+            assert!(app.active_viewport().unwrap().y > 0);
         }
 
         #[tokio::test]

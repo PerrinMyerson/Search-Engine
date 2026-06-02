@@ -85,6 +85,7 @@ pub enum BrowserAppAction {
     TypeText(String),
     DeleteTextBackward(usize),
     ClearText,
+    BlurFocused,
     SubmitFocused,
     ToggleFocused,
     ToggleControl {
@@ -340,6 +341,13 @@ impl BrowserApp {
             BrowserAppAction::ClearText => {
                 self.active_tab_mut()?.session.clear_focused_text()?;
                 self.mark_active_content_dirty()
+            }
+            BrowserAppAction::BlurFocused => {
+                let blurred = self.active_tab_mut()?.session.blur_focused_control()?;
+                if blurred {
+                    self.mark_active_content_dirty()?;
+                }
+                Ok(())
             }
             BrowserAppAction::SubmitFocused => self.submit_focused().await,
             BrowserAppAction::ToggleFocused => self.toggle_focused(),
