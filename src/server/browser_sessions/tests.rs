@@ -1475,11 +1475,15 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert_eq!(payload.find_query, "needle");
     assert_eq!(payload.find_match_count, 2);
     assert_eq!(payload.find_current_index, Some(0));
+    assert_eq!(payload.find_current_line, Some(1));
+    assert_eq!(payload.find_current_column, Some(0));
     assert_eq!(payload.find_matches.len(), 2);
     assert_eq!(payload.find_matches[0].line + 1, 2);
+    assert_eq!(payload.find_matches[0].column + 1, 1);
     assert!(payload.find_matches[0].current);
     assert!(payload.find_matches[0].text.contains("needle first"));
     assert_eq!(payload.find_matches[1].line + 1, 4);
+    assert_eq!(payload.find_matches[1].column + 1, 1);
     assert!(!payload.find_matches[1].current);
     assert!(
         payload.find_matches[1]
@@ -1535,8 +1539,10 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert_eq!(exported_find["match_count"], 2);
     assert_eq!(exported_find["current_index"], 0);
     assert_eq!(exported_find["current_line"], 1);
+    assert_eq!(exported_find["current_column"], 0);
     assert_eq!(exported_find["matches"].as_array().unwrap().len(), 2);
     assert_eq!(exported_find["matches"][0]["text"], "needle first");
+    assert_eq!(exported_find["matches"][0]["column"], 0);
     assert_eq!(exported_find["matches"][0]["current"], true);
     assert!(
         exported_find["matches"][1]["action_url"]
@@ -1578,10 +1584,10 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     let response = browser_session_api_response(&find_csv_export, &payload);
     assert_eq!(response.status, 200);
     assert_eq!(response.content_type, "text/csv; charset=utf-8");
-    assert!(response.body.starts_with("match_index,line,current,query,text,action_url,new_session_url,background_session_url,session_id,source,match_count,current_match_index,current_line\n"));
+    assert!(response.body.starts_with("match_index,line,column,current,query,text,action_url,new_session_url,background_session_url,session_id,source,match_count,current_match_index,current_line,current_column\n"));
     assert_eq!(response.body.lines().count(), 3);
-    assert!(response.body.contains("1,2,true,needle,needle first"));
-    assert!(response.body.contains("2,4,false,needle,needle second"));
+    assert!(response.body.contains("1,2,1,true,needle,needle first"));
+    assert!(response.body.contains("2,4,1,false,needle,needle second"));
     assert!(response.body.contains("action=find-match"));
     assert!(response.body.contains("action=find-match-new-session"));
     assert!(
@@ -1589,7 +1595,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
             .body
             .contains("action=find-match-background-session")
     );
-    assert!(response.body.contains(",2,1,2"));
+    assert!(response.body.contains(",2,1,2,1"));
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
         params: vec![
@@ -1604,8 +1610,10 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert_eq!(exported["find"]["match_count"], 2);
     assert_eq!(exported["find"]["current_index"], 0);
     assert_eq!(exported["find"]["current_line"], 1);
+    assert_eq!(exported["find"]["current_column"], 0);
     assert_eq!(exported["find"]["matches"].as_array().unwrap().len(), 2);
     assert_eq!(exported["find"]["matches"][0]["text"], "needle first");
+    assert_eq!(exported["find"]["matches"][0]["column"], 0);
     assert_eq!(exported["find"]["matches"][0]["current"], true);
     assert!(
         exported["find"]["matches"][1]["action_url"]
@@ -1653,7 +1661,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     let response = browser_session_api_response(&state_csv_export, &payload);
     assert_eq!(response.status, 200);
     assert_eq!(response.content_type, "text/csv; charset=utf-8");
-    assert!(response.body.contains("find,,needle,match_count,2,1,2,"));
+    assert!(response.body.contains("find,,needle,match_count,2,1,2,1,"));
     assert!(response.body.contains("action=clear-find"));
 
     let jump_second = RequestTarget {
@@ -1670,6 +1678,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     let (payload, _) = registry.apply_target(&jump_second).await.unwrap();
     assert_eq!(payload.find_match_count, 2);
     assert_eq!(payload.find_current_index, Some(1));
+    assert_eq!(payload.find_current_column, Some(0));
     assert!(payload.viewport.contains("needle second"));
 
     let previous = RequestTarget {
@@ -1681,6 +1690,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     };
     let (payload, _) = registry.apply_target(&previous).await.unwrap();
     assert_eq!(payload.find_current_index, Some(0));
+    assert_eq!(payload.find_current_column, Some(0));
     assert!(payload.viewport.contains("needle first"));
 
     let next = RequestTarget {
@@ -1693,6 +1703,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     let (payload, _) = registry.apply_target(&next).await.unwrap();
     assert_eq!(payload.find_match_count, 2);
     assert_eq!(payload.find_current_index, Some(1));
+    assert_eq!(payload.find_current_column, Some(0));
     assert!(payload.viewport.contains("needle second"));
 
     let second_new_session_url = payload.find_matches[1].new_session_url.clone();
@@ -1764,6 +1775,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert_eq!(payload.id, background_session_id);
     assert_eq!(payload.find_query, "needle");
     assert_eq!(payload.find_current_index, Some(0));
+    assert_eq!(payload.find_current_column, Some(0));
     assert!(payload.viewport.contains("needle first"));
 
     let clear = RequestTarget {
@@ -1777,6 +1789,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert!(payload.find_query.is_empty());
     assert_eq!(payload.find_match_count, 0);
     assert_eq!(payload.find_current_index, None);
+    assert_eq!(payload.find_current_column, None);
 
     let no_match = RequestTarget {
         path: "/browser".to_owned(),
@@ -1929,6 +1942,76 @@ async fn browser_session_registry_opens_find_matches_in_bulk_sessions() {
     }
     background_match_indexes.sort_unstable();
     assert_eq!(background_match_indexes, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn browser_session_registry_find_jumps_to_match_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("find-wide.html");
+    let prefix = "0123456789abcdef".repeat(3);
+    let suffix = "-visible-after-match-0123456789abcdef";
+    std::fs::write(
+        &page,
+        format!(r#"<!doctype html><title>Find Wide</title><pre>{prefix}needle{suffix}</pre>"#),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("width".to_owned(), "20".to_owned()),
+            ("height".to_owned(), "8".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.viewport_x, 0);
+    assert!(!payload.viewport.contains("needle"));
+
+    let find = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "find".to_owned()),
+            ("q".to_owned(), "needle".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&find).await.unwrap();
+    assert_eq!(payload.find_match_count, 1);
+    assert_eq!(payload.find_current_index, Some(0));
+    assert_eq!(payload.find_current_line, Some(0));
+    assert_eq!(payload.find_current_column, Some(prefix.len()));
+    assert_eq!(payload.find_matches[0].column, prefix.len());
+    assert_eq!(payload.viewport_x, prefix.len());
+    assert!(payload.viewport.contains("needle"));
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("line 1, col 49"));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["find"]["current_column"], prefix.len());
+    assert_eq!(exported["find"]["matches"][0]["column"], prefix.len());
+
+    let find_csv_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "find-csv".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&find_csv_export, &payload);
+    assert_eq!(response.status, 200);
+    assert!(response.body.contains("1,1,49,true,needle,"));
+    assert!(response.body.contains(",1,1,1,49\n"));
 }
 
 #[tokio::test]
@@ -7591,6 +7674,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         find_match_count: 0,
         find_current_index: None,
         find_current_line: None,
+        find_current_column: None,
         find_matches: Vec::new(),
         tab_search_query: String::new(),
         tab_search_results: Vec::new(),
