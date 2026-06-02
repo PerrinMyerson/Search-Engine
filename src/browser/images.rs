@@ -568,13 +568,18 @@ fn jpeg_pixels_to_grayscale(
         JpegPixelFormat::CMYK32 => {
             for cmyk in decoded.chunks_exact(4) {
                 let key = cmyk[3];
-                let red = multiply_u8(cmyk[0], key);
-                let green = multiply_u8(cmyk[1], key);
-                let blue = multiply_u8(cmyk[2], key);
+                let red = cmyk_channel_to_rgb(cmyk[0], key);
+                let green = cmyk_channel_to_rgb(cmyk[1], key);
+                let blue = cmyk_channel_to_rgb(cmyk[2], key);
                 pixels.push(rgb_to_gray(red, green, blue));
             }
         }
-        JpegPixelFormat::L16 => return None,
+        JpegPixelFormat::L16 => {
+            for gray in decoded.chunks_exact(2) {
+                let gray = u16::from_ne_bytes(gray.try_into().ok()?);
+                pixels.push(gray_u16_to_u8(gray));
+            }
+        }
     }
     (pixels.len() == pixel_count).then_some(pixels)
 }
@@ -683,8 +688,15 @@ fn rgb_to_gray(red: u8, green: u8, blue: u8) -> u8 {
     (((red as u16 * 77) + (green as u16 * 150) + (blue as u16 * 29) + 128) >> 8) as u8
 }
 
-fn multiply_u8(a: u8, b: u8) -> u8 {
-    ((a as u16 * b as u16 + 127) / 255) as u8
+fn cmyk_channel_to_rgb(cmy: u8, key: u8) -> u8 {
+    let cmy = ((cmy as u16 * (255 - key as u16) + 127) / 255)
+        .saturating_add(key as u16)
+        .min(255);
+    (255 - cmy) as u8
+}
+
+fn gray_u16_to_u8(gray: u16) -> u8 {
+    ((gray as u32 * 255 + 32767) / 65535) as u8
 }
 
 fn blend_gray_over_white(gray: u8, alpha: u8) -> u8 {
@@ -971,6 +983,45 @@ mod tests {
         assert!((186..=196).contains(&decoded.pixels[3]));
         assert!(decoded.pixels[4] >= 250);
         assert!((24..=34).contains(&decoded.pixels[5]));
+    }
+
+    #[test]
+    fn converts_cmyk_jpeg_pixels_using_subtractive_model() {
+        let pixels = jpeg_pixels_to_grayscale(
+            &[
+                0, 0, 0, 0, // white
+                0, 0, 0, 255, // black
+                255, 0, 0, 0, // cyan
+                0, 255, 0, 0, // magenta
+                0, 0, 255, 0, // yellow
+            ],
+            JpegPixelFormat::CMYK32,
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pixels,
+            vec![
+                255,
+                0,
+                rgb_to_gray(0, 255, 255),
+                rgb_to_gray(255, 0, 255),
+                rgb_to_gray(255, 255, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn converts_l16_jpeg_pixels_to_eight_bit_shades() {
+        let mut bytes = Vec::new();
+        for gray in [0u16, 32768, 65535] {
+            bytes.extend_from_slice(&gray.to_ne_bytes());
+        }
+
+        let pixels = jpeg_pixels_to_grayscale(&bytes, JpegPixelFormat::L16, 3).unwrap();
+
+        assert_eq!(pixels, vec![0, 128, 255]);
     }
 
     #[test]
