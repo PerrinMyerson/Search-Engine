@@ -1340,10 +1340,11 @@ mod native {
         if let Some(query) = browser_window_find_text(mode) {
             return format!("{BROWSER_WINDOW_TITLE_PREFIX} - Find: {query}");
         }
-        if frame.report.title.trim().is_empty() {
+        let title = frame.report.title.trim();
+        if title.is_empty() {
             BROWSER_WINDOW_TITLE_PREFIX.to_owned()
         } else {
-            format!("{BROWSER_WINDOW_TITLE_PREFIX} - {}", frame.report.title)
+            format!("{BROWSER_WINDOW_TITLE_PREFIX} - {title}")
         }
     }
 
@@ -3403,6 +3404,12 @@ mod native {
             assert_eq!(
                 browser_window_title(&frame, &BrowserWindowMode::Page),
                 "Blackium Starium✴ - Static Text Fixture"
+            );
+            let mut padded_title_frame = frame.clone();
+            padded_title_frame.report.title = "  Padded Title  ".to_owned();
+            assert_eq!(
+                browser_window_title(&padded_title_frame, &BrowserWindowMode::Page),
+                "Blackium Starium✴ - Padded Title"
             );
             assert_eq!(
                 browser_window_title(
