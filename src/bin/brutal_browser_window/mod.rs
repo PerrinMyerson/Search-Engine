@@ -442,18 +442,9 @@ mod native {
 
             let window_size = window.get_size();
             if window_size != previous_window_size {
-                let (viewport_width, viewport_height) = browser_viewport_size_for_window_pixels(
-                    window_size.0,
-                    window_size.1,
-                    raster_options,
-                );
-                app.apply_action(BrowserAppAction::SetViewport {
-                    width: viewport_width,
-                    height: viewport_height,
-                })
-                .await?;
+                dirty |=
+                    handle_browser_window_resize(&mut app, window_size, raster_options).await?;
                 previous_window_size = window_size;
-                dirty = true;
             }
 
             let typed_text = drain_browser_window_input_chars(&input_chars);
@@ -533,6 +524,25 @@ mod native {
         }
 
         Ok(())
+    }
+
+    async fn handle_browser_window_resize(
+        app: &mut BrowserApp,
+        window_size: (usize, usize),
+        raster_options: BrowserRasterOptions,
+    ) -> Result<bool> {
+        let (viewport_width, viewport_height) =
+            browser_viewport_size_for_window_pixels(window_size.0, window_size.1, raster_options);
+        let viewport = app.active_viewport()?;
+        if viewport.width == viewport_width && viewport.height == viewport_height {
+            return Ok(false);
+        }
+        app.apply_action(BrowserAppAction::SetViewport {
+            width: viewport_width,
+            height: viewport_height,
+        })
+        .await?;
+        Ok(true)
     }
 
     async fn handle_browser_window_key(
@@ -3380,6 +3390,52 @@ mod native {
             assert_eq!(mode, BrowserWindowMode::Page);
             assert_eq!(app.active_viewport().unwrap().y, 0);
             assert!(app.active_find_state().unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn browser_window_resize_noops_when_viewport_cells_unchanged() {
+            let raster = BrowserRasterOptions {
+                cell_width: 8,
+                cell_height: 12,
+                padding_x: 4,
+                padding_y: 4,
+                ..BrowserRasterOptions::default()
+            };
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 2,
+                    raster,
+                },
+            )
+            .await
+            .unwrap();
+
+            let same_cells = handle_browser_window_resize(&mut app, (329, 76), raster)
+                .await
+                .unwrap();
+            assert!(!same_cells);
+            assert_eq!(app.active_viewport().unwrap().width, 40);
+            assert_eq!(app.active_viewport().unwrap().height, 2);
+
+            let wider = handle_browser_window_resize(&mut app, (336, 76), raster)
+                .await
+                .unwrap();
+            assert!(wider);
+            assert_eq!(app.active_viewport().unwrap().width, 41);
+            assert_eq!(app.active_viewport().unwrap().height, 2);
+
+            let still_wider = handle_browser_window_resize(&mut app, (337, 76), raster)
+                .await
+                .unwrap();
+            assert!(!still_wider);
+            assert_eq!(app.active_viewport().unwrap().width, 41);
+            assert_eq!(app.active_viewport().unwrap().height, 2);
         }
 
         #[tokio::test]
