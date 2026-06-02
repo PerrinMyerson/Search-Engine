@@ -173,6 +173,7 @@ struct BrowserSessionPayload {
     find_match_count: usize,
     find_current_index: Option<usize>,
     find_current_line: Option<usize>,
+    find_current_column: Option<usize>,
     find_matches: Vec<BrowserSessionFindMatchPayload>,
     tab_search_query: String,
     tab_search_results: Vec<BrowserSessionTabSearchResultPayload>,
@@ -371,6 +372,7 @@ struct BrowserSessionHistoryEntryPayload {
 struct BrowserSessionFindMatchPayload {
     index: usize,
     line: usize,
+    column: usize,
     current: bool,
     text: String,
     action_url: String,
@@ -580,6 +582,7 @@ struct BrowserSessionFindExportPayload<'a> {
     match_count: usize,
     current_index: Option<usize>,
     current_line: Option<usize>,
+    current_column: Option<usize>,
     matches: &'a [BrowserSessionFindMatchPayload],
     csv_url: String,
     session_state_url: String,
@@ -643,6 +646,7 @@ struct BrowserSessionStateExportFind<'a> {
     match_count: usize,
     current_index: Option<usize>,
     current_line: Option<usize>,
+    current_column: Option<usize>,
     matches: &'a [BrowserSessionFindMatchPayload],
 }
 
@@ -7069,6 +7073,12 @@ enum BrowserFindDirection {
     Previous,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BrowserFindMatch {
+    line: usize,
+    column: usize,
+}
+
 #[derive(Debug, Clone)]
 enum BrowserSessionCloseScope {
     Others,
@@ -7402,12 +7412,13 @@ fn apply_browser_find(
     let current_line = web_session
         .find_active_line
         .unwrap_or(web_session.viewport_y);
-    let Some(target_line) = browser_find_target_line(&matches, current_line, direction) else {
+    let Some(target_match) = browser_find_target_match(&matches, current_line, direction) else {
         clear_browser_find_active_line(web_session);
         return Ok(());
     };
-    web_session.viewport_y = target_line;
-    web_session.find_active_line = Some(target_line);
+    web_session.viewport_x = target_match.column;
+    web_session.viewport_y = target_match.line;
+    web_session.find_active_line = Some(target_match.line);
     Ok(())
 }
 
@@ -7426,46 +7437,53 @@ fn apply_browser_find_match(
         BrowserRouteError::BadRequest("browser session has no current page".to_owned())
     })?;
     let matches = browser_find_matches(&render.text, query);
-    let Some(target_line) = matches.get(match_index).copied() else {
+    let Some(target_match) = matches.get(match_index).copied() else {
         return Err(BrowserRouteError::BadRequest(format!(
             "find match {} is not available",
             match_index + 1
         )));
     };
-    web_session.viewport_y = target_line;
-    web_session.find_active_line = Some(target_line);
+    web_session.viewport_x = target_match.column;
+    web_session.viewport_y = target_match.line;
+    web_session.find_active_line = Some(target_match.line);
     Ok(())
 }
 
-fn browser_find_target_line(
-    matches: &[usize],
+fn browser_find_target_match(
+    matches: &[BrowserFindMatch],
     viewport_y: usize,
     direction: BrowserFindDirection,
-) -> Option<usize> {
+) -> Option<BrowserFindMatch> {
     match direction {
         BrowserFindDirection::First => matches.first().copied(),
         BrowserFindDirection::Next => matches
             .iter()
             .copied()
-            .find(|line| *line > viewport_y)
+            .find(|match_| match_.line > viewport_y)
             .or_else(|| matches.first().copied()),
         BrowserFindDirection::Previous => matches
             .iter()
             .rev()
             .copied()
-            .find(|line| *line < viewport_y)
+            .find(|match_| match_.line < viewport_y)
             .or_else(|| matches.last().copied()),
     }
 }
 
-fn browser_find_matches(text: &str, query: &str) -> Vec<usize> {
-    let needle = query.trim().to_lowercase();
+fn browser_find_matches(text: &str, query: &str) -> Vec<BrowserFindMatch> {
+    let needle = query.trim();
     if needle.is_empty() {
         return Vec::new();
     }
     text.lines()
         .enumerate()
-        .filter_map(|(line, text)| text.to_lowercase().contains(&needle).then_some(line))
+        .filter_map(|(line, text)| {
+            let byte_index = find_ascii_case_insensitive(text, needle)?;
+            Some(BrowserFindMatch {
+                line,
+                column: text[..byte_index].chars().count(),
+            })
+        })
         .collect()
 }
 
@@ -7486,7 +7504,7 @@ fn browser_bulk_find_match_indices(
     Ok(browser_find_matches(&render.text, query)
         .into_iter()
         .enumerate()
-        .filter(|(_, line)| Some(*line) != active_line)
+        .filter(|(_, match_)| Some(match_.line) != active_line)
         .map(|(index, _)| index)
         .take(MAX_BULK_BACKGROUND_LINKS)
         .take(limit)
@@ -7497,7 +7515,7 @@ fn browser_session_find_match_payloads(
     id: &str,
     web_session: &BrowserWebSession,
     text: &str,
-    matches: &[usize],
+    matches: &[BrowserFindMatch],
     current_index: Option<usize>,
 ) -> Vec<BrowserSessionFindMatchPayload> {
     let lines = text.lines().collect::<Vec<_>>();
@@ -7505,11 +7523,16 @@ fn browser_session_find_match_payloads(
         .iter()
         .copied()
         .enumerate()
-        .map(|(index, line)| BrowserSessionFindMatchPayload {
+        .map(|(index, match_)| BrowserSessionFindMatchPayload {
             index,
-            line,
+            line: match_.line,
+            column: match_.column,
             current: current_index == Some(index),
-            text: lines.get(line).copied().unwrap_or_default().to_owned(),
+            text: lines
+                .get(match_.line)
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
             action_url: browser_session_action_href(
                 id,
                 "find-match",
@@ -7533,28 +7556,28 @@ fn browser_session_find_match_payloads(
 }
 
 fn browser_find_visible_match(
-    matches: &[usize],
+    matches: &[BrowserFindMatch],
     viewport_y: usize,
     viewport_height: usize,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, BrowserFindMatch)> {
     let viewport_end = viewport_y.saturating_add(viewport_height.max(1));
     matches
         .iter()
         .enumerate()
-        .find(|(_, line)| **line >= viewport_y && **line < viewport_end)
-        .map(|(index, line)| (index, *line))
+        .find(|(_, match_)| match_.line >= viewport_y && match_.line < viewport_end)
+        .map(|(index, match_)| (index, *match_))
 }
 
 fn browser_find_active_match(
-    matches: &[usize],
+    matches: &[BrowserFindMatch],
     active_line: Option<usize>,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, BrowserFindMatch)> {
     let active_line = active_line?;
     matches
         .iter()
         .enumerate()
-        .find(|(_, line)| **line == active_line)
-        .map(|(index, line)| (index, *line))
+        .find(|(_, match_)| match_.line == active_line)
+        .map(|(index, match_)| (index, *match_))
 }
 
 fn clear_browser_find_active_line(web_session: &mut BrowserWebSession) {
@@ -8078,7 +8101,8 @@ fn browser_session_payload(
             find_query: web_session.find_query.clone(),
             find_match_count: find_matches.len(),
             find_current_index,
-            find_current_line: find_current.map(|(_, line)| line),
+            find_current_line: find_current.map(|(_, match_)| match_.line),
+            find_current_column: find_current.map(|(_, match_)| match_.column),
             find_matches: find_match_payloads,
             tab_search_query: web_session.tab_search_query.clone(),
             tab_search_results: Vec::new(),
@@ -8599,6 +8623,7 @@ fn browser_session_state_export_payload(
             match_count: payload.find_match_count,
             current_index: payload.find_current_index,
             current_line: payload.find_current_line,
+            current_column: payload.find_current_column,
             matches: &payload.find_matches,
         },
         tab_search: BrowserSessionStateExportTabSearch {
@@ -8774,6 +8799,7 @@ fn browser_session_find_export_payload(
         match_count: payload.find_match_count,
         current_index: payload.find_current_index,
         current_line: payload.find_current_line,
+        current_column: payload.find_current_column,
         matches: &payload.find_matches,
         csv_url: browser_session_api_href(&payload.id, "find-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
@@ -9303,6 +9329,10 @@ fn browser_session_state_csv(payload: &BrowserSessionPayload) -> String {
             .find_current_line
             .map(|line| (line + 1).to_string())
             .unwrap_or_default();
+        let current_column = payload
+            .find_current_column
+            .map(|column| (column + 1).to_string())
+            .unwrap_or_default();
         let clear_find = browser_session_action_href(&payload.id, "clear-find", &[], payload);
         browser_session_push_csv_row(
             &mut csv,
@@ -9314,7 +9344,7 @@ fn browser_session_state_csv(payload: &BrowserSessionPayload) -> String {
                 &match_count,
                 &current_index,
                 &current_line,
-                "",
+                &current_column,
                 &clear_find,
                 &payload.id,
                 &payload.source,
@@ -10185,6 +10215,7 @@ fn browser_session_find_csv(payload: &BrowserSessionPayload) -> String {
         &[
             "match_index",
             "line",
+            "column",
             "current",
             "query",
             "text",
@@ -10196,6 +10227,7 @@ fn browser_session_find_csv(payload: &BrowserSessionPayload) -> String {
             "match_count",
             "current_match_index",
             "current_line",
+            "current_column",
         ],
     );
     let match_count = payload.find_match_count.to_string();
@@ -10207,15 +10239,21 @@ fn browser_session_find_csv(payload: &BrowserSessionPayload) -> String {
         .find_current_line
         .map(|line| (line + 1).to_string())
         .unwrap_or_default();
+    let current_column = payload
+        .find_current_column
+        .map(|column| (column + 1).to_string())
+        .unwrap_or_default();
     for find_match in &payload.find_matches {
         let match_index = (find_match.index + 1).to_string();
         let line = (find_match.line + 1).to_string();
+        let column = (find_match.column + 1).to_string();
         let current = if find_match.current { "true" } else { "false" };
         browser_session_push_csv_row(
             &mut csv,
             &[
                 &match_index,
                 &line,
+                &column,
                 current,
                 &payload.find_query,
                 &find_match.text,
@@ -10227,6 +10265,7 @@ fn browser_session_find_csv(payload: &BrowserSessionPayload) -> String {
                 &match_count,
                 &current_match_index,
                 &current_line,
+                &current_column,
             ],
         );
     }
@@ -10273,14 +10312,17 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
         "Find in page".to_owned()
     } else if payload.find_match_count == 0 {
         format!("0 matches for {}", payload.find_query)
-    } else if let (Some(index), Some(line)) =
-        (payload.find_current_index, payload.find_current_line)
-    {
+    } else if let (Some(index), Some(line), Some(column)) = (
+        payload.find_current_index,
+        payload.find_current_line,
+        payload.find_current_column,
+    ) {
         format!(
-            "{} of {} at line {}",
+            "{} of {} at line {}, col {}",
             index + 1,
             payload.find_match_count,
-            line + 1
+            line + 1,
+            column + 1
         )
     } else {
         format!("{} matches", payload.find_match_count)
@@ -10359,7 +10401,7 @@ fn render_browser_session_find_match_links(payload: &BrowserSessionPayload) -> S
         };
         let _ = write!(
             links,
-            r#"<span class="find-match-actions"><a class="{class}" href="{href}">{index} · line {line}</a><a class="find-match" href="{new_href}">New</a><a class="find-match" href="{background_href}">Bg</a></span>"#,
+            r#"<span class="find-match-actions"><a class="{class}" href="{href}">{index} · line {line}, col {column}</a><a class="find-match" href="{new_href}">New</a><a class="find-match" href="{background_href}">Bg</a></span>"#,
             class = class,
             href = html_escape::encode_double_quoted_attribute(&find_match.action_url),
             new_href = html_escape::encode_double_quoted_attribute(&find_match.new_session_url),
@@ -10367,6 +10409,7 @@ fn render_browser_session_find_match_links(payload: &BrowserSessionPayload) -> S
                 html_escape::encode_double_quoted_attribute(&find_match.background_session_url),
             index = find_match.index + 1,
             line = find_match.line + 1,
+            column = find_match.column + 1,
         );
     }
 
