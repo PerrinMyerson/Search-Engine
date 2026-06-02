@@ -2155,6 +2155,13 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert_eq!(payload.sessions.len(), 1);
     assert_eq!(payload.sessions[0].id, first_id);
     assert!(payload.sessions[0].current);
+    assert!(!payload.sessions[0].can_close);
+    assert!(payload.sessions[0].close_url.is_empty());
+    assert!(!payload.sessions[0].can_move_left);
+    assert!(payload.sessions[0].move_left_url.is_empty());
+    assert!(!payload.sessions[0].can_move_right);
+    assert!(payload.sessions[0].move_right_url.is_empty());
+    assert!(payload.sessions[0].clear_label_url.is_empty());
 
     let create_second = RequestTarget {
         path: "/browser".to_owned(),
@@ -2177,6 +2184,7 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(!payload.sessions[0].pinned);
     assert!(!payload.sessions[1].pinned);
     assert!(payload.sessions[0].reload_url.contains("action=reload"));
+    assert!(payload.sessions[0].move_left_url.is_empty());
     assert!(
         payload.sessions[0]
             .move_right_url
@@ -2187,7 +2195,10 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .move_left_url
             .contains("action=move-tab-left")
     );
+    assert!(payload.sessions[1].move_right_url.is_empty());
     assert!(payload.sessions[0].close_url.contains("close-session"));
+    assert!(payload.sessions[0].clear_label_url.is_empty());
+    assert!(payload.sessions[1].clear_label_url.is_empty());
     assert!(payload.sessions[0].pin_url.contains("action=pin-tab"));
     assert!(payload.sessions[0].unpin_url.contains("action=unpin-tab"));
     assert!(!payload.sessions[0].current);
@@ -2568,6 +2579,14 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .unwrap()
             .contains("action=current")
     );
+    assert_eq!(exported["tabs"][0]["move_left_url"], "");
+    assert!(
+        exported["tabs"][0]["move_right_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=move-tab-right")
+    );
+    assert_eq!(exported["tabs"][1]["move_right_url"], "");
     assert!(
         exported["tabs"][1]["close_url"]
             .as_str()
@@ -2586,6 +2605,7 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .unwrap()
             .contains("action=clear-tab-label")
     );
+    assert_eq!(exported["tabs"][1]["clear_label_url"], "");
     assert!(
         exported["tabs"][1]["move_left_url"]
             .as_str()
@@ -2811,6 +2831,11 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert_eq!(payload.sessions.len(), 1);
     assert!(payload.sessions[0].current);
     assert!(!payload.sessions[0].can_close);
+    assert!(payload.sessions[0].close_url.is_empty());
+    assert!(!payload.sessions[0].can_move_left);
+    assert!(payload.sessions[0].move_left_url.is_empty());
+    assert!(!payload.sessions[0].can_move_right);
+    assert!(payload.sessions[0].move_right_url.is_empty());
 }
 
 #[tokio::test]
