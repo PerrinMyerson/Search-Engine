@@ -3196,6 +3196,72 @@ mod native {
         }
 
         #[tokio::test]
+        async fn browser_window_page_click_blurs_focused_control_for_navigation() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("click-blur.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Click Blur Fixture</title></head>
+<body>
+<form><input name="q" value="search"></form>
+<p>ordinary page text</p>
+<p>middle</p>
+<p>bottom</p>
+<p>after bottom</p>
+<p>final line</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_some());
+
+            let mut mode = BrowserWindowMode::Page;
+            let focused_arrow = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(!focused_arrow.dirty);
+            assert_eq!(app.active_viewport().unwrap().y, 0);
+
+            app.apply_action(BrowserAppAction::Click { x: 0, y: 1 })
+                .await
+                .unwrap();
+            assert!(app.active_session().unwrap().focused_control().is_none());
+
+            let page_arrow = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Down,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+            assert!(page_arrow.dirty);
+            assert!(app.active_viewport().unwrap().y > 0);
+        }
+
+        #[tokio::test]
         async fn browser_window_find_mode_enters_query_and_scrolls_to_match() {
             let mut app = BrowserApp::open(
                 "bench/browser-fixtures/static-text.html",
