@@ -1373,6 +1373,7 @@ mod native {
                 })
             }
             BrowserAppWindowHit::PageViewport { x, y } if modifiers.command => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let before_tabs = app.tab_count();
                 let action = if modifiers.shift {
@@ -1382,15 +1383,16 @@ mod native {
                 };
                 app.apply_action(action).await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: app.tab_count() != before_tabs,
+                    dirty: dismissed_prompt || app.tab_count() != before_tabs,
                     close: false,
                 })
             }
             _ => {
+                let dismissed_prompt = !matches!(mode, BrowserWindowMode::Page);
                 *mode = BrowserWindowMode::Page;
                 let report = app.click_window(window_x, window_y).await?;
                 Ok(BrowserWindowKeyResult {
-                    dirty: report.applied,
+                    dirty: dismissed_prompt || report.applied,
                     close: false,
                 })
             }
@@ -2735,6 +2737,68 @@ mod native {
                 app.active_session().unwrap().current().unwrap().title,
                 "First"
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_left_click_dismisses_prompt_even_without_page_action() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Find {
+                text: "open prompt".to_owned(),
+                replace_on_input: false,
+            };
+
+            let chrome_background = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::ChromeBackground,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(chrome_background.dirty);
+            assert!(!chrome_background.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
+
+            mode = BrowserWindowMode::Location {
+                text: "stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let command_click_non_link = handle_browser_window_left_click(
+                &mut app,
+                &mut mode,
+                0,
+                0,
+                BrowserAppWindowHit::PageViewport { x: 20, y: 0 },
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(command_click_non_link.dirty);
+            assert!(!command_click_non_link.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 1);
         }
 
         #[tokio::test]
