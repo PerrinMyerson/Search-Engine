@@ -8707,19 +8707,28 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const loadImagesUrl = {load_images};
   const refreshUrl = {refresh_url};
   const stateKey = {state_key};
+  const runningRefreshDelayMs = 5000;
+  const runningStaleAfterMs = 45000;
+  const requestTimeoutMs = 90000;
   const status = document.querySelector("[data-auto-visual-status]");
   const setStatus = (message) => {{
     if (status) {{
       status.textContent = message;
     }}
   }};
+  const scheduleRefresh = (message, delayMs) => {{
+    setStatus(message);
+    if (refreshUrl) {{
+      window.setTimeout(() => window.location.replace(refreshUrl), delayMs);
+    }}
+  }};
   const currentState = sessionStorage.getItem(stateKey) || "";
   if (currentState === "done") {{
-    return;
-  }}
-  if (currentState.startsWith("running:")) {{
+    sessionStorage.removeItem(stateKey);
+  }} else if (currentState.startsWith("running:")) {{
     const startedAt = Number(currentState.slice("running:".length));
-    if (Number.isFinite(startedAt) && Date.now() - startedAt < 45000) {{
+    if (Number.isFinite(startedAt) && Date.now() - startedAt < runningStaleAfterMs) {{
+      scheduleRefresh("Visual render is still running. Refreshing soon...", runningRefreshDelayMs);
       return;
     }}
   }}
@@ -8729,12 +8738,24 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
       return;
     }}
     setStatus(label);
-    const response = await fetch(url, {{
-      cache: "no-store",
-      credentials: "same-origin",
-    }});
-    if (!response.ok) {{
-      throw new Error(`${{label}} failed (${{response.status}})`);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs);
+    try {{
+      const response = await fetch(url, {{
+        cache: "no-store",
+        credentials: "same-origin",
+        signal: controller.signal,
+      }});
+      if (!response.ok) {{
+        throw new Error(`${{label}} failed (${{response.status}})`);
+      }}
+    }} catch (error) {{
+      if (error && error.name === "AbortError") {{
+        throw new Error(`${{label}} timed out`);
+      }}
+      throw error;
+    }} finally {{
+      window.clearTimeout(timeout);
     }}
   }};
   (async () => {{
