@@ -8153,7 +8153,9 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("action=fetch-resources"));
     assert!(html.contains("action=apply-styles"));
     assert!(html.contains("action=run-scripts"));
-    assert!(html.contains("action=load-images"));
+    assert!(html.contains(r#"<span class="meta">0 images, 1 stylesheet</span>"#));
+    assert!(!html.contains("action=load-images"));
+    assert!(!html.contains(">Load images</a>"));
 
     let apply_styles = RequestTarget {
         path: "/browser".to_owned(),
