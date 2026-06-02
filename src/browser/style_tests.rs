@@ -343,6 +343,44 @@ fn compound_child_and_descendant_css_selectors_hide_content() {
 }
 
 #[test]
+fn css_not_pseudo_selectors_filter_rendered_layout_rules() {
+    let render = render_html(
+        "mem://not-selectors",
+        br#"
+        <html><head><style>
+          .item:not(.keep, [data-state="open"]) { display:none }
+          .panel:not(.closed) .target { text-transform: uppercase }
+          .panel.closed .target { display:none }
+        </style></head>
+        <body>
+          <p class="item">Hidden item</p>
+          <p class="item keep">Visible keep</p>
+          <p class="item" data-state="open">Visible data</p>
+          <section class="panel closed"><p class="target">Hidden panel</p></section>
+          <section class="panel"><p class="target">visible panel</p></section>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(render.text, "Visible keep\nVisible data\nVISIBLE PANEL");
+    assert_eq!(render.css_rule_count, 3);
+    assert!(!render.text.contains("Hidden"));
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                DisplayCommand::StyledText { text, .. } => Some(text.as_str()),
+                DisplayCommand::Rect { .. } | DisplayCommand::Image { .. } => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["Visible keep", "Visible data", "VISIBLE PANEL"]
+    );
+}
+
+#[test]
 fn indexed_css_cascade_preserves_specificity_and_source_order() {
     let render = render_html(
         "mem://page",

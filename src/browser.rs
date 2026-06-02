@@ -1242,6 +1242,7 @@ struct CompoundSelector {
     id: Option<String>,
     classes: Vec<String>,
     attributes: Vec<AttributeSelector>,
+    not_selectors: Vec<CompoundSelector>,
     universal: bool,
 }
 
@@ -9030,7 +9031,7 @@ fn parse_css(css: &str) -> CssCascade {
         if declarations == CssDeclarations::default() {
             continue;
         }
-        for selector in selectors.split(',') {
+        for selector in split_css_selector_list(selectors) {
             if let Some(selector) = parse_selector(selector) {
                 cascade.push(CssRule {
                     selector,
@@ -9041,6 +9042,45 @@ fn parse_css(css: &str) -> CssCascade {
     }
 
     cascade
+}
+
+fn split_css_selector_list(selectors: &str) -> Vec<&str> {
+    let bytes = selectors.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b',' if bracket_depth == 0 && paren_depth == 0 => {
+                parts.push(&selectors[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&selectors[start..]);
+    parts
 }
 
 impl CssCascade {
@@ -9153,9 +9193,7 @@ fn parse_selector(selector: &str) -> Option<CssSelector> {
         }
 
         let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
-            i += 1;
-        }
+        i = compound_selector_end(selector, start);
         let compound = parse_compound_selector(&selector[start..i])?;
         let combinator = if steps.is_empty() {
             None
@@ -9175,12 +9213,47 @@ fn parse_selector(selector: &str) -> Option<CssSelector> {
     (!steps.is_empty()).then_some(CssSelector { steps })
 }
 
+fn compound_selector_end(selector: &str, start: usize) -> usize {
+    let bytes = selector.as_bytes();
+    let mut i = start;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut quote = None;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'[' => bracket_depth = bracket_depth.saturating_add(1),
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'>' if bracket_depth == 0 && paren_depth == 0 => break,
+            _ if byte.is_ascii_whitespace() && bracket_depth == 0 && paren_depth == 0 => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
 fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
     let bytes = selector.as_bytes();
     let mut tag = None;
     let mut id = None;
     let mut classes = Vec::new();
     let mut attributes = Vec::new();
+    let mut not_selectors = Vec::new();
     let mut universal = false;
     let mut i = 0usize;
 
@@ -9204,6 +9277,12 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         if prefix == b'[' {
             let (attribute, next) = parse_attribute_selector(selector, i)?;
             attributes.push(attribute);
+            i = next;
+            continue;
+        }
+        if selector[i..].starts_with(":not(") {
+            let (negated, next) = parse_not_selector(selector, i)?;
+            not_selectors.extend(negated);
             i = next;
             continue;
         }
@@ -9238,8 +9317,56 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             id,
             classes,
             attributes,
+            not_selectors,
             universal,
         })
+}
+
+fn parse_not_selector(selector: &str, start: usize) -> Option<(Vec<CompoundSelector>, usize)> {
+    let bytes = selector.as_bytes();
+    if !selector[start..].starts_with(":not(") {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut quote = None;
+    let mut i = start + ":not(".len();
+    let content_start = i;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == active_quote {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let content = &selector[content_start..i];
+                        let selectors = parse_not_selector_list(content)?;
+                        return Some((selectors, i + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_not_selector_list(content: &str) -> Option<Vec<CompoundSelector>> {
+    let mut selectors = Vec::new();
+    for selector in split_css_selector_list(content) {
+        let selector = selector.trim();
+        if selector.is_empty() || selector.contains(char::is_whitespace) || selector.contains('>') {
+            return None;
+        }
+        selectors.push(parse_compound_selector(selector)?);
+    }
+    (!selectors.is_empty()).then_some(selectors)
 }
 
 fn parse_attribute_selector(selector: &str, start: usize) -> Option<(AttributeSelector, usize)> {
@@ -11504,6 +11631,12 @@ fn compound_specificity(compound: &CompoundSelector) -> u32 {
     u32::from(compound.id.is_some()) * 100
         + (compound.classes.len() + compound.attributes.len()) as u32 * 10
         + u32::from(compound.tag.is_some())
+        + compound
+            .not_selectors
+            .iter()
+            .map(compound_specificity)
+            .max()
+            .unwrap_or(0)
 }
 
 fn selector_matches(selector: &CssSelector, dom: &Dom, node_id: usize) -> bool {
@@ -11581,11 +11714,19 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
             return false;
         }
     }
+    if compound
+        .not_selectors
+        .iter()
+        .any(|selector| compound_selector_matches(selector, dom, node_id))
+    {
+        return false;
+    }
     compound.universal
         || compound.tag.is_some()
         || compound.id.is_some()
         || !compound.classes.is_empty()
         || !compound.attributes.is_empty()
+        || !compound.not_selectors.is_empty()
 }
 
 #[derive(Debug)]
