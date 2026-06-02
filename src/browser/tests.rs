@@ -1446,9 +1446,8 @@ async fn session_render_images_decodes_data_url_image_resource() {
         "data:image/png;base64,",
         "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAAAAAAAAAAAFklEQVR4AWNgYGD4//8/438GBkaG/wAh9gT+AAAAAAAAAABJRU5EAAAAAA=="
     );
-    let expected_hash = decode_image_reference("mem://page", data_url)
-        .unwrap()
-        .pixel_hash();
+    let decoded = decode_image_reference("mem://page", data_url).unwrap();
+    let expected_hash = decoded.pixel_hash();
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     fs::write(
@@ -1472,6 +1471,9 @@ async fn session_render_images_decodes_data_url_image_resource() {
     assert_eq!(report.fetches.len(), 1);
     assert_eq!(report.fetches[0].status, "cached");
     assert_eq!(report.fetches[0].content_type.as_deref(), Some("image/png"));
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, report.fetches[0].bytes);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
 
     let render = session.current().unwrap();
     assert_eq!(render.decoded_images.len(), 1);
@@ -1553,6 +1555,9 @@ async fn session_render_images_decodes_http_resource_cache_pixels() {
     assert_eq!(report.image_count, 1);
     assert_eq!(report.decoded, 1);
     assert_eq!(report.failed, 0);
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, report.fetches[0].bytes);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
     let render = session.current().unwrap();
     assert_eq!(render.decoded_images.len(), 1);
     assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
@@ -3150,8 +3155,10 @@ async fn fetches_current_resources_and_uses_session_cache() {
     let page = dir.path().join("page.html");
     let stylesheet = dir.path().join("style.css");
     let script = dir.path().join("app.js");
-    fs::write(&stylesheet, "body { display:block }").unwrap();
-    fs::write(&script, "console.log('ok')").unwrap();
+    let stylesheet_text = "body { display:block }";
+    let script_text = "console.log('ok')";
+    fs::write(&stylesheet, stylesheet_text).unwrap();
+    fs::write(&script, script_text).unwrap();
     fs::write(
         &page,
         r#"
@@ -3173,6 +3180,11 @@ async fn fetches_current_resources_and_uses_session_cache() {
     assert_eq!(report.cached, 1);
     assert_eq!(report.failed, 1);
     assert_eq!(report.skipped, 0);
+    assert_eq!(report.cached_resource_count, 2);
+    assert_eq!(
+        report.cached_resource_bytes,
+        stylesheet_text.len() + script_text.len()
+    );
     assert!(report.resources.iter().any(|resource| {
         resource.status == "fetched"
             && resource.resource.kind == "stylesheet"
@@ -3191,7 +3203,8 @@ async fn external_stylesheets_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     let stylesheet = dir.path().join("style.css");
-    fs::write(&stylesheet, ".hide { display:none }").unwrap();
+    let stylesheet_text = ".hide { display:none }";
+    fs::write(&stylesheet, stylesheet_text).unwrap();
     fs::write(
         &page,
         r#"
@@ -3209,6 +3222,8 @@ async fn external_stylesheets_can_rerender_current_page() {
     assert_eq!(report.stylesheet_count, 1);
     assert_eq!(report.applied, 1);
     assert_eq!(report.failed, 0);
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, stylesheet_text.len());
     let render = session.current().unwrap();
     assert!(render.text.contains("Visible"));
     assert!(!render.text.contains("Hidden"));
@@ -3220,16 +3235,13 @@ async fn external_scripts_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     let script = dir.path().join("app.js");
-    fs::write(
-        &script,
-        r#"
+    let script_text = r#"
             document.title = "External Script";
             const heading = document.createElement("h1");
             heading.textContent = "Loaded from script";
             document.body.appendChild(heading);
-            "#,
-    )
-    .unwrap();
+            "#;
+    fs::write(&script, script_text).unwrap();
     fs::write(
         &page,
         r#"
@@ -3248,6 +3260,8 @@ async fn external_scripts_can_rerender_current_page() {
     assert_eq!(report.script_count, 1);
     assert_eq!(report.applied, 1);
     assert_eq!(report.failed, 0);
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, script_text.len());
     let render = session.current().unwrap();
     assert_eq!(render.title, "External Script");
     assert_eq!(render.text, "Static\nLoaded from script");

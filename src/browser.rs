@@ -2787,6 +2787,8 @@ impl BrowserSession {
             cached,
             failed,
             skipped,
+            cached_resource_count: self.resource_cache.len(),
+            cached_resource_bytes: self.resource_cache.total_bytes(),
             resources: fetched_resources,
         })
     }
@@ -2845,6 +2847,8 @@ impl BrowserSession {
             stylesheet_count: fetches.len(),
             applied,
             failed,
+            cached_resource_count: self.resource_cache.len(),
+            cached_resource_bytes: self.resource_cache.total_bytes(),
             fetches,
         })
     }
@@ -2905,6 +2909,8 @@ impl BrowserSession {
             script_count: fetches.len(),
             applied,
             failed,
+            cached_resource_count: self.resource_cache.len(),
+            cached_resource_bytes: self.resource_cache.total_bytes(),
             fetches,
         })
     }
@@ -2941,6 +2947,10 @@ impl BrowserSession {
 
         let cached_images = decoded_cached_images(&self.resource_cache);
         let decoded = cached_images.len();
+        let decoded_image_bytes = cached_images
+            .iter()
+            .map(|entry| entry.image.pixels.len())
+            .sum();
         let failed = fetches
             .iter()
             .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
@@ -2954,6 +2964,9 @@ impl BrowserSession {
             image_count: fetches.len(),
             decoded,
             failed,
+            cached_resource_count: self.resource_cache.len(),
+            cached_resource_bytes: self.resource_cache.total_bytes(),
+            decoded_image_bytes,
             fetches,
         })
     }
