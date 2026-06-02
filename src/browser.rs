@@ -1710,6 +1710,57 @@ impl BrowserSession {
         Ok(())
     }
 
+    fn clear_focused_control(&mut self, current_index: usize) -> Result<()> {
+        let previous = self.entries[current_index].focused_control.take();
+        let Some(previous_node_id) = previous
+            .map(|previous| previous.node_id)
+            .filter(|&node_id| node_id < self.entries[current_index].page_state.dom.nodes.len())
+        else {
+            self.entries[current_index]
+                .page_state
+                .runtime
+                .active_element = None;
+            return Ok(());
+        };
+
+        {
+            let entry = &mut self.entries[current_index];
+            entry.page_state.runtime.active_element = None;
+            dispatch_event_listeners(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                previous_node_id,
+                "blur",
+                false,
+            );
+            dispatch_event_listeners(
+                &mut entry.page_state.dom,
+                &mut entry.page_state.runtime,
+                previous_node_id,
+                "focusout",
+                true,
+            );
+            drain_timer_tasks(&mut entry.page_state.dom, &mut entry.page_state.runtime);
+        }
+
+        self.persist_entry_runtime_storage(current_index);
+        let render = self.render_entry_page_state(current_index);
+        self.set_entry_render(current_index, render);
+        Ok(())
+    }
+
+    fn apply_click_focus_change(
+        &mut self,
+        current_index: usize,
+        focused_control: Option<BrowserFocusedFormControl>,
+    ) -> Result<()> {
+        if let Some(focused_control) = focused_control {
+            self.set_focused_control(current_index, focused_control)
+        } else {
+            self.clear_focused_control(current_index)
+        }
+    }
+
     pub fn type_text(&mut self, text: &str) -> Result<&BrowserRender> {
         let Some(current_index) = self.current_index else {
             bail!("cannot type text: session has no current page");
@@ -2229,9 +2280,7 @@ impl BrowserSession {
             .focusable_control_for_selector(current_index, selector)
             .ok();
         self.set_entry_render(current_index, profiled.render);
-        if let Some(focused_control) = focused_control {
-            self.set_focused_control(current_index, focused_control)?;
-        }
+        self.apply_click_focus_change(current_index, focused_control)?;
         if let Some(action) = default_action {
             let render = self.entries[current_index].render.clone();
             return self
@@ -2268,9 +2317,7 @@ impl BrowserSession {
             .filter(|action| !action.default_prevented());
         let focused_control = self.focusable_control_for_node(current_index, target_node);
         self.set_entry_render(current_index, profiled.render);
-        if let Some(focused_control) = focused_control {
-            self.set_focused_control(current_index, focused_control)?;
-        }
+        self.apply_click_focus_change(current_index, focused_control)?;
         if let Some(action) = default_action {
             let render = self.entries[current_index].render.clone();
             return self

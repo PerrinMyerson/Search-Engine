@@ -581,6 +581,51 @@ async fn browser_session_click_default_action_focuses_form_control_before_change
 }
 
 #[tokio::test]
+async fn browser_session_clicking_non_focusable_content_blurs_focused_control() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("click-blur.html");
+    fs::write(
+        &page,
+        r#"
+            <html><body>
+              <form id="form"><input id="q" name="q" value=""></form>
+              <p id="outside">Outside target</p>
+              <p id="out"></p>
+              <p id="active">none</p>
+              <script>
+                const q = document.getElementById("q");
+                q.addEventListener("focus", () => {
+                  document.getElementById("out").textContent += "focus|";
+                  document.getElementById("active").textContent = document.activeElement.id;
+                });
+                q.addEventListener("blur", () => {
+                  document.getElementById("out").textContent += "blur|";
+                  document.getElementById("active").textContent = String(document.activeElement);
+                });
+                document.getElementById("form").addEventListener("focusout", () => {
+                  document.getElementById("out").textContent += "focusout|";
+                });
+              </script>
+            </body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    session.focus_selector("#q").unwrap();
+    assert_eq!(session.focused_control().unwrap().name, "q");
+
+    let render = session
+        .click_selector_with_default_action("#outside")
+        .await
+        .unwrap();
+
+    assert!(render.text.contains("focus|blur|focusout|"));
+    assert!(session.focused_control().is_none());
+}
+
+#[tokio::test]
 async fn browser_session_text_edits_update_live_dom_and_dispatch_input() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("input-events.html");
