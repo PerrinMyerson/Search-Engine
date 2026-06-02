@@ -12418,9 +12418,9 @@ impl FlowRenderer {
         self.break_line();
         if self.visibility == Visibility::Visible {
             self.display_list.push(DisplayCommand::Rect {
-                x: 0,
+                x: self.left_inset,
                 y: self.next_y,
-                width: self.width,
+                width: self.available_width(),
                 height: 1,
                 shade: 96,
             });

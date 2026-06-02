@@ -1522,6 +1522,52 @@ fn indents_blockquotes_and_definition_descriptions_by_default() {
 }
 
 #[test]
+fn horizontal_rules_respect_current_insets() {
+    let render = render_html(
+        "mem://hr-insets",
+        br#"
+            <html><body>
+              <blockquote><hr></blockquote>
+              <div style="padding-left:16px; padding-right:24px"><hr></div>
+              <hr>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 4,
+                y: 0,
+                width: 12,
+                height: 1,
+                shade: 96,
+            },
+            DisplayCommand::Rect {
+                x: 2,
+                y: 1,
+                width: 15,
+                height: 1,
+                shade: 96,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 20,
+                height: 1,
+                shade: 96,
+            },
+        ]
+    );
+}
+
+#[test]
 fn links_have_default_text_shade_with_css_override() {
     let render = render_html(
         "mem://default-link-text-shade",
