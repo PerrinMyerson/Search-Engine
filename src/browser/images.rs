@@ -750,12 +750,13 @@ pub(super) fn image_render_source(
     dom: &Dom,
     node_id: usize,
     element: &ElementData,
+    viewport_width_css_px: usize,
 ) -> Option<String> {
     let desired_width = element
         .attrs
         .get("width")
         .and_then(|value| parse_css_pixel_dimension(value));
-    let selected_source = picture_source_srcset(dom, node_id)
+    let selected_source = picture_source_srcset(dom, node_id, viewport_width_css_px)
         .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         .or_else(|| {
             element
@@ -767,25 +768,40 @@ pub(super) fn image_render_source(
     if selected_source
         .as_deref()
         .is_none_or(is_lazy_svg_placeholder_src)
-        && let Some(lazy_source) = lazy_image_render_source(dom, node_id, element, desired_width)
+        && let Some(lazy_source) =
+            lazy_image_render_source(dom, node_id, element, desired_width, viewport_width_css_px)
     {
         return Some(lazy_source);
     }
     selected_source
 }
 
-fn picture_source_srcset(dom: &Dom, img_node_id: usize) -> Option<&str> {
-    picture_source_attr(dom, img_node_id, &["srcset"])
+fn picture_source_srcset(
+    dom: &Dom,
+    img_node_id: usize,
+    viewport_width_css_px: usize,
+) -> Option<&str> {
+    picture_source_attr(dom, img_node_id, &["srcset"], viewport_width_css_px)
 }
 
-fn picture_source_lazy_srcset(dom: &Dom, img_node_id: usize) -> Option<&str> {
-    picture_source_attr(dom, img_node_id, &["data-srcset", "data-lazy-srcset"])
+fn picture_source_lazy_srcset(
+    dom: &Dom,
+    img_node_id: usize,
+    viewport_width_css_px: usize,
+) -> Option<&str> {
+    picture_source_attr(
+        dom,
+        img_node_id,
+        &["data-srcset", "data-lazy-srcset"],
+        viewport_width_css_px,
+    )
 }
 
 fn picture_source_attr<'a>(
     dom: &'a Dom,
     img_node_id: usize,
     attr_names: &[&str],
+    viewport_width_css_px: usize,
 ) -> Option<&'a str> {
     let parent = dom.nodes.get(img_node_id)?.parent?;
     let parent_node = dom.nodes.get(parent)?;
@@ -799,7 +815,7 @@ fn picture_source_attr<'a>(
         }
         if let Some(NodeKind::Element(element)) = dom.nodes.get(child).map(|node| &node.kind)
             && element.tag == "source"
-            && picture_source_media_matches(element.media.as_deref())
+            && picture_source_media_matches(element.media.as_deref(), viewport_width_css_px)
             && picture_source_type_supported(element)
             && let Some(srcset) = first_non_empty_attr(element, attr_names)
         {
@@ -814,8 +830,9 @@ fn lazy_image_render_source(
     node_id: usize,
     element: &ElementData,
     desired_width: Option<usize>,
+    viewport_width_css_px: usize,
 ) -> Option<String> {
-    picture_source_lazy_srcset(dom, node_id)
+    picture_source_lazy_srcset(dom, node_id, viewport_width_css_px)
         .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         .or_else(|| {
             first_non_empty_attr(element, &["data-srcset", "data-lazy-srcset"])
@@ -1208,22 +1225,89 @@ mod tests {
     }
 }
 
-fn picture_source_media_matches(media: Option<&str>) -> bool {
-    media.is_none_or(|media| media.split(',').any(media_query_matches_current_screen))
+fn picture_source_media_matches(media: Option<&str>, viewport_width_css_px: usize) -> bool {
+    media.is_none_or(|media| {
+        media
+            .split(',')
+            .any(|query| media_query_matches_current_screen(query, viewport_width_css_px))
+    })
 }
 
-fn media_query_matches_current_screen(query: &str) -> bool {
+fn media_query_matches_current_screen(query: &str, viewport_width_css_px: usize) -> bool {
     let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() || matches!(query.as_str(), "all" | "screen") {
+    if query.is_empty() {
         return true;
     }
     if let Some(query) = query.strip_prefix("only ") {
-        return matches!(query.trim(), "all" | "screen");
+        return positive_media_query_matches_current_screen(query.trim(), viewport_width_css_px);
     }
     if let Some(query) = query.strip_prefix("not ") {
-        return matches!(query.trim(), "print" | "speech");
+        return !positive_media_query_matches_current_screen(query.trim(), viewport_width_css_px);
     }
-    false
+    positive_media_query_matches_current_screen(&query, viewport_width_css_px)
+}
+
+fn positive_media_query_matches_current_screen(query: &str, viewport_width_css_px: usize) -> bool {
+    let mut saw_condition = false;
+    for (index, part) in media_query_parts(query).into_iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            match part {
+                "all" | "screen" => {
+                    saw_condition = true;
+                    continue;
+                }
+                "print" | "speech" => return false,
+                _ => {}
+            }
+        }
+        let Some(matches) = media_width_feature_matches(part, viewport_width_css_px) else {
+            return false;
+        };
+        if !matches {
+            return false;
+        }
+        saw_condition = true;
+    }
+    saw_condition
+}
+
+fn media_query_parts(query: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let bytes = query.as_bytes();
+    let mut index = 0usize;
+    while index + 3 <= bytes.len() {
+        if &bytes[index..index + 3] == b"and"
+            && index > start
+            && bytes[index - 1].is_ascii_whitespace()
+            && bytes
+                .get(index + 3)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            parts.push(query[start..index].trim());
+            start = index + 3;
+            index = start;
+        } else {
+            index += 1;
+        }
+    }
+    parts.push(query[start..].trim());
+    parts
+}
+
+fn media_width_feature_matches(feature: &str, viewport_width_css_px: usize) -> Option<bool> {
+    let feature = feature.strip_prefix('(')?.strip_suffix(')')?.trim();
+    let (name, value) = feature.split_once(':')?;
+    let width = parse_css_pixel_dimension(value)?;
+    match name.trim() {
+        "min-width" => Some(viewport_width_css_px >= width),
+        "max-width" => Some(viewport_width_css_px <= width),
+        "width" => Some(viewport_width_css_px == width),
+        _ => None,
+    }
 }
 
 fn picture_source_type_supported(element: &ElementData) -> bool {

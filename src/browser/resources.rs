@@ -435,9 +435,13 @@ pub(super) fn collect_resources(dom: &Dom, source: &str) -> Vec<BrowserResource>
     resources
 }
 
-pub(super) fn collect_selected_image_resources(dom: &Dom, source: &str) -> Vec<BrowserResource> {
+pub(super) fn collect_selected_image_resources(
+    dom: &Dom,
+    source: &str,
+    viewport_width_css_px: usize,
+) -> Vec<BrowserResource> {
     let mut resources = Vec::new();
-    collect_selected_image_resources_at(dom, 0, source, &mut resources);
+    collect_selected_image_resources_at(dom, 0, source, viewport_width_css_px, &mut resources);
     resources
 }
 
@@ -445,6 +449,7 @@ fn collect_selected_image_resources_at(
     dom: &Dom,
     node_id: usize,
     source: &str,
+    viewport_width_css_px: usize,
     resources: &mut Vec<BrowserResource>,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
@@ -453,13 +458,13 @@ fn collect_selected_image_resources_at(
 
     if let NodeKind::Element(element) = &node.kind
         && element.tag == "img"
-        && let Some(url) = image_render_source(dom, node_id, element)
+        && let Some(url) = image_render_source(dom, node_id, element, viewport_width_css_px)
     {
         push_resource(resources, source, element, "image", "img", &url);
     }
 
     for &child in &node.children {
-        collect_selected_image_resources_at(dom, child, source, resources);
+        collect_selected_image_resources_at(dom, child, source, viewport_width_css_px, resources);
     }
 }
 
