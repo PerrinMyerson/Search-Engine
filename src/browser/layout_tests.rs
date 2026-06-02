@@ -772,6 +772,41 @@ fn inline_text_spacing_preserves_source_whitespace_between_elements() {
 }
 
 #[test]
+fn css_inline_background_color_paints_text_run_underlay() {
+    let render = render_html(
+        "mem://css-inline-background",
+        br#"
+            <html><body>
+              <p><span style="background-color: silver">Mark</span></p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Mark");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 1,
+                shade: 192,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Mark".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_white_space_pre_line_preserves_newlines_and_wraps() {
     let render = render_html(
         "mem://pre-line",
