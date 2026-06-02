@@ -856,6 +856,12 @@ mod native {
                 delta_x: 8,
                 delta_y: 0,
             }),
+            Key::PageUp if modifiers.shift => {
+                Some(browser_window_horizontal_page_scroll_action(app, -1)?)
+            }
+            Key::PageDown if modifiers.shift => {
+                Some(browser_window_horizontal_page_scroll_action(app, 1)?)
+            }
             Key::PageUp => Some(browser_window_page_scroll_action(app, -1)?),
             Key::PageDown => Some(browser_window_page_scroll_action(app, 1)?),
             Key::Home if modifiers.shift => Some(browser_window_row_start_action(app)?),
@@ -1042,6 +1048,22 @@ mod native {
         Ok(BrowserAppAction::Scroll {
             delta_x: 0,
             delta_y: rows.saturating_mul(direction.signum()),
+        })
+    }
+
+    fn browser_window_horizontal_page_scroll_action(
+        app: &BrowserApp,
+        direction: isize,
+    ) -> Result<BrowserAppAction> {
+        let viewport = app.active_viewport()?;
+        let columns = viewport
+            .width
+            .saturating_sub(1)
+            .max(1)
+            .min(isize::MAX as usize) as isize;
+        Ok(BrowserAppAction::Scroll {
+            delta_x: columns.saturating_mul(direction.signum()),
+            delta_y: 0,
         })
     }
 
@@ -1568,6 +1590,67 @@ mod native {
             let at_row_end = app.active_viewport().unwrap();
             assert!(at_row_end.x > at_row_start.x);
             assert_eq!(at_row_end.y, scrolled.y);
+        }
+
+        #[tokio::test]
+        async fn browser_window_shift_page_keys_scroll_horizontally_by_viewport() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("wide-page.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Wide Page</title></head><body>
+<p>top</p>
+<pre>wide-line-000000000011111111112222222222333333333344444444445555555555</pre>
+<p>bottom</p>
+</body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 10,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 10,
+                    viewport_height: 2,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 20, y: 1 })
+                .await
+                .unwrap();
+            let start = app.active_viewport().unwrap();
+            assert_eq!(start.x, 20);
+            assert_eq!(start.y, 1);
+            let mut mode = BrowserWindowMode::Page;
+            let modifiers = BrowserWindowModifiers {
+                command: false,
+                shift: true,
+                alt: false,
+            };
+
+            let page_left = handle_browser_window_key(&mut app, &mut mode, Key::PageUp, modifiers)
+                .await
+                .unwrap();
+
+            assert!(page_left.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            let after_left = app.active_viewport().unwrap();
+            assert_eq!(after_left.x, 11);
+            assert_eq!(after_left.y, start.y);
+
+            let page_right =
+                handle_browser_window_key(&mut app, &mut mode, Key::PageDown, modifiers)
+                    .await
+                    .unwrap();
+
+            assert!(page_right.dirty);
+            let after_right = app.active_viewport().unwrap();
+            assert_eq!(after_right.x, start.x);
+            assert_eq!(after_right.y, start.y);
         }
 
         #[tokio::test]
