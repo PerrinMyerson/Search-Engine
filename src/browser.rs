@@ -1248,7 +1248,19 @@ struct CompoundSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttributeSelector {
     name: String,
+    operator: AttributeSelectorOperator,
     value: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttributeSelectorOperator {
+    Exists,
+    Exact,
+    Includes,
+    Prefix,
+    Suffix,
+    Substring,
+    DashMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9268,11 +9280,8 @@ fn parse_attribute_selector(selector: &str, start: usize) -> Option<(AttributeSe
 }
 
 fn parse_attribute_selector_content(content: &str) -> Option<AttributeSelector> {
-    let (name, value) = content
-        .split_once('=')
-        .map_or((content.trim(), None), |(name, value)| {
-            (name.trim(), Some(unquote_css_attribute_value(value.trim())))
-        });
+    let (name, operator, value) = parse_attribute_selector_operator(content)
+        .unwrap_or_else(|| (content.trim(), AttributeSelectorOperator::Exists, None));
     if name.is_empty()
         || !name
             .bytes()
@@ -9282,8 +9291,31 @@ fn parse_attribute_selector_content(content: &str) -> Option<AttributeSelector> 
     }
     Some(AttributeSelector {
         name: normalize_attribute_name(name),
+        operator,
         value,
     })
+}
+
+fn parse_attribute_selector_operator(
+    content: &str,
+) -> Option<(&str, AttributeSelectorOperator, Option<String>)> {
+    for (token, operator) in [
+        ("~=", AttributeSelectorOperator::Includes),
+        ("^=", AttributeSelectorOperator::Prefix),
+        ("$=", AttributeSelectorOperator::Suffix),
+        ("*=", AttributeSelectorOperator::Substring),
+        ("|=", AttributeSelectorOperator::DashMatch),
+        ("=", AttributeSelectorOperator::Exact),
+    ] {
+        if let Some((name, value)) = content.split_once(token) {
+            return Some((
+                name.trim(),
+                operator,
+                Some(unquote_css_attribute_value(value.trim())),
+            ));
+        }
+    }
+    None
 }
 
 fn unquote_css_attribute_value(value: &str) -> String {
@@ -11573,11 +11605,7 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
         let Some(value) = get_element_attribute_data(element, &attribute.name) else {
             return false;
         };
-        if attribute
-            .value
-            .as_deref()
-            .is_some_and(|expected| value != expected)
-        {
+        if !attribute_selector_value_matches(attribute, &value) {
             return false;
         }
     }
@@ -11586,6 +11614,43 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
         || compound.id.is_some()
         || !compound.classes.is_empty()
         || !compound.attributes.is_empty()
+}
+
+fn attribute_selector_value_matches(attribute: &AttributeSelector, value: &str) -> bool {
+    match attribute.operator {
+        AttributeSelectorOperator::Exists => true,
+        AttributeSelectorOperator::Exact => attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| value == expected),
+        AttributeSelectorOperator::Includes => attribute.value.as_deref().is_some_and(|expected| {
+            !expected.is_empty()
+                && value
+                    .split_ascii_whitespace()
+                    .any(|token| token == expected)
+        }),
+        AttributeSelectorOperator::Prefix => attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| !expected.is_empty() && value.starts_with(expected)),
+        AttributeSelectorOperator::Suffix => attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| !expected.is_empty() && value.ends_with(expected)),
+        AttributeSelectorOperator::Substring => attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| !expected.is_empty() && value.contains(expected)),
+        AttributeSelectorOperator::DashMatch => {
+            attribute.value.as_deref().is_some_and(|expected| {
+                !expected.is_empty()
+                    && (value == expected
+                        || value
+                            .strip_prefix(expected)
+                            .is_some_and(|rest| rest.starts_with('-')))
+            })
+        }
+    }
 }
 
 #[derive(Debug)]

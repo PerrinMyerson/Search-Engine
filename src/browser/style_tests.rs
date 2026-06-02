@@ -392,6 +392,41 @@ fn hidden_attribute_and_attribute_css_selectors_hide_content() {
     assert!(!render.text.contains("Hidden"));
 }
 
+#[test]
+fn css_attribute_selector_operators_hide_matching_content() {
+    let render = render_html(
+        "mem://attribute-operators",
+        br##"
+        <html><head><style>
+          [data-tags~="archived"] { display:none }
+          [href^="#"] { display:none }
+          [href$=".pdf"] { display:none }
+          [class*="icon-"] { display:none }
+          [lang|="en"] { display:none }
+        </style></head>
+        <body>
+          <p data-tags="current archived featured">Hidden token match</p>
+          <a href="#skip">Hidden prefix match</a>
+          <a href="/files/report.pdf">Hidden suffix match</a>
+          <span class="button icon-print">Hidden substring match</span>
+          <p lang="en-US">Hidden dash match</p>
+          <p data-tags="prearchived">Visible token control</p>
+          <a href="/files/report.pdf?download=1">Visible suffix control</a>
+          <p class="button iconic">Visible substring control</p>
+          <p lang="english">Visible dash control</p>
+        </body></html>
+        "##,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(
+        render.text,
+        "Visible token control\nVisible suffix control\nVisible substring control\nVisible dash control"
+    );
+    assert_eq!(render.css_rule_count, 5);
+    assert!(!render.text.contains("Hidden"));
+}
+
 fn style_display_command_text(command: &DisplayCommand) -> &str {
     match command {
         DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => text,
