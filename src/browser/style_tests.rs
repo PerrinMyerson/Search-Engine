@@ -392,6 +392,36 @@ fn hidden_attribute_and_attribute_css_selectors_hide_content() {
     assert!(!render.text.contains("Hidden"));
 }
 
+#[test]
+fn css_escaped_identifier_selectors_match_layout_rules() {
+    let render = render_html(
+        "mem://escaped-identifiers",
+        br#"
+        <html><head><style>
+          .sm\:hidden { display:none }
+          .card\.featured { display:none }
+          .w-1\/2 { display:none }
+          .\32xl\:block { display:none }
+          #hero\:mobile { display:none }
+        </style></head>
+        <body>
+          <p class="sm:hidden">Hidden colon class</p>
+          <p class="card.featured">Hidden dot class</p>
+          <p class="w-1/2">Hidden slash class</p>
+          <p class="2xl:block">Hidden hex class</p>
+          <p id="hero:mobile">Hidden escaped id</p>
+          <p class="sm-visible">Visible class control</p>
+          <p id="hero-mobile">Visible id control</p>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(render.text, "Visible class control\nVisible id control");
+    assert_eq!(render.css_rule_count, 5);
+    assert!(!render.text.contains("Hidden"));
+}
+
 fn style_display_command_text(command: &DisplayCommand) -> &str {
     match command {
         DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => text,

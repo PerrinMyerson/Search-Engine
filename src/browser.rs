@@ -9189,14 +9189,11 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         i += 1;
     } else if bytes
         .get(i)
-        .is_some_and(|byte| is_selector_ident_start(*byte))
+        .is_some_and(|byte| is_selector_ident_start(*byte) || *byte == b'\\')
     {
-        let start = i;
-        i += 1;
-        while i < bytes.len() && is_selector_ident_continue(bytes[i]) {
-            i += 1;
-        }
-        tag = Some(selector[start..i].to_ascii_lowercase());
+        let (value, next) = parse_selector_identifier(selector, i)?;
+        i = next;
+        tag = Some(value.to_ascii_lowercase());
     }
 
     while i < bytes.len() {
@@ -9211,18 +9208,8 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             return None;
         }
         i += 1;
-        let start = i;
-        if !bytes
-            .get(i)
-            .is_some_and(|byte| is_selector_ident_start(*byte))
-        {
-            return None;
-        }
-        i += 1;
-        while i < bytes.len() && is_selector_ident_continue(bytes[i]) {
-            i += 1;
-        }
-        let value = selector[start..i].to_owned();
+        let (value, next) = parse_selector_identifier(selector, i)?;
+        i = next;
         if prefix == b'#' {
             if id.replace(value).is_some() {
                 return None;
@@ -9240,6 +9227,58 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             attributes,
             universal,
         })
+}
+
+fn parse_selector_identifier(selector: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = selector.as_bytes();
+    let first = *bytes.get(start)?;
+    if !is_selector_ident_start(first) && first != b'\\' {
+        return None;
+    }
+
+    let mut value = String::new();
+    let mut i = start;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if is_selector_ident_continue(byte) {
+            value.push(byte as char);
+            i += 1;
+        } else if byte == b'\\' {
+            let (ch, next) = parse_css_identifier_escape(selector, i)?;
+            value.push(ch);
+            i = next;
+        } else {
+            break;
+        }
+    }
+
+    (!value.is_empty()).then_some((value, i))
+}
+
+fn parse_css_identifier_escape(selector: &str, start: usize) -> Option<(char, usize)> {
+    let bytes = selector.as_bytes();
+    if bytes.get(start) != Some(&b'\\') {
+        return None;
+    }
+    let mut i = start + 1;
+    if i >= bytes.len() {
+        return None;
+    }
+
+    if bytes[i].is_ascii_hexdigit() {
+        let hex_start = i;
+        while i < bytes.len() && i.saturating_sub(hex_start) < 6 && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        let code = u32::from_str_radix(&selector[hex_start..i], 16).ok()?;
+        if bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        return Some((char::from_u32(code).unwrap_or('?'), i));
+    }
+
+    let ch = selector[i..].chars().next()?;
+    Some((ch, i + ch.len_utf8()))
 }
 
 fn parse_attribute_selector(selector: &str, start: usize) -> Option<(AttributeSelector, usize)> {
