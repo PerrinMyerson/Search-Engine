@@ -307,7 +307,10 @@ fn browser_window_frame_options_with_status(
     match mode {
         BrowserWindowMode::Page => BrowserAppWindowFrameOptions {
             location_text: None,
-            status_text: page_status_text.map(str::to_owned),
+            status_text: page_status_text
+                .map(str::trim)
+                .filter(|status| !status.is_empty())
+                .map(str::to_owned),
         },
         BrowserWindowMode::Location { text, .. } => BrowserAppWindowFrameOptions {
             location_text: Some(format!("URL > {text}")),
@@ -3464,6 +3467,24 @@ mod tests {
         assert_eq!(wheel_delta_to_scroll_cells(1.0), 3);
         assert_eq!(wheel_delta_to_scroll_cells(-1.0), -3);
         assert_eq!(wheel_delta_to_scroll_cells(100.0), 24);
+    }
+
+    #[test]
+    fn browser_window_page_status_text_trims_and_ignores_blank_values() {
+        let padded = browser_window_frame_options_with_status(
+            &BrowserWindowMode::Page,
+            Some("  https://example.com/path  "),
+        );
+        assert_eq!(padded.location_text, None);
+        assert_eq!(
+            padded.status_text,
+            Some("https://example.com/path".to_owned())
+        );
+
+        let blank =
+            browser_window_frame_options_with_status(&BrowserWindowMode::Page, Some(" \t "));
+        assert_eq!(blank.location_text, None);
+        assert_eq!(blank.status_text, None);
     }
 
     #[test]
