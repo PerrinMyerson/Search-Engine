@@ -31,6 +31,7 @@ pub struct WebSearchConfig {
 #[derive(Debug, Clone)]
 enum ThirdPartySearchProvider {
     Brave { api_key: String },
+    CacheOnly,
 }
 
 #[derive(Debug)]
@@ -103,17 +104,19 @@ impl WebSearchService {
             return Ok(None);
         }
 
-        let Some(api_key) = env::var("BRAVE_SEARCH_API_KEY")
+        let api_key = env::var("BRAVE_SEARCH_API_KEY")
             .ok()
             .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-        else {
-            return Ok(None);
-        };
+            .filter(|value| !value.is_empty());
 
         let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| index_dir.join("web-cache.jsonl"));
+        let provider = match api_key {
+            Some(api_key) => ThirdPartySearchProvider::Brave { api_key },
+            None if cache_path.exists() => ThirdPartySearchProvider::CacheOnly,
+            None => return Ok(None),
+        };
         let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
         let cache_max_entries =
             env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
@@ -136,7 +139,7 @@ impl WebSearchService {
         Ok(Some(Self {
             client,
             config: WebSearchConfig {
-                provider: ThirdPartySearchProvider::Brave { api_key },
+                provider,
                 cache_path,
                 cache_ttl_secs,
                 min_local_results,
@@ -151,6 +154,7 @@ impl WebSearchService {
     pub fn provider_name(&self) -> &'static str {
         match &self.config.provider {
             ThirdPartySearchProvider::Brave { .. } => "brave",
+            ThirdPartySearchProvider::CacheOnly => "brave-cache",
         }
     }
 
@@ -199,6 +203,14 @@ impl WebSearchService {
                     &self.config.search_lang,
                 )
                 .await?
+            }
+            ThirdPartySearchProvider::CacheOnly => {
+                return Ok(WebSearchLookup {
+                    provider: self.provider_name(),
+                    cache_hit: false,
+                    fetched: false,
+                    results: Vec::new(),
+                });
             }
         };
 
@@ -764,6 +776,53 @@ mod tests {
         assert!(lines.contains("https://example.com/new-fresh"));
         assert!(!lines.contains("https://example.com/stale"));
         assert!(!lines.contains("https://example.com/old-fresh"));
+    }
+
+    #[tokio::test]
+    async fn cache_only_provider_serves_cached_results_without_fetching() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("web-cache.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &path,
+            &CachedWebSearch {
+                query: "Cached Query".to_owned(),
+                normalized_query: "cached query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/cached", now)],
+            },
+        )
+        .unwrap();
+
+        let service = WebSearchService {
+            client: reqwest::Client::builder().build().unwrap(),
+            config: WebSearchConfig {
+                provider: ThirdPartySearchProvider::CacheOnly,
+                cache_path: path.clone(),
+                cache_ttl_secs: 60,
+                min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
+                max_results: DEFAULT_MAX_WEB_RESULTS,
+                country: "us".to_owned(),
+                search_lang: "en".to_owned(),
+            },
+            cache: std::sync::Arc::new(tokio::sync::Mutex::new(
+                WebResultCache::load(path, 60, DEFAULT_CACHE_MAX_ENTRIES).unwrap(),
+            )),
+        };
+
+        let hit = service.search("  Cached   Query ", 10).await.unwrap();
+        assert_eq!(hit.provider, "brave-cache");
+        assert!(hit.cache_hit);
+        assert!(!hit.fetched);
+        assert_eq!(hit.results.len(), 1);
+        assert_eq!(hit.results[0].url, "https://example.com/cached");
+
+        let miss = service.search("missing", 10).await.unwrap();
+        assert_eq!(miss.provider, "brave-cache");
+        assert!(!miss.cache_hit);
+        assert!(!miss.fetched);
+        assert!(miss.results.is_empty());
     }
 
     fn web_result(url: &str, fetched_at_unix: u64) -> WebSearchResult {
