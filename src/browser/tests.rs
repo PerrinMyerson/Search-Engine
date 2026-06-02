@@ -1146,6 +1146,44 @@ fn skips_unsupported_picture_source_type_for_img_jpeg_fallback() {
 }
 
 #[test]
+fn selects_picture_jpeg_source_with_screen_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let screen_jpeg = dir.path().join("screen.jpg");
+    let fallback_jpeg = dir.path().join("fallback.jpg");
+    fs::write(&screen_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&fallback_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "screen.jpg").unwrap().info();
+    let render = render_html(
+            &source,
+            br#"<html><body><picture><source media="print" type="image/jpeg" srcset="print.jpg 80w"><source media="screen" type="image/jpeg" srcset="screen.jpg 80w"><img src="fallback.jpg" alt="Screen JPEG" width="80" height="24"></picture></body></html>"#,
+            BrowserRenderOptions {
+                width: 40,
+                ..BrowserRenderOptions::default()
+            },
+        );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Screen JPEG".to_owned()),
+            url: Some("screen.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash)
+        }]
+    );
+}
+
+#[test]
 fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
     let data_url = concat!(
         "data:image/png;base64,",
