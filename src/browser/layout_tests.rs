@@ -1734,6 +1734,85 @@ Tail"
 }
 
 #[test]
+fn css_floating_images_wrap_following_text_rows() {
+    let render = render_html(
+        "mem://image-floats",
+        br#"
+              <html><body>
+              <img alt="portrait" width="16" height="24" style="float:left">
+              <p>Alpha Beta Gamma Pad</p>
+              <p>Tail</p>
+              <img alt="badge" width="16" height="12" style="float:right">
+              <p>Right Float Text Pad</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Alpha Beta Gamma\nPad\nTail\nRight Float Text\nPad"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("portrait".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 0,
+                text: "Alpha Beta Gamma".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 1,
+                text: "Pad".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 18,
+                y: 3,
+                width: 2,
+                height: 1,
+                shade: 220,
+                alt: Some("badge".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Right Float Text".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Pad".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",
