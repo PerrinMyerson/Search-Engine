@@ -553,6 +553,9 @@ mod native {
     ) -> Result<BrowserWindowKeyResult> {
         if modifiers.command {
             if let Some(index) = browser_window_tab_shortcut_index(key, app.tab_count()) {
+                if index == app.active_tab() {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -2545,6 +2548,12 @@ mod native {
                 .await
                 .unwrap();
             assert!(last_tab.dirty);
+            assert_eq!(app.active_tab(), 2);
+
+            let active_tab = handle_browser_window_key(&mut app, &mut mode, Key::Key9, modifiers)
+                .await
+                .unwrap();
+            assert!(!active_tab.dirty);
             assert_eq!(app.active_tab(), 2);
 
             let missing_tab = handle_browser_window_key(&mut app, &mut mode, Key::Key8, modifiers)
