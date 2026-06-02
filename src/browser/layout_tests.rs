@@ -1713,6 +1713,45 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn metadata_and_fallback_elements_do_not_render_in_body_flow() {
+    let render = render_html(
+        "mem://hidden-metadata-elements",
+        br#"
+            <html><body>
+              <p>Before metadata</p>
+              <title>Body title should not paint</title>
+              <datalist id="choices">
+                <option value="rust">Rust fallback option</option>
+              </datalist>
+              <noembed>Legacy fallback text</noembed>
+              <p>After metadata</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before metadata\nAfter metadata");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before metadata".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "After metadata".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",
