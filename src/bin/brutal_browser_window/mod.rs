@@ -476,8 +476,7 @@ mod native {
                 && !previous_left_down
                 && let Some((x, y)) = window.get_unscaled_mouse_pos(MouseMode::Discard)
             {
-                let x = x.max(0.0).round() as usize;
-                let y = y.max(0.0).round() as usize;
+                let (x, y) = browser_window_mouse_position_to_pixels(x, y);
                 let hit = app.hit_test_window(x, y)?;
                 let result =
                     handle_browser_window_left_click(&mut app, &mut mode, x, y, hit, modifiers)
@@ -492,8 +491,7 @@ mod native {
                 && !previous_middle_down
                 && let Some((x, y)) = window.get_unscaled_mouse_pos(MouseMode::Discard)
             {
-                let x = x.max(0.0).round() as usize;
-                let y = y.max(0.0).round() as usize;
+                let (x, y) = browser_window_mouse_position_to_pixels(x, y);
                 let hit = app.hit_test_window(x, y)?;
                 let result = handle_browser_window_middle_click(&mut app, &mut mode, hit).await?;
                 dirty |= result.dirty;
@@ -1138,10 +1136,23 @@ mod native {
         let Some((x, y)) = window.get_unscaled_mouse_pos(MouseMode::Discard) else {
             return Ok(None);
         };
-        let x = x.max(0.0).round() as usize;
-        let y = y.max(0.0).round() as usize;
+        let (x, y) = browser_window_mouse_position_to_pixels(x, y);
         let hit = app.hit_test_window(x, y)?;
         browser_window_hover_status_text(app, hit)
+    }
+
+    fn browser_window_mouse_position_to_pixels(x: f32, y: f32) -> (usize, usize) {
+        (
+            browser_window_mouse_coordinate_to_pixel(x),
+            browser_window_mouse_coordinate_to_pixel(y),
+        )
+    }
+
+    fn browser_window_mouse_coordinate_to_pixel(value: f32) -> usize {
+        if !value.is_finite() || value <= 0.0 {
+            return 0;
+        }
+        value.floor() as usize
     }
 
     fn browser_window_hover_status_text(
@@ -1363,6 +1374,22 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn browser_window_mouse_position_to_pixels_floors_fractional_coordinates() {
+            assert_eq!(
+                browser_window_mouse_position_to_pixels(7.99, 12.01),
+                (7, 12)
+            );
+            assert_eq!(
+                browser_window_mouse_position_to_pixels(-1.0, f32::NAN),
+                (0, 0)
+            );
+            assert_eq!(
+                browser_window_mouse_position_to_pixels(f32::INFINITY, 3.75),
+                (0, 3)
+            );
+        }
 
         #[tokio::test]
         async fn browser_window_page_keys_use_viewport_sized_scrolls_and_end() {
