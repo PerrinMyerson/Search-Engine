@@ -100,6 +100,7 @@ use resources::{
 };
 
 const TABLE_COLUMN_GAP_CELLS: usize = 2;
+const MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserRenderOptions {
@@ -12441,12 +12442,17 @@ impl FlowRenderer {
     ) {
         self.break_line();
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
+        let placeholder_height = if decoded_info.is_some() {
+            height.max(1)
+        } else {
+            height.min(MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT).max(1)
+        };
         if self.visibility == Visibility::Visible {
             self.display_list.push(DisplayCommand::Image {
                 x: self.left_inset,
                 y: self.next_y,
                 width: width.min(self.available_width()).max(1),
-                height: height.max(1),
+                height: placeholder_height,
                 shade: 220,
                 alt,
                 url: decoded_info.as_ref().map(|image| image.url.clone()),
@@ -12457,7 +12463,7 @@ impl FlowRenderer {
             self.display_targets
                 .push(DisplayHitTarget::node(target_node));
         }
-        self.next_y = self.next_y.saturating_add(height.max(1));
+        self.next_y = self.next_y.saturating_add(placeholder_height);
     }
 
     fn cached_decoded_image_info(&mut self, source: &str, url: &str) -> Option<DecodedImageInfo> {

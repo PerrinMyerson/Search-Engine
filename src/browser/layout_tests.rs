@@ -1713,6 +1713,47 @@ fn css_max_height_limits_image_placeholder_extent() {
 }
 
 #[test]
+fn unresolved_image_placeholders_are_clamped_to_keep_text_visible() {
+    let render = render_html(
+        "mem://unresolved-image-placeholder-clamp",
+        br#"
+            <html><body>
+              <img alt="hero" src="https://example.invalid/hero.jpg" width="800" height="480">
+              <p>Contact details</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Contact details");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 60,
+                height: 8,
+                shade: 220,
+                alt: Some("hero".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Contact details".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_box_sizing_content_box_keeps_width_as_content_width() {
     let render = render_html(
         "mem://box-sizing",
