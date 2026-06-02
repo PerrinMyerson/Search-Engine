@@ -1038,7 +1038,13 @@ struct ElementData {
 enum Display {
     None,
     Inline,
+    InlineBlock,
+    InlineFlex,
+    InlineGrid,
     Block,
+    Flex,
+    Grid,
+    FlowRoot,
     ListItem,
     Table,
     TableRow,
@@ -1049,7 +1055,13 @@ impl Display {
     fn is_block_flow(self) -> bool {
         matches!(
             self,
-            Self::Block | Self::ListItem | Self::Table | Self::TableRow
+            Self::Block
+                | Self::Flex
+                | Self::Grid
+                | Self::FlowRoot
+                | Self::ListItem
+                | Self::Table
+                | Self::TableRow
         )
     }
 }
@@ -3642,6 +3654,12 @@ fn layout_box_kind(
     } else {
         match style.display {
             Display::Block => "block".to_owned(),
+            Display::Flex => "flex".to_owned(),
+            Display::FlowRoot => "flow-root".to_owned(),
+            Display::Grid => "grid".to_owned(),
+            Display::InlineBlock => "inline-block".to_owned(),
+            Display::InlineFlex => "inline-flex".to_owned(),
+            Display::InlineGrid => "inline-grid".to_owned(),
             Display::ListItem => "list-item".to_owned(),
             Display::Table => "table".to_owned(),
             Display::TableRow => "table-row".to_owned(),
@@ -9523,7 +9541,13 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
                     "none" => Some(Display::None),
                     "block" => Some(Display::Block),
+                    "flex" => Some(Display::Flex),
+                    "flow-root" => Some(Display::FlowRoot),
+                    "grid" => Some(Display::Grid),
                     "inline" => Some(Display::Inline),
+                    "inline-block" => Some(Display::InlineBlock),
+                    "inline-flex" => Some(Display::InlineFlex),
+                    "inline-grid" => Some(Display::InlineGrid),
                     "list-item" => Some(Display::ListItem),
                     "table" | "inline-table" => Some(Display::Table),
                     "table-row" => Some(Display::TableRow),
