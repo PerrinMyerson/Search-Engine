@@ -1143,7 +1143,7 @@ mod native {
             BrowserAppWindowHit::ReloadButton => {
                 format!("Reload {}", browser_window_active_status_label(app)?)
             }
-            BrowserAppWindowHit::NewTabButton => "New tab".to_owned(),
+            BrowserAppWindowHit::NewTabButton => "Open new blank tab".to_owned(),
             BrowserAppWindowHit::Tab { index } => {
                 let Some(tab) = app
                     .tab_summaries()
@@ -2110,7 +2110,7 @@ mod native {
             );
             assert_eq!(
                 browser_window_hover_status_text(&app, BrowserAppWindowHit::NewTabButton).unwrap(),
-                Some("New tab".to_owned())
+                Some("Open new blank tab".to_owned())
             );
             assert_eq!(
                 browser_window_hover_status_text(
