@@ -315,6 +315,54 @@ fn css_and_inline_display_none_hide_content() {
 }
 
 #[test]
+fn css_important_declarations_feed_rendered_layout() {
+    let render = render_html(
+        "mem://important",
+        br#"
+        <html><head><style>
+          .hide { display: none !important }
+          .ghost { visibility: hidden !important }
+          .muted { color: #808080!important }
+        </style></head>
+        <body>
+          <p class="hide">Hidden CSS</p>
+          <p style="display:none !important">Hidden inline</p>
+          <p>Before <span class="ghost">Ghost</span> After</p>
+          <p class="muted">Muted</p>
+        </body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before       After\nMuted");
+    assert!(!render.text.contains("Hidden"));
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 12,
+                y: 0,
+                text: " After".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 1,
+                text: "Muted".to_owned(),
+                shade: 128,
+            },
+        ]
+    );
+}
+
+#[test]
 fn compound_child_and_descendant_css_selectors_hide_content() {
     let render = render_html(
         "mem://page",

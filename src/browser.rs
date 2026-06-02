@@ -9315,6 +9315,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         let Some((name, value)) = declaration.split_once(':') else {
             continue;
         };
+        let value = css_declaration_value(value);
         match name.trim().to_ascii_lowercase().as_str() {
             "display" => {
                 declarations.display = match value.trim().to_ascii_lowercase().as_str() {
@@ -9488,6 +9489,18 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
     declarations.padding = padding.finish();
     declarations.margin = margin.finish();
     declarations
+}
+
+fn css_declaration_value(value: &str) -> &str {
+    let value = value.trim().trim_end_matches(';').trim();
+    let important = "!important";
+    if value.len() >= important.len()
+        && value[value.len() - important.len()..].eq_ignore_ascii_case(important)
+    {
+        value[..value.len() - important.len()].trim_end()
+    } else {
+        value
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
