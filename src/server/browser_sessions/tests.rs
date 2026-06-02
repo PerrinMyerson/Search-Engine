@@ -1506,6 +1506,8 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert!(payload.viewport.contains("needle first"));
     let html = render_browser_session_page(&payload, "/search?q=find");
     assert!(html.contains("<mark>needle</mark> first"));
+    assert!(html.contains("Find JSON"));
+    assert!(html.contains("format=find-json"));
     assert!(html.contains("Find CSV"));
     assert!(html.contains("format=find-csv"));
     assert!(html.contains(r#"class="find-match current""#));
@@ -1514,6 +1516,56 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     assert!(html.contains("action=find-match-background-session"));
     assert!(html.contains("action=open-find-matches-new-sessions"));
     assert!(html.contains("action=open-find-matches-background-sessions"));
+    let find_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "find-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&find_json_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "application/json; charset=utf-8");
+    let exported_find: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_find["format"], "browser-find");
+    assert_eq!(exported_find["id"], payload.id);
+    assert_eq!(exported_find["query"], "needle");
+    assert_eq!(exported_find["match_count"], 2);
+    assert_eq!(exported_find["current_index"], 0);
+    assert_eq!(exported_find["current_line"], 1);
+    assert_eq!(exported_find["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(exported_find["matches"][0]["text"], "needle first");
+    assert_eq!(exported_find["matches"][0]["current"], true);
+    assert!(
+        exported_find["matches"][1]["action_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=find-match")
+    );
+    assert!(
+        exported_find["matches"][1]["new_session_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=find-match-new-session")
+    );
+    assert!(
+        exported_find["matches"][1]["background_session_url"]
+            .as_str()
+            .unwrap()
+            .contains("action=find-match-background-session")
+    );
+    assert!(
+        exported_find["csv_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=find-csv")
+    );
+    assert!(
+        exported_find["session_state_url"]
+            .as_str()
+            .unwrap()
+            .contains("format=session-state")
+    );
     let find_csv_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
         params: vec![
@@ -8456,6 +8508,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("resources_csv", "resources-csv"),
         ("resource_report_json", "resource-report-json"),
         ("resource_report_csv", "resource-report-csv"),
+        ("find_json", "find-json"),
         ("find_csv", "find-csv"),
         ("tab_search_csv", "tab-search-csv"),
         ("viewport_text", "viewport-text"),
