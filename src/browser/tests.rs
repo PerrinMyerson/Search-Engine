@@ -1110,6 +1110,42 @@ fn selects_picture_source_srcset_before_img_src() {
 }
 
 #[test]
+fn skips_unsupported_picture_source_type_for_img_jpeg_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let jpeg = dir.path().join("fallback.jpg");
+    fs::write(&jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "fallback.jpg").unwrap().info();
+    let render = render_html(
+            &source,
+            br#"<html><body><picture><source type="image/webp" srcset="hero.webp 80w"><source type="image/avif" srcset="hero.avif 80w"><img src="fallback.jpg" alt="JPEG fallback" width="80" height="24"></picture></body></html>"#,
+            BrowserRenderOptions {
+                width: 40,
+                ..BrowserRenderOptions::default()
+            },
+        );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("JPEG fallback".to_owned()),
+            url: Some("fallback.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash)
+        }]
+    );
+}
+
+#[test]
 fn lazy_svg_placeholder_img_uses_real_data_source_for_rendering() {
     let data_url = concat!(
         "data:image/png;base64,",
