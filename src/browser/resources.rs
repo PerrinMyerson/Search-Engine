@@ -500,7 +500,10 @@ fn collect_resources_at(
                 if let Some(href) = element.href.as_deref().map(str::trim)
                     && !href.is_empty()
                 {
-                    let kind = link_resource_kind(element.rel.as_deref());
+                    let kind = link_resource_kind(
+                        element.rel.as_deref(),
+                        element.attrs.get("as").map(String::as_str),
+                    );
                     push_resource(resources, source, element, &kind, "link", href);
                 }
             }
@@ -582,7 +585,7 @@ fn push_resource(
     });
 }
 
-fn link_resource_kind(rel: Option<&str>) -> String {
+fn link_resource_kind(rel: Option<&str>, as_hint: Option<&str>) -> String {
     let rel = rel.unwrap_or_default().to_ascii_lowercase();
     if rel
         .split_ascii_whitespace()
@@ -591,6 +594,10 @@ fn link_resource_kind(rel: Option<&str>) -> String {
         "stylesheet".to_owned()
     } else if rel.split_ascii_whitespace().any(|item| item == "icon") {
         "icon".to_owned()
+    } else if rel.split_ascii_whitespace().any(|item| item == "preload")
+        && as_hint.is_some_and(|as_hint| as_hint.eq_ignore_ascii_case("style"))
+    {
+        "stylesheet".to_owned()
     } else if rel.split_ascii_whitespace().any(|item| item == "preload") {
         "preload".to_owned()
     } else if rel

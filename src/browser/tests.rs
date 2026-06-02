@@ -2678,6 +2678,37 @@ async fn external_stylesheets_can_rerender_current_page() {
 }
 
 #[tokio::test]
+async fn preloaded_style_links_can_rerender_current_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let stylesheet = dir.path().join("style.css");
+    fs::write(&stylesheet, ".hide { display:none }").unwrap();
+    fs::write(
+        &page,
+        r#"
+            <html><head><link rel="preload" as="style" href="style.css"></head>
+            <body><p>Visible</p><p class="hide">Hidden</p></body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    assert!(session.current().unwrap().text.contains("Hidden"));
+
+    let report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(report.stylesheet_count, 1);
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches[0].resource.kind, "stylesheet");
+    assert_eq!(report.fetches[0].resource.rel.as_deref(), Some("preload"));
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Visible"));
+    assert!(!render.text.contains("Hidden"));
+    assert_eq!(render.css_rule_count, 1);
+}
+
+#[tokio::test]
 async fn external_scripts_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
