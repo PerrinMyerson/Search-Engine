@@ -1069,7 +1069,7 @@ impl Display {
     fn lays_out_children_in_row(self) -> bool {
         matches!(
             self,
-            Self::Flex | Self::Grid | Self::InlineFlex | Self::InlineGrid
+            Self::InlineBlock | Self::Flex | Self::Grid | Self::InlineFlex | Self::InlineGrid
         )
     }
 }

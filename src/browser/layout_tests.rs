@@ -471,6 +471,48 @@ fn css_flex_container_lays_out_block_children_in_row() {
 }
 
 #[test]
+fn css_inline_block_menu_items_keep_block_links_on_row() {
+    let render = render_html(
+        "mem://css-inline-block-menu-links",
+        br#"
+            <html><body>
+              <ul>
+                <li class="item"><a class="link">Data</a></li>
+                <li class="item"><a class="link">Intelligence</a></li>
+                <li class="item"><a class="link">Customers</a></li>
+              </ul>
+              <p>After</p>
+              <style>
+                ul > li.item { display: inline-block; margin: 0 8px 0 0; }
+                ul > li.item > a.link { display: block; line-height: 40px; padding: 0 10px; }
+              </style>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Data Intelligence Customers\nAfter");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Data Intelligence Customers".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_display_contents_flattens_wrapper_without_painting_box() {
     let render = render_html(
         "mem://css-display-contents",
