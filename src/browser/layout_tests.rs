@@ -1191,6 +1191,36 @@ fn flows_simple_table_cells_across_rows() {
 }
 
 #[test]
+fn table_caption_defaults_to_block_flow() {
+    let render = render_html(
+        "mem://table-caption",
+        br#"
+            <html><body>
+              <table>
+                <caption>Release results</caption>
+                <tr><td>A</td><td>Ready</td></tr>
+              </table>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Release results\nA  Ready\nAfter");
+    assert_eq!(
+        render
+            .layout_boxes
+            .iter()
+            .find(|layout_box| layout_box.tag == "caption")
+            .map(|layout_box| layout_box.kind.as_str()),
+        Some("block")
+    );
+}
+
+#[test]
 fn table_colspan_spans_multiple_columns() {
     let render = render_html(
         "mem://table-colspan",
