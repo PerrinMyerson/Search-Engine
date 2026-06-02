@@ -89,7 +89,7 @@ use images::{
     decoded_cached_images, decoded_image_entry, image_render_source,
 };
 #[cfg(test)]
-use images::{decode_simple_png, tiny_test_jpeg_data_url};
+use images::{decode_simple_png, tiny_test_jpeg_bytes, tiny_test_jpeg_data_url};
 use labels::associated_label_control_node;
 use layout::{list_item_marker, nested_list_indent};
 use raster_pgm::{compare_raster_with_pgm, diff_within_threshold, encode_diff_pgm};
