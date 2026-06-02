@@ -579,13 +579,18 @@ mod native {
                     });
                 }
                 Key::Backspace | Key::Delete
-                    if app.active_session()?.focused_control().is_some() =>
+                    if browser_window_focused_control_accepts_text_input(app)? =>
                 {
                     app.apply_action(BrowserAppAction::ClearText).await?;
                     return Ok(BrowserWindowKeyResult {
                         dirty: true,
                         close: false,
                     });
+                }
+                Key::Backspace | Key::Delete
+                    if app.active_session()?.focused_control().is_some() =>
+                {
+                    return Ok(BrowserWindowKeyResult::default());
                 }
                 Key::L => {
                     let source = current_browser_window_source(app)?;
@@ -811,9 +816,10 @@ mod native {
 
         let action = match key {
             Key::Escape => None,
-            Key::Backspace if app.active_session()?.focused_control().is_some() => {
+            Key::Backspace if browser_window_focused_control_accepts_text_input(app)? => {
                 Some(BrowserAppAction::DeleteTextBackward(1))
             }
+            Key::Backspace if app.active_session()?.focused_control().is_some() => None,
             Key::Backspace => Some(BrowserAppAction::Back),
             Key::Enter | Key::NumPadEnter if app.active_session()?.focused_control().is_some() => {
                 Some(BrowserAppAction::SubmitFocused)
@@ -3208,6 +3214,89 @@ mod native {
                     .unwrap()
                     .value,
                 ""
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_backspace_noops_on_focused_checkbox() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("checkbox.html");
+            std::fs::write(
+                &path,
+                r#"<html><head><title>Checkbox</title></head><body><form><label><input type="checkbox" name="ok">Accept</label></form></body></html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::FocusNext).await.unwrap();
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "checkbox"
+            );
+            assert_eq!(app.active_session().unwrap().snapshot().entries.len(), 1);
+            let mut mode = BrowserWindowMode::Page;
+
+            let backspace = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Backspace,
+                BrowserWindowModifiers::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(!backspace.dirty);
+            assert!(!backspace.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_session().unwrap().snapshot().entries.len(), 1);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "checkbox"
+            );
+
+            let command_delete = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Delete,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!command_delete.dirty);
+            assert!(!command_delete.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session()
+                    .unwrap()
+                    .focused_control()
+                    .unwrap()
+                    .kind,
+                "checkbox"
             );
         }
 
