@@ -11618,6 +11618,8 @@ struct TableCellFlow {
     start_width: usize,
 }
 
+const SOFT_HYPHEN: char = '\u{00ad}';
+
 fn table_spanned_column_width(
     column_widths: &[usize],
     active_cell: TableCellFlow,
@@ -11850,6 +11852,10 @@ impl FlowRenderer {
     }
 
     fn push_wrapped_word(&mut self, word: &str, target_node: Option<usize>) {
+        if word.contains(SOFT_HYPHEN) {
+            self.push_soft_hyphenated_word(word, target_node);
+            return;
+        }
         let word_fits = self
             .effective_current_width()
             .saturating_add(self.letter_spaced_text_width(word))
@@ -11859,6 +11865,61 @@ impl FlowRenderer {
             return;
         }
         self.push_breakable_text_segment(word, target_node);
+    }
+
+    fn push_soft_hyphenated_word(&mut self, word: &str, target_node: Option<usize>) {
+        let visible_word = remove_soft_hyphens(word);
+        let word_fits = self
+            .effective_current_width()
+            .saturating_add(self.letter_spaced_text_width(&visible_word))
+            <= self.available_width();
+        if word_fits {
+            self.push_text_run_piece(&visible_word, target_node);
+            return;
+        }
+
+        if let Some((prefix, rest)) = self.soft_hyphen_break(word) {
+            let hyphenated_prefix = format!("{prefix}-");
+            self.push_text_run_piece(&hyphenated_prefix, target_node);
+            self.break_line();
+            if !rest.is_empty() {
+                self.push_soft_hyphenated_word(&rest, target_node);
+            }
+            return;
+        }
+
+        if self.current_width > 0 {
+            self.break_line();
+            self.push_soft_hyphenated_word(word, target_node);
+        } else if self.can_break_word() {
+            self.push_breakable_text_segment(&visible_word, target_node);
+        } else {
+            self.push_text_run_piece(&visible_word, target_node);
+        }
+    }
+
+    fn soft_hyphen_break(&self, word: &str) -> Option<(String, String)> {
+        let mut prefix = String::new();
+        let mut best = None;
+        for (index, ch) in word.char_indices() {
+            if ch == SOFT_HYPHEN {
+                if prefix.is_empty() {
+                    continue;
+                }
+                let hyphenated_prefix = format!("{prefix}-");
+                if self
+                    .effective_current_width()
+                    .saturating_add(self.letter_spaced_text_width(&hyphenated_prefix))
+                    <= self.available_width()
+                {
+                    let rest_start = index.saturating_add(ch.len_utf8());
+                    best = Some((prefix.clone(), word[rest_start..].to_owned()));
+                }
+            } else {
+                prefix.push(ch);
+            }
+        }
+        best
     }
 
     fn can_break_word(&self) -> bool {
@@ -12085,6 +12146,7 @@ impl FlowRenderer {
             self.push_pending_text_indent();
         }
         let piece = self.transform_text_piece(piece);
+        let piece = remove_soft_hyphens(&piece);
         let piece = if apply_letter_spacing {
             self.apply_letter_spacing(&piece)
         } else {
@@ -12127,7 +12189,7 @@ impl FlowRenderer {
     }
 
     fn letter_spaced_text_width(&self, text: &str) -> usize {
-        self.letter_spaced_char_count_width(text.chars().count())
+        self.letter_spaced_char_count_width(text.chars().filter(|ch| *ch != SOFT_HYPHEN).count())
     }
 
     fn letter_spaced_char_count_width(&self, char_count: usize) -> usize {
@@ -12641,6 +12703,14 @@ impl FlowRenderer {
             hit_targets: self.underlay_targets,
             decoded_images: self.decoded_images,
         }
+    }
+}
+
+fn remove_soft_hyphens(text: &str) -> String {
+    if text.contains(SOFT_HYPHEN) {
+        text.chars().filter(|ch| *ch != SOFT_HYPHEN).collect()
+    } else {
+        text.to_owned()
     }
 }
 

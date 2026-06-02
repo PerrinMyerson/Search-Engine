@@ -828,6 +828,45 @@ fn wbr_creates_zero_width_soft_break_opportunity() {
 }
 
 #[test]
+fn soft_hyphen_is_invisible_until_used_for_wrapping() {
+    let soft_hyphen = '\u{00ad}';
+    let html = format!(
+        "<html><body><p>Demonstration{soft_hyphen}Wrapping</p><p>Fit{soft_hyphen}Here</p></body></html>"
+    );
+    let render = render_html(
+        "mem://soft-hyphen",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Demonstration-\nWrapping\nFitHere");
+    assert!(!render.text.contains('\u{00ad}'));
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Demonstration-".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Wrapping".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "FitHere".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_line_height_adds_visual_row_spacing() {
     let render = render_html(
         "mem://line-height",
