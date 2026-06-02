@@ -642,20 +642,10 @@ mod native {
                     });
                 }
                 Key::Left | Key::LeftBracket => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Back).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, true).await;
                 }
                 Key::Right | Key::RightBracket => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Forward).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, false).await;
                 }
                 Key::Up => {
                     *mode = BrowserWindowMode::Page;
@@ -745,20 +735,10 @@ mod native {
                     });
                 }
                 Key::Left => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Back).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, true).await;
                 }
                 Key::Right => {
-                    *mode = BrowserWindowMode::Page;
-                    app.apply_action(BrowserAppAction::Forward).await?;
-                    return Ok(BrowserWindowKeyResult {
-                        dirty: true,
-                        close: false,
-                    });
+                    return handle_browser_window_history_navigation(app, mode, false).await;
                 }
                 _ => {}
             }
@@ -901,6 +881,27 @@ mod native {
         } else {
             begin_browser_window_find_input(mode, None);
         }
+        Ok(BrowserWindowKeyResult {
+            dirty: true,
+            close: false,
+        })
+    }
+
+    async fn handle_browser_window_history_navigation(
+        app: &mut BrowserApp,
+        mode: &mut BrowserWindowMode,
+        backwards: bool,
+    ) -> Result<BrowserWindowKeyResult> {
+        if browser_window_history_target_status(app, backwards)?.is_none() {
+            return Ok(BrowserWindowKeyResult::default());
+        }
+        *mode = BrowserWindowMode::Page;
+        let action = if backwards {
+            BrowserAppAction::Back
+        } else {
+            BrowserAppAction::Forward
+        };
+        app.apply_action(action).await?;
         Ok(BrowserWindowKeyResult {
             dirty: true,
             close: false,
@@ -1876,6 +1877,73 @@ mod native {
             assert_eq!(
                 app.active_session().unwrap().current().unwrap().title,
                 "Second"
+            );
+        }
+
+        #[tokio::test]
+        async fn browser_window_history_shortcuts_noop_without_target() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            let mut mode = BrowserWindowMode::Page;
+
+            let unavailable_back = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::LeftBracket,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: false,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!unavailable_back.dirty);
+            assert!(!unavailable_back.close);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Static Text Fixture"
+            );
+
+            mode = BrowserWindowMode::Location {
+                text: "editing".to_owned(),
+                replace_on_input: false,
+            };
+            let unavailable_forward = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::Right,
+                BrowserWindowModifiers {
+                    command: false,
+                    shift: false,
+                    alt: true,
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(!unavailable_forward.dirty);
+            assert!(!unavailable_forward.close);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: "editing".to_owned(),
+                    replace_on_input: false,
+                }
             );
         }
 
