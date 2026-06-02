@@ -8468,12 +8468,19 @@ a {{ color: #123fae; text-decoration: none; font-weight: 700; overflow-wrap: any
 a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
+.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 8px; margin: -18px -18px 14px; padding: 10px 18px 8px; background: rgba(247, 247, 245, 0.96); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
+.browser-primary-nav {{ margin-bottom: 0; }}
+.browser-page-head {{ margin: 12px 0 10px; }}
+.browser-page-head h1 {{ margin-top: 0; }}
 .toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }}
 .toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .toolbar span {{ color: #8a929d; background: #eef0f3; }}
 .toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
 .toolbar input[type="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .toolbar button {{ cursor: pointer; background: #2457d6; color: #fff; border-color: #2457d6; }}
+.address-bar {{ margin-bottom: 0; }}
+.address-bar input[type="url"] {{ flex: 1 1 420px; }}
+.secondary-toolbar {{ margin: 0 0 12px; }}
 .viewport-jump {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }}
 .viewport-jump label {{ color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-jump input[type="number"] {{ width: 96px; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -8511,9 +8518,16 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
+.browser-viewport-primary {{ margin: 10px 0 18px; }}
 .viewport-text {{ margin-top: 10px; }}
 .viewport-text summary {{ cursor: pointer; color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-text pre {{ margin-top: 8px; }}
+.debug-stack {{ display: grid; gap: 10px; margin-top: 18px; }}
+.debug-section {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
+.debug-section > summary {{ cursor: pointer; padding: 11px 12px; color: #20242a; font-size: 14px; font-weight: 800; }}
+.debug-section > summary::marker {{ color: #5d636b; }}
+.debug-section-content {{ padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
+.debug-section-content > :first-child {{ margin-top: 12px; }}
 ol {{ list-style: none; margin: 0; padding: 0; }}
 li {{ display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 8px 10px; padding: 10px 0; border-top: 1px solid #dfe2e6; }}
 li span {{ color: #6b717a; font-size: 12px; padding-top: 3px; text-align: right; }}
@@ -8557,8 +8571,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </head>
 <body>
 <main>
-<nav class="toolbar"><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate tab</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
-<form class="toolbar" action="/browser" method="get">
+<header class="browser-topbar">
+<nav class="toolbar browser-primary-nav"><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
+<form class="toolbar address-bar" action="/browser" method="get">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -8569,29 +8584,25 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="url" name="url" value="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
-{viewport_jump}
-{session_tabs}
-{closed_sessions}
-{bookmarks}
-{profile_history}
+</header>
+<section class="browser-page-head">
 <h1>{heading}</h1>
 <div class="meta">{source}</div>
 <div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>
+</section>
 {find_controls}
 {auto_visual_bootstrap}
+<section class="browser-viewport-primary">
 {viewport_image}
+{viewport_jump}
 <details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
-<h2>Click</h2>
-<div class="browser-actions">{click_controls}</div>
-<h2>Keyboard</h2>
-<div class="keyboard-actions">{keyboard_controls}</div>
-<div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div>
-<div class="browser-forms">{form_rows}</div>
-<h2>Inspector</h2>
-<div class="browser-inspector">{inspector}</div>
-<div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div>
-<div class="browser-actions">{link_controls}</div>
-<ol>{link_rows}</ol>
+</section>
+<section class="debug-stack">
+<details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate tab</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
+<details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
+<details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
+<details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
+</section>
 </main>
 </body>
 </html>"#,

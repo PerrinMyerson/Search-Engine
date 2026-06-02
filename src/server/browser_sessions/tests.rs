@@ -9707,6 +9707,31 @@ async fn browser_session_page_renders_form_controls() {
     let (payload, back_href) = registry.create_target(&create).await.unwrap();
     let html = render_browser_session_page(&payload, &back_href);
 
+    let topbar_index = html.find(r#"class="browser-topbar""#).unwrap();
+    let title_index = html.find("<h1>Form</h1>").unwrap();
+    let viewport_index = html.find(r#"class="browser-viewport-primary""#).unwrap();
+    let debug_index = html.find(r#"<section class="debug-stack">"#).unwrap();
+    assert!(topbar_index < title_index);
+    assert!(title_index < viewport_index);
+    assert!(viewport_index < debug_index);
+    assert!(
+        html.find(r#"<summary>Tabs and saved state</summary>"#)
+            .unwrap()
+            > viewport_index
+    );
+    assert!(
+        html.find(r#"<summary>Input tools and forms</summary>"#)
+            .unwrap()
+            > viewport_index
+    );
+    assert!(
+        html.find(r#"<summary>Inspector and resources</summary>"#)
+            .unwrap()
+            > viewport_index
+    );
+    assert!(html.find(r#"<summary>Links</summary>"#).unwrap() > viewport_index);
+    assert!(html.find("<h2>Forms</h2>").unwrap() > debug_index);
+    assert!(html.find("<h2>Inspector</h2>").unwrap() > debug_index);
     assert!(html.contains("<h2>Forms</h2>"));
     assert!(html.contains("Forms JSON"));
     assert!(html.contains("format=forms-json"));
