@@ -1055,20 +1055,36 @@ impl Display {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextAlign {
+    Left,
     Start,
     Center,
     End,
+    Right,
 }
 
 impl TextAlign {
-    fn offset(self, available_width: usize, line_width: usize) -> usize {
+    fn offset(self, available_width: usize, line_width: usize, direction: TextDirection) -> usize {
         let remaining = available_width.saturating_sub(line_width);
         match self {
-            TextAlign::Start => 0,
+            TextAlign::Left => 0,
+            TextAlign::Start => match direction {
+                TextDirection::Ltr => 0,
+                TextDirection::Rtl => remaining,
+            },
             TextAlign::Center => remaining / 2,
-            TextAlign::End => remaining,
+            TextAlign::End => match direction {
+                TextDirection::Ltr => remaining,
+                TextDirection::Rtl => 0,
+            },
+            TextAlign::Right => remaining,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextDirection {
+    Ltr,
+    Rtl,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1135,6 +1151,7 @@ struct ComputedStyle {
     background_shade: Option<u8>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
+    text_direction: Option<TextDirection>,
     visibility: Option<Visibility>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
@@ -1171,6 +1188,7 @@ struct CssDeclarations {
     background_shade: Option<u8>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
+    text_direction: Option<TextDirection>,
     visibility: Option<Visibility>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
@@ -8846,6 +8864,13 @@ fn attr_from_attrs(attrs: &HashMap<String, String>, name: &str) -> Option<String
     attrs.get(name).cloned()
 }
 
+fn element_text_direction(element: &ElementData) -> Option<TextDirection> {
+    element
+        .attrs
+        .get("dir")
+        .and_then(|value| parse_css_text_direction(value))
+}
+
 fn pop_until(stack: &mut Vec<usize>, dom: &Dom, tag: &str) {
     while stack.len() > 1 {
         let node_id = stack.pop().unwrap_or(0);
@@ -9337,6 +9362,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "text-align" => {
                 declarations.text_align = parse_css_text_align(value).or(declarations.text_align);
             }
+            "direction" => {
+                declarations.text_direction =
+                    parse_css_text_direction(value).or(declarations.text_direction);
+            }
             "visibility" => {
                 declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
             }
@@ -9762,9 +9791,24 @@ fn parse_css_text_align(value: &str) -> Option<TextAlign> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "left" | "start" => Some(TextAlign::Start),
+        "left" => Some(TextAlign::Left),
+        "start" => Some(TextAlign::Start),
         "center" => Some(TextAlign::Center),
-        "right" | "end" => Some(TextAlign::End),
+        "end" => Some(TextAlign::End),
+        "right" => Some(TextAlign::Right),
+        _ => None,
+    }
+}
+
+fn parse_css_text_direction(value: &str) -> Option<TextDirection> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ltr" => Some(TextDirection::Ltr),
+        "rtl" => Some(TextDirection::Rtl),
         _ => None,
     }
 }
@@ -10355,6 +10399,12 @@ fn render_node(
                 renderer.enter_text_shade(text_shade);
             }
             let text_align_entered = style.text_align;
+            let text_direction_entered = style
+                .text_direction
+                .or_else(|| element_text_direction(element));
+            let text_direction_override_entered = (element.tag == "bdo")
+                .then_some(text_direction_entered)
+                .flatten();
             let white_space_entered = style.white_space;
             let text_transform_entered = style.text_transform;
             let letter_spacing_entered = style.letter_spacing;
@@ -10458,6 +10508,12 @@ fn render_node(
             });
             if let Some(text_align) = text_align_entered {
                 renderer.enter_text_align(text_align);
+            }
+            if let Some(text_direction) = text_direction_entered {
+                renderer.enter_text_direction(text_direction);
+            }
+            if let Some(text_direction_override) = text_direction_override_entered {
+                renderer.enter_text_direction_override(text_direction_override);
             }
             if let Some(white_space) = white_space_entered {
                 renderer.enter_white_space(white_space);
@@ -10584,6 +10640,12 @@ fn render_node(
             }
             if white_space_entered.is_some() {
                 renderer.exit_white_space();
+            }
+            if text_direction_override_entered.is_some() {
+                renderer.exit_text_direction_override();
+            }
+            if text_direction_entered.is_some() {
+                renderer.exit_text_direction();
             }
             if text_align_entered.is_some() {
                 renderer.exit_text_align();
@@ -10828,6 +10890,7 @@ fn computed_style(
             background_shade: None,
             text_shade: None,
             text_align: None,
+            text_direction: None,
             visibility: None,
             white_space: None,
             text_transform: None,
@@ -10856,6 +10919,7 @@ fn computed_style(
     let mut background_shade = None;
     let mut text_shade = default_text_shade(element);
     let mut text_align = None;
+    let mut text_direction = None;
     let mut visibility = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
@@ -10882,6 +10946,7 @@ fn computed_style(
     let mut background_specificity = 0u32;
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
+    let mut text_direction_specificity = 0u32;
     let mut visibility_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
@@ -10933,6 +10998,12 @@ fn computed_style(
             {
                 text_align = Some(rule_text_align);
                 text_align_specificity = rule_specificity;
+            }
+            if let Some(rule_text_direction) = rule.declarations.text_direction
+                && rule_specificity >= text_direction_specificity
+            {
+                text_direction = Some(rule_text_direction);
+                text_direction_specificity = rule_specificity;
             }
             if let Some(rule_visibility) = rule.declarations.visibility
                 && rule_specificity >= visibility_specificity
@@ -11081,6 +11152,9 @@ fn computed_style(
         if let Some(inline_text_align) = inline.text_align {
             text_align = Some(inline_text_align);
         }
+        if let Some(inline_text_direction) = inline.text_direction {
+            text_direction = Some(inline_text_direction);
+        }
         if let Some(inline_visibility) = inline.visibility {
             visibility = Some(inline_visibility);
         }
@@ -11153,6 +11227,7 @@ fn computed_style(
         background_shade,
         text_shade,
         text_align,
+        text_direction,
         visibility,
         white_space,
         text_transform,
@@ -11690,6 +11765,10 @@ struct FlowRenderer {
     text_shade_stack: Vec<u8>,
     text_align: TextAlign,
     text_align_stack: Vec<TextAlign>,
+    text_direction: TextDirection,
+    text_direction_stack: Vec<TextDirection>,
+    text_direction_override: Option<TextDirection>,
+    text_direction_override_stack: Vec<Option<TextDirection>>,
     visibility: Visibility,
     visibility_stack: Vec<Visibility>,
     white_space: WhiteSpace,
@@ -11739,6 +11818,10 @@ impl FlowRenderer {
             text_shade_stack: Vec::new(),
             text_align: TextAlign::Start,
             text_align_stack: Vec::new(),
+            text_direction: TextDirection::Ltr,
+            text_direction_stack: Vec::new(),
+            text_direction_override: None,
+            text_direction_override_stack: Vec::new(),
             visibility: Visibility::Visible,
             visibility_stack: Vec::new(),
             white_space: WhiteSpace::Normal,
@@ -11783,6 +11866,13 @@ impl FlowRenderer {
     }
 
     fn push_text(&mut self, text: &str, target_node: Option<usize>) {
+        let reversed_text;
+        let text = if self.text_direction_override == Some(TextDirection::Rtl) {
+            reversed_text = text.chars().rev().collect::<String>();
+            reversed_text.as_str()
+        } else {
+            text
+        };
         match self.white_space {
             WhiteSpace::Normal => self.push_wrapped_text(text, target_node),
             WhiteSpace::Nowrap => self.push_nowrap_text(text, target_node),
@@ -12007,9 +12097,11 @@ impl FlowRenderer {
         let line_height = self.line_height.max(1);
         if !self.current_runs.is_empty() {
             let y = self.next_y;
-            let align_offset = self
-                .text_align
-                .offset(self.available_width(), self.current_width);
+            let align_offset = self.text_align.offset(
+                self.available_width(),
+                self.current_width,
+                self.text_direction,
+            );
             let mut run_x = self.left_inset.saturating_add(align_offset);
             let mut text = String::new();
             for run in self.current_runs.drain(..) {
@@ -12198,6 +12290,28 @@ impl FlowRenderer {
 
     fn exit_text_align(&mut self) {
         self.text_align = self.text_align_stack.pop().unwrap_or(TextAlign::Start);
+    }
+
+    fn enter_text_direction(&mut self, direction: TextDirection) {
+        self.text_direction_stack.push(self.text_direction);
+        self.text_direction = direction;
+    }
+
+    fn exit_text_direction(&mut self) {
+        self.text_direction = self
+            .text_direction_stack
+            .pop()
+            .unwrap_or(TextDirection::Ltr);
+    }
+
+    fn enter_text_direction_override(&mut self, direction: TextDirection) {
+        self.text_direction_override_stack
+            .push(self.text_direction_override);
+        self.text_direction_override = Some(direction);
+    }
+
+    fn exit_text_direction_override(&mut self) {
+        self.text_direction_override = self.text_direction_override_stack.pop().unwrap_or(None);
     }
 
     fn enter_visibility(&mut self, visibility: Visibility) {

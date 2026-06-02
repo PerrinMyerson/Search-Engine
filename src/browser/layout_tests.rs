@@ -1046,6 +1046,61 @@ fn css_text_transform_capitalize_uses_word_boundaries() {
 }
 
 #[test]
+fn rtl_direction_aligns_logical_text_and_bdo_overrides_order() {
+    let render = render_html(
+        "mem://rtl-direction",
+        br#"
+            <html><body>
+              <p>Before <bdo dir="rtl">abc 123</bdo> after</p>
+              <p dir="rtl">Right edge</p>
+              <p dir="rtl" style="text-align: end">Left edge</p>
+              <p style="direction: rtl">CSS start</p>
+              <p style="direction: rtl; text-align: left">Physical left</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Before 321 cba after\nRight edge\nLeft edge\nCSS start\nPhysical left"
+    );
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before 321 cba after".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 14,
+                y: 1,
+                text: "Right edge".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Left edge".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 15,
+                y: 3,
+                text: "CSS start".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Physical left".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_letter_spacing_expands_text_runs_and_wrap_width() {
     let render = render_html(
         "mem://letter-spacing",
