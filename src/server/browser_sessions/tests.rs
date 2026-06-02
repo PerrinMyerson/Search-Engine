@@ -1938,7 +1938,13 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert_eq!(payload.viewport_x, 0);
     assert_eq!(payload.viewport_y, 0);
     assert!(payload.max_scroll_x > 0);
+    assert!(payload.max_scroll_y > 0);
     assert!(payload.viewport.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+    let html = render_browser_session_page(&payload, "/search?q=wide");
+    assert!(html.contains("<span>Top</span>"));
+    assert!(html.contains("<span>Up</span>"));
+    assert!(html.contains(">Down</a>"));
+    assert!(html.contains(">Bottom</a>"));
 
     let scroll_right = RequestTarget {
         path: "/browser".to_owned(),
@@ -1968,6 +1974,9 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(">Left</a>"));
+    assert!(html.contains(">Top</a>"));
+    assert!(html.contains(">Up</a>"));
+    assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Right</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"name="viewport_x" value="8""#));

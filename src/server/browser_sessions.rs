@@ -8302,6 +8302,18 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     );
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
     let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let top_control = nav_control(payload.viewport_y > 0, "Top", &top_href);
+    let up_control = nav_control(payload.viewport_y > 0, "Up", &up_href);
+    let down_control = nav_control(
+        payload.viewport_y < payload.max_scroll_y,
+        "Down",
+        &down_href,
+    );
+    let bottom_control = nav_control(
+        payload.viewport_y < payload.max_scroll_y,
+        "Bottom",
+        &bottom_href,
+    );
 
     format!(
         r#"<!doctype html>
@@ -8400,7 +8412,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </head>
 <body>
 <main>
-<nav class="toolbar"><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate tab</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}<a href="{top_href}">Top</a>{left_control}<a href="{up_href}">Up</a><a href="{down_href}">Down</a>{right_control}<a href="{bottom_href}">Bottom</a></nav>
+<nav class="toolbar"><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate tab</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
 <form class="toolbar" action="/browser" method="get">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
@@ -8467,10 +8479,10 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
             "Right",
             &right_href
         ),
-        top_href = html_escape::encode_double_quoted_attribute(&top_href),
-        up_href = html_escape::encode_double_quoted_attribute(&up_href),
-        down_href = html_escape::encode_double_quoted_attribute(&down_href),
-        bottom_href = html_escape::encode_double_quoted_attribute(&bottom_href),
+        top_control = top_control,
+        up_control = up_control,
+        down_control = down_control,
+        bottom_control = bottom_control,
         width = payload.width,
         height = payload.height,
         max_bytes = payload.max_bytes,
