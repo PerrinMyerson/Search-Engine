@@ -2678,6 +2678,60 @@ async fn external_stylesheets_can_rerender_current_page() {
 }
 
 #[tokio::test]
+async fn stylesheet_imports_can_rerender_current_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let stylesheet = dir.path().join("base.css");
+    let imported = dir.path().join("theme.css");
+    fs::write(
+        &stylesheet,
+        r#"
+            @import "theme.css";
+            .hide-base { display:none }
+            "#,
+    )
+    .unwrap();
+    fs::write(
+        &imported,
+        r#"
+            .title { text-transform: uppercase }
+            .hide-import { display:none }
+            "#,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"
+            <html><head><link rel="stylesheet" href="base.css"></head>
+            <body>
+              <p class="title">Imported title</p>
+              <p class="hide-import">Hidden import</p>
+              <p class="hide-base">Hidden base</p>
+            </body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    assert!(session.current().unwrap().text.contains("Hidden import"));
+    assert!(session.current().unwrap().text.contains("Hidden base"));
+
+    let report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(report.stylesheet_count, 2);
+    assert_eq!(report.applied, 2);
+    assert_eq!(report.failed, 0);
+    assert!(report.fetches.iter().any(|fetch| {
+        fetch.resource.initiator == "css-import"
+            && fetch.resource.resolved.ends_with("theme.css")
+            && fetch.status == "fetched"
+    }));
+    let render = session.current().unwrap();
+    assert_eq!(render.text, "IMPORTED TITLE");
+    assert_eq!(render.css_rule_count, 3);
+}
+
+#[tokio::test]
 async fn external_scripts_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

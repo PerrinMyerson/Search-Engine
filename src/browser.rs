@@ -2699,23 +2699,50 @@ impl BrowserSession {
             .filter(|resource| resource.kind == "stylesheet")
             .cloned()
             .collect::<Vec<_>>();
-        let mut fetches = Vec::with_capacity(stylesheet_resources.len());
-        let mut stylesheet_text = Vec::new();
+        enum StylesheetRenderTask {
+            Fetch(BrowserResource),
+            Apply(String),
+        }
 
-        for resource in stylesheet_resources {
-            let fetch = fetch_resource_with_cache(
-                resource,
-                max_resource_bytes,
-                &mut self.cookie_jar,
-                &mut self.resource_cache,
-            )
-            .await;
-            if matches!(fetch.status.as_str(), "fetched" | "cached")
-                && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
-            {
-                stylesheet_text.push(String::from_utf8_lossy(bytes).into_owned());
+        let mut tasks = stylesheet_resources
+            .into_iter()
+            .map(StylesheetRenderTask::Fetch)
+            .collect::<VecDeque<_>>();
+        let mut fetches = Vec::new();
+        let mut stylesheet_text = Vec::new();
+        let mut seen_stylesheets = HashSet::new();
+
+        while let Some(task) = tasks.pop_front() {
+            match task {
+                StylesheetRenderTask::Apply(css) => stylesheet_text.push(css),
+                StylesheetRenderTask::Fetch(resource) => {
+                    if !seen_stylesheets.insert(resource.resolved.clone()) {
+                        continue;
+                    }
+                    let fetch = fetch_resource_with_cache(
+                        resource,
+                        max_resource_bytes,
+                        &mut self.cookie_jar,
+                        &mut self.resource_cache,
+                    )
+                    .await;
+                    if matches!(fetch.status.as_str(), "fetched" | "cached")
+                        && let Some(bytes) =
+                            self.resource_cache.cached_bytes(&fetch.resource.resolved)
+                    {
+                        let css = String::from_utf8_lossy(bytes).into_owned();
+                        let (imports, body) =
+                            stylesheet_imports_and_body(&fetch.resource.resolved, &css);
+                        if !body.trim().is_empty() {
+                            tasks.push_front(StylesheetRenderTask::Apply(body));
+                        }
+                        for import in imports.into_iter().rev() {
+                            tasks.push_front(StylesheetRenderTask::Fetch(import));
+                        }
+                    }
+                    fetches.push(fetch);
+                }
             }
-            fetches.push(fetch);
         }
 
         let applied = stylesheet_text.len();
@@ -2853,6 +2880,189 @@ impl BrowserSession {
             entry.render = render;
         }
     }
+}
+
+fn stylesheet_imports_and_body(source: &str, css: &str) -> (Vec<BrowserResource>, String) {
+    let (urls, body) = css_import_urls_and_body(css);
+    let imports = urls
+        .into_iter()
+        .map(|url| BrowserResource {
+            kind: "stylesheet".to_owned(),
+            initiator: "css-import".to_owned(),
+            resolved: resolve_browser_href(source, &url),
+            url,
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect();
+    (imports, body)
+}
+
+fn css_import_urls_and_body(css: &str) -> (Vec<String>, String) {
+    let css = strip_css_comments(css);
+    let mut imports = Vec::new();
+    let mut body = String::with_capacity(css.len());
+    let mut cursor = 0usize;
+
+    while let Some(offset) = find_next_css_import_rule(&css[cursor..]) {
+        let start = cursor.saturating_add(offset);
+        body.push_str(&css[cursor..start]);
+        let Some(end) = css_at_rule_end(&css, start) else {
+            body.push_str(&css[start..]);
+            return (imports, body);
+        };
+        if let Some(url) = parse_css_import_url(&css[start..end]) {
+            imports.push(url);
+        }
+        cursor = end;
+    }
+
+    body.push_str(&css[cursor..]);
+    (imports, body)
+}
+
+fn find_next_css_import_rule(css: &str) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'@' if starts_with_ascii_case(&css[i..], "@import")
+                && bytes
+                    .get(i.saturating_add("@import".len()))
+                    .is_some_and(u8::is_ascii_whitespace) =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn css_at_rule_end(css: &str, start: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote = None;
+    let mut paren_depth = 0usize;
+    let mut i = start;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b';' if paren_depth == 0 => return Some(i + 1),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_css_import_url(rule: &str) -> Option<String> {
+    let rule = rule.trim_start();
+    if !starts_with_ascii_case(rule, "@import") {
+        return None;
+    }
+    let value = rule["@import".len()..].trim_start();
+    if starts_with_ascii_case(value, "url(") {
+        let close = css_url_function_end(value, "url(".len())?;
+        return non_empty_css_url(&value["url(".len()..close]);
+    }
+    let quote = value.as_bytes().first().copied()?;
+    if matches!(quote, b'\'' | b'"') {
+        let end = quoted_css_string_end(value, quote)?;
+        return non_empty_css_url(&value[1..end]);
+    }
+    let url = value
+        .trim_end_matches(';')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default();
+    non_empty_css_url(url)
+}
+
+fn css_url_function_end(value: &str, start: usize) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut quote = None;
+    let mut i = start;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                i = i.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b')' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn quoted_css_string_end(value: &str, quote: u8) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut i = 1usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = i.saturating_add(2);
+            continue;
+        }
+        if bytes[i] == quote {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn non_empty_css_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    let value = unquote_css_attribute_value(value);
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn starts_with_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
 fn set_live_form_value(dom: &mut Dom, node_id: usize, kind: &str, value: &str) {
