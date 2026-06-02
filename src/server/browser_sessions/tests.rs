@@ -2113,6 +2113,16 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"name="action" value="current""#));
     assert!(html.contains(r#"name="x" value="8""#));
     assert!(html.contains(r#"name="y" value="4""#));
+    assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"data-scroll-url="/browser?"#));
+    assert!(html.contains(r#"data-viewport-x="8""#));
+    assert!(html.contains(r#"data-viewport-y="4""#));
+    assert!(html.contains(r#"data-viewport-width="40""#));
+    assert!(html.contains(r#"data-viewport-height="16""#));
+    assert!(html.contains(r#"tabindex="0" role="region""#));
+    assert!(html.contains(r#"addEventListener("wheel""#));
+    assert!(html.contains(r#"addEventListener("keydown""#));
+    assert!(html.contains("WheelEvent.DOM_DELTA_LINE"));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert!(

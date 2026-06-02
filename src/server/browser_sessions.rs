@@ -8515,7 +8515,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
 .auto-visual-status {{ margin: 12px 0 8px; color: #5d636b; font-size: 13px; font-weight: 700; }}
-.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; }}
+.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; }}
+.browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
 .browser-viewport-primary {{ margin: 10px 0 18px; }}
@@ -8787,11 +8788,20 @@ fn browser_json_script_string(value: &str) -> String {
 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
     if let Some(image) = &payload.viewport_image {
+        let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
         return format!(
-            r#"<div class="browser-raster-shell"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="Rendered browser viewport"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
+            scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
+            viewport_x = payload.viewport_x,
+            viewport_y = payload.viewport_y,
+            viewport_width = payload.width,
+            viewport_height = payload.height,
+            max_scroll_x = payload.max_scroll_x,
+            max_scroll_y = payload.max_scroll_y,
             src = html_escape::encode_double_quoted_attribute(&image.data_url),
             width = image.width,
             height = image.height,
+            script = render_browser_session_viewport_scroll_script(),
         );
     }
     if let Some(error) = &payload.viewport_image_error {
@@ -8801,6 +8811,88 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
         );
     }
     String::new()
+}
+
+fn render_browser_session_viewport_scroll_script() -> &'static str {
+    r#"<script>
+(() => {
+  const shell = document.querySelector("[data-browser-viewport-scroll]");
+  if (!shell) {
+    return;
+  }
+  const numberData = (name) => {
+    const value = Number(shell.dataset[name]);
+    return Number.isFinite(value) ? value : 0;
+  };
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const navigate = (dx, dy) => {
+    const x = numberData("viewportX");
+    const y = numberData("viewportY");
+    const maxX = Math.max(0, numberData("maxScrollX"));
+    const maxY = Math.max(0, numberData("maxScrollY"));
+    const nextX = clamp(x + dx, 0, maxX);
+    const nextY = clamp(y + dy, 0, maxY);
+    const appliedDx = nextX - x;
+    const appliedDy = nextY - y;
+    if (appliedDx === 0 && appliedDy === 0) {
+      return false;
+    }
+    const url = new URL(shell.dataset.scrollUrl, window.location.href);
+    url.searchParams.set("dx", String(appliedDx));
+    url.searchParams.set("dy", String(appliedDy));
+    window.location.href = url.toString();
+    return true;
+  };
+  const wheelCells = (delta, deltaMode, viewportSize) => {
+    if (!delta) {
+      return 0;
+    }
+    let units = delta / 24;
+    if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
+      units = delta;
+    } else if (deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+      units = delta * Math.max(1, viewportSize);
+    }
+    const limit = Math.max(1, Math.ceil(Math.max(1, viewportSize) / 2));
+    const magnitude = clamp(Math.round(Math.abs(units)) || 1, 1, limit);
+    return Math.sign(delta) * magnitude;
+  };
+  shell.addEventListener("wheel", (event) => {
+    const dx = wheelCells(event.deltaX, event.deltaMode, numberData("viewportWidth"));
+    const dy = wheelCells(event.deltaY, event.deltaMode, numberData("viewportHeight"));
+    if ((dx || dy) && navigate(dx, dy)) {
+      event.preventDefault();
+    }
+  }, { passive: false });
+  shell.addEventListener("keydown", (event) => {
+    const pageY = Math.max(1, Math.floor(numberData("viewportHeight") / 2));
+    let dx = 0;
+    let dy = 0;
+    if (event.key === "ArrowDown") {
+      dy = 1;
+    } else if (event.key === "ArrowUp") {
+      dy = -1;
+    } else if (event.key === "ArrowRight") {
+      dx = 1;
+    } else if (event.key === "ArrowLeft") {
+      dx = -1;
+    } else if (event.key === "PageDown" || event.key === " ") {
+      dy = pageY;
+    } else if (event.key === "PageUp") {
+      dy = -pageY;
+    } else if (event.key === "Home") {
+      dy = -numberData("viewportY");
+    } else if (event.key === "End") {
+      dy = numberData("maxScrollY") - numberData("viewportY");
+    } else {
+      return;
+    }
+    if (navigate(dx, dy)) {
+      event.preventDefault();
+    }
+  });
+})();
+</script>"#
 }
 
 fn browser_session_state_export_payload(
