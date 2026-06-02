@@ -1617,6 +1617,51 @@ Tail"
 }
 
 #[test]
+fn css_font_size_zero_suppresses_text_flow_until_restored() {
+    let render = render_html(
+        "mem://font-size-zero",
+        br#"
+            <html><head><style>
+              .icon-label { font-size: 0px; }
+              .icon-label .restore { font-size: 16px; }
+              .utility { font-size: 0; }
+            </style></head>
+            <body>
+              <p>Before <span class="icon-label">Hidden icon <span class="restore">Shown</span></span> After</p>
+              <p class="utility">Suppressed <span style="font-size:12px">Restored</span></p>
+              <p>Tail</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before Shown After\nRestored\nTail");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before Shown After".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Restored".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Tail".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",

@@ -1138,6 +1138,7 @@ struct ComputedStyle {
     visibility: Option<Visibility>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
+    font_size_zero: Option<bool>,
     letter_spacing: Option<usize>,
     word_spacing: Option<usize>,
     overflow_wrap: Option<OverflowWrap>,
@@ -1174,6 +1175,7 @@ struct CssDeclarations {
     visibility: Option<Visibility>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
+    font_size_zero: Option<bool>,
     letter_spacing: Option<usize>,
     word_spacing: Option<usize>,
     overflow_wrap: Option<OverflowWrap>,
@@ -9348,6 +9350,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.text_transform =
                     parse_css_text_transform(value).or(declarations.text_transform);
             }
+            "font-size" => {
+                declarations.font_size_zero =
+                    parse_css_font_size_zero(value).or(declarations.font_size_zero);
+            }
             "letter-spacing" => {
                 declarations.letter_spacing =
                     parse_css_letter_spacing(value).or(declarations.letter_spacing);
@@ -9825,6 +9831,37 @@ fn parse_css_text_transform(value: &str) -> Option<TextTransform> {
         "capitalize" => Some(TextTransform::Capitalize),
         _ => None,
     }
+}
+
+fn parse_css_font_size_zero(value: &str) -> Option<bool> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if matches!(value.as_str(), "inherit" | "unset") {
+        return None;
+    }
+    if matches!(
+        value.as_str(),
+        "initial"
+            | "revert"
+            | "xx-small"
+            | "x-small"
+            | "small"
+            | "medium"
+            | "large"
+            | "x-large"
+            | "xx-large"
+            | "smaller"
+            | "larger"
+    ) {
+        return Some(false);
+    }
+    let numeric = [
+        "px", "rem", "em", "%", "pt", "pc", "vh", "vw", "vmin", "vmax",
+    ]
+    .iter()
+    .find_map(|suffix| value.strip_suffix(suffix))
+    .unwrap_or(&value);
+    let size = numeric.parse::<f32>().ok()?;
+    (size >= 0.0).then_some(size == 0.0)
 }
 
 fn parse_css_letter_spacing(value: &str) -> Option<usize> {
@@ -10357,6 +10394,7 @@ fn render_node(
             let text_align_entered = style.text_align;
             let white_space_entered = style.white_space;
             let text_transform_entered = style.text_transform;
+            let font_size_zero_entered = style.font_size_zero;
             let letter_spacing_entered = style.letter_spacing;
             let word_spacing_entered = style.word_spacing;
             let overflow_wrap_entered = style.overflow_wrap;
@@ -10464,6 +10502,9 @@ fn render_node(
             }
             if let Some(text_transform) = text_transform_entered {
                 renderer.enter_text_transform(text_transform);
+            }
+            if let Some(font_size_zero) = font_size_zero_entered {
+                renderer.enter_font_size_zero(font_size_zero);
             }
             if let Some(letter_spacing) = letter_spacing_entered {
                 renderer.enter_letter_spacing(letter_spacing);
@@ -10578,6 +10619,9 @@ fn render_node(
             }
             if letter_spacing_entered.is_some() {
                 renderer.exit_letter_spacing();
+            }
+            if font_size_zero_entered.is_some() {
+                renderer.exit_font_size_zero();
             }
             if text_transform_entered.is_some() {
                 renderer.exit_text_transform();
@@ -10831,6 +10875,7 @@ fn computed_style(
             visibility: None,
             white_space: None,
             text_transform: None,
+            font_size_zero: None,
             letter_spacing: None,
             word_spacing: None,
             overflow_wrap: None,
@@ -10859,6 +10904,7 @@ fn computed_style(
     let mut visibility = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
+    let mut font_size_zero = None;
     let mut letter_spacing = None;
     let mut word_spacing = None;
     let mut overflow_wrap = None;
@@ -10885,6 +10931,7 @@ fn computed_style(
     let mut visibility_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
+    let mut font_size_zero_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
     let mut word_spacing_specificity = 0u32;
     let mut overflow_wrap_specificity = 0u32;
@@ -10951,6 +10998,12 @@ fn computed_style(
             {
                 text_transform = Some(rule_text_transform);
                 text_transform_specificity = rule_specificity;
+            }
+            if let Some(rule_font_size_zero) = rule.declarations.font_size_zero
+                && rule_specificity >= font_size_zero_specificity
+            {
+                font_size_zero = Some(rule_font_size_zero);
+                font_size_zero_specificity = rule_specificity;
             }
             if let Some(rule_letter_spacing) = rule.declarations.letter_spacing
                 && rule_specificity >= letter_spacing_specificity
@@ -11090,6 +11143,9 @@ fn computed_style(
         if let Some(inline_text_transform) = inline.text_transform {
             text_transform = Some(inline_text_transform);
         }
+        if let Some(inline_font_size_zero) = inline.font_size_zero {
+            font_size_zero = Some(inline_font_size_zero);
+        }
         if let Some(inline_letter_spacing) = inline.letter_spacing {
             letter_spacing = Some(inline_letter_spacing);
         }
@@ -11156,6 +11212,7 @@ fn computed_style(
         visibility,
         white_space,
         text_transform,
+        font_size_zero,
         letter_spacing,
         word_spacing,
         overflow_wrap,
@@ -11698,6 +11755,8 @@ struct FlowRenderer {
     text_transform_stack: Vec<TextTransform>,
     text_transform_capitalize_next: bool,
     text_transform_capitalize_next_stack: Vec<bool>,
+    font_size_zero: bool,
+    font_size_zero_stack: Vec<bool>,
     letter_spacing: usize,
     letter_spacing_stack: Vec<usize>,
     word_spacing: usize,
@@ -11747,6 +11806,8 @@ impl FlowRenderer {
             text_transform_stack: Vec::new(),
             text_transform_capitalize_next: true,
             text_transform_capitalize_next_stack: Vec::new(),
+            font_size_zero: false,
+            font_size_zero_stack: Vec::new(),
             letter_spacing: 0,
             letter_spacing_stack: Vec::new(),
             word_spacing: 0,
@@ -11783,6 +11844,9 @@ impl FlowRenderer {
     }
 
     fn push_text(&mut self, text: &str, target_node: Option<usize>) {
+        if self.font_size_zero {
+            return;
+        }
         match self.white_space {
             WhiteSpace::Normal => self.push_wrapped_text(text, target_node),
             WhiteSpace::Nowrap => self.push_nowrap_text(text, target_node),
@@ -12237,6 +12301,15 @@ impl FlowRenderer {
             .text_transform_capitalize_next_stack
             .pop()
             .unwrap_or(true);
+    }
+
+    fn enter_font_size_zero(&mut self, font_size_zero: bool) {
+        self.font_size_zero_stack.push(self.font_size_zero);
+        self.font_size_zero = font_size_zero;
+    }
+
+    fn exit_font_size_zero(&mut self) {
+        self.font_size_zero = self.font_size_zero_stack.pop().unwrap_or(false);
     }
 
     fn enter_letter_spacing(&mut self, letter_spacing: usize) {
