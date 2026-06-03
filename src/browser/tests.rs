@@ -1303,6 +1303,44 @@ fn selects_jpeg_srcset_candidate_from_sizes_vw() {
 }
 
 #[test]
+fn ignores_unitless_jpeg_srcset_sizes_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let medium_jpeg = dir.path().join("medium.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&medium_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "medium.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" sizes="160" srcset="small.jpg 160w, medium.jpg 320w" alt="Unitless Sizes JPEG" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            shade: 220,
+            alt: Some("Unitless Sizes JPEG".to_owned()),
+            url: Some("medium.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
 fn selects_picture_jpeg_srcset_candidate_from_source_sizes() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

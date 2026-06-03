@@ -1327,14 +1327,17 @@ fn parse_source_size_value(value: &str, viewport_width_css_px: usize) -> Option<
         }
         return Some(values[1].clamp(values[0], values[2]));
     }
-    if let Some(vw) = value.strip_suffix("vw") {
+    if let Some(vw) = strip_ascii_case_suffix(value, "vw") {
         let vw = vw.trim().parse::<f64>().ok()?;
         if !vw.is_finite() || vw <= 0.0 || viewport_width_css_px == 0 {
             return None;
         }
         return Some((viewport_width_css_px as f64) * vw / 100.0);
     }
-    let pixels = value.trim_end_matches("px").trim().parse::<f64>().ok()?;
+    let pixels = strip_ascii_case_suffix(value, "px")?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
     pixels.is_finite().then_some(pixels)
 }
 
@@ -1375,15 +1378,26 @@ fn parse_source_size_calc(expression: &str, viewport_width_css_px: usize) -> Opt
 }
 
 fn parse_source_size_calc_term(term: &str, viewport_width_css_px: usize) -> Option<f64> {
-    if let Some(vw) = term.strip_suffix("vw") {
+    if let Some(vw) = strip_ascii_case_suffix(term, "vw") {
         let vw = vw.trim().parse::<f64>().ok()?;
         if !vw.is_finite() || viewport_width_css_px == 0 {
             return None;
         }
         return Some((viewport_width_css_px as f64) * vw / 100.0);
     }
-    let px = term.trim_end_matches("px").trim().parse::<f64>().ok()?;
+    let px = strip_ascii_case_suffix(term, "px")?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
     px.is_finite().then_some(px)
+}
+
+fn strip_ascii_case_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    let split = value.len().checked_sub(suffix.len())?;
+    let tail = value.get(split..)?;
+    tail.eq_ignore_ascii_case(suffix)
+        .then(|| value.get(..split))
+        .flatten()
 }
 
 fn split_css_top_level_commas(input: &str) -> Vec<&str> {
