@@ -874,7 +874,7 @@ pub(super) fn image_render_source(
         .or_else(|| element.src.clone());
     if selected_source
         .as_deref()
-        .is_none_or(is_lazy_data_image_placeholder_src)
+        .is_none_or(is_lazy_image_placeholder_src)
         && let Some(lazy_source) = lazy_image_render_source(
             dom,
             node_id,
@@ -913,6 +913,8 @@ fn picture_source_lazy_srcset(
         &[
             "data-srcset",
             "data-lazy-srcset",
+            "data-original-srcset",
+            "data-originalset",
             "data-image-srcset",
             "data-img-srcset",
         ],
@@ -973,6 +975,8 @@ fn lazy_image_render_source(
                 &[
                     "data-srcset",
                     "data-lazy-srcset",
+                    "data-original-srcset",
+                    "data-originalset",
                     "data-image-srcset",
                     "data-img-srcset",
                 ],
@@ -985,6 +989,7 @@ fn lazy_image_render_source(
                 &[
                     "data-src",
                     "data-lazy-src",
+                    "data-original-url",
                     "data-original",
                     "data-original-src",
                     "data-image",
@@ -1007,11 +1012,36 @@ fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Op
     })
 }
 
-fn is_lazy_data_image_placeholder_src(src: &str) -> bool {
+fn is_lazy_image_placeholder_src(src: &str) -> bool {
     let src = src.trim_start().to_ascii_lowercase();
-    src.starts_with("data:image/svg+xml")
+    if src.starts_with("data:image/svg+xml")
         || src.starts_with("data:image/png")
         || src.starts_with("data:image/gif")
+    {
+        return true;
+    }
+    let path = src
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(src.as_str())
+        .trim_end_matches('/');
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        filename,
+        "blank.gif"
+            | "blank.png"
+            | "blank.svg"
+            | "spacer.gif"
+            | "spacer.png"
+            | "spacer.svg"
+            | "transparent.gif"
+            | "transparent.png"
+            | "transparent.svg"
+            | "pixel.gif"
+            | "pixel.png"
+            | "1x1.gif"
+            | "1x1.png"
+    ) || filename.contains("placeholder")
 }
 
 fn is_empty_picture_placeholder_source(element: &ElementData, srcset: &str) -> bool {
@@ -1019,10 +1049,7 @@ fn is_empty_picture_placeholder_source(element: &ElementData, srcset: &str) -> b
         return false;
     }
     let urls = srcset_candidate_urls(srcset);
-    !urls.is_empty()
-        && urls
-            .iter()
-            .all(|url| is_lazy_data_image_placeholder_src(url))
+    !urls.is_empty() && urls.iter().all(|url| is_lazy_image_placeholder_src(url))
 }
 
 #[cfg(test)]

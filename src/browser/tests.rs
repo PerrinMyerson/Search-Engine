@@ -1218,7 +1218,7 @@ fn selects_descriptorless_jpeg_srcset_candidate_as_default_density() {
     fs::write(&retina_jpeg, tiny_test_jpeg_bytes()).unwrap();
 
     let source = page.display().to_string();
-    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let decoded_info = decoded_image_entry(&source, "large.jpg").unwrap().info();
     let render = render_html(
         &source,
         br#"<html><body><img src="fallback.jpg" srcset="small.jpg, retina.jpg 2x" alt="Default Density JPEG" width="80" height="24"></body></html>"#,
@@ -1296,7 +1296,7 @@ fn ignores_jpeg_srcset_candidate_with_mixed_descriptors() {
     fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
 
     let source = page.display().to_string();
-    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let decoded_info = decoded_image_entry(&source, "large.jpg").unwrap().info();
     let render = render_html(
         &source,
         br#"<html><body><img src="fallback.jpg" sizes="160px" srcset="bad.jpg 160w 1x, small.jpg 160w, large.jpg 320w" alt="Mixed Descriptor JPEG" height="24"></body></html>"#,
@@ -2077,7 +2077,97 @@ fn lazy_gif_placeholder_img_uses_data_image_srcset_for_rendering() {
                 height: 4,
                 shade: 220,
                 alt: Some("Data image srcset JPEG".to_owned()),
-                url: Some("small.jpg".to_owned()),
+                url: Some("large.jpg".to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(decoded_info.pixel_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn image_visible_resources_uses_lazy_source_for_file_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero_jpeg = dir.path().join("hero.jpg");
+    fs::write(&hero_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "hero.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="/assets/blank.gif?cache=1" data-original-url="hero.jpg" alt="Original URL JPEG" width="80" height="48"><p>After</p></body></html>"#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("Original URL JPEG".to_owned()),
+                url: Some("hero.jpg".to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(decoded_info.pixel_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn image_visible_resources_uses_picture_original_srcset_for_file_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let large_jpeg = dir.path().join("large.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><picture><source type="image/jpeg" data-original-srcset="small.jpg 160w, large.jpg 320w"><img src="/assets/placeholder.png" alt="Original srcset JPEG" height="48"></picture><p>After</p></body></html>"#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                shade: 220,
+                alt: Some("Original srcset JPEG".to_owned()),
+                url: Some("large.jpg".to_owned()),
                 decoded_width: Some(2),
                 decoded_height: Some(2),
                 decoded_hash: Some(decoded_info.pixel_hash),
