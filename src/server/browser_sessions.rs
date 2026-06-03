@@ -8812,6 +8812,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-page-state {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .viewport-state-chip {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #f7f7f5; color: #3a3f45; font-size: 12px; font-weight: 800; white-space: nowrap; }}
 .viewport-state-chip.report {{ background: #eef4ff; border-color: #c7d7ff; color: #1d3f91; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }}
+.viewport-state-chip.warning {{ background: #fff7e8; border-color: #f0c16b; color: #6b4300; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }}
 .viewport-command-jump {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
@@ -11521,9 +11522,10 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         r#"<span class="resource-visual-status resource-action-status" data-browser-visual-status data-browser-resource-status-output aria-live="polite"></span>"#.to_owned()
     };
     let page_state = render_browser_session_viewport_page_state(payload);
+    let render_status = render_browser_session_render_status(payload);
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls"><span class="viewport-command-label">Scroll</span>{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}{render_status}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls"><span class="viewport-command-label">Scroll</span>{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -11537,6 +11539,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         visual_status = visual_status,
         page_state = page_state,
+        render_status = render_status,
         page_left = nav_control(can_scroll_left, "Page left", &page_left_href),
         top = nav_control(can_scroll_up, "Top", &top_href),
         page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
@@ -11617,6 +11620,49 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
     format!(
         r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}</div>"#,
         chips = chips,
+    )
+}
+
+fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> String {
+    let raster_chip = if let Some(image) = payload.viewport_image.as_ref() {
+        format!(
+            r#"<span class="viewport-state-chip">raster ready {}x{}</span>"#,
+            image.width, image.height,
+        )
+    } else if let Some(error) = payload.viewport_image_error.as_ref() {
+        format!(
+            r#"<span class="viewport-state-chip warning">raster error: {}</span>"#,
+            html_escape::encode_text(error),
+        )
+    } else {
+        r#"<span class="viewport-state-chip warning">raster unavailable</span>"#.to_owned()
+    };
+    let text_lines = payload.page_text.lines().count();
+    let resource_summary = if payload.resource_count == 0 {
+        r#"<span class="viewport-state-chip">0 resources</span>"#.to_owned()
+    } else {
+        format!(
+            r#"<span class="viewport-state-chip">{} · {}</span>"#,
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_count,
+                "resource",
+                "resources",
+            )),
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_image_count,
+                "image",
+                "images",
+            )),
+        )
+    };
+
+    format!(
+        r#"<div class="viewport-command-row viewport-render-status" data-browser-render-status><span class="viewport-command-label">Render</span>{raster_chip}<span class="viewport-state-chip">text {text_lines} lines</span><span class="viewport-state-chip">document {document_width}x{document_height}</span>{resource_summary}</div>"#,
+        raster_chip = raster_chip,
+        text_lines = text_lines,
+        document_width = payload.document_width,
+        document_height = payload.document_height,
+        resource_summary = resource_summary,
     )
 }
 
