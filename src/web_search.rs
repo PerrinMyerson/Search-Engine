@@ -14,6 +14,7 @@ const BRAVE_WEB_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web
 const BRAVE_MAX_COUNT: usize = 20;
 const DEFAULT_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_CACHE_MAX_ENTRIES: usize = 4096;
+const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_MAX_WEB_RESULTS: usize = 20;
 const DEFAULT_MIN_LOCAL_RESULTS: usize = 20;
 
@@ -22,6 +23,7 @@ pub struct WebSearchConfig {
     provider: ThirdPartySearchProvider,
     cache_path: PathBuf,
     result_log_path: PathBuf,
+    result_log_max_entries: usize,
     cache_ttl_secs: u64,
     min_local_results: usize,
     max_results: usize,
@@ -129,6 +131,8 @@ impl WebSearchService {
         let result_log_path = env::var_os("BRUTAL_WEB_RESULT_LOG_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
+        let result_log_max_entries = env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES")
+            .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
         let provider = match api_key {
             Some(api_key) => ThirdPartySearchProvider::Brave { api_key },
             None if cache_path.exists() => ThirdPartySearchProvider::CacheOnly,
@@ -159,6 +163,7 @@ impl WebSearchService {
                 provider,
                 cache_path,
                 result_log_path,
+                result_log_max_entries,
                 cache_ttl_secs,
                 min_local_results,
                 max_results,
@@ -248,6 +253,7 @@ impl WebSearchService {
             &normalized_query,
             self.provider_name(),
             &results,
+            self.config.result_log_max_entries,
         )?;
 
         Ok(WebSearchLookup {
@@ -518,6 +524,7 @@ fn append_result_log(
     normalized_query: &str,
     provider: &str,
     results: &[WebSearchResult],
+    max_entries: usize,
 ) -> Result<()> {
     if results.is_empty() {
         return Ok(());
@@ -549,6 +556,46 @@ fn append_result_log(
         file.write_all(b"\n")?;
     }
     file.flush()?;
+    enforce_result_log_retention(path, max_entries)?;
+    Ok(())
+}
+
+fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
+    if max_entries == 0 || !path.exists() {
+        return Ok(());
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("open web search result log {}", path.display()))?;
+    let entries = BufReader::new(file)
+        .lines()
+        .filter_map(|line| match line {
+            Ok(line) if line.trim().is_empty() => None,
+            other => Some(other),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read web search result log {}", path.display()))?;
+    if entries.len() <= max_entries {
+        return Ok(());
+    }
+
+    let tmp_path = path.with_extension("tmp");
+    {
+        let mut file = fs::File::create(&tmp_path)
+            .with_context(|| format!("create web search result log temp {}", tmp_path.display()))?;
+        for line in entries.iter().skip(entries.len() - max_entries) {
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
+        file.flush()?;
+    }
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "replace web search result log {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -856,6 +903,7 @@ mod tests {
                 web_result("https://example.com/one", 100),
                 web_result("https://example.com/two", 101),
             ],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
         )
         .unwrap();
 
@@ -867,6 +915,43 @@ mod tests {
         assert!(lines.contains("https://example.com/one"));
         assert!(lines.contains(r#""rank":2"#));
         assert!(lines.contains("https://example.com/two"));
+    }
+
+    #[test]
+    fn append_result_log_keeps_only_newest_max_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        append_result_log(
+            &path,
+            "Old Query",
+            "old query",
+            "brave",
+            &[
+                web_result("https://example.com/one", 100),
+                web_result("https://example.com/two", 101),
+            ],
+            3,
+        )
+        .unwrap();
+        append_result_log(
+            &path,
+            "New Query",
+            "new query",
+            "brave",
+            &[
+                web_result("https://example.com/three", 102),
+                web_result("https://example.com/four", 103),
+            ],
+            3,
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+        assert!(!lines.contains("https://example.com/one"));
+        assert!(lines.contains("https://example.com/two"));
+        assert!(lines.contains("https://example.com/three"));
+        assert!(lines.contains("https://example.com/four"));
     }
 
     #[tokio::test]
@@ -892,6 +977,7 @@ mod tests {
                 provider: ThirdPartySearchProvider::CacheOnly,
                 cache_path: path.clone(),
                 result_log_path: dir.path().join("brave-results.jsonl"),
+                result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
                 cache_ttl_secs: 60,
                 min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
                 max_results: DEFAULT_MAX_WEB_RESULTS,
