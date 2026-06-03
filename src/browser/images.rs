@@ -756,20 +756,27 @@ pub(super) fn image_render_source(
         .attrs
         .get("width")
         .and_then(|value| parse_css_pixel_dimension(value));
+    let srcset_target_width =
+        desired_width.or_else(|| (viewport_width_css_px > 0).then_some(viewport_width_css_px));
     let selected_source = picture_source_srcset(dom, node_id, viewport_width_css_px)
-        .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
+        .and_then(|srcset| choose_srcset_candidate(srcset, srcset_target_width))
         .or_else(|| {
             element
                 .srcset
                 .as_deref()
-                .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
+                .and_then(|srcset| choose_srcset_candidate(srcset, srcset_target_width))
         })
         .or_else(|| element.src.clone());
     if selected_source
         .as_deref()
         .is_none_or(is_lazy_data_image_placeholder_src)
-        && let Some(lazy_source) =
-            lazy_image_render_source(dom, node_id, element, desired_width, viewport_width_css_px)
+        && let Some(lazy_source) = lazy_image_render_source(
+            dom,
+            node_id,
+            element,
+            srcset_target_width,
+            viewport_width_css_px,
+        )
     {
         return Some(lazy_source);
     }
