@@ -738,6 +738,9 @@ mod native {
                         close: false,
                     });
                 }
+                Key::Tab | Key::PageUp | Key::PageDown => {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 _ => {}
             }
         }
@@ -2706,6 +2709,99 @@ mod native {
                 app.active_session().unwrap().current().unwrap().title,
                 "First"
             );
+        }
+
+        #[tokio::test]
+        async fn browser_window_single_tab_command_cycle_keys_do_not_fall_through_to_page() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("single-tab-command-cycle.html");
+            std::fs::write(
+                &path,
+                r#"<!doctype html>
+<html>
+<head><title>Single Tab Command Cycle</title></head>
+<body>
+<form><input name="q" value="search"></form>
+<p>top</p>
+<p>middle</p>
+<p>bottom</p>
+<p>after bottom</p>
+<p>final line</p>
+</body>
+</html>"#,
+            )
+            .unwrap();
+            let mut app = BrowserApp::open(
+                path.to_str().unwrap(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 3,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 2 })
+                .await
+                .unwrap();
+            let viewport = app.active_viewport().unwrap();
+            assert_eq!(app.tab_count(), 1);
+            assert!(app.active_session().unwrap().focused_control().is_none());
+
+            for (key, modifiers) in [
+                (
+                    Key::Tab,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::Tab,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: true,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::PageUp,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::PageDown,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+            ] {
+                let mut mode = BrowserWindowMode::Page;
+                let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers)
+                    .await
+                    .unwrap();
+
+                assert!(!result.dirty, "{key:?} should not repaint");
+                assert!(!result.close, "{key:?} should not close");
+                assert_eq!(mode, BrowserWindowMode::Page);
+                let actual_viewport = app.active_viewport().unwrap();
+                assert_eq!(actual_viewport.x, viewport.x);
+                assert_eq!(actual_viewport.y, viewport.y);
+                assert_eq!(actual_viewport.width, viewport.width);
+                assert_eq!(actual_viewport.height, viewport.height);
+                assert!(app.active_session().unwrap().focused_control().is_none());
+                assert_eq!(app.active_tab(), 0);
+            }
         }
 
         #[tokio::test]
