@@ -1279,7 +1279,7 @@ fn parse_sizes_candidate(candidate: &str, viewport_width_css_px: usize) -> Optio
     if let Some(size) = parse_source_size_dimension(candidate, viewport_width_css_px) {
         return Some(size);
     }
-    let media_end = candidate.rfind(')')?;
+    let media_end = matching_closing_paren(candidate, 0)?;
     let media = candidate[..=media_end].trim();
     let size = candidate[media_end + 1..].trim();
     media_query_matches_current_screen(media, viewport_width_css_px)
@@ -1292,6 +1292,10 @@ fn parse_source_size_dimension(value: &str, viewport_width_css_px: usize) -> Opt
     if value.eq_ignore_ascii_case("auto") {
         return None;
     }
+    if value.len() >= 6 && value[..5].eq_ignore_ascii_case("calc(") && value.ends_with(')') {
+        let value = &value[5..value.len() - 1];
+        return parse_source_size_calc(value, viewport_width_css_px);
+    }
     if let Some(vw) = value.strip_suffix("vw") {
         let vw = vw.trim().parse::<f64>().ok()?;
         if !vw.is_finite() || vw <= 0.0 || viewport_width_css_px == 0 {
@@ -1300,6 +1304,66 @@ fn parse_source_size_dimension(value: &str, viewport_width_css_px: usize) -> Opt
         return Some(((viewport_width_css_px as f64) * vw / 100.0).ceil() as usize);
     }
     parse_css_pixel_dimension(value)
+}
+
+fn parse_source_size_calc(expression: &str, viewport_width_css_px: usize) -> Option<usize> {
+    let mut total = 0.0f64;
+    let mut sign = 1.0f64;
+    let mut term_start = 0usize;
+    let bytes = expression.as_bytes();
+    let mut index = 0usize;
+    while index <= bytes.len() {
+        let at_end = index == bytes.len();
+        let is_operator = !at_end && matches!(bytes[index], b'+' | b'-');
+        if at_end || is_operator {
+            let term = expression[term_start..index].trim();
+            if !term.is_empty() {
+                total += sign * parse_source_size_calc_term(term, viewport_width_css_px)?;
+            }
+            if at_end {
+                break;
+            }
+            sign = if bytes[index] == b'-' { -1.0 } else { 1.0 };
+            term_start = index + 1;
+        }
+        index += 1;
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    Some(total.ceil() as usize)
+}
+
+fn parse_source_size_calc_term(term: &str, viewport_width_css_px: usize) -> Option<f64> {
+    if let Some(vw) = term.strip_suffix("vw") {
+        let vw = vw.trim().parse::<f64>().ok()?;
+        if !vw.is_finite() || viewport_width_css_px == 0 {
+            return None;
+        }
+        return Some((viewport_width_css_px as f64) * vw / 100.0);
+    }
+    let px = term.trim_end_matches("px").trim().parse::<f64>().ok()?;
+    px.is_finite().then_some(px)
+}
+
+fn matching_closing_paren(input: &str, open_index: usize) -> Option<usize> {
+    if input.as_bytes().get(open_index) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (index, byte) in input.as_bytes().iter().enumerate().skip(open_index) {
+        match byte {
+            b'(' => depth = depth.saturating_add(1),
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn media_query_matches_current_screen(query: &str, viewport_width_css_px: usize) -> bool {
