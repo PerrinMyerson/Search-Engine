@@ -633,7 +633,7 @@ mod native {
                         close: false,
                     });
                 }
-                Key::LeftBracket if modifiers.shift && app.tab_count() > 0 => {
+                Key::LeftBracket if modifiers.shift && app.tab_count() > 1 => {
                     dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
@@ -642,7 +642,7 @@ mod native {
                         close: false,
                     });
                 }
-                Key::RightBracket if modifiers.shift && app.tab_count() > 0 => {
+                Key::RightBracket if modifiers.shift && app.tab_count() > 1 => {
                     dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
@@ -708,7 +708,7 @@ mod native {
                         close: true,
                     });
                 }
-                Key::Tab if app.tab_count() > 0 => {
+                Key::Tab if app.tab_count() > 1 => {
                     dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
                         .await?;
@@ -717,7 +717,7 @@ mod native {
                         close: false,
                     });
                 }
-                Key::PageUp if app.tab_count() > 0 => {
+                Key::PageUp if app.tab_count() > 1 => {
                     dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
@@ -726,7 +726,7 @@ mod native {
                         close: false,
                     });
                 }
-                Key::PageDown if app.tab_count() > 0 => {
+                Key::PageDown if app.tab_count() > 1 => {
                     dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
@@ -2515,6 +2515,97 @@ mod native {
                 .unwrap();
             assert!(next.dirty);
             assert_eq!(app.active_tab(), 2);
+        }
+
+        #[tokio::test]
+        async fn browser_window_tab_cycle_shortcuts_noop_with_single_tab() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(app.active_tab(), 0);
+
+            for (key, modifiers) in [
+                (
+                    Key::Tab,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::Tab,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: true,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::PageUp,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::PageDown,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: false,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::LeftBracket,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: true,
+                        alt: false,
+                    },
+                ),
+                (
+                    Key::RightBracket,
+                    BrowserWindowModifiers {
+                        command: true,
+                        shift: true,
+                        alt: false,
+                    },
+                ),
+            ] {
+                let mut mode = BrowserWindowMode::Find {
+                    text: "keep prompt".to_owned(),
+                    replace_on_input: false,
+                };
+                let result = handle_browser_window_key(&mut app, &mut mode, key, modifiers)
+                    .await
+                    .unwrap();
+
+                assert!(!result.dirty, "{key:?} should not repaint");
+                assert!(!result.close, "{key:?} should not close");
+                assert_eq!(
+                    mode,
+                    BrowserWindowMode::Find {
+                        text: "keep prompt".to_owned(),
+                        replace_on_input: false,
+                    }
+                );
+                assert_eq!(app.tab_count(), 1);
+                assert_eq!(app.active_tab(), 0);
+            }
         }
 
         #[tokio::test]
