@@ -8837,10 +8837,19 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("action=fetch-resources"));
+    assert!(html.contains("action=make-visual"));
+    assert!(html.contains(r#"data-browser-make-visual-action"#));
+    assert!(html.contains(r#"data-browser-visual-status"#));
+    assert!(html.contains(r#"data-browser-make-visual-status"#));
+    assert!(html.contains(r#"section.dataset.visualPending = "true""#));
+    assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
+    assert!(html.contains(r#"target.setAttribute("aria-disabled", "true")"#));
+    assert!(html.contains(">Make visual</a>"));
     assert!(html.contains("action=apply-styles"));
     assert!(html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Preparing visual render"));
+    assert!(html.contains("Making visual..."));
     assert!(html.contains("Applying styles..."));
     assert!(html.contains("sessionStorage"));
     assert!(html.contains("guardAutoVisualControls"));
@@ -9095,6 +9104,12 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(">Make visual</a>"));
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"class="clear-link primary-action""#));
+    assert!(html.contains(r#"data-browser-make-visual-action"#));
+    assert!(html.contains(r#"data-browser-resource-actions"#));
+    assert!(html.contains(r#"data-browser-visual-status aria-live="polite""#));
+    assert!(html.contains(r#"data-browser-make-visual-status"#));
+    assert!(html.contains(r#"section.dataset.visualPending = "true""#));
+    assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("Making visual..."));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
 
@@ -9437,6 +9452,10 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
     );
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains("action=load-images"));
+    assert!(html.contains(">Make visual</a>"));
+    assert!(html.contains("action=make-visual"));
+    assert!(html.contains(r#"data-browser-make-visual-action"#));
+    assert!(html.contains(r#"data-browser-visual-status"#));
     assert!(html.contains(">Fetch resources</a>"));
     assert!(html.contains(">Apply styles</a>"));
     assert!(html.contains(">Resources JSON</a>"));
@@ -9464,6 +9483,12 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
             .unwrap()
             .contains("action=load-images")
     );
+    assert!(
+        exported["action_urls"]["make_visual"]
+            .as_str()
+            .unwrap()
+            .contains("action=make-visual")
+    );
 
     let resources_json_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -9486,6 +9511,12 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
             .as_str()
             .unwrap()
             .contains("action=fetch-resources")
+    );
+    assert!(
+        exported_resources["action_urls"]["make_visual"]
+            .as_str()
+            .unwrap()
+            .contains("action=make-visual")
     );
     assert!(
         exported_resources["action_urls"]["apply_stylesheets"]
@@ -9580,12 +9611,17 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"<img class="browser-raster""#));
     assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains(">Make visual</a>"));
+    assert!(html.contains("action=make-visual"));
+    assert!(html.contains(r#"data-browser-make-visual-action"#));
+    assert!(html.contains(r#"data-browser-visual-status"#));
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
     assert!(html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Preparing visual render"));
+    assert!(html.contains("Making visual..."));
     assert!(html.contains("Loading images..."));
     assert!(html.contains("sessionStorage"));
     assert!(html.contains(r#"document.querySelector("[data-auto-visual-" + "status]")"#));

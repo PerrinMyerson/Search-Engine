@@ -8825,6 +8825,8 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-summary strong {{ color: #20242a; font-size: 13px; }}
 .resource-quick-summary span {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .resource-quick-actions .resource-actions {{ justify-content: flex-end; }}
+.resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
+.resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
@@ -12340,11 +12342,14 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
 
     let action_urls = browser_session_resource_action_urls(payload);
     let mut actions = String::new();
-    actions.push_str(&browser_session_resource_action_link_with_class(
-        action_urls.make_visual.as_deref(),
-        "Make visual",
-        "clear-link primary-action",
-    ));
+    actions.push_str(
+        &browser_session_resource_action_link_with_class_and_attributes(
+            action_urls.make_visual.as_deref(),
+            "Make visual",
+            "clear-link primary-action",
+            r#" data-browser-make-visual-action"#,
+        ),
+    );
     actions.push_str(&browser_session_resource_action_link(
         action_urls.fetch_resources.as_deref(),
         "Fetch resources",
@@ -12375,11 +12380,26 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
         Some(&resources_csv_href),
         "Resources CSV",
     ));
+    let visual_status = action_urls
+        .make_visual
+        .as_ref()
+        .map_or_else(String::new, |_| {
+            r#"<span class="resource-visual-status" data-browser-visual-status aria-live="polite"></span>"#
+                .to_owned()
+        });
+    let visual_status_script = action_urls
+        .make_visual
+        .as_ref()
+        .map_or_else(String::new, |_| {
+            render_browser_session_make_visual_status_script().to_owned()
+        });
 
     format!(
-        r#"<section class="resource-quick-actions" data-browser-resource-actions data-browser-auto-visual-control><div class="resource-quick-summary"><strong>Resources</strong><span>{summary}</span></div><div class="resource-actions">{actions}</div></section>"#,
+        r#"<section class="resource-quick-actions" data-browser-resource-actions data-browser-auto-visual-control><div class="resource-quick-summary"><strong>Resources</strong><span>{summary}</span></div><div class="resource-actions">{actions}{visual_status}</div></section>{visual_status_script}"#,
         summary = html_escape::encode_text(&browser_session_resource_summary(payload)),
         actions = actions,
+        visual_status = visual_status,
+        visual_status_script = visual_status_script,
     )
 }
 
@@ -12392,14 +12412,48 @@ fn browser_session_resource_action_link_with_class(
     label: &str,
     class: &str,
 ) -> String {
+    browser_session_resource_action_link_with_class_and_attributes(href, label, class, "")
+}
+
+fn browser_session_resource_action_link_with_class_and_attributes(
+    href: Option<&str>,
+    label: &str,
+    class: &str,
+    attributes: &str,
+) -> String {
     href.map_or_else(String::new, |href| {
         format!(
-            r#"<a class="{class}" href="{href}">{label}</a>"#,
+            r#"<a class="{class}" href="{href}"{attributes}>{label}</a>"#,
             class = html_escape::encode_double_quoted_attribute(class),
             href = html_escape::encode_double_quoted_attribute(href),
+            attributes = attributes,
             label = html_escape::encode_text(label),
         )
     })
+}
+
+fn render_browser_session_make_visual_status_script() -> &'static str {
+    r#"<script data-browser-make-visual-status>
+(() => {
+  document.addEventListener("click", (event) => {
+    const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-make-visual-action]") : null;
+    if (!target) {
+      return;
+    }
+    const section = target.closest("[data-browser-resource-actions]");
+    const status = section ? section.querySelector("[data-browser-visual-status]") : null;
+    if (status) {
+      status.textContent = "Making visual...";
+    }
+    if (section) {
+      section.dataset.visualPending = "true";
+      section.setAttribute("aria-busy", "true");
+    }
+    target.setAttribute("aria-disabled", "true");
+  });
+})();
+</script>"#
 }
 
 fn browser_session_resource_summary(payload: &BrowserSessionPayload) -> String {
