@@ -8529,6 +8529,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
+    let navigation_state = render_browser_session_navigation_state(payload, back_href);
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
@@ -8596,9 +8597,9 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
         "pin-tab"
     };
     let pin_current_label = if current_session_pinned {
-        "Unpin tab"
+        "Unpin current"
     } else {
-        "Pin tab"
+        "Pin current"
     };
     let pin_current_href = browser_session_action_href(
         &payload.id,
@@ -8768,6 +8769,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
 .browser-page-head {{ margin: 12px 0 10px; }}
 .browser-page-head h1 {{ margin-top: 0; }}
+.browser-navigation-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }}
+.browser-navigation-state a, .browser-navigation-state span {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; color: #3a3f45; font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }}
+.browser-navigation-state a {{ color: #123fae; border-color: #c6cbd2; }}
 .toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }}
 .toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .toolbar span {{ color: #8a929d; background: #eef0f3; }}
@@ -8925,6 +8929,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <h1>{heading}</h1>
 <div class="meta">{source}</div>
 <div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>
+{navigation_state}
 </section>
 {find_controls}
 {auto_visual_bootstrap}
@@ -8939,7 +8944,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
 </section>
 <section class="debug-stack">
-<details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate tab</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
+<details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
 <details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
 <details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
 <details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
@@ -9010,6 +9015,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
         viewport_command_strip = viewport_command_strip,
+        navigation_state = navigation_state,
         resource_quick_actions = resource_quick_actions,
         viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
@@ -11677,6 +11683,49 @@ fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> 
     }
 
     format!(r#"<nav class="browser-tab-strip" aria-label="Open browser tabs">{tabs}</nav>"#)
+}
+
+fn render_browser_session_navigation_state(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+) -> String {
+    let current_session = payload
+        .sessions
+        .iter()
+        .find(|session| session.id == payload.id);
+    let tab_position = current_session.map_or_else(
+        || format!("session {}", payload.id),
+        |session| format!("tab {}/{}", session.position, payload.sessions.len()),
+    );
+    let tab_state = current_session.map_or("active".to_owned(), |session| {
+        match (session.current, session.pinned) {
+            (true, true) => "active pinned".to_owned(),
+            (true, false) => "active".to_owned(),
+            (false, true) => "pinned".to_owned(),
+            (false, false) => "background".to_owned(),
+        }
+    });
+    let history_position = payload.current_history_index.map_or(0, |index| index + 1);
+    let return_target = if back_href.trim().is_empty() {
+        r#"<span>no return target</span>"#.to_owned()
+    } else {
+        format!(
+            r#"<a href="{href}" title="Return to {title_target}">Return to results</a><span>from {text_target}</span>"#,
+            href = html_escape::encode_double_quoted_attribute(back_href),
+            title_target = html_escape::encode_double_quoted_attribute(back_href),
+            text_target = html_escape::encode_text(back_href),
+        )
+    };
+
+    format!(
+        r#"<nav class="browser-navigation-state" data-browser-navigation-state aria-label="Browser session state">{return_target}<span>session {id}</span><span>{tab_position}</span><span>{tab_state}</span><span>history {history_position}/{history_len}</span></nav>"#,
+        return_target = return_target,
+        id = html_escape::encode_text(&payload.id),
+        tab_position = html_escape::encode_text(&tab_position),
+        tab_state = html_escape::encode_text(&tab_state),
+        history_position = history_position,
+        history_len = payload.history_len,
+    )
 }
 
 fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
