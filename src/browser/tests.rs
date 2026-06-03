@@ -1147,6 +1147,86 @@ fn selects_viewport_width_jpeg_srcset_candidate_without_width_attr() {
 }
 
 #[test]
+fn selects_jpeg_srcset_candidate_from_sizes_vw() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let medium_jpeg = dir.path().join("medium.jpg");
+    let large_jpeg = dir.path().join("large.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&medium_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" sizes="50vw" srcset="small.jpg 160w, medium.jpg 320w, large.jpg 1200w" alt="Sized JPEG" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            shade: 220,
+            alt: Some("Sized JPEG".to_owned()),
+            url: Some("small.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
+fn selects_picture_jpeg_srcset_candidate_from_source_sizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let medium_jpeg = dir.path().join("medium.jpg");
+    let fallback_jpeg = dir.path().join("fallback.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&medium_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&fallback_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><picture><source type="image/jpeg" sizes="(max-width: 400px) 160px, 320px" srcset="small.jpg 160w, medium.jpg 320w"><img src="fallback.jpg" alt="Source Sizes JPEG" height="24"></picture></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            shade: 220,
+            alt: Some("Source Sizes JPEG".to_owned()),
+            url: Some("small.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
 fn selects_picture_source_srcset_before_img_src() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
