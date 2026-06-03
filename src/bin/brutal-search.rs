@@ -791,6 +791,8 @@ struct IndexStorageStats {
 struct WebStorageArtifactStats {
     name: &'static str,
     entries: usize,
+    unique_entries: usize,
+    duplicate_entries: usize,
     oldest_fetched_at_unix: Option<u64>,
     newest_fetched_at_unix: Option<u64>,
 }
@@ -842,6 +844,14 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
             "web_storage_artifact_entries: {} {}",
             artifact.name, artifact.entries
         );
+        println!(
+            "web_storage_artifact_unique_entries: {} {}",
+            artifact.name, artifact.unique_entries
+        );
+        println!(
+            "web_storage_artifact_duplicate_entries: {} {}",
+            artifact.name, artifact.duplicate_entries
+        );
         if let Some(oldest) = artifact.oldest_fetched_at_unix {
             println!(
                 "web_storage_artifact_oldest_fetched_at_unix: {} {}",
@@ -867,9 +877,12 @@ fn collect_web_storage_artifact_stats(
     let mut stats = WebStorageArtifactStats {
         name,
         entries: 0,
+        unique_entries: 0,
+        duplicate_entries: 0,
         oldest_fetched_at_unix: None,
         newest_fetched_at_unix: None,
     };
+    let mut unique_keys = std::collections::HashSet::new();
 
     for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
         let line = line.with_context(|| {
@@ -886,6 +899,13 @@ fn collect_web_storage_artifact_stats(
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        if let Some(key) = web_storage_unique_key(name, &value) {
+            if unique_keys.insert(key) {
+                stats.unique_entries += 1;
+            } else {
+                stats.duplicate_entries += 1;
+            }
+        }
         let Some(fetched_at_unix) = value
             .get("fetched_at_unix")
             .and_then(|value| value.as_u64())
@@ -905,6 +925,36 @@ fn collect_web_storage_artifact_stats(
     }
 
     Ok(stats)
+}
+
+fn web_storage_unique_key(name: &str, value: &serde_json::Value) -> Option<String> {
+    match name {
+        "web-cache.jsonl" => value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+            .filter(|query| !query.is_empty())
+            .map(|query| query.to_owned()),
+        "brave-results.jsonl" => {
+            let query = value
+                .get("normalized_query")
+                .and_then(|value| value.as_str())
+                .filter(|query| !query.is_empty())?;
+            let provider = value
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let rank = value
+                .get("rank")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            let url = value
+                .get("url")
+                .and_then(|value| value.as_str())
+                .filter(|url| !url.is_empty())?;
+            Some(format!("{query}\t{provider}\t{rank}\t{url}"))
+        }
+        _ => None,
+    }
 }
 
 async fn run_recrawl_scheduler_cli(options: RecrawlSchedulerOptions) -> Result<()> {
@@ -1014,12 +1064,16 @@ mod tests {
                 WebStorageArtifactStats {
                     name: "web-cache.jsonl",
                     entries: 2,
+                    unique_entries: 0,
+                    duplicate_entries: 0,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
                 },
                 WebStorageArtifactStats {
                     name: "brave-results.jsonl",
                     entries: 1,
+                    unique_entries: 0,
+                    duplicate_entries: 0,
                     oldest_fetched_at_unix: Some(130),
                     newest_fetched_at_unix: Some(130),
                 },
@@ -1036,5 +1090,34 @@ mod tests {
         assert_eq!(stats.total_bytes, 0);
         assert!(stats.artifacts.is_empty());
         assert!(stats.web_artifacts.is_empty());
+    }
+
+    #[test]
+    fn web_storage_stats_counts_unique_and_duplicate_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"one\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"two\",\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":120}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+
+        assert_eq!(cache_stats.entries, 3);
+        assert_eq!(cache_stats.unique_entries, 2);
+        assert_eq!(cache_stats.duplicate_entries, 1);
+        assert_eq!(log_stats.entries, 2);
+        assert_eq!(log_stats.unique_entries, 1);
+        assert_eq!(log_stats.duplicate_entries, 1);
     }
 }

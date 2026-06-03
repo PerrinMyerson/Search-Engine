@@ -288,7 +288,7 @@ impl WebResultCache {
                 match serde_json::from_str::<CachedWebSearch>(&line) {
                     Ok(entry) if !entry.normalized_query.is_empty() => {
                         parsed_lines += 1;
-                        entries.insert(entry.normalized_query.clone(), entry);
+                        preserve_newest_cached_entry(&mut entries, entry);
                     }
                     Ok(_) => {
                         skipped_lines = true;
@@ -410,6 +410,18 @@ impl WebResultCache {
             )
         })?;
         Ok(())
+    }
+}
+
+fn preserve_newest_cached_entry(
+    entries: &mut HashMap<String, CachedWebSearch>,
+    entry: CachedWebSearch,
+) {
+    match entries.get(&entry.normalized_query) {
+        Some(existing) if existing.fetched_at_unix > entry.fetched_at_unix => {}
+        _ => {
+            entries.insert(entry.normalized_query.clone(), entry);
+        }
     }
 }
 
@@ -927,6 +939,43 @@ mod tests {
         assert!(lines.contains("https://example.com/new-fresh"));
         assert!(!lines.contains("https://example.com/stale"));
         assert!(!lines.contains("https://example.com/old-fresh"));
+    }
+
+    #[test]
+    fn cache_load_preserves_newest_duplicate_query_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("web-cache.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/new", now)],
+            },
+        )
+        .unwrap();
+        append_cache_entry(
+            &path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now.saturating_sub(1),
+                results: vec![web_result("https://example.com/old", now.saturating_sub(1))],
+            },
+        )
+        .unwrap();
+
+        let cache = WebResultCache::load(path.clone(), 1_000, DEFAULT_CACHE_MAX_ENTRIES).unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(lines.lines().count(), 1);
+        assert!(lines.contains("https://example.com/new"));
+        assert!(!lines.contains("https://example.com/old"));
     }
 
     #[test]
