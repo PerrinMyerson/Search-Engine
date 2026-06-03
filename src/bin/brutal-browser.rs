@@ -2372,6 +2372,32 @@ fn print_render(
                         decoded_hash.as_deref().unwrap_or("")
                     );
                 }
+                brutal_search::browser::DisplayCommand::BackgroundImage {
+                    x,
+                    y,
+                    width,
+                    height,
+                    shade,
+                    url,
+                    decoded_width,
+                    decoded_height,
+                    decoded_hash,
+                    size,
+                    position,
+                    repeat,
+                } => {
+                    println!(
+                        "background-image x={x} y={y} width={width} height={height} shade={shade} url={} decoded_width={} decoded_height={} decoded={} size={size:?} position={position:?} repeat={repeat:?}",
+                        url.as_deref().unwrap_or(""),
+                        decoded_width
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                        decoded_height
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                        decoded_hash.as_deref().unwrap_or("")
+                    );
+                }
             }
         }
     } else {
