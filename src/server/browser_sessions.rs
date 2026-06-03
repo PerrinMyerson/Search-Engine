@@ -12,9 +12,9 @@ use url::form_urlencoded;
 use crate::browser::{
     BrowserCookie, BrowserFocusedControl, BrowserForm, BrowserImageRenderReport,
     BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender, BrowserRenderOptions,
-    BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport, BrowserSession,
-    BrowserStylesheetRenderReport, BrowserTextViewportOptions, browser_text_viewport,
-    rasterize_render_rgba,
+    BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport,
+    BrowserSession, BrowserStylesheetRenderReport, BrowserTextViewportOptions,
+    browser_text_viewport, rasterize_render_rgba,
 };
 
 use super::{
@@ -30,6 +30,7 @@ const MAX_BROWSER_PROFILE_HISTORY: usize = 200;
 const MAX_VISIBLE_BROWSER_PROFILE_HISTORY: usize = 40;
 const DEFAULT_BULK_BACKGROUND_LINKS: usize = 16;
 const MAX_BULK_BACKGROUND_LINKS: usize = 80;
+const MAX_BROWSER_SESSION_RESOURCES: usize = 120;
 const BROWSER_PROFILE_ENV: &str = "BRUTAL_BROWSER_PROFILE";
 
 pub(super) struct BrowserSessionRegistry {
@@ -203,6 +204,9 @@ struct BrowserSessionPayload {
     local_storage: Vec<BrowserLocalStorageEntry>,
     session_storage: Vec<BrowserLocalStorageEntry>,
     resource_count: usize,
+    resource_image_count: usize,
+    resource_stylesheet_count: usize,
+    resource_script_count: usize,
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
 }
@@ -571,9 +575,24 @@ struct BrowserSessionResourcesExportPayload<'a> {
     title: &'a str,
     source: &'a str,
     resource_count: usize,
+    displayed_resource_count: usize,
+    image_count: usize,
+    stylesheet_count: usize,
+    script_count: usize,
+    other_count: usize,
     resources: &'a [BrowserSessionResourcePayload],
+    action_urls: BrowserSessionResourceActionUrls,
     csv_url: String,
     session_state_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BrowserSessionResourceActionUrls {
+    fetch_resources: Option<String>,
+    apply_stylesheets: Option<String>,
+    run_scripts: Option<String>,
+    load_images: Option<String>,
+    clear_resource_report: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -712,6 +731,10 @@ struct BrowserSessionStateExportCounts {
     tab_search_results: usize,
     dom_nodes: usize,
     resources: usize,
+    resource_images: usize,
+    resource_stylesheets: usize,
+    resource_scripts: usize,
+    resource_others: usize,
     cookies: usize,
     local_storage: usize,
     session_storage: usize,
@@ -8181,11 +8204,9 @@ fn browser_session_payload(
                 ),
             })
             .collect::<Vec<_>>();
-        let resources = render
-            .resources
-            .iter()
-            .take(120)
-            .enumerate()
+        let resource_kind_counts = browser_session_resource_kind_counts(&render.resources);
+        let resources = browser_session_visible_resources(&render.resources)
+            .into_iter()
             .map(|(index, resource)| {
                 let resolved = resource.resolved.clone();
                 BrowserSessionResourcePayload {
@@ -8282,6 +8303,9 @@ fn browser_session_payload(
             local_storage: web_session.session.local_storage_entries(),
             session_storage: web_session.session.session_storage_entries(),
             resource_count: render.resources.len(),
+            resource_image_count: resource_kind_counts.images,
+            resource_stylesheet_count: resource_kind_counts.stylesheets,
+            resource_script_count: resource_kind_counts.scripts,
             resources,
             resource_report: web_session.resource_report.clone(),
         }
@@ -8289,6 +8313,46 @@ fn browser_session_payload(
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
     Ok(payload)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BrowserSessionResourceKindCounts {
+    images: usize,
+    stylesheets: usize,
+    scripts: usize,
+}
+
+fn browser_session_resource_kind_counts(
+    resources: &[BrowserResource],
+) -> BrowserSessionResourceKindCounts {
+    let mut counts = BrowserSessionResourceKindCounts::default();
+    for resource in resources {
+        match resource.kind.as_str() {
+            "image" => counts.images += 1,
+            "stylesheet" => counts.stylesheets += 1,
+            "script" => counts.scripts += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
+fn browser_session_visible_resources(
+    resources: &[BrowserResource],
+) -> Vec<(usize, &BrowserResource)> {
+    let mut visible = resources.iter().enumerate().collect::<Vec<_>>();
+    visible.sort_by_key(|(index, resource)| (browser_session_resource_priority(resource), *index));
+    visible.truncate(MAX_BROWSER_SESSION_RESOURCES);
+    visible
+}
+
+fn browser_session_resource_priority(resource: &BrowserResource) -> u8 {
+    match resource.kind.as_str() {
+        "image" => 0,
+        "stylesheet" => 1,
+        "script" => 2,
+        _ => 3,
+    }
 }
 
 fn browser_session_viewport_image(
@@ -8383,6 +8447,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let primary_input_controls = render_browser_session_primary_input_controls(payload);
     let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
+    let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
@@ -8670,6 +8735,11 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
 .auto-visual-status {{ margin: 12px 0 8px; color: #5d636b; font-size: 13px; font-weight: 700; }}
+.resource-quick-actions {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #dfe2e6; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
+.resource-quick-summary {{ min-width: 220px; display: grid; gap: 2px; }}
+.resource-quick-summary strong {{ color: #20242a; font-size: 13px; }}
+.resource-quick-summary span {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
+.resource-quick-actions .resource-actions {{ justify-content: flex-end; }}
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
@@ -8719,7 +8789,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector section {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 12px; }}
 .browser-inspector h3 {{ margin: 0 0 8px; font-size: 14px; letter-spacing: 0; }}
 .browser-inspector .section-title {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
-.browser-inspector .clear-link {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; white-space: nowrap; }}
+.clear-link {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; white-space: nowrap; }}
 .resource-actions {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
 .resource-report {{ display: grid; gap: 6px; margin: 8px 0 10px; color: #3a3f45; font-size: 12px; }}
 .resource-report-summary {{ color: #5d636b; overflow-wrap: anywhere; }}
@@ -8755,6 +8825,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {find_controls}
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary">
+{resource_quick_actions}
 {viewport_status}
 {viewport_image}
 {primary_input_controls}
@@ -8832,6 +8903,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_jump = viewport_jump,
         viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
+        resource_quick_actions = resource_quick_actions,
         viewport_image = viewport_image,
         primary_input_controls = primary_input_controls,
         viewport = viewport,
@@ -9381,6 +9453,14 @@ fn browser_session_state_export_payload(
             tab_search_results: payload.tab_search_results.len(),
             dom_nodes: payload.dom_node_count,
             resources: payload.resource_count,
+            resource_images: payload.resource_image_count,
+            resource_stylesheets: payload.resource_stylesheet_count,
+            resource_scripts: payload.resource_script_count,
+            resource_others: payload.resource_count.saturating_sub(
+                payload.resource_image_count
+                    + payload.resource_stylesheet_count
+                    + payload.resource_script_count,
+            ),
             cookies: payload.cookies.len(),
             local_storage: payload.local_storage.len(),
             session_storage: payload.session_storage.len(),
@@ -9471,9 +9551,37 @@ fn browser_session_resources_export_payload(
         title: &payload.title,
         source: &payload.source,
         resource_count: payload.resource_count,
+        displayed_resource_count: payload.resources.len(),
+        image_count: payload.resource_image_count,
+        stylesheet_count: payload.resource_stylesheet_count,
+        script_count: payload.resource_script_count,
+        other_count: payload.resource_count.saturating_sub(
+            payload.resource_image_count
+                + payload.resource_stylesheet_count
+                + payload.resource_script_count,
+        ),
         resources: &payload.resources,
+        action_urls: browser_session_resource_action_urls(payload),
         csv_url: browser_session_api_href(&payload.id, "resources-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
+    }
+}
+
+fn browser_session_resource_action_urls(
+    payload: &BrowserSessionPayload,
+) -> BrowserSessionResourceActionUrls {
+    BrowserSessionResourceActionUrls {
+        fetch_resources: (payload.resource_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
+        apply_stylesheets: (payload.resource_stylesheet_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
+        run_scripts: (payload.resource_script_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "run-scripts", &[], payload)),
+        load_images: (payload.resource_image_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
+        clear_resource_report: payload.resource_report.as_ref().map(|_| {
+            browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
+        }),
     }
 }
 
@@ -9559,6 +9667,7 @@ fn browser_session_state_action_urls(
     let tab_search_label = (!payload.tab_search_results.is_empty())
         .then(|| normalize_browser_tab_label_option(Some(&payload.tab_search_query)))
         .flatten();
+    let resource_action_urls = browser_session_resource_action_urls(payload);
     BrowserSessionStateExportActionUrls {
         back: payload
             .can_back
@@ -9849,25 +9958,12 @@ fn browser_session_state_action_urls(
             .then(|| {
                 browser_session_action_href(&payload.id, "clear-tab-search-labels", &[], payload)
             }),
-        fetch_resources: (payload.resource_count > 0)
-            .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
-        apply_stylesheets: browser_session_has_resource_kind(payload, "stylesheet")
-            .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
-        run_scripts: browser_session_has_resource_kind(payload, "script")
-            .then(|| browser_session_action_href(&payload.id, "run-scripts", &[], payload)),
-        load_images: browser_session_has_resource_kind(payload, "image")
-            .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
-        clear_resource_report: payload.resource_report.as_ref().map(|_| {
-            browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
-        }),
+        fetch_resources: resource_action_urls.fetch_resources,
+        apply_stylesheets: resource_action_urls.apply_stylesheets,
+        run_scripts: resource_action_urls.run_scripts,
+        load_images: resource_action_urls.load_images,
+        clear_resource_report: resource_action_urls.clear_resource_report,
     }
-}
-
-fn browser_session_has_resource_kind(payload: &BrowserSessionPayload, kind: &str) -> bool {
-    payload
-        .resources
-        .iter()
-        .any(|resource| resource.kind == kind)
 }
 
 fn browser_tab_search_results_can_move(payload: &BrowserSessionPayload, to_front: bool) -> bool {
@@ -12108,40 +12204,84 @@ fn render_browser_session_storage(
     )
 }
 
-fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
-    let image_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "image")
-        .count();
-    let stylesheet_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "stylesheet")
-        .count();
-    let script_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "script")
-        .count();
-    let summarized_count = image_count + stylesheet_count + script_count;
-    let other_count = payload.resources.len().saturating_sub(summarized_count);
-    let image_count_label = browser_resource_count_label(image_count, "image", "images");
+fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload) -> String {
+    if payload.resource_count == 0 {
+        return String::new();
+    }
+
+    let action_urls = browser_session_resource_action_urls(payload);
+    let mut actions = String::new();
+    actions.push_str(&browser_session_resource_action_link(
+        action_urls.fetch_resources.as_deref(),
+        "Fetch resources",
+    ));
+    actions.push_str(&browser_session_resource_action_link(
+        action_urls.apply_stylesheets.as_deref(),
+        "Apply styles",
+    ));
+    actions.push_str(&browser_session_resource_action_link(
+        action_urls.run_scripts.as_deref(),
+        "Run scripts",
+    ));
+    let load_images_label = format!(
+        "Load {}",
+        browser_resource_count_label(payload.resource_image_count, "image", "images")
+    );
+    actions.push_str(&browser_session_resource_action_link(
+        action_urls.load_images.as_deref(),
+        &load_images_label,
+    ));
+    let resources_json_href = browser_session_api_href(&payload.id, "resources-json", payload);
+    let resources_csv_href = browser_session_api_href(&payload.id, "resources-csv", payload);
+    actions.push_str(&browser_session_resource_action_link(
+        Some(&resources_json_href),
+        "Resources JSON",
+    ));
+    actions.push_str(&browser_session_resource_action_link(
+        Some(&resources_csv_href),
+        "Resources CSV",
+    ));
+
+    format!(
+        r#"<section class="resource-quick-actions" data-browser-resource-actions data-browser-auto-visual-control><div class="resource-quick-summary"><strong>Resources</strong><span>{summary}</span></div><div class="resource-actions">{actions}</div></section>"#,
+        summary = html_escape::encode_text(&browser_session_resource_summary(payload)),
+        actions = actions,
+    )
+}
+
+fn browser_session_resource_action_link(href: Option<&str>, label: &str) -> String {
+    href.map_or_else(String::new, |href| {
+        format!(
+            r#"<a class="clear-link" href="{href}">{label}</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+            label = html_escape::encode_text(label),
+        )
+    })
+}
+
+fn browser_session_resource_summary(payload: &BrowserSessionPayload) -> String {
+    let image_count_label =
+        browser_resource_count_label(payload.resource_image_count, "image", "images");
     let mut resource_summary = vec![image_count_label.clone()];
-    if stylesheet_count > 0 {
+    if payload.resource_stylesheet_count > 0 {
         resource_summary.push(browser_resource_count_label(
-            stylesheet_count,
+            payload.resource_stylesheet_count,
             "stylesheet",
             "stylesheets",
         ));
     }
-    if script_count > 0 {
+    if payload.resource_script_count > 0 {
         resource_summary.push(browser_resource_count_label(
-            script_count,
+            payload.resource_script_count,
             "script",
             "scripts",
         ));
     }
+    let other_count = payload.resource_count.saturating_sub(
+        payload.resource_image_count
+            + payload.resource_stylesheet_count
+            + payload.resource_script_count,
+    );
     if other_count > 0 {
         resource_summary.push(browser_resource_count_label(
             other_count,
@@ -12149,7 +12289,13 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             "other resources",
         ));
     }
-    let resource_summary = resource_summary.join(", ");
+    resource_summary.join(", ")
+}
+
+fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
+    let image_count_label =
+        browser_resource_count_label(payload.resource_image_count, "image", "images");
+    let resource_summary = browser_session_resource_summary(payload);
     let fetch_control = if payload.resource_count == 0 {
         String::new()
     } else {
@@ -12159,7 +12305,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
         )
     };
-    let styles_control = if stylesheet_count == 0 {
+    let styles_control = if payload.resource_stylesheet_count == 0 {
         String::new()
     } else {
         let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
@@ -12168,7 +12314,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
         )
     };
-    let scripts_control = if script_count == 0 {
+    let scripts_control = if payload.resource_script_count == 0 {
         String::new()
     } else {
         let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
@@ -12177,7 +12323,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
         )
     };
-    let load_images_control = if image_count == 0 {
+    let load_images_control = if payload.resource_image_count == 0 {
         String::new()
     } else {
         let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
