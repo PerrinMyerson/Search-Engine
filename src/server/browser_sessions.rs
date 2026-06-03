@@ -8828,7 +8828,8 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-summary span {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .resource-quick-actions .resource-actions {{ justify-content: flex-end; }}
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
-.resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
+.resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
+.resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
@@ -9308,6 +9309,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const raster = shell.querySelector(".browser-raster");
   const controls = document.querySelector("[data-browser-viewport-controls]");
   const status = document.querySelector("[data-browser-viewport-status]");
+  const feedback = document.querySelector("[data-browser-viewport-feedback]");
   const setViewportPending = (message) => {
     shell.dataset.viewportPending = "true";
     shell.setAttribute("aria-busy", "true");
@@ -9319,6 +9321,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.dataset.viewportPending = "true";
       status.setAttribute("aria-busy", "true");
       status.setAttribute("aria-label", message);
+    }
+    if (feedback) {
+      feedback.textContent = message;
     }
   };
   const numberData = (name) => {
@@ -11386,20 +11391,28 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
 
 fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
+    let left_href =
+        browser_session_action_href(&payload.id, "scroll", &[("dx", "-1".to_owned())], payload);
     let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
     let line_up_href = browser_session_action_href(&payload.id, "line-up", &[], payload);
     let line_down_href = browser_session_action_href(&payload.id, "line-down", &[], payload);
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
+    let right_href =
+        browser_session_action_href(&payload.id, "scroll", &[("dx", "1".to_owned())], payload);
     let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let can_scroll_left = payload.viewport_x > 0;
+    let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{page_up}{line_up}{line_down}{page_down}{bottom}</nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></nav>"#,
         top = nav_control(can_scroll_up, "Top", &top_href),
+        left = nav_control(can_scroll_left, "Left", &left_href),
         page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
         line_up = nav_control(can_scroll_up, "Line up", &line_up_href),
         line_down = nav_control(can_scroll_down, "Line down", &line_down_href),
         page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
+        right = nav_control(can_scroll_right, "Right", &right_href),
         bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
     )
 }
@@ -12376,28 +12389,32 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
             action_urls.make_visual.as_deref(),
             "Make visual",
             "clear-link primary-action",
-            r#" data-browser-make-visual-action"#,
+            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#,
         ),
     );
-    actions.push_str(&browser_session_resource_action_link(
+    actions.push_str(&browser_session_resource_action_link_with_status(
         action_urls.fetch_resources.as_deref(),
         "Fetch resources",
+        "Fetching resources...",
     ));
-    actions.push_str(&browser_session_resource_action_link(
+    actions.push_str(&browser_session_resource_action_link_with_status(
         action_urls.apply_stylesheets.as_deref(),
         "Apply styles",
+        "Applying styles...",
     ));
-    actions.push_str(&browser_session_resource_action_link(
+    actions.push_str(&browser_session_resource_action_link_with_status(
         action_urls.run_scripts.as_deref(),
         "Run scripts",
+        "Running scripts...",
     ));
     let load_images_label = format!(
         "Load {}",
         browser_resource_count_label(payload.resource_image_count, "image", "images")
     );
-    actions.push_str(&browser_session_resource_action_link(
+    actions.push_str(&browser_session_resource_action_link_with_status(
         action_urls.load_images.as_deref(),
         &load_images_label,
+        "Loading images...",
     ));
     let resources_json_href = browser_session_api_href(&payload.id, "resources-json", payload);
     let resources_csv_href = browser_session_api_href(&payload.id, "resources-csv", payload);
@@ -12409,19 +12426,22 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
         Some(&resources_csv_href),
         "Resources CSV",
     ));
-    let visual_status = action_urls
-        .make_visual
-        .as_ref()
-        .map_or_else(String::new, |_| {
-            r#"<span class="resource-visual-status" data-browser-visual-status aria-live="polite"></span>"#
+    let has_status_action = action_urls.fetch_resources.is_some()
+        || action_urls.make_visual.is_some()
+        || action_urls.apply_stylesheets.is_some()
+        || action_urls.run_scripts.is_some()
+        || action_urls.load_images.is_some();
+    let visual_status = if has_status_action {
+        r#"<span class="resource-visual-status resource-action-status" data-browser-visual-status data-browser-resource-status-output aria-live="polite"></span>"#
                 .to_owned()
-        });
-    let visual_status_script = action_urls
-        .make_visual
-        .as_ref()
-        .map_or_else(String::new, |_| {
-            render_browser_session_make_visual_status_script().to_owned()
-        });
+    } else {
+        String::new()
+    };
+    let visual_status_script = if has_status_action {
+        render_browser_session_make_visual_status_script().to_owned()
+    } else {
+        String::new()
+    };
 
     format!(
         r#"<section class="resource-quick-actions" data-browser-resource-actions data-browser-auto-visual-control><div class="resource-quick-summary"><strong>Resources</strong><span>{summary}</span></div><div class="resource-actions">{actions}{visual_status}</div></section>{visual_status_script}"#,
@@ -12434,6 +12454,23 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
 
 fn browser_session_resource_action_link(href: Option<&str>, label: &str) -> String {
     browser_session_resource_action_link_with_class(href, label, "clear-link")
+}
+
+fn browser_session_resource_action_link_with_status(
+    href: Option<&str>,
+    label: &str,
+    status: &str,
+) -> String {
+    let attributes = format!(
+        r#" data-browser-resource-action data-browser-resource-status="{}""#,
+        html_escape::encode_double_quoted_attribute(status),
+    );
+    browser_session_resource_action_link_with_class_and_attributes(
+        href,
+        label,
+        "clear-link",
+        &attributes,
+    )
 }
 
 fn browser_session_resource_action_link_with_class(
@@ -12462,21 +12499,25 @@ fn browser_session_resource_action_link_with_class_and_attributes(
 }
 
 fn render_browser_session_make_visual_status_script() -> &'static str {
-    r#"<script data-browser-make-visual-status>
+    r#"<script data-browser-make-visual-status data-browser-resource-action-status>
 (() => {
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
-    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-make-visual-action]") : null;
+    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-resource-action]") : null;
     if (!target) {
       return;
     }
     const section = target.closest("[data-browser-resource-actions]");
-    const status = section ? section.querySelector("[data-browser-visual-status]") : null;
+    const status = section ? section.querySelector("[data-browser-resource-status-output], [data-browser-visual-status]") : null;
+    const message = target.dataset.browserResourceStatus || "Working...";
     if (status) {
-      status.textContent = "Making visual...";
+      status.textContent = message;
     }
     if (section) {
-      section.dataset.visualPending = "true";
+      if (target.hasAttribute("data-browser-make-visual-action")) {
+        section.dataset.visualPending = "true";
+      }
+      section.dataset.resourcePending = "true";
       section.setAttribute("aria-busy", "true");
     }
     target.setAttribute("aria-disabled", "true");
@@ -12526,38 +12567,44 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         String::new()
     } else {
         let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
-        format!(
-            r#"<a class="clear-link" href="{fetch_href}">Fetch</a>"#,
-            fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
+        browser_session_resource_action_link_with_status(
+            Some(&fetch_href),
+            "Fetch",
+            "Fetching resources...",
         )
     };
-    let make_visual_control =
-        if payload.resource_stylesheet_count == 0 && payload.resource_image_count == 0 {
-            String::new()
-        } else {
-            let make_visual_href =
-                browser_session_action_href(&payload.id, "make-visual", &[], payload);
-            format!(
-                r#"<a class="clear-link primary-action" href="{make_visual_href}">Make visual</a>"#,
-                make_visual_href = html_escape::encode_double_quoted_attribute(&make_visual_href),
-            )
-        };
+    let make_visual_control = if payload.resource_stylesheet_count == 0
+        && payload.resource_image_count == 0
+    {
+        String::new()
+    } else {
+        let make_visual_href =
+            browser_session_action_href(&payload.id, "make-visual", &[], payload);
+        browser_session_resource_action_link_with_class_and_attributes(
+            Some(&make_visual_href),
+            "Make visual",
+            "clear-link primary-action",
+            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#,
+        )
+    };
     let styles_control = if payload.resource_stylesheet_count == 0 {
         String::new()
     } else {
         let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
-        format!(
-            r#"<a class="clear-link" href="{styles_href}">Apply styles</a>"#,
-            styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
+        browser_session_resource_action_link_with_status(
+            Some(&styles_href),
+            "Apply styles",
+            "Applying styles...",
         )
     };
     let scripts_control = if payload.resource_script_count == 0 {
         String::new()
     } else {
         let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
-        format!(
-            r#"<a class="clear-link" href="{scripts_href}">Run scripts</a>"#,
-            scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
+        browser_session_resource_action_link_with_status(
+            Some(&scripts_href),
+            "Run scripts",
+            "Running scripts...",
         )
     };
     let load_images_control = if payload.resource_image_count == 0 {
@@ -12565,10 +12612,10 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     } else {
         let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
         let load_images_label = format!("Load {image_count_label}");
-        format!(
-            r#"<a class="clear-link" href="{images_href}">{load_images_label}</a>"#,
-            images_href = html_escape::encode_double_quoted_attribute(&images_href),
-            load_images_label = html_escape::encode_text(&load_images_label),
+        browser_session_resource_action_link_with_status(
+            Some(&images_href),
+            &load_images_label,
+            "Loading images...",
         )
     };
     let open_tabs_href = browser_session_action_href(
@@ -12639,8 +12686,14 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     if rows.is_empty() {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
+    let resource_action_status = if payload.resource_count == 0 {
+        String::new()
+    } else {
+        r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#
+            .to_owned()
+    };
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}{fetch_control}{make_visual_control}{styles_control}{scripts_control}{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section data-browser-resource-actions data-browser-auto-visual-control><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}{fetch_control}{make_visual_control}{styles_control}{scripts_control}{load_images_control}{clear_report}{resource_action_status}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
         resource_summary = html_escape::encode_text(&resource_summary),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
@@ -12652,6 +12705,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         scripts_control = scripts_control,
         load_images_control = load_images_control,
         clear_report = clear_report,
+        resource_action_status = resource_action_status,
         report = report,
     )
 }
