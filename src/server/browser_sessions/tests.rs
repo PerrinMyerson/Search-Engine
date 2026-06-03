@@ -9126,6 +9126,9 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains(r#"target.setAttribute("aria-disabled", "true")"#));
     assert!(html.contains(">Make visual</a>"));
     assert!(html.contains("action=apply-styles"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: 1 stylesheet · 0 images</span>"#
+    ));
     assert!(html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Preparing visual render"));
@@ -9173,6 +9176,9 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Apply styles: total=1 fetched=1 cached=0 failed=0 skipped=0 applied=1"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>styles applied: 1</span>"#
+    ));
     assert!(!html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains("text/css"));
     assert!(html.contains("Report JSON"));
@@ -9446,6 +9452,9 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"<span class="viewport-state-chip">Ready</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">1 stylesheet</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">1 image</span>"#));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: 1 stylesheet · 1 image</span>"#
+    ));
     assert!(html.contains(r#"<details class="resource-quick-actions resource-quick-details""#));
     assert!(html.contains(r#"<strong>Resource actions</strong>"#));
     assert!(html.contains(&format!(
@@ -9580,6 +9589,12 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"<span class="viewport-state-chip report">Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip report">applied 1</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip report">decoded 1</span>"#));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>styles applied: 1</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
+    ));
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));
     assert!(html.contains("Clear report"));
@@ -10062,6 +10077,9 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(r#"<details class="viewport-text">"#));
     assert!(!html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
+    ));
     assert!(html.contains("<th>Source</th>"));
     assert!(html.contains("<th>Content Type</th>"));
     assert!(html.contains("<th>Error</th>"));

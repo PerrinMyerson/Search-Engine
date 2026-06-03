@@ -11631,6 +11631,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
 
 fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
     let action_feedback = render_browser_session_action_feedback(payload);
+    let visual_flow_status = render_browser_session_visual_flow_status(payload);
     if let Some(report) = payload.resource_report.as_ref() {
         let status = browser_session_resource_report_status(report);
         let report_json_href =
@@ -11650,11 +11651,12 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
             })
             .unwrap_or_default();
         return format!(
-            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip report">Last action: {action}</span><span class="viewport-state-chip report">{status}</span>{applied}{decoded}{action_feedback}<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{clear_href}">Clear report</a></div>"#,
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip report">Last action: {action}</span><span class="viewport-state-chip report">{status}</span>{applied}{decoded}{visual_flow_status}{action_feedback}<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{clear_href}">Clear report</a></div>"#,
             action = html_escape::encode_text(&report.action),
             status = html_escape::encode_text(&status),
             applied = applied,
             decoded = decoded,
+            visual_flow_status = visual_flow_status,
             action_feedback = action_feedback,
             report_json_href = html_escape::encode_double_quoted_attribute(&report_json_href),
             clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
@@ -11697,15 +11699,76 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
     }
     if chips.is_empty() {
         return format!(
-            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">No visual resources</span>{action_feedback}</div>"#,
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">No visual resources</span>{visual_flow_status}{action_feedback}</div>"#,
+            visual_flow_status = visual_flow_status,
             action_feedback = action_feedback,
         );
     }
     format!(
-        r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}{action_feedback}</div>"#,
+        r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}{visual_flow_status}{action_feedback}</div>"#,
         chips = chips,
+        visual_flow_status = visual_flow_status,
         action_feedback = action_feedback,
     )
+}
+
+fn render_browser_session_visual_flow_status(payload: &BrowserSessionPayload) -> String {
+    let Some(report) = payload.resource_report.as_ref() else {
+        if payload.resource_stylesheet_count == 0 && payload.resource_image_count == 0 {
+            return r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions unavailable</span>"#.to_owned();
+        }
+        return format!(
+            r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: {} · {}</span>"#,
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_stylesheet_count,
+                "stylesheet",
+                "stylesheets",
+            )),
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_image_count,
+                "image",
+                "images",
+            )),
+        );
+    };
+
+    let mut chips = String::new();
+    if payload.resource_stylesheet_count > 0 {
+        let label = match report.applied {
+            Some(count) if count > 0 => format!("styles applied: {count}"),
+            Some(_) => "styles unchanged".to_owned(),
+            None => "styles waiting".to_owned(),
+        };
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>{}</span>"#,
+            html_escape::encode_text(&label),
+        );
+    }
+    if payload.resource_image_count > 0 {
+        let label = match report.decoded {
+            Some(count) if count > 0 => format!("images loaded: {count}"),
+            Some(_) => "images not decoded".to_owned(),
+            None => "images waiting".to_owned(),
+        };
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>{}</span>"#,
+            html_escape::encode_text(&label),
+        );
+    }
+    if report.failed > 0 {
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip warning" data-browser-visual-flow-status>resource failures: {}</span>"#,
+            report.failed,
+        );
+    }
+    if chips.is_empty() {
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions complete</span>"#.to_owned()
+    } else {
+        chips
+    }
 }
 
 fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> String {
