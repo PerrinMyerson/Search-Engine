@@ -1699,6 +1699,7 @@ fn image_mime_type_supported(source_type: &str) -> bool {
             | "image/jpe"
             | "image/pjpeg"
             | "image/x-jpeg"
+            | "image/webp"
     )
 }
 
