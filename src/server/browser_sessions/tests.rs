@@ -9290,6 +9290,36 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(&format!(r#"<span>session {}</span>"#, payload.id)));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(r#"data-browser-viewport-page-state"#));
+    assert!(html.contains(r#"data-browser-render-status"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Render</span>"#));
+    let viewport_image = payload.viewport_image.as_ref().unwrap();
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">raster ready {}x{}</span>"#,
+        viewport_image.width, viewport_image.height
+    )));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">text {} lines</span>"#,
+        payload.page_text.lines().count()
+    )));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">document {}x{}</span>"#,
+        payload.document_width, payload.document_height
+    )));
+    assert!(html.contains(r#"<span class="viewport-state-chip">2 resources · 1 image</span>"#));
+    let mut raster_error_payload = payload.clone();
+    raster_error_payload.viewport_image = None;
+    raster_error_payload.viewport_image_error = Some("paint <failed>".to_owned());
+    let render_status = render_browser_session_render_status(&raster_error_payload);
+    assert!(render_status.contains(
+        r#"<span class="viewport-state-chip warning">raster error: paint &lt;failed&gt;</span>"#
+    ));
+    let mut raster_unavailable_payload = raster_error_payload.clone();
+    raster_unavailable_payload.viewport_image_error = None;
+    let render_status = render_browser_session_render_status(&raster_unavailable_payload);
+    assert!(
+        render_status
+            .contains(r#"<span class="viewport-state-chip warning">raster unavailable</span>"#)
+    );
     assert!(html.contains(r#"<span class="viewport-state-chip">Ready</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">1 stylesheet</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">1 image</span>"#));
