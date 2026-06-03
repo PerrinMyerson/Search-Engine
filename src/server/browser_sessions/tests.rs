@@ -1509,6 +1509,13 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     );
     assert!(payload.viewport.contains("needle first"));
     let html = render_browser_session_page(&payload, "/search?q=find");
+    assert!(html.contains(r#"data-browser-address type="url" name="url""#));
+    assert!(html.contains(r#"data-browser-find type="search" name="q" value="needle""#));
+    assert!(html.contains(r#"<script data-browser-keyboard-controls>"#));
+    assert!(html.contains(r#"event.metaKey || event.ctrlKey"#));
+    assert!(html.contains("focusAndSelect(addressInput)"));
+    assert!(html.contains("focusAndSelect(findInput)"));
+    assert!(html.contains("window.location.href = reloadUrl"));
     assert!(html.contains("<mark>needle</mark> first"));
     assert!(html.contains(">Previous</a>"));
     assert!(html.contains(">Next</a>"));

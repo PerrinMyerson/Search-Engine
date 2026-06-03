@@ -8293,6 +8293,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
         &browser_session_action_href(&payload.id, "forward", &[], payload),
     );
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
+    let keyboard_controls_script = render_browser_session_keyboard_controls_script(&reload_href);
     let duplicate_href = browser_session_action_href(
         &payload.id,
         "duplicate-session",
@@ -8597,7 +8598,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_x" value="{viewport_x}">
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
-<input type="url" name="url" value="{source_attr}" aria-label="Address">
+<input data-browser-address type="url" name="url" value="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
 </header>
@@ -8621,6 +8622,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
 <details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
 </section>
+{keyboard_controls_script}
 </main>
 </body>
 </html>"#,
@@ -8633,6 +8635,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         back_control = back_control,
         forward_control = forward_control,
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        keyboard_controls_script = keyboard_controls_script,
         previous_tab_control = previous_tab_control,
         next_tab_control = next_tab_control,
         move_left_control = move_left_control,
@@ -8803,6 +8806,47 @@ fn browser_json_script_string(value: &str) -> String {
     json.replace('<', "\\u003c")
         .replace('>', "\\u003e")
         .replace('&', "\\u0026")
+}
+
+fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String {
+    format!(
+        r#"<script data-browser-keyboard-controls>
+(() => {{
+  const addressInput = document.querySelector("[data-browser-address]");
+  const findInput = document.querySelector("[data-browser-find]");
+  const reloadUrl = {reload_url};
+  const focusAndSelect = (element) => {{
+    if (!element) {{
+      return false;
+    }}
+    element.focus();
+    if (typeof element.select === "function") {{
+      element.select();
+    }}
+    return true;
+  }};
+  document.addEventListener("keydown", (event) => {{
+    if (event.defaultPrevented || event.altKey || !(event.metaKey || event.ctrlKey)) {{
+      return;
+    }}
+    const key = event.key.toLowerCase();
+    if (key === "l") {{
+      if (focusAndSelect(addressInput)) {{
+        event.preventDefault();
+      }}
+    }} else if (key === "f") {{
+      if (focusAndSelect(findInput)) {{
+        event.preventDefault();
+      }}
+    }} else if (key === "r" && reloadUrl) {{
+      event.preventDefault();
+      window.location.href = reloadUrl;
+    }}
+  }});
+}})();
+</script>"#,
+        reload_url = browser_json_script_string(reload_href),
+    )
 }
 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
@@ -10775,7 +10819,7 @@ fn render_browser_session_find_controls(payload: &BrowserSessionPayload) -> Stri
     };
 
     format!(
-        r#"<div class="find-bar"><form action="/browser" method="get">{common}<input type="hidden" name="action" value="find"><input type="search" name="q" value="{query}" aria-label="Find in page"><button type="submit">Find</button></form><div class="find-actions"><span class="meta">{status}</span>{actions}</div></div>"#,
+        r#"<div class="find-bar"><form action="/browser" method="get">{common}<input type="hidden" name="action" value="find"><input data-browser-find type="search" name="q" value="{query}" aria-label="Find in page"><button type="submit">Find</button></form><div class="find-actions"><span class="meta">{status}</span>{actions}</div></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         query = html_escape::encode_double_quoted_attribute(&payload.find_query),
         status = html_escape::encode_text(&status),
