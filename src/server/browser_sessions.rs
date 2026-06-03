@@ -8243,6 +8243,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let find_controls = render_browser_session_find_controls(payload);
     let viewport = render_browser_session_viewport(payload);
     let viewport_image = render_browser_session_viewport_image(payload);
+    let primary_input_controls = render_browser_session_primary_input_controls(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
@@ -8520,6 +8521,11 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
 .browser-viewport-primary {{ margin: 10px 0 18px; }}
+.viewport-input {{ display: grid; gap: 8px; margin: 8px 0 12px; }}
+.viewport-input form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 8px; align-items: center; }}
+.viewport-input input[type="text"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.viewport-input button, .viewport-input a {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.viewport-input button {{ background: #2457d6; color: #fff; border-color: #2457d6; }}
 .viewport-text {{ margin-top: 10px; }}
 .viewport-text summary {{ cursor: pointer; color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-text pre {{ margin-top: 8px; }}
@@ -8567,7 +8573,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector th, .browser-inspector td {{ border-top: 1px solid #eef0f3; padding: 7px 6px; color: #3a3f45; font-size: 12px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }}
 .browser-inspector th {{ color: #5d636b; font-weight: 700; }}
 .browser-inspector .current-row td {{ background: #eef4ff; }}
-@media (max-width: 720px) {{ .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 720px) {{ .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} }}
 </style>
 </head>
 <body>
@@ -8595,6 +8601,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary">
 {viewport_image}
+{primary_input_controls}
 {viewport_jump}
 <details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
 </section>
@@ -8667,6 +8674,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_jump = viewport_jump,
         auto_visual_bootstrap = auto_visual_bootstrap,
         viewport_image = viewport_image,
+        primary_input_controls = primary_input_controls,
         viewport = viewport,
         click_controls = click_controls,
         keyboard_controls = keyboard_controls,
@@ -8918,6 +8926,40 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   });
 })();
 </script>"#
+}
+
+fn render_browser_session_primary_input_controls(payload: &BrowserSessionPayload) -> String {
+    let Some(focused) = payload
+        .focused
+        .as_ref()
+        .filter(|focused| form_control_is_text_editable(&focused.kind))
+    else {
+        return String::new();
+    };
+    let focused_name = if focused.name.trim().is_empty() {
+        focused.kind.as_str()
+    } else {
+        focused.name.as_str()
+    };
+    let backspace_href = browser_session_action_href(
+        &payload.id,
+        "backspace",
+        &[("count", "1".to_owned())],
+        payload,
+    );
+    let clear_href = browser_session_action_href(&payload.id, "clear-input", &[], payload);
+    let enter_href = browser_session_action_href(&payload.id, "enter", &[], payload);
+
+    format!(
+        r#"<section class="viewport-input" data-browser-primary-input><div class="meta">Focused {focused_kind} name={focused_name} value={focused_value}</div><form action="/browser" method="get">{common}<input type="hidden" name="action" value="type-text"><input id="browser-primary-type-text" type="text" name="text" placeholder="text" aria-label="Type into focused control" autofocus><button type="submit">Type</button><a href="{enter_href}">Enter</a><a href="{backspace_href}">Backspace</a><a href="{clear_href}">Clear</a></form></section>"#,
+        focused_kind = html_escape::encode_text(&focused.kind),
+        focused_name = html_escape::encode_text(focused_name),
+        focused_value = html_escape::encode_text(&focused.value),
+        common = browser_session_common_hidden_inputs(payload),
+        enter_href = html_escape::encode_double_quoted_attribute(&enter_href),
+        backspace_href = html_escape::encode_double_quoted_attribute(&backspace_href),
+        clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
+    )
 }
 
 fn browser_session_state_export_payload(
