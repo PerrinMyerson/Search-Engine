@@ -1201,6 +1201,7 @@ struct ComputedStyle {
     opacity: PaintOpacity,
     overflow: Overflow,
     position: Position,
+    position_top: Option<usize>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -1242,6 +1243,7 @@ struct CssDeclarations {
     opacity: Option<PaintOpacity>,
     overflow: Option<Overflow>,
     position: Option<Position>,
+    position_top: Option<usize>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -10020,6 +10022,14 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "position" => {
                 declarations.position = parse_css_position(value).or(declarations.position);
             }
+            "top" => {
+                declarations.position_top = parse_css_position_offset(value, CssAxis::Vertical)
+                    .or(declarations.position_top);
+            }
+            "inset" => {
+                declarations.position_top =
+                    parse_css_inset_top(value).or(declarations.position_top);
+            }
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
@@ -10570,6 +10580,17 @@ fn parse_css_position(value: &str) -> Option<Position> {
         "sticky" | "-webkit-sticky" => Some(Position::Sticky),
         _ => None,
     }
+}
+
+fn parse_css_position_offset(value: &str, axis: CssAxis) -> Option<usize> {
+    parse_css_dimension_length(value, axis)
+}
+
+fn parse_css_inset_top(value: &str) -> Option<usize> {
+    value
+        .split_ascii_whitespace()
+        .next()
+        .and_then(|top| parse_css_position_offset(top, CssAxis::Vertical))
 }
 
 fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
@@ -11145,10 +11166,15 @@ fn render_node(
             if opacity_entered {
                 renderer.enter_transparent_opacity();
             }
+            let out_of_flow_y = style.position.is_out_of_flow().then(|| {
+                style
+                    .position_top
+                    .map(|top| renderer.current_positioning_context_y().saturating_add(top))
+            });
             let mut out_of_flow_entered = style
                 .position
                 .is_out_of_flow()
-                .then(|| renderer.enter_out_of_flow());
+                .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
 
             if element.tag == "br" {
                 renderer.break_line();
@@ -11351,6 +11377,12 @@ fn render_node(
                     renderer.current_row(),
                 )
             });
+            let positioning_context_entered = block_box
+                .filter(|_| style.position != Position::Static)
+                .map(|(_, _, start_y)| {
+                    renderer.enter_positioning_context(start_y);
+                })
+                .is_some();
             let border = block_box.and(style.border);
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
                 renderer.push_block_border_top(box_x, box_width, border, Some(node_id));
@@ -11495,6 +11527,9 @@ fn render_node(
                 );
             }
 
+            if positioning_context_entered {
+                renderer.exit_positioning_context();
+            }
             if table_cell_entered {
                 renderer.exit_table_cell();
             }
@@ -12036,6 +12071,7 @@ fn computed_style(
             opacity: PaintOpacity::Opaque,
             overflow: Overflow::Visible,
             position: Position::Static,
+            position_top: None,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -12069,6 +12105,7 @@ fn computed_style(
     let mut opacity = PaintOpacity::Opaque;
     let mut overflow = Overflow::Visible;
     let mut position = Position::Static;
+    let mut position_top = None;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -12100,6 +12137,7 @@ fn computed_style(
     let mut opacity_specificity = 0u32;
     let mut overflow_specificity = 0u32;
     let mut position_specificity = 0u32;
+    let mut position_top_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
@@ -12186,6 +12224,12 @@ fn computed_style(
             {
                 position = rule_position;
                 position_specificity = rule_specificity;
+            }
+            if let Some(rule_position_top) = rule.declarations.position_top
+                && rule_specificity >= position_top_specificity
+            {
+                position_top = Some(rule_position_top);
+                position_top_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
                 && rule_specificity >= white_space_specificity
@@ -12349,6 +12393,9 @@ fn computed_style(
         if let Some(inline_position) = inline.position {
             position = inline_position;
         }
+        if let Some(inline_position_top) = inline.position_top {
+            position_top = Some(inline_position_top);
+        }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
         }
@@ -12424,6 +12471,7 @@ fn computed_style(
         opacity,
         overflow,
         position,
+        position_top,
         white_space,
         text_transform,
         letter_spacing,
@@ -13079,6 +13127,7 @@ struct FlowRenderer {
     pending_text_indent_stack: Vec<Option<usize>>,
     line_height: usize,
     line_height_stack: Vec<usize>,
+    positioning_context_stack: Vec<usize>,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
     underlay_list: Vec<DisplayCommand>,
@@ -13134,6 +13183,7 @@ impl FlowRenderer {
             pending_text_indent_stack: Vec::new(),
             line_height: 1,
             line_height_stack: Vec::new(),
+            positioning_context_stack: Vec::new(),
             table_stack: Vec::new(),
             active_floats: Vec::new(),
             underlay_list: Vec::new(),
@@ -13642,8 +13692,20 @@ impl FlowRenderer {
         }
     }
 
-    fn enter_out_of_flow(&mut self) -> FlowOutOfFlowSnapshot {
-        FlowOutOfFlowSnapshot {
+    fn enter_positioning_context(&mut self, y: usize) {
+        self.positioning_context_stack.push(y);
+    }
+
+    fn exit_positioning_context(&mut self) {
+        self.positioning_context_stack.pop();
+    }
+
+    fn current_positioning_context_y(&self) -> usize {
+        self.positioning_context_stack.last().copied().unwrap_or(0)
+    }
+
+    fn enter_out_of_flow(&mut self, y: Option<usize>) -> FlowOutOfFlowSnapshot {
+        let snapshot = FlowOutOfFlowSnapshot {
             lines_len: self.lines.len(),
             current_runs: std::mem::take(&mut self.current_runs),
             current_width: std::mem::take(&mut self.current_width),
@@ -13653,7 +13715,11 @@ impl FlowRenderer {
             pending_text_indent: self.pending_text_indent.take(),
             table_stack: std::mem::take(&mut self.table_stack),
             active_floats: std::mem::take(&mut self.active_floats),
+        };
+        if let Some(y) = y {
+            self.next_y = y;
         }
+        snapshot
     }
 
     fn exit_out_of_flow(&mut self, snapshot: FlowOutOfFlowSnapshot) {

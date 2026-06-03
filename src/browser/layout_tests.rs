@@ -2240,6 +2240,40 @@ fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
 }
 
 #[test]
+fn css_absolute_top_uses_positioned_containing_block_start() {
+    let render = render_html(
+        "mem://absolute-top-containing-block",
+        br#"
+            <html><body>
+              <p>Before</p>
+              <section style="position:relative; height:72px; background-color:#eeeeee">
+                <div style="height:60px"></div>
+                <div style="position:absolute; top:0">Hero overlay</div>
+              </section>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before\nAfter");
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { x, y, text } => Some((*x, *y, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![(0, 0, "Before"), (0, 1, "Hero overlay"), (0, 7, "After"),]
+    );
+}
+
+#[test]
 fn css_overflow_hidden_clips_paint_and_flow_extent() {
     let render = render_html(
         "mem://overflow-hidden",
