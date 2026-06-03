@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
@@ -824,6 +825,8 @@ struct WebStorageArtifactStats {
     entries: usize,
     unique_entries: usize,
     duplicate_entries: usize,
+    query_count: usize,
+    max_entries_per_query: usize,
     oldest_fetched_at_unix: Option<u64>,
     newest_fetched_at_unix: Option<u64>,
 }
@@ -897,6 +900,14 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         println!(
             "web_storage_artifact_duplicate_entries: {} {}",
             artifact.name, artifact.duplicate_entries
+        );
+        println!(
+            "web_storage_artifact_queries: {} {}",
+            artifact.name, artifact.query_count
+        );
+        println!(
+            "web_storage_artifact_max_entries_per_query: {} {}",
+            artifact.name, artifact.max_entries_per_query
         );
         if let Some(oldest) = artifact.oldest_fetched_at_unix {
             println!(
@@ -1117,10 +1128,13 @@ fn collect_web_storage_artifact_stats(
         entries: 0,
         unique_entries: 0,
         duplicate_entries: 0,
+        query_count: 0,
+        max_entries_per_query: 0,
         oldest_fetched_at_unix: None,
         newest_fetched_at_unix: None,
     };
     let mut unique_keys = std::collections::HashSet::new();
+    let mut query_counts = HashMap::new();
 
     for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
         let line = line.with_context(|| {
@@ -1144,6 +1158,13 @@ fn collect_web_storage_artifact_stats(
                 stats.duplicate_entries += 1;
             }
         }
+        if let Some(query) = value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+            .filter(|query| !query.is_empty())
+        {
+            *query_counts.entry(query.to_owned()).or_insert(0usize) += 1;
+        }
         let Some(fetched_at_unix) = value
             .get("fetched_at_unix")
             .and_then(|value| value.as_u64())
@@ -1161,6 +1182,8 @@ fn collect_web_storage_artifact_stats(
                 .map_or(fetched_at_unix, |newest| newest.max(fetched_at_unix)),
         );
     }
+    stats.query_count = query_counts.len();
+    stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
 
     Ok(stats)
 }
@@ -1305,6 +1328,8 @@ mod tests {
                     entries: 2,
                     unique_entries: 0,
                     duplicate_entries: 0,
+                    query_count: 0,
+                    max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
                 },
@@ -1314,6 +1339,8 @@ mod tests {
                     entries: 1,
                     unique_entries: 0,
                     duplicate_entries: 0,
+                    query_count: 0,
+                    max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(130),
                     newest_fetched_at_unix: Some(130),
                 },
@@ -1357,10 +1384,14 @@ mod tests {
         assert_eq!(cache_stats.bytes, 147);
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
+        assert_eq!(cache_stats.query_count, 2);
+        assert_eq!(cache_stats.max_entries_per_query, 2);
         assert_eq!(log_stats.entries, 2);
         assert_eq!(log_stats.bytes, 214);
         assert_eq!(log_stats.unique_entries, 1);
         assert_eq!(log_stats.duplicate_entries, 1);
+        assert_eq!(log_stats.query_count, 1);
+        assert_eq!(log_stats.max_entries_per_query, 2);
     }
 
     #[test]
@@ -1371,6 +1402,8 @@ mod tests {
             entries: 3,
             unique_entries: 2,
             duplicate_entries: 1,
+            query_count: 2,
+            max_entries_per_query: 2,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
         };
@@ -1380,6 +1413,8 @@ mod tests {
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             duplicate_entries: 0,
+            query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
         };
@@ -1389,6 +1424,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            query_count: 2,
+            max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
         };
@@ -1425,6 +1462,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            query_count: 2,
+            max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
         };
@@ -1434,6 +1473,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            query_count: 2,
+            max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(190),
             newest_fetched_at_unix: Some(200),
         };
@@ -1456,6 +1497,8 @@ mod tests {
                     entries: 3,
                     unique_entries: 2,
                     duplicate_entries: 1,
+                    query_count: 2,
+                    max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
                 },
@@ -1465,6 +1508,8 @@ mod tests {
                     entries: 2,
                     unique_entries: 2,
                     duplicate_entries: 0,
+                    query_count: 2,
+                    max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
                     newest_fetched_at_unix: Some(200),
                 },
