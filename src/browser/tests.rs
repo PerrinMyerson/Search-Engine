@@ -3001,6 +3001,61 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     );
 }
 
+#[tokio::test]
+async fn image_render_coverage_skips_unsupported_picture_source_for_renderable_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <picture>
+                <source srcset="hero.avif 1x">
+                <source srcset="hero.webp 1x">
+                <img src="fallback.jpg" alt="Renderable picture" width="80" height="24">
+            </picture>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+
+    let hero_url = hero.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.resource.url, "hero.webp");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+}
+
 fn tiny_test_png_rgb_with_sub_filter() -> Vec<u8> {
     let filtered_scanlines = [0, 0, 0, 0, 255, 255, 255, 1, 255, 0, 0, 1, 0, 255];
     encode_test_png(2, 2, 2, &filtered_scanlines)
