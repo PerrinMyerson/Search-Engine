@@ -8625,6 +8625,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
 .toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .toolbar button {{ cursor: pointer; background: #2457d6; color: #fff; border-color: #2457d6; }}
+[data-browser-auto-visual-control][aria-busy="true"] a[href^="/browser"], [data-browser-auto-visual-control][aria-busy="true"] button {{ cursor: wait; opacity: 0.62; }}
 .address-bar {{ margin-bottom: 0; }}
 .address-bar input[name="url"] {{ flex: 1 1 420px; }}
 .secondary-toolbar {{ margin: 0 0 12px; }}
@@ -8725,8 +8726,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <body>
 <main>
 <header class="browser-topbar">
-<nav class="toolbar browser-primary-nav"><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
-<form class="toolbar address-bar" action="/browser" method="get">
+<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
+<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -8876,6 +8877,60 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
       status.textContent = message;
     }}
   }};
+  const autoVisualControls = Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"));
+  let autoVisualControlsBlocked = true;
+  const setAutoVisualControlsBusy = (busy) => {{
+    autoVisualControlsBlocked = busy;
+    for (const control of autoVisualControls) {{
+      if (busy) {{
+        control.dataset.autoVisualPending = "true";
+        control.setAttribute("aria-busy", "true");
+      }} else {{
+        delete control.dataset.autoVisualPending;
+        control.removeAttribute("aria-busy");
+      }}
+    }}
+  }};
+  const isBrowserActionLink = (target) => {{
+    if (!target || target.tagName !== "A") {{
+      return true;
+    }}
+    const href = target.getAttribute("href") || "";
+    if (!href) {{
+      return false;
+    }}
+    try {{
+      return new URL(target.href, window.location.href).pathname === "/browser";
+    }} catch (_) {{
+      return href.startsWith("/browser");
+    }}
+  }};
+  const showAutoVisualControlStatus = () => setStatus("Visual render is still running. Please wait...");
+  const guardAutoVisualControls = () => {{
+    setAutoVisualControlsBusy(true);
+    for (const control of autoVisualControls) {{
+      control.addEventListener("click", (event) => {{
+        if (!autoVisualControlsBlocked) {{
+          return;
+        }}
+        const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+        const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("a, button") : null;
+        if (!target || !isBrowserActionLink(target)) {{
+          return;
+        }}
+        event.preventDefault();
+        showAutoVisualControlStatus();
+      }});
+      control.addEventListener("submit", (event) => {{
+        if (!autoVisualControlsBlocked) {{
+          return;
+        }}
+        event.preventDefault();
+        showAutoVisualControlStatus();
+      }});
+    }}
+  }};
+  guardAutoVisualControls();
   const scheduleRefresh = (message, delayMs) => {{
     setStatus(message);
     if (refreshUrl) {{
@@ -8935,6 +8990,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }}
   }})().catch((error) => {{
     sessionStorage.setItem(stateKey, `failed:${{Date.now()}}`);
+    setAutoVisualControlsBusy(false);
     setStatus(error && error.message ? error.message : "Visual render failed");
   }});
 }})();
@@ -8960,6 +9016,14 @@ fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String 
   const addressInput = document.querySelector("[data-browser-address]");
   const findInput = document.querySelector("[data-browser-find]");
   const reloadUrl = {reload_url};
+  const showPendingAutoVisualStatus = () => {{
+    const pendingAutoVisual = document.querySelector("[data-auto-visual-" + "status]");
+    if (!pendingAutoVisual) {{
+      return false;
+    }}
+    pendingAutoVisual.textContent = "Visual render is still running. Please wait...";
+    return true;
+  }};
   const focusAndSelect = (element) => {{
     if (!element) {{
       return false;
@@ -8982,11 +9046,14 @@ fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String 
     }} else if (key === "f") {{
       if (focusAndSelect(findInput)) {{
         event.preventDefault();
-      }}
-    }} else if (key === "r" && reloadUrl) {{
-      event.preventDefault();
-      window.location.href = reloadUrl;
     }}
+  }} else if (key === "r" && reloadUrl) {{
+    event.preventDefault();
+    if (showPendingAutoVisualStatus()) {{
+      return;
+    }}
+    window.location.href = reloadUrl;
+  }}
   }});
 }})();
 </script>"#,
@@ -9034,6 +9101,20 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   if (pendingAutoVisual) {
     shell.dataset.pendingAutoVisual = "true";
     shell.setAttribute("aria-busy", "true");
+    const showPendingAutoVisualStatus = () => {
+      pendingAutoVisual.textContent = "Visual render is still running. Please wait...";
+    };
+    shell.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      showPendingAutoVisualStatus();
+    }, { passive: false });
+    shell.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "End", "Home", "PageDown", "PageUp", " "].includes(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      showPendingAutoVisualStatus();
+    });
     return;
   }
   const raster = shell.querySelector(".browser-raster");
