@@ -1,3 +1,4 @@
+use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
 ];
 const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
 const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
+const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -892,7 +894,15 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
                 artifact.name, newest
             );
         }
-        if let Some(suggestion) = web_storage_compaction_suggestion(&artifact) {
+        let now = unix_now();
+        let stale_secs = web_storage_stale_threshold_secs();
+        if let Some(age_secs) = web_storage_oldest_age_secs(&artifact, now) {
+            println!(
+                "web_storage_artifact_oldest_age_secs: {} {}",
+                artifact.name, age_secs
+            );
+        }
+        if let Some(suggestion) = web_storage_compaction_suggestion(&artifact, now, stale_secs) {
             println!(
                 "web_storage_compaction_suggestion: {} {}",
                 artifact.name, suggestion
@@ -902,7 +912,11 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     Ok(())
 }
 
-fn web_storage_compaction_suggestion(artifact: &WebStorageArtifactStats) -> Option<String> {
+fn web_storage_compaction_suggestion(
+    artifact: &WebStorageArtifactStats,
+    now: u64,
+    stale_secs: u64,
+) -> Option<String> {
     if artifact.duplicate_entries >= WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES {
         return Some(format!(
             "brutal-search compact-web-cache --dry-run --min-entries {}",
@@ -915,7 +929,25 @@ fn web_storage_compaction_suggestion(artifact: &WebStorageArtifactStats) -> Opti
             WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
         ));
     }
+    if stale_secs > 0
+        && web_storage_oldest_age_secs(artifact, now).is_some_and(|age_secs| age_secs > stale_secs)
+    {
+        return Some("brutal-search compact-web-cache --dry-run --min-entries 1".to_owned());
+    }
     None
+}
+
+fn web_storage_oldest_age_secs(artifact: &WebStorageArtifactStats, now: u64) -> Option<u64> {
+    artifact
+        .oldest_fetched_at_unix
+        .map(|oldest| now.saturating_sub(oldest))
+}
+
+fn web_storage_stale_threshold_secs() -> u64 {
+    env::var("BRUTAL_WEB_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_WEB_STORAGE_STALE_SECS)
 }
 
 fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
@@ -1237,13 +1269,53 @@ mod tests {
         };
 
         assert_eq!(
-            web_storage_compaction_suggestion(&duplicate_artifact).as_deref(),
+            web_storage_compaction_suggestion(
+                &duplicate_artifact,
+                200,
+                DEFAULT_WEB_STORAGE_STALE_SECS
+            )
+            .as_deref(),
             Some("brutal-search compact-web-cache --dry-run --min-entries 3")
         );
         assert_eq!(
-            web_storage_compaction_suggestion(&large_artifact).as_deref(),
+            web_storage_compaction_suggestion(&large_artifact, 200, DEFAULT_WEB_STORAGE_STALE_SECS)
+                .as_deref(),
             Some("brutal-search compact-web-cache --dry-run --min-entries 1024")
         );
-        assert!(web_storage_compaction_suggestion(&small_clean_artifact).is_none());
+        assert!(
+            web_storage_compaction_suggestion(
+                &small_clean_artifact,
+                200,
+                DEFAULT_WEB_STORAGE_STALE_SECS
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn web_storage_compaction_suggestion_flags_stale_artifacts() {
+        let stale_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let fresh_artifact = WebStorageArtifactStats {
+            name: "brave-results.jsonl",
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            oldest_fetched_at_unix: Some(190),
+            newest_fetched_at_unix: Some(200),
+        };
+
+        assert_eq!(web_storage_oldest_age_secs(&stale_artifact, 200), Some(100));
+        assert_eq!(
+            web_storage_compaction_suggestion(&stale_artifact, 200, 60).as_deref(),
+            Some("brutal-search compact-web-cache --dry-run --min-entries 1")
+        );
+        assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
     }
 }
