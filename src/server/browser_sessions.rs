@@ -11500,14 +11500,29 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     format!(
         r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></nav>"#,
-        top = nav_control(can_scroll_up, "Top", &top_href),
-        left = nav_control(can_scroll_left, "Left", &left_href),
-        page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
-        line_up = nav_control(can_scroll_up, "Line up", &line_up_href),
-        line_down = nav_control(can_scroll_down, "Line down", &line_down_href),
-        page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
-        right = nav_control(can_scroll_right, "Right", &right_href),
-        bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
+        top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
+        left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
+        page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
+        line_up = scroll_nav_control(can_scroll_up, "Line up", &line_up_href, "Already at top"),
+        line_down = scroll_nav_control(
+            can_scroll_down,
+            "Line down",
+            &line_down_href,
+            "Already at bottom"
+        ),
+        page_down = scroll_nav_control(
+            can_scroll_down,
+            "Page down",
+            &page_down_href,
+            "Already at bottom"
+        ),
+        right = scroll_nav_control(
+            can_scroll_right,
+            "Right",
+            &right_href,
+            "Already at right edge"
+        ),
+        bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
     )
 }
 
@@ -11589,12 +11604,27 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         visual_status = visual_status,
         page_state = page_state,
         render_status = render_status,
-        page_left = nav_control(can_scroll_left, "Page left", &page_left_href),
-        top = nav_control(can_scroll_up, "Top", &top_href),
-        page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
-        page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
-        bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
-        page_right = nav_control(can_scroll_right, "Page right", &page_right_href),
+        page_left = scroll_nav_control(
+            can_scroll_left,
+            "Page left",
+            &page_left_href,
+            "Already at left edge"
+        ),
+        top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
+        page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
+        page_down = scroll_nav_control(
+            can_scroll_down,
+            "Page down",
+            &page_down_href,
+            "Already at bottom"
+        ),
+        bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
+        page_right = scroll_nav_control(
+            can_scroll_right,
+            "Page right",
+            &page_right_href,
+            "Already at right edge"
+        ),
         common = browser_session_common_hidden_inputs(payload),
     )
 }
@@ -13605,6 +13635,17 @@ fn nav_control(enabled: bool, label: &str, href: &str) -> String {
             label = html_escape::encode_text(label),
         )
     }
+}
+
+fn scroll_nav_control(enabled: bool, label: &str, href: &str, disabled_reason: &str) -> String {
+    if enabled {
+        return nav_control(true, label, href);
+    }
+    format!(
+        r#"<span aria-disabled="true" title="{reason}" data-browser-scroll-disabled="{reason}">{label}</span>"#,
+        reason = html_escape::encode_double_quoted_attribute(disabled_reason),
+        label = html_escape::encode_text(label),
+    )
 }
 
 fn browser_session_title(render: &crate::browser::BrowserRender) -> String {
