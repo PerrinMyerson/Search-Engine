@@ -5075,6 +5075,9 @@ fn draw_raster_text_command(
     if y < viewport.y || y >= viewport.end_y() {
         return;
     }
+    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
+        return;
+    }
     let text = readable_display_text(text);
     for (column_offset, ch) in text.chars().enumerate() {
         let document_column = x.saturating_add(column_offset);
@@ -5261,6 +5264,9 @@ fn draw_text_viewport_command(
     let (x, y) =
         display_command_origin_for_viewport(x, y, viewport, viewport_fixed, viewport_sticky_top);
     if y < viewport.y || y >= viewport.end_y() {
+        return;
+    }
+    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
         return;
     }
     let row = y.saturating_sub(viewport.y);
@@ -5488,6 +5494,46 @@ fn display_command_text(command: &DisplayCommand) -> Option<&str> {
 
 fn readable_display_text(text: &str) -> String {
     collapse_repeated_glyph_runs(text).unwrap_or_else(|| text.to_owned())
+}
+
+fn scaled_text_vertical_duplicate(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+) -> bool {
+    let Some(text) = display_command_text(command) else {
+        return false;
+    };
+    let Some(readable) = collapse_repeated_glyph_runs(text) else {
+        return false;
+    };
+    let current_bounds = display_command_bounds_for_viewport(
+        command,
+        viewport,
+        display_command_viewport_fixed(render, command_index),
+        display_command_viewport_sticky_top(render, command_index),
+    );
+    for previous_index in (0..command_index).rev() {
+        let previous_command = &render.display_list[previous_index];
+        let Some(previous_text) = display_command_text(previous_command) else {
+            continue;
+        };
+        if collapse_repeated_glyph_runs(previous_text).as_deref() != Some(readable.as_str()) {
+            continue;
+        }
+        let previous_bounds = display_command_bounds_for_viewport(
+            previous_command,
+            viewport,
+            display_command_viewport_fixed(render, previous_index),
+            display_command_viewport_sticky_top(render, previous_index),
+        );
+        return previous_bounds.x == current_bounds.x
+            && previous_bounds.y.saturating_add(1) == current_bounds.y
+            && previous_bounds.y >= viewport.y
+            && previous_bounds.y < viewport.end_y();
+    }
+    false
 }
 
 fn collapse_repeated_glyph_runs(text: &str) -> Option<String> {

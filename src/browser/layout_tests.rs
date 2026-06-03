@@ -1296,12 +1296,31 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
         viewport.lines,
         vec![
             "Hero".to_owned(),
-            "Hero".to_owned(),
-            "Hero".to_owned(),
+            String::new(),
+            String::new(),
             String::new(),
             "Body".to_owned(),
         ]
     );
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(16),
+        viewport_height: Some(5),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize scaled text");
+    let first_row_glyph = raster_options
+        .padding_y
+        .saturating_add(2)
+        .saturating_mul(raster.width)
+        .saturating_add(raster_options.padding_x.saturating_add(1));
+    assert_eq!(raster.pixels[first_row_glyph], 0);
+    let duplicate_row_pixel = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2)
+        .saturating_mul(raster.width)
+        .saturating_add(raster_options.padding_x.saturating_add(1));
+    assert_eq!(raster.pixels[duplicate_row_pixel], 255);
     assert_eq!(
         collapse_repeated_glyph_runs("TTrruuvveettaa  DDaattaa").as_deref(),
         Some("Truveta Data")
