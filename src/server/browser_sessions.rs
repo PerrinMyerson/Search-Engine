@@ -140,6 +140,7 @@ struct BrowserWebSession {
     find_active_line: Option<usize>,
     tab_search_query: String,
     resource_report: Option<BrowserSessionResourceReportPayload>,
+    action_feedback: Option<String>,
     pinned: bool,
     tab_label: Option<String>,
 }
@@ -209,6 +210,7 @@ struct BrowserSessionPayload {
     resource_script_count: usize,
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
+    action_feedback: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1205,6 +1207,7 @@ impl BrowserSessionRegistry {
             find_active_line: None,
             tab_search_query: String::new(),
             resource_report: None,
+            action_feedback: None,
             pinned: false,
             tab_label: None,
         };
@@ -1329,6 +1332,7 @@ impl BrowserSessionRegistry {
                 find_active_line: None,
                 tab_search_query: String::new(),
                 resource_report: None,
+                action_feedback: None,
                 pinned: tab.pinned,
                 tab_label: tab.label.clone(),
             };
@@ -5661,6 +5665,15 @@ async fn apply_browser_action(
     action: BrowserSessionAction,
     web_session: &mut BrowserWebSession,
 ) -> Result<(), BrowserRouteError> {
+    if !matches!(
+        &action,
+        BrowserSessionAction::Current
+            | BrowserSessionAction::ClickSelector(_)
+            | BrowserSessionAction::ClickAt { .. }
+    ) {
+        web_session.action_feedback = None;
+    }
+
     match action {
         BrowserSessionAction::Current => {}
         BrowserSessionAction::Open(url) => {
@@ -5774,25 +5787,36 @@ async fn apply_browser_action(
                 .click_selector_with_default_action(&selector)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            if current_session_source(web_session) != before {
+            let navigated = current_session_source(web_session) != before;
+            if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
+            let suffix = if navigated { "; navigated" } else { "" };
+            web_session.action_feedback = Some(format!(
+                "Clicked selector {}{}",
+                browser_session_feedback_excerpt(&selector),
+                suffix
+            ));
         }
         BrowserSessionAction::ClickAt { x, y } => {
             let before = current_session_source(web_session);
+            let page_x = web_session.viewport_x.saturating_add(x);
+            let page_y = web_session.viewport_y.saturating_add(y);
             web_session
                 .session
-                .click_at_with_default_action(
-                    web_session.viewport_x.saturating_add(x),
-                    web_session.viewport_y.saturating_add(y),
-                )
+                .click_at_with_default_action(page_x, page_y)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            if current_session_source(web_session) != before {
+            let navigated = current_session_source(web_session) != before;
+            if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
+            let suffix = if navigated { "; navigated" } else { "" };
+            web_session.action_feedback = Some(format!(
+                "Clicked point x {x}, y {y} (page {page_x}, {page_y}){suffix}"
+            ));
         }
         BrowserSessionAction::FocusSelector(selector) => {
             web_session
@@ -8420,6 +8444,7 @@ fn browser_session_payload(
             resource_script_count: resource_kind_counts.scripts,
             resources,
             resource_report: web_session.resource_report.clone(),
+            action_feedback: web_session.action_feedback.clone(),
         }
     };
     web_session.viewport_x = payload.viewport_x;
@@ -11575,6 +11600,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
 }
 
 fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
+    let action_feedback = render_browser_session_action_feedback(payload);
     if let Some(report) = payload.resource_report.as_ref() {
         let status = browser_session_resource_report_status(report);
         let report_json_href =
@@ -11594,11 +11620,12 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
             })
             .unwrap_or_default();
         return format!(
-            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip report">Last action: {action}</span><span class="viewport-state-chip report">{status}</span>{applied}{decoded}<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{clear_href}">Clear report</a></div>"#,
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip report">Last action: {action}</span><span class="viewport-state-chip report">{status}</span>{applied}{decoded}{action_feedback}<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{clear_href}">Clear report</a></div>"#,
             action = html_escape::encode_text(&report.action),
             status = html_escape::encode_text(&status),
             applied = applied,
             decoded = decoded,
+            action_feedback = action_feedback,
             report_json_href = html_escape::encode_double_quoted_attribute(&report_json_href),
             clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
         );
@@ -11639,12 +11666,31 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
         );
     }
     if chips.is_empty() {
-        return r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">No visual resources</span></div>"#.to_owned();
+        return format!(
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">No visual resources</span>{action_feedback}</div>"#,
+            action_feedback = action_feedback,
+        );
     }
     format!(
-        r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}</div>"#,
+        r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}{action_feedback}</div>"#,
         chips = chips,
+        action_feedback = action_feedback,
     )
+}
+
+fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> String {
+    payload
+        .action_feedback
+        .as_deref()
+        .map(str::trim)
+        .filter(|feedback| !feedback.is_empty())
+        .map(|feedback| {
+            format!(
+                r#"<span class="viewport-state-chip report" data-browser-action-feedback>{}</span>"#,
+                html_escape::encode_text(feedback),
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> String {
@@ -13574,6 +13620,17 @@ fn current_session_source(web_session: &BrowserWebSession) -> Option<String> {
         .session
         .current()
         .map(|render| render.source.clone())
+}
+
+fn browser_session_feedback_excerpt(value: &str) -> String {
+    let trimmed = value.trim();
+    const LIMIT: usize = 80;
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_owned();
+    }
+    let mut excerpt = trimmed.chars().take(LIMIT).collect::<String>();
+    excerpt.push_str("...");
+    excerpt
 }
 
 fn reset_viewport_to_fragment(web_session: &mut BrowserWebSession) {

@@ -8025,6 +8025,13 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert_eq!(payload.history_len, 2);
     assert!(payload.can_back);
     assert!(payload.viewport.contains("arrived"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Clicked selector #go; navigated")
+    );
+    let html = render_browser_session_page(&payload, "/search?q=button");
+    assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains("Clicked selector #go; navigated"));
 }
 
 #[tokio::test]
@@ -8061,6 +8068,13 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert_eq!(payload.title, "Button");
     assert_eq!(payload.history_len, 1);
     assert!(payload.viewport.contains("Clicked"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Clicked point x 0, y 0 (page 0, 0)")
+    );
+    let html = render_browser_session_page(&payload, "/search?q=button");
+    assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains("Clicked point x 0, y 0 (page 0, 0)"));
 }
 
 #[tokio::test]
@@ -8134,6 +8148,14 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(payload.viewport_y, button_y);
     assert!(payload.viewport.contains("Clicked"));
+    let expected_feedback = format!("Clicked point x 0, y 0 (page 0, {button_y})");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_feedback.as_str())
+    );
+    let html = render_browser_session_page(&payload, "/search?q=button");
+    assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains(&expected_feedback));
 }
 
 #[test]
@@ -8210,6 +8232,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         resource_script_count: 0,
         resources: Vec::new(),
         resource_report: None,
+        action_feedback: None,
     };
     let href =
         browser_session_action_href(&payload.id, "scroll", &[("dy", "15".to_owned())], &payload);
