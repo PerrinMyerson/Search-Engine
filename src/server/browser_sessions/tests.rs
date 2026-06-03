@@ -2165,6 +2165,9 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
+    assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
+    assert!(html.contains(r#"<span>Left</span>"#));
+    assert!(html.contains(r#">Right</a>"#));
     assert!(html.contains("<span>Page up</span>"));
     assert!(html.contains("<span>Line up</span>"));
     assert!(html.contains(">Line down</a>"));
@@ -2276,6 +2279,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
         payload.max_scroll_x, payload.max_scroll_y
     )));
     assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
+    assert!(html.contains(r#"viewport-scroll-feedback"#));
     assert!(html.contains(r#"data-scroll-url="/browser?"#));
     assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-viewport-x="8""#));
@@ -2300,6 +2305,10 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(html.contains("setViewportPending"));
+    assert!(html.contains(
+        r#"const feedback = document.querySelector("[data-browser-viewport-feedback]")"#
+    ));
+    assert!(html.contains("feedback.textContent = message"));
     assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
     assert!(html.contains(r#"controls.dataset.scrollPending = "true""#));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
@@ -8845,9 +8854,20 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("action=fetch-resources"));
     assert!(html.contains("action=make-visual"));
+    assert!(html.contains(r#"data-browser-resource-action-status"#));
+    assert!(html.contains(
+        r#"data-browser-resource-action data-browser-resource-status="Fetching resources...""#
+    ));
+    assert!(html.contains(
+        r#"data-browser-resource-action data-browser-resource-status="Applying styles...""#
+    ));
+    assert!(html.contains(r#"data-browser-resource-status-output aria-live="polite""#));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
     assert!(html.contains(r#"data-browser-visual-status"#));
     assert!(html.contains(r#"data-browser-make-visual-status"#));
+    assert!(html.contains(r#"eventTarget.closest("[data-browser-resource-action]")"#));
+    assert!(html.contains(r#"target.dataset.browserResourceStatus || "Working...""#));
+    assert!(html.contains(r#"section.dataset.resourcePending = "true""#));
     assert!(html.contains(r#"section.dataset.visualPending = "true""#));
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains(r#"target.setAttribute("aria-disabled", "true")"#));
@@ -9112,9 +9132,19 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"class="clear-link primary-action""#));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
+    assert!(html.contains(r#"data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#));
     assert!(html.contains(r#"data-browser-resource-actions"#));
-    assert!(html.contains(r#"data-browser-visual-status aria-live="polite""#));
+    assert!(html.contains(
+        r#"data-browser-visual-status data-browser-resource-status-output aria-live="polite""#
+    ));
+    assert!(html.contains(r#"data-browser-resource-status-output aria-live="polite""#));
+    assert!(html.contains(r#"data-browser-resource-action-status"#));
+    assert!(html.contains(r#"data-browser-resource-status="Fetching resources...""#));
+    assert!(html.contains(r#"data-browser-resource-status="Applying styles...""#));
+    assert!(html.contains(r#"data-browser-resource-status="Loading images...""#));
     assert!(html.contains(r#"data-browser-make-visual-status"#));
+    assert!(html.contains(r#"target.dataset.browserResourceStatus || "Working...""#));
+    assert!(html.contains(r#"section.dataset.resourcePending = "true""#));
     assert!(html.contains(r#"section.dataset.visualPending = "true""#));
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("Making visual..."));
@@ -9622,6 +9652,10 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
     assert!(html.contains(r#"data-browser-visual-status"#));
+    assert!(html.contains(r#"data-browser-resource-status-output aria-live="polite""#));
+    assert!(html.contains(r#"data-browser-resource-action-status"#));
+    assert!(html.contains(r#"data-browser-resource-status="Loading images...""#));
+    assert!(html.contains(r#"section.dataset.resourcePending = "true""#));
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
