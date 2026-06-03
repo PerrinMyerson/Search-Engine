@@ -651,6 +651,9 @@ mod native {
                         close: false,
                     });
                 }
+                Key::LeftBracket | Key::RightBracket if modifiers.shift => {
+                    return Ok(BrowserWindowKeyResult::default());
+                }
                 Key::Left | Key::LeftBracket => {
                     return handle_browser_window_history_navigation(app, mode, true).await;
                 }
@@ -2606,6 +2609,103 @@ mod native {
                 assert_eq!(app.tab_count(), 1);
                 assert_eq!(app.active_tab(), 0);
             }
+        }
+
+        #[tokio::test]
+        async fn browser_window_single_tab_shift_brackets_do_not_navigate_history() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = dir.path().join("first.html");
+            let second = dir.path().join("second.html");
+            std::fs::write(
+                &first,
+                r#"<html><head><title>First</title></head><body>First</body></html>"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &second,
+                r#"<html><head><title>Second</title></head><body>Second</body></html>"#,
+            )
+            .unwrap();
+
+            let mut app = BrowserApp::open(
+                &first.to_string_lossy(),
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::Open(
+                second.to_string_lossy().into_owned(),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(app.tab_count(), 1);
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: true,
+                alt: false,
+            };
+            let mut mode = BrowserWindowMode::Find {
+                text: "keep prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let previous_tab =
+                handle_browser_window_key(&mut app, &mut mode, Key::LeftBracket, modifiers)
+                    .await
+                    .unwrap();
+            assert!(!previous_tab.dirty);
+            assert!(!previous_tab.close);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Find {
+                    text: "keep prompt".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "Second"
+            );
+
+            app.apply_action(BrowserAppAction::Back).await.unwrap();
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
+
+            mode = BrowserWindowMode::Location {
+                text: "keep location".to_owned(),
+                replace_on_input: false,
+            };
+            let next_tab =
+                handle_browser_window_key(&mut app, &mut mode, Key::RightBracket, modifiers)
+                    .await
+                    .unwrap();
+            assert!(!next_tab.dirty);
+            assert!(!next_tab.close);
+            assert_eq!(
+                mode,
+                BrowserWindowMode::Location {
+                    text: "keep location".to_owned(),
+                    replace_on_input: false,
+                }
+            );
+            assert_eq!(
+                app.active_session().unwrap().current().unwrap().title,
+                "First"
+            );
         }
 
         #[tokio::test]
