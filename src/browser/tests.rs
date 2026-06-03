@@ -1,3 +1,4 @@
+use super::images::{tiny_test_webp_bytes, tiny_test_webp_data_url};
 use super::*;
 
 #[test]
@@ -975,6 +976,105 @@ fn decodes_local_png_image_into_cached_raster_pixels() {
     fs::remove_file(png).unwrap();
     let cached_raster = rasterize_render(&render, BrowserRasterOptions::default()).unwrap();
     assert_eq!(cached_raster.pixel_hash(), raster_hash);
+}
+
+#[test]
+fn decodes_local_webp_image_into_rendered_image_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let webp = dir.path().join("tile.webp");
+    fs::write(&webp, tiny_test_webp_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "tile.webp").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><p>Before webp</p><img src="tile.webp" alt="WebP tile" width="16" height="24"><p>After webp</p></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before webp\nAfter webp");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, decoded_info.pixel_hash);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before webp".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("WebP tile".to_owned()),
+                url: Some("tile.webp".to_owned()),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: Some(decoded_info.pixel_hash)
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "After webp".to_owned()
+            },
+        ]
+    );
+}
+
+#[test]
+fn decodes_data_url_webp_image_into_rendered_image_command() {
+    let data_url = tiny_test_webp_data_url();
+    let decoded = decode_image_reference("mem://webp", &data_url).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let render = render_html(
+        "mem://webp",
+        format!(
+            r#"<html><body><p>Before webp</p><img src="{data_url}" alt="Inline WebP" width="16" height="24"><p>After webp</p></body></html>"#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before webp\nAfter webp");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Before webp".to_owned()
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("Inline WebP".to_owned()),
+                url: Some(data_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: Some(expected_hash)
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "After webp".to_owned()
+            },
+        ]
+    );
 }
 
 #[test]
