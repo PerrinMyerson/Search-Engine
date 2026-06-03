@@ -2695,6 +2695,65 @@ fn scrolled_visual_viewports_use_nearby_document_flow_text_context() {
 }
 
 #[test]
+fn sparse_visual_viewports_prioritize_meaningful_document_flow_text() {
+    let render = render_html(
+        "mem://sparse-visual-flow-priority",
+        br#"
+            <html><body>
+              <h2 style="margin:0">Care pathways</h2>
+              <p style="margin:0">Patient outcomes summary</p>
+              <section style="height:240px; background-color:black; color:black">
+                ID
+              </section>
+              <ul style="margin:0"><li>Follow up item</li></ul>
+              <table><tr><td>Measure</td><td>Trend</td></tr></table>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 2,
+            width: 32,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains("ID"));
+    assert!(scrolled_text.contains("Patient outcomes summary"));
+    assert!(
+        scrolled
+            .lines
+            .iter()
+            .all(|line| line.chars().filter(|ch| *ch == '#').count() < 10)
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(2),
+        viewport_width: Some(32),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options)
+        .expect("rasterize meaningful document flow context");
+    let context_pixel_x = raster_options.padding_x.saturating_add(2);
+    let context_pixel_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2);
+    let context_pixel = context_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(context_pixel_x);
+    assert_eq!(raster.pixels[context_pixel], 255);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
