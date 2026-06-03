@@ -11153,10 +11153,12 @@ fn browser_scroll_percent(value: usize, max: usize) -> usize {
 
 fn render_browser_session_viewport_jump(payload: &BrowserSessionPayload) -> String {
     format!(
-        r#"<form class="viewport-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-viewport-x">x</label><input id="browser-viewport-x" type="number" min="0" name="x" value="{x}" aria-label="Viewport x"><label for="browser-viewport-y">y</label><input id="browser-viewport-y" type="number" min="0" name="y" value="{y}" aria-label="Viewport y"><button type="submit">Jump viewport</button></form>"#,
+        r#"<form class="viewport-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-viewport-x">x</label><input id="browser-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x"><label for="browser-viewport-y">y</label><input id="browser-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y"><button type="submit">Jump viewport</button></form>"#,
         common = browser_session_common_hidden_inputs(payload),
         x = payload.viewport_x,
+        max_x = payload.max_scroll_x,
         y = payload.viewport_y,
+        max_y = payload.max_scroll_y,
     )
 }
 
