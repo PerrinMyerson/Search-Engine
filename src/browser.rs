@@ -5288,29 +5288,61 @@ fn text_viewport_needs_readable_context(
     render: &BrowserRender,
     viewport: RasterViewport,
 ) -> bool {
-    let has_visual_fill = cells.iter().flatten().any(|ch| matches!(*ch, '#' | '@'));
-    has_visual_fill && !viewport_has_meaningful_visible_text(render, viewport, false)
+    let visual_rows = text_viewport_visual_fill_row_count(cells);
+    visual_rows > 0
+        && viewport_needs_more_body_context(
+            render,
+            viewport,
+            visual_rows,
+            text_viewport_mixed_media_row_threshold(cells.len()),
+        )
 }
 
 fn meaningful_text_row_threshold(width: usize) -> usize {
     width.saturating_div(4).clamp(6, 24)
 }
 
+fn text_viewport_visual_fill_row_count(cells: &[Vec<char>]) -> usize {
+    cells
+        .iter()
+        .filter(|line| line.iter().any(|ch| matches!(*ch, '#' | '@')))
+        .count()
+}
+
+fn text_viewport_mixed_media_row_threshold(height: usize) -> usize {
+    height.saturating_div(2).max(1)
+}
+
 fn raster_viewport_needs_readable_context(
     render: &BrowserRender,
     viewport: RasterViewport,
 ) -> bool {
-    if !raster_viewport_has_large_visual_fill(render, viewport) {
-        return false;
-    }
-    !viewport_has_meaningful_visible_text(render, viewport, false)
+    let visual_rows = raster_viewport_visual_fill_row_count(render, viewport);
+    visual_rows >= text_viewport_mixed_media_row_threshold(viewport.height)
+        && viewport_needs_more_body_context(render, viewport, visual_rows, visual_rows)
 }
 
-fn viewport_has_meaningful_visible_text(
+fn viewport_needs_more_body_context(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    visual_rows: usize,
+    mixed_media_row_threshold: usize,
+) -> bool {
+    let meaningful_rows = viewport_meaningful_visible_text_row_count(render, viewport, false);
+    meaningful_rows == 0
+        || (visual_rows >= mixed_media_row_threshold
+            && meaningful_rows < viewport_minimum_readable_body_rows(viewport.height))
+}
+
+fn viewport_minimum_readable_body_rows(height: usize) -> usize {
+    height.min(2)
+}
+
+fn viewport_meaningful_visible_text_row_count(
     render: &BrowserRender,
     viewport: RasterViewport,
     include_pinned: bool,
-) -> bool {
+) -> usize {
     let mut row_text_counts = vec![0usize; viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
         let Some(text) = display_command_text(command) else {
@@ -5342,31 +5374,47 @@ fn viewport_has_meaningful_visible_text(
     }
     row_text_counts
         .into_iter()
-        .any(|count| count >= meaningful_text_row_threshold(viewport.width))
+        .filter(|count| *count >= meaningful_text_row_threshold(viewport.width))
+        .count()
 }
 
-fn raster_viewport_has_large_visual_fill(render: &BrowserRender, viewport: RasterViewport) -> bool {
-    render
-        .display_list
-        .iter()
-        .enumerate()
-        .any(|(command_index, command)| {
-            if !display_command_is_visual_fill(command) {
-                return false;
+fn raster_viewport_visual_fill_row_count(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> usize {
+    let mut row_has_visual = vec![false; viewport.height];
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !display_command_is_visual_fill(command) {
+            continue;
+        }
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        let Some(visible) = intersect_display_bounds_with_viewport(bounds, viewport) else {
+            continue;
+        };
+        if !large_text_viewport_visual_fill(viewport, visible) {
+            continue;
+        }
+        let start_row = visible.y.saturating_sub(viewport.y);
+        let end_row = start_row
+            .saturating_add(visible.height)
+            .min(viewport.height);
+        for row in start_row..end_row {
+            if let Some(has_visual) = row_has_visual.get_mut(row) {
+                *has_visual = true;
             }
-            let viewport_fixed = display_command_viewport_fixed(render, command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let bounds = display_command_bounds_for_viewport(
-                command,
-                viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
-            let Some(visible) = intersect_display_bounds_with_viewport(bounds, viewport) else {
-                return false;
-            };
-            large_text_viewport_visual_fill(viewport, visible)
-        })
+        }
+    }
+    row_has_visual
+        .into_iter()
+        .filter(|has_visual| *has_visual)
+        .count()
 }
 
 fn raster_text_context_overlay_row(render: &BrowserRender, viewport: RasterViewport) -> usize {
