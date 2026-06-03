@@ -2159,20 +2159,34 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(payload.max_scroll_y > 0);
     assert!(payload.viewport.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
     let html = render_browser_session_page(&payload, "/search?q=wide");
-    assert!(html.contains("<span>Top</span>"));
-    assert!(html.contains("<span>Up</span>"));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Top</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
+    ));
     assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
-    assert!(html.contains(r#"<span>Left</span>"#));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
+    ));
     assert!(html.contains(r#">Right</a>"#));
-    assert!(html.contains(r#"<span>Page left</span>"#));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Page left</span>"#
+    ));
     assert!(html.contains(r#">Page right</a>"#));
     assert!(html.contains(r#"data-browser-viewport-page-controls"#));
-    assert!(html.contains("<span>Page up</span>"));
-    assert!(html.contains("<span>Line up</span>"));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Page up</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
+    ));
+    assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
+    assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
     assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
     let state_export = RequestTarget {
@@ -2568,6 +2582,19 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&bottom).await.unwrap();
     assert_eq!(payload.viewport_x, 12);
     assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Page down</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Bottom</span>"#
+    ));
+    assert!(html.contains(r#">Top</a>"#));
+    assert!(html.contains(r#">Page up</a>"#));
+    assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert!(
