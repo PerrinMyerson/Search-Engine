@@ -346,7 +346,7 @@ fn text_viewport_clips_display_list_for_browser_shell() {
         BrowserTextViewportOptions {
             x: 1,
             y: 1,
-            width: 4,
+            width: 2,
             height: 3,
         },
     );
@@ -1204,6 +1204,78 @@ fn selects_data_url_jpeg_srcset_candidate_for_static_render() {
             decoded_width: Some(2),
             decoded_height: Some(2),
             decoded_hash: Some(expected_hash),
+        }]
+    );
+}
+
+#[test]
+fn image_decode_visibility_skips_unsupported_width_srcset_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let large_jpeg = dir.path().join("large.jpg");
+    fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "large.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" srcset="hero.avif 320w, large.jpg 640w" alt="Supported width JPEG" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            shade: 220,
+            alt: Some("Supported width JPEG".to_owned()),
+            url: Some("large.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
+fn image_decode_visibility_skips_unsupported_density_srcset_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let retina_webp = dir.path().join("retina.webp");
+    fs::write(&retina_webp, tiny_test_webp_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "retina.webp").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" srcset="placeholder.gif 1x, retina.webp 2x" alt="Supported density WebP" width="80" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Supported density WebP".to_owned()),
+            url: Some("retina.webp".to_owned()),
+            decoded_width: Some(1),
+            decoded_height: Some(1),
+            decoded_hash: Some(decoded_info.pixel_hash),
         }]
     );
 }

@@ -1830,9 +1830,11 @@ fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option
     if candidates.is_empty() {
         return None;
     }
+    let candidates = supported_srcset_candidates(&candidates);
 
     let width_candidates = candidates
         .iter()
+        .copied()
         .filter(|candidate| candidate.width.is_some())
         .collect::<Vec<_>>();
     if !width_candidates.is_empty() {
@@ -1855,6 +1857,7 @@ fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option
 
     let density_candidates = candidates
         .iter()
+        .copied()
         .filter(|candidate| candidate.density_milli.is_some())
         .collect::<Vec<_>>();
     if !density_candidates.is_empty() {
@@ -1883,6 +1886,49 @@ fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option
     }
 
     candidates.first().map(|candidate| candidate.url.clone())
+}
+
+fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCandidate> {
+    let supported = candidates
+        .iter()
+        .filter(|candidate| !srcset_candidate_clearly_unsupported(&candidate.url))
+        .collect::<Vec<_>>();
+    if supported.is_empty() {
+        candidates.iter().collect()
+    } else {
+        supported
+    }
+}
+
+fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
+    let url = url.trim();
+    if let Some(metadata) = url
+        .strip_prefix("data:")
+        .or_else(|| url.strip_prefix("DATA:"))
+        .and_then(|payload| payload.split_once(',').map(|(metadata, _)| metadata))
+    {
+        let mime = metadata.split(';').next().unwrap_or_default();
+        return mime
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+            && !image_mime_type_supported(mime);
+    }
+
+    let path = Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
+    let Some(extension) = Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+    else {
+        return false;
+    };
+    matches!(
+        extension.as_str(),
+        "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
+    )
 }
 
 fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
