@@ -445,7 +445,9 @@ fn css_not_pseudo_selectors_filter_rendered_layout_rules() {
             .filter_map(|command| match command {
                 DisplayCommand::Text { text, .. } => Some(text.as_str()),
                 DisplayCommand::StyledText { text, .. } => Some(text.as_str()),
-                DisplayCommand::Rect { .. } | DisplayCommand::Image { .. } => None,
+                DisplayCommand::Rect { .. }
+                | DisplayCommand::Image { .. }
+                | DisplayCommand::BackgroundImage { .. } => None,
             })
             .collect::<Vec<_>>(),
         vec!["Visible keep", "Visible data", "VISIBLE PANEL"]
@@ -505,6 +507,8 @@ fn hidden_attribute_and_attribute_css_selectors_hide_content() {
 fn style_display_command_text(command: &DisplayCommand) -> &str {
     match command {
         DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => text,
-        DisplayCommand::Rect { .. } | DisplayCommand::Image { .. } => "",
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => "",
     }
 }

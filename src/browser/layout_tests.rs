@@ -2576,17 +2576,22 @@ fn css_background_image_paints_block_underlay() {
                 height: 2,
                 shade: 255,
             },
-            DisplayCommand::Image {
+            DisplayCommand::BackgroundImage {
                 x: 0,
                 y: 0,
                 width: 10,
                 height: 2,
                 shade: 220,
-                alt: None,
                 url: Some("https://example.test/hero.png".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
+                size: BackgroundImageSize::Auto,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::Repeat,
             },
             DisplayCommand::Text {
                 x: 0,
@@ -2600,6 +2605,47 @@ fn css_background_image_paints_block_underlay() {
             },
         ]
     );
+}
+
+#[test]
+fn css_background_image_respects_contain_position_and_no_repeat() {
+    let image_url = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='8'%20height='12'%3E%3Crect%20width='8'%20height='12'%20fill='black'/%3E%3C/svg%3E";
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="width:16px; height:12px; background-image:url({image_url}); background-size:contain; background-position:right top; background-repeat:no-repeat"></div>
+            </body></html>
+            "#
+    );
+    let render = render_html(
+        "mem://background-image-fit",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 4,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let raster = rasterize_render(&render, BrowserRasterOptions::default()).unwrap();
+    let left_cell_x = BrowserRasterOptions::default().padding_x;
+    let right_cell_x = left_cell_x + BrowserRasterOptions::default().cell_width;
+    let sample_y = BrowserRasterOptions::default().padding_y;
+    assert_eq!(raster.pixels[sample_y * raster.width + left_cell_x], 255);
+    assert_eq!(raster.pixels[sample_y * raster.width + right_cell_x], 0);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 100,
+                    y_percent: 0
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+                ..
+            }
+        )
+    }));
 }
 
 #[test]

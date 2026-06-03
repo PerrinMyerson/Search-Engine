@@ -2024,8 +2024,7 @@ async fn session_render_images_decodes_css_background_image_resource() {
     assert!(render.display_list.iter().any(|command| {
         matches!(
             command,
-            DisplayCommand::Image {
-                alt: None,
+            DisplayCommand::BackgroundImage {
                 url: Some(url),
                 decoded_hash: Some(hash),
                 ..
