@@ -9242,10 +9242,7 @@ fn parse_css(css: &str) -> CssCascade {
         custom_properties,
     };
 
-    for block in css.split('}') {
-        let Some((selectors, declarations)) = block.split_once('{') else {
-            continue;
-        };
+    for (selectors, declarations) in top_level_css_rule_blocks(&css) {
         let resolved_declarations = substitute_css_vars(declarations, &cascade.custom_properties);
         let declarations = parse_css_declarations(&resolved_declarations);
         if declarations == CssDeclarations::default() {
@@ -9266,10 +9263,7 @@ fn parse_css(css: &str) -> CssCascade {
 
 fn collect_root_css_custom_properties(css: &str) -> HashMap<String, String> {
     let mut custom_properties = HashMap::new();
-    for block in css.split('}') {
-        let Some((selectors, declarations)) = block.split_once('{') else {
-            continue;
-        };
+    for (selectors, declarations) in top_level_css_rule_blocks(css) {
         if !split_css_selector_list(selectors)
             .iter()
             .any(|selector| css_selector_defines_root_custom_properties(selector))
@@ -9291,6 +9285,141 @@ fn collect_root_css_custom_properties(css: &str) -> HashMap<String, String> {
         }
     }
     custom_properties
+}
+
+fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
+    let bytes = css.as_bytes();
+    let mut blocks = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        index = skip_css_whitespace(bytes, index);
+        if index >= bytes.len() {
+            break;
+        }
+        if bytes[index] == b'@' {
+            index = skip_css_at_rule(css, index);
+            continue;
+        }
+        let selector_start = index;
+        let Some(open_brace) = find_css_rule_open_brace(css, index) else {
+            break;
+        };
+        let Some(close_brace) = find_matching_css_brace(css, open_brace) else {
+            break;
+        };
+        blocks.push((
+            &css[selector_start..open_brace],
+            &css[open_brace + 1..close_brace],
+        ));
+        index = close_brace + 1;
+    }
+    blocks
+}
+
+fn skip_css_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        index += 1;
+    }
+    index
+}
+
+fn skip_css_at_rule(css: &str, start: usize) -> usize {
+    let bytes = css.as_bytes();
+    let mut quote = None;
+    let mut index = start;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                index = index.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => {
+                quote = Some(byte);
+                index += 1;
+            }
+            b';' => return index + 1,
+            b'{' => {
+                return find_matching_css_brace(css, index)
+                    .map(|close| close + 1)
+                    .unwrap_or(bytes.len());
+            }
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn find_css_rule_open_brace(css: &str, start: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote = None;
+    let mut index = start;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                index = index.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' => return Some(index),
+            b'}' => return None,
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn find_matching_css_brace(css: &str, open_brace: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote = None;
+    let mut depth = 0usize;
+    let mut index = open_brace;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active_quote) = quote {
+            if byte == b'\\' {
+                index = index.saturating_add(2);
+                continue;
+            }
+            if byte == active_quote {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
 }
 
 fn css_selector_defines_root_custom_properties(selector: &str) -> bool {
