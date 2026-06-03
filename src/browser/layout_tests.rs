@@ -2286,6 +2286,51 @@ fn css_fixed_position_paints_relative_to_scrolled_viewport() {
 }
 
 #[test]
+fn css_sticky_position_paints_relative_to_scrolled_viewport() {
+    let render = render_html(
+        "mem://sticky-position-scrolled-viewport",
+        br#"
+            <html><body>
+              <div style="height:24px"></div>
+              <div style="position:sticky; top:0">Sticky nav</div>
+              <div style="height:96px"></div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 5,
+            width: 30,
+            height: 3,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert_eq!(
+        viewport.lines,
+        vec!["Sticky nav".to_owned(), String::new(), String::new()]
+    );
+    assert_eq!(viewport.visible_command_count, 1);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(5),
+        viewport_width: Some(30),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).unwrap();
+    let report = raster_report(&render, &raster, raster_options);
+    assert_eq!(report.visible_command_count, 1);
+    assert!(raster.non_background_pixels() > 0);
+}
+
+#[test]
 fn css_absolute_top_uses_positioned_containing_block_start() {
     let render = render_html(
         "mem://absolute-top-containing-block",

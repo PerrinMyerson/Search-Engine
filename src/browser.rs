@@ -246,6 +246,7 @@ struct DisplayHitTarget {
     target_node: Option<usize>,
     text_runs: Vec<TextHitTargetRun>,
     viewport_fixed: bool,
+    viewport_sticky_top: Option<usize>,
 }
 
 impl DisplayHitTarget {
@@ -254,6 +255,7 @@ impl DisplayHitTarget {
             target_node,
             text_runs: Vec::new(),
             viewport_fixed: false,
+            viewport_sticky_top: None,
         }
     }
 
@@ -262,6 +264,7 @@ impl DisplayHitTarget {
             target_node: None,
             text_runs,
             viewport_fixed: false,
+            viewport_sticky_top: None,
         }
     }
 
@@ -278,6 +281,11 @@ impl DisplayHitTarget {
 
     fn with_viewport_fixed(mut self, viewport_fixed: bool) -> Self {
         self.viewport_fixed = viewport_fixed;
+        self
+    }
+
+    fn with_viewport_sticky_top(mut self, viewport_sticky_top: Option<usize>) -> Self {
+        self.viewport_sticky_top = viewport_sticky_top;
         self
     }
 }
@@ -3927,14 +3935,27 @@ fn display_command_viewport_fixed(render: &BrowserRender, command_index: usize) 
         .is_some_and(|target| target.viewport_fixed)
 }
 
+fn display_command_viewport_sticky_top(
+    render: &BrowserRender,
+    command_index: usize,
+) -> Option<usize> {
+    render
+        .hit_targets
+        .get(command_index)
+        .and_then(|target| target.viewport_sticky_top)
+}
+
 fn display_command_origin_for_viewport(
     x: usize,
     y: usize,
     viewport: RasterViewport,
     viewport_fixed: bool,
+    viewport_sticky_top: Option<usize>,
 ) -> (usize, usize) {
     if viewport_fixed {
         (x.saturating_add(viewport.x), y.saturating_add(viewport.y))
+    } else if let Some(top) = viewport_sticky_top {
+        (x, y.max(viewport.y.saturating_add(top)))
     } else {
         (x, y)
     }
@@ -3944,12 +3965,16 @@ fn display_command_bounds_for_viewport(
     command: &DisplayCommand,
     viewport: RasterViewport,
     viewport_fixed: bool,
+    viewport_sticky_top: Option<usize>,
 ) -> DisplayCommandBounds {
     let mut bounds = display_command_bounds(command);
-    if viewport_fixed {
-        bounds.x = bounds.x.saturating_add(viewport.x);
-        bounds.y = bounds.y.saturating_add(viewport.y);
-    }
+    (bounds.x, bounds.y) = display_command_origin_for_viewport(
+        bounds.x,
+        bounds.y,
+        viewport,
+        viewport_fixed,
+        viewport_sticky_top,
+    );
     bounds
 }
 
@@ -3960,8 +3985,13 @@ fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) ->
         .enumerate()
         .filter(|(command_index, command)| {
             let viewport_fixed = display_command_viewport_fixed(render, *command_index);
-            let command_bounds =
-                display_command_bounds_for_viewport(command, viewport, viewport_fixed);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, *command_index);
+            let command_bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                viewport_fixed,
+                viewport_sticky_top,
+            );
             intersect_display_bounds_with_viewport(command_bounds, viewport).is_some()
         })
         .count();
@@ -4380,14 +4410,26 @@ pub fn rasterize_render(
     let mut pixels = vec![background; pixel_count];
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(command, viewport, viewport_fixed);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
         let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
         else {
             continue;
         };
         match command {
             DisplayCommand::Text { x, y, text } => {
-                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
                 if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
@@ -4409,7 +4451,13 @@ pub fn rasterize_render(
                 }
             }
             DisplayCommand::StyledText { x, y, text, shade } => {
-                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
                 if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
@@ -4470,7 +4518,13 @@ pub fn rasterize_render(
                 url,
                 ..
             } => {
-                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
                 let image_width_cells = *image_width;
                 let image_height_cells = *height;
                 let image_x = options.padding_x.saturating_add(
@@ -4682,14 +4736,26 @@ pub fn browser_text_viewport(
 
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(command, viewport, viewport_fixed);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
         let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
         else {
             continue;
         };
         match command {
             DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
-                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
                 if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
@@ -11229,6 +11295,14 @@ fn render_node(
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
             }
+            let viewport_sticky_top_entered = if style.position == Position::Sticky {
+                style.position_top
+            } else {
+                None
+            };
+            if let Some(sticky_top) = viewport_sticky_top_entered {
+                renderer.enter_viewport_sticky(sticky_top);
+            }
             let exit_outer_contexts =
                 |renderer: &mut FlowRenderer,
                  out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>| {
@@ -11237,6 +11311,9 @@ fn render_node(
                     }
                     if viewport_fixed_entered {
                         renderer.exit_viewport_fixed();
+                    }
+                    if viewport_sticky_top_entered.is_some() {
+                        renderer.exit_viewport_sticky();
                     }
                     if opacity_entered {
                         renderer.exit_transparent_opacity();
@@ -13143,6 +13220,7 @@ struct FlowRenderer {
     line_height_stack: Vec<usize>,
     positioning_context_stack: Vec<usize>,
     viewport_fixed_depth: usize,
+    viewport_sticky_top_stack: Vec<usize>,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
     underlay_list: Vec<DisplayCommand>,
@@ -13200,6 +13278,7 @@ impl FlowRenderer {
             line_height_stack: Vec::new(),
             positioning_context_stack: Vec::new(),
             viewport_fixed_depth: 0,
+            viewport_sticky_top_stack: Vec::new(),
             table_stack: Vec::new(),
             active_floats: Vec::new(),
             underlay_list: Vec::new(),
@@ -13732,12 +13811,36 @@ impl FlowRenderer {
         self.viewport_fixed_depth > 0
     }
 
+    fn enter_viewport_sticky(&mut self, top: usize) {
+        self.viewport_sticky_top_stack.push(top);
+    }
+
+    fn exit_viewport_sticky(&mut self) {
+        self.viewport_sticky_top_stack.pop();
+    }
+
+    fn viewport_sticky_top(&self) -> Option<usize> {
+        self.viewport_sticky_top_stack.last().copied()
+    }
+
     fn node_hit_target(&self, target_node: Option<usize>) -> DisplayHitTarget {
-        DisplayHitTarget::node(target_node).with_viewport_fixed(self.viewport_fixed())
+        DisplayHitTarget::node(target_node)
+            .with_viewport_fixed(self.viewport_fixed())
+            .with_viewport_sticky_top(
+                (!self.viewport_fixed())
+                    .then(|| self.viewport_sticky_top())
+                    .flatten(),
+            )
     }
 
     fn text_hit_target(&self, target_runs: Vec<TextHitTargetRun>) -> DisplayHitTarget {
-        DisplayHitTarget::text(target_runs).with_viewport_fixed(self.viewport_fixed())
+        DisplayHitTarget::text(target_runs)
+            .with_viewport_fixed(self.viewport_fixed())
+            .with_viewport_sticky_top(
+                (!self.viewport_fixed())
+                    .then(|| self.viewport_sticky_top())
+                    .flatten(),
+            )
     }
 
     fn enter_out_of_flow(&mut self, y: Option<usize>) -> FlowOutOfFlowSnapshot {
