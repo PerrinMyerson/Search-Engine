@@ -245,6 +245,7 @@ impl BrowserClickDefaultAction {
 struct DisplayHitTarget {
     target_node: Option<usize>,
     text_runs: Vec<TextHitTargetRun>,
+    viewport_fixed: bool,
 }
 
 impl DisplayHitTarget {
@@ -252,6 +253,7 @@ impl DisplayHitTarget {
         Self {
             target_node,
             text_runs: Vec::new(),
+            viewport_fixed: false,
         }
     }
 
@@ -259,6 +261,7 @@ impl DisplayHitTarget {
         Self {
             target_node: None,
             text_runs,
+            viewport_fixed: false,
         }
     }
 
@@ -271,6 +274,11 @@ impl DisplayHitTarget {
             });
         }
         self.target_node
+    }
+
+    fn with_viewport_fixed(mut self, viewport_fixed: bool) -> Self {
+        self.viewport_fixed = viewport_fixed;
+        self
     }
 }
 
@@ -3912,13 +3920,49 @@ fn intersect_display_bounds_with_viewport(
     })
 }
 
+fn display_command_viewport_fixed(render: &BrowserRender, command_index: usize) -> bool {
+    render
+        .hit_targets
+        .get(command_index)
+        .is_some_and(|target| target.viewport_fixed)
+}
+
+fn display_command_origin_for_viewport(
+    x: usize,
+    y: usize,
+    viewport: RasterViewport,
+    viewport_fixed: bool,
+) -> (usize, usize) {
+    if viewport_fixed {
+        (x.saturating_add(viewport.x), y.saturating_add(viewport.y))
+    } else {
+        (x, y)
+    }
+}
+
+fn display_command_bounds_for_viewport(
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+    viewport_fixed: bool,
+) -> DisplayCommandBounds {
+    let mut bounds = display_command_bounds(command);
+    if viewport_fixed {
+        bounds.x = bounds.x.saturating_add(viewport.x);
+        bounds.y = bounds.y.saturating_add(viewport.y);
+    }
+    bounds
+}
+
 fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) -> (usize, usize) {
     let visible = render
         .display_list
         .iter()
-        .filter(|command| {
-            intersect_display_bounds_with_viewport(display_command_bounds(command), viewport)
-                .is_some()
+        .enumerate()
+        .filter(|(command_index, command)| {
+            let viewport_fixed = display_command_viewport_fixed(render, *command_index);
+            let command_bounds =
+                display_command_bounds_for_viewport(command, viewport, viewport_fixed);
+            intersect_display_bounds_with_viewport(command_bounds, viewport).is_some()
         })
         .count();
     (visible, render.display_list.len().saturating_sub(visible))
@@ -4334,15 +4378,17 @@ pub fn rasterize_render(
 
     let background = 255u8;
     let mut pixels = vec![background; pixel_count];
-    for command in &render.display_list {
-        let command_bounds = display_command_bounds(command);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(command, viewport, viewport_fixed);
         let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
         else {
             continue;
         };
         match command {
             DisplayCommand::Text { x, y, text } => {
-                if *y < viewport.y || *y >= viewport.end_y() {
+                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
                 for (column_offset, ch) in text.chars().enumerate() {
@@ -4363,7 +4409,8 @@ pub fn rasterize_render(
                 }
             }
             DisplayCommand::StyledText { x, y, text, shade } => {
-                if *y < viewport.y || *y >= viewport.end_y() {
+                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
                 for (column_offset, ch) in text.chars().enumerate() {
@@ -4423,6 +4470,7 @@ pub fn rasterize_render(
                 url,
                 ..
             } => {
+                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
                 let image_width_cells = *image_width;
                 let image_height_cells = *height;
                 let image_x = options.padding_x.saturating_add(
@@ -4444,11 +4492,11 @@ pub fn rasterize_render(
                 let image_height = image_height_cells.saturating_mul(options.cell_height);
                 let source_offset_x = visible_bounds
                     .x
-                    .saturating_sub(*x)
+                    .saturating_sub(x)
                     .saturating_mul(options.cell_width);
                 let source_offset_y = visible_bounds
                     .y
-                    .saturating_sub(*y)
+                    .saturating_sub(y)
                     .saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_decoded_image_region(
@@ -4493,7 +4541,7 @@ pub fn rasterize_render(
                     );
                     let original_right = x.saturating_add(image_width_cells);
                     let original_bottom = y.saturating_add(image_height_cells);
-                    if visible_bounds.y == *y {
+                    if visible_bounds.y == y {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -4515,7 +4563,7 @@ pub fn rasterize_render(
                             96,
                         );
                     }
-                    if visible_bounds.x == *x {
+                    if visible_bounds.x == x {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -4632,15 +4680,17 @@ pub fn browser_text_viewport(
     let height = document_viewport.viewport.height;
     let mut cells = vec![vec![' '; width]; height];
 
-    for command in &render.display_list {
-        let command_bounds = display_command_bounds(command);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(command, viewport, viewport_fixed);
         let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
         else {
             continue;
         };
         match command {
             DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
-                if *y < viewport.y || *y >= viewport.end_y() {
+                let (x, y) = display_command_origin_for_viewport(*x, *y, viewport, viewport_fixed);
+                if y < viewport.y || y >= viewport.end_y() {
                     continue;
                 }
                 let row = y.saturating_sub(viewport.y);
@@ -11175,44 +11225,40 @@ fn render_node(
                 .position
                 .is_out_of_flow()
                 .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
+            let viewport_fixed_entered = style.position == Position::Fixed;
+            if viewport_fixed_entered {
+                renderer.enter_viewport_fixed();
+            }
+            let exit_outer_contexts =
+                |renderer: &mut FlowRenderer,
+                 out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>| {
+                    if let Some(snapshot) = out_of_flow_entered.take() {
+                        renderer.exit_out_of_flow(snapshot);
+                    }
+                    if viewport_fixed_entered {
+                        renderer.exit_viewport_fixed();
+                    }
+                    if opacity_entered {
+                        renderer.exit_transparent_opacity();
+                    }
+                    if visibility_entered.is_some() {
+                        renderer.exit_visibility();
+                    }
+                };
 
             if element.tag == "br" {
                 renderer.break_line();
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             if element.tag == "wbr" {
                 renderer.push_word_break_opportunity();
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             if element.tag == "hr" {
                 renderer.push_horizontal_rule(Some(node_id));
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             if element.tag == "img" {
@@ -11242,15 +11288,7 @@ fn render_node(
                         Some(node_id),
                     );
                 }
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             if is_replaced_media_element(&element.tag) {
@@ -11264,30 +11302,14 @@ fn render_node(
                     replaced_media_render_source(element),
                     Some(node_id),
                 );
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
                 }
-                if let Some(snapshot) = out_of_flow_entered.take() {
-                    renderer.exit_out_of_flow(snapshot);
-                }
-                if opacity_entered {
-                    renderer.exit_transparent_opacity();
-                }
-                if visibility_entered.is_some() {
-                    renderer.exit_visibility();
-                }
+                exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
             let text_shade_entered = style.text_shade;
@@ -11640,15 +11662,7 @@ fn render_node(
             if table_entered {
                 renderer.exit_table();
             }
-            if let Some(snapshot) = out_of_flow_entered.take() {
-                renderer.exit_out_of_flow(snapshot);
-            }
-            if opacity_entered {
-                renderer.exit_transparent_opacity();
-            }
-            if visibility_entered.is_some() {
-                renderer.exit_visibility();
-            }
+            exit_outer_contexts(renderer, &mut out_of_flow_entered);
         }
     }
 }
@@ -13128,6 +13142,7 @@ struct FlowRenderer {
     line_height: usize,
     line_height_stack: Vec<usize>,
     positioning_context_stack: Vec<usize>,
+    viewport_fixed_depth: usize,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
     underlay_list: Vec<DisplayCommand>,
@@ -13184,6 +13199,7 @@ impl FlowRenderer {
             line_height: 1,
             line_height_stack: Vec::new(),
             positioning_context_stack: Vec::new(),
+            viewport_fixed_depth: 0,
             table_stack: Vec::new(),
             active_floats: Vec::new(),
             underlay_list: Vec::new(),
@@ -13287,7 +13303,7 @@ impl FlowRenderer {
             });
         }
         self.display_targets
-            .push(DisplayHitTarget::text(clip_text_hit_target_runs(
+            .push(self.text_hit_target(clip_text_hit_target_runs(
                 &target_runs,
                 start,
                 clipped.width,
@@ -13598,7 +13614,7 @@ impl FlowRenderer {
                         )
                     {
                         self.underlay_list.push(command);
-                        self.underlay_targets.push(DisplayHitTarget::node(None));
+                        self.underlay_targets.push(self.node_hit_target(None));
                     }
                     self.push_text_display_command(run_x, y, run.text, run.shade, run.target_runs);
                 } else {
@@ -13702,6 +13718,26 @@ impl FlowRenderer {
 
     fn current_positioning_context_y(&self) -> usize {
         self.positioning_context_stack.last().copied().unwrap_or(0)
+    }
+
+    fn enter_viewport_fixed(&mut self) {
+        self.viewport_fixed_depth = self.viewport_fixed_depth.saturating_add(1);
+    }
+
+    fn exit_viewport_fixed(&mut self) {
+        self.viewport_fixed_depth = self.viewport_fixed_depth.saturating_sub(1);
+    }
+
+    fn viewport_fixed(&self) -> bool {
+        self.viewport_fixed_depth > 0
+    }
+
+    fn node_hit_target(&self, target_node: Option<usize>) -> DisplayHitTarget {
+        DisplayHitTarget::node(target_node).with_viewport_fixed(self.viewport_fixed())
+    }
+
+    fn text_hit_target(&self, target_runs: Vec<TextHitTargetRun>) -> DisplayHitTarget {
+        DisplayHitTarget::text(target_runs).with_viewport_fixed(self.viewport_fixed())
     }
 
     fn enter_out_of_flow(&mut self, y: Option<usize>) -> FlowOutOfFlowSnapshot {
@@ -14060,8 +14096,7 @@ impl FlowRenderer {
         if self.paint_visible() {
             if let Some(command) = self.clipped_rect_command(0, self.next_y, self.width, 1, 96) {
                 self.display_list.push(command);
-                self.display_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.display_targets.push(self.node_hit_target(target_node));
             }
         }
         self.next_y += 1;
@@ -14098,8 +14133,7 @@ impl FlowRenderer {
             };
             if let Some(command) = self.clipped_image_command(command) {
                 self.display_list.push(command);
-                self.display_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.display_targets.push(self.node_hit_target(target_node));
             }
         }
         self.next_y = self.next_y.saturating_add(placeholder_height);
@@ -14150,8 +14184,7 @@ impl FlowRenderer {
             };
             if let Some(command) = self.clipped_image_command(command) {
                 self.display_list.push(command);
-                self.display_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.display_targets.push(self.node_hit_target(target_node));
             }
         }
         self.active_floats.push(ActiveFloat {
@@ -14271,8 +14304,7 @@ impl FlowRenderer {
                 self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
             {
                 self.border_list.push(command);
-                self.border_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.border_targets.push(self.node_hit_target(target_node));
             }
         }
         self.next_y = self.next_y.saturating_add(border.width);
@@ -14298,8 +14330,7 @@ impl FlowRenderer {
             self.clipped_rect_command(x, start_y, border_width, height, border.shade)
         {
             self.border_list.push(command);
-            self.border_targets
-                .push(DisplayHitTarget::node(target_node));
+            self.border_targets.push(self.node_hit_target(target_node));
         }
         if width > border_width {
             if let Some(command) = self.clipped_rect_command(
@@ -14310,8 +14341,7 @@ impl FlowRenderer {
                 border.shade,
             ) {
                 self.border_list.push(command);
-                self.border_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.border_targets.push(self.node_hit_target(target_node));
             }
         }
     }
@@ -14328,8 +14358,7 @@ impl FlowRenderer {
                 self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
             {
                 self.border_list.push(command);
-                self.border_targets
-                    .push(DisplayHitTarget::node(target_node));
+                self.border_targets.push(self.node_hit_target(target_node));
             }
         }
         self.next_y = self.next_y.saturating_add(border.width);
@@ -14350,7 +14379,7 @@ impl FlowRenderer {
         if let Some(command) = self.clipped_rect_command(x, start_y, width, height, shade) {
             self.underlay_list.push(command);
             self.underlay_targets
-                .push(DisplayHitTarget::node(target_node));
+                .push(self.node_hit_target(target_node));
         }
     }
 
@@ -14386,7 +14415,7 @@ impl FlowRenderer {
         if let Some(command) = self.clipped_image_command(command) {
             self.underlay_list.push(command);
             self.underlay_targets
-                .push(DisplayHitTarget::node(target_node));
+                .push(self.node_hit_target(target_node));
         }
     }
 
