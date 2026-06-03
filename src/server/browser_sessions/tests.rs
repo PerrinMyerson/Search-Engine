@@ -9181,10 +9181,12 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(">Make visual</a>"));
+    assert!(html.contains(">Make page readable</a>"));
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"class="clear-link primary-action""#));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
     assert!(html.contains(r#"data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#));
+    assert!(html.contains(r#"data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#));
     assert!(html.contains(r#"data-browser-resource-actions"#));
     assert!(html.contains(
         r#"data-browser-visual-status data-browser-resource-status-output aria-live="polite""#
@@ -9200,8 +9202,15 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"section.dataset.visualPending = "true""#));
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("Making visual..."));
+    assert!(html.contains("Making page readable..."));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
+    assert!(html.contains(r#"data-browser-viewport-page-state"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip">Ready</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip">1 stylesheet</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip">1 image</span>"#));
+    assert!(html.contains(r#"<details class="resource-quick-actions resource-quick-details""#));
+    assert!(html.contains(r#"<strong>Resource actions</strong>"#));
     assert!(html.contains(&format!(
         r#"<span class="viewport-state-chip">session {}</span>"#,
         payload.id
@@ -9317,8 +9326,18 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(
         "Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1"
     ));
+    assert!(html.contains(r#"data-browser-viewport-page-state"#));
+    assert!(
+        html.contains(
+            r#"<span class="viewport-state-chip report">Last action: Make visual</span>"#
+        )
+    );
+    assert!(html.contains(r#"<span class="viewport-state-chip report">Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip report">applied 1</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip report">decoded 1</span>"#));
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));
+    assert!(html.contains("Clear report"));
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),

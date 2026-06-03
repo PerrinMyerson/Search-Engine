@@ -8796,7 +8796,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-strip {{ display: grid; gap: 8px; border: 1px solid #d3d8df; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
 .viewport-command-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
 .viewport-command-strip .resource-actions {{ flex: 1 1 auto; }}
+.viewport-page-state {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .viewport-state-chip {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #f7f7f5; color: #3a3f45; font-size: 12px; font-weight: 800; white-space: nowrap; }}
+.viewport-state-chip.report {{ background: #eef4ff; border-color: #c7d7ff; color: #1d3f91; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }}
 .viewport-command-jump {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
@@ -8832,11 +8834,12 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
 .auto-visual-status {{ margin: 12px 0 8px; color: #5d636b; font-size: 13px; font-weight: 700; }}
-.resource-quick-actions {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #dfe2e6; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
+.resource-quick-actions {{ display: grid; gap: 8px; border: 1px solid #dfe2e6; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
+.resource-quick-actions > summary {{ cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }}
 .resource-quick-summary {{ min-width: 220px; display: grid; gap: 2px; }}
 .resource-quick-summary strong {{ color: #20242a; font-size: 13px; }}
 .resource-quick-summary span {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
-.resource-quick-actions .resource-actions {{ justify-content: flex-end; }}
+.resource-quick-actions .resource-actions {{ justify-content: flex-start; }}
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
 .resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
 .resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
@@ -11449,9 +11452,9 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     visual_actions.push_str(
         &browser_session_resource_action_link_with_class_and_attributes(
             action_urls.make_visual.as_deref(),
-            "Make visual",
+            "Make page readable",
             "clear-link primary-action",
-            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#,
+            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
         ),
     );
     visual_actions.push_str(&browser_session_resource_action_link_with_status(
@@ -11488,9 +11491,10 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     } else {
         r#"<span class="resource-visual-status resource-action-status" data-browser-visual-status data-browser-resource-status-output aria-live="polite"></span>"#.to_owned()
     };
+    let page_state = render_browser_session_viewport_page_state(payload);
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div><div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div>{page_state}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -11503,11 +11507,85 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         visual_status = visual_status,
+        page_state = page_state,
         top = nav_control(can_scroll_up, "Top", &top_href),
         page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
         page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
         bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
         common = browser_session_common_hidden_inputs(payload),
+    )
+}
+
+fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
+    if let Some(report) = payload.resource_report.as_ref() {
+        let status = browser_session_resource_report_status(report);
+        let report_json_href =
+            browser_session_api_href(&payload.id, "resource-report-json", payload);
+        let clear_href =
+            browser_session_action_href(&payload.id, "clear-resource-report", &[], payload);
+        let applied = report
+            .applied
+            .map(|count| {
+                format!(r#"<span class="viewport-state-chip report">applied {count}</span>"#)
+            })
+            .unwrap_or_default();
+        let decoded = report
+            .decoded
+            .map(|count| {
+                format!(r#"<span class="viewport-state-chip report">decoded {count}</span>"#)
+            })
+            .unwrap_or_default();
+        return format!(
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip report">Last action: {action}</span><span class="viewport-state-chip report">{status}</span>{applied}{decoded}<a class="clear-link" href="{report_json_href}">Report JSON</a><a class="clear-link" href="{clear_href}">Clear report</a></div>"#,
+            action = html_escape::encode_text(&report.action),
+            status = html_escape::encode_text(&status),
+            applied = applied,
+            decoded = decoded,
+            report_json_href = html_escape::encode_double_quoted_attribute(&report_json_href),
+            clear_href = html_escape::encode_double_quoted_attribute(&clear_href),
+        );
+    }
+
+    let mut chips = String::new();
+    if payload.resource_stylesheet_count > 0 {
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip">{}</span>"#,
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_stylesheet_count,
+                "stylesheet",
+                "stylesheets",
+            )),
+        );
+    }
+    if payload.resource_script_count > 0 {
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip">{}</span>"#,
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_script_count,
+                "script",
+                "scripts",
+            )),
+        );
+    }
+    if payload.resource_image_count > 0 {
+        let _ = write!(
+            chips,
+            r#"<span class="viewport-state-chip">{}</span>"#,
+            html_escape::encode_text(&browser_resource_count_label(
+                payload.resource_image_count,
+                "image",
+                "images",
+            )),
+        );
+    }
+    if chips.is_empty() {
+        return r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">No visual resources</span></div>"#.to_owned();
+    }
+    format!(
+        r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state><span class="viewport-state-chip">Ready</span>{chips}</div>"#,
+        chips = chips,
     )
 }
 
@@ -12538,7 +12616,7 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
     };
 
     format!(
-        r#"<section class="resource-quick-actions" data-browser-resource-actions data-browser-auto-visual-control><div class="resource-quick-summary"><strong>Resources</strong><span>{summary}</span></div><div class="resource-actions">{actions}{visual_status}</div></section>{visual_status_script}"#,
+        r#"<details class="resource-quick-actions resource-quick-details" data-browser-resource-actions data-browser-auto-visual-control><summary><span class="resource-quick-summary"><strong>Resource actions</strong><span>{summary}</span></span></summary><div class="resource-actions">{actions}{visual_status}</div></details>{visual_status_script}"#,
         summary = html_escape::encode_text(&browser_session_resource_summary(payload)),
         actions = actions,
         visual_status = visual_status,
@@ -12819,16 +12897,7 @@ fn render_browser_session_resource_report(
         return String::new();
     };
 
-    let mut status = format!(
-        "{}: total={} fetched={} cached={} failed={} skipped={}",
-        report.action, report.total, report.fetched, report.cached, report.failed, report.skipped
-    );
-    if let Some(applied) = report.applied {
-        let _ = write!(status, " applied={applied}");
-    }
-    if let Some(decoded) = report.decoded {
-        let _ = write!(status, " decoded={decoded}");
-    }
+    let status = browser_session_resource_report_status(report);
 
     let mut rows = String::new();
     for resource in report.resources.iter().take(20) {
@@ -12863,6 +12932,20 @@ fn render_browser_session_resource_report(
         summary = html_escape::encode_text(&status),
         rows = rows,
     )
+}
+
+fn browser_session_resource_report_status(report: &BrowserSessionResourceReportPayload) -> String {
+    let mut status = format!(
+        "{}: total={} fetched={} cached={} failed={} skipped={}",
+        report.action, report.total, report.fetched, report.cached, report.failed, report.skipped
+    );
+    if let Some(applied) = report.applied {
+        let _ = write!(status, " applied={applied}");
+    }
+    if let Some(decoded) = report.decoded {
+        let _ = write!(status, " decoded={decoded}");
+    }
+    status
 }
 
 fn browser_cookie_flags(cookie: &BrowserCookie) -> String {
