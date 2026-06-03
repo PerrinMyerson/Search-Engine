@@ -484,6 +484,48 @@ pub struct BrowserLayerMetrics {
     pub total_layer_area: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundImageSize {
+    Auto,
+    Cover,
+    Contain,
+}
+
+impl Default for BackgroundImageSize {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackgroundImagePosition {
+    pub x_percent: i32,
+    pub y_percent: i32,
+}
+
+impl Default for BackgroundImagePosition {
+    fn default() -> Self {
+        Self {
+            x_percent: 0,
+            y_percent: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundImageRepeat {
+    Repeat,
+    NoRepeat,
+}
+
+impl Default for BackgroundImageRepeat {
+    fn default() -> Self {
+        Self::Repeat
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum DisplayCommand {
@@ -520,6 +562,27 @@ pub enum DisplayCommand {
         decoded_height: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         decoded_hash: Option<String>,
+    },
+    BackgroundImage {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shade: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_width: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_height: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decoded_hash: Option<String>,
+        #[serde(default)]
+        size: BackgroundImageSize,
+        #[serde(default)]
+        position: BackgroundImagePosition,
+        #[serde(default)]
+        repeat: BackgroundImageRepeat,
     },
 }
 
@@ -1211,6 +1274,9 @@ struct ComputedStyle {
     float: Option<FloatSide>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
+    background_image_size: BackgroundImageSize,
+    background_image_position: BackgroundImagePosition,
+    background_image_repeat: BackgroundImageRepeat,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
@@ -1254,6 +1320,9 @@ struct CssDeclarations {
     float: Option<Option<FloatSide>>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
+    background_image_size: Option<BackgroundImageSize>,
+    background_image_position: Option<BackgroundImagePosition>,
+    background_image_repeat: Option<BackgroundImageRepeat>,
     text_shade: Option<u8>,
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
@@ -3454,7 +3523,10 @@ pub fn layer_tree_render(render: &BrowserRender) -> BrowserLayerTreeReport {
     for (command_index, command) in render.display_list.iter().enumerate() {
         let bounds = display_command_bounds(command);
         content_bounds = Some(union_display_bounds(content_bounds, bounds));
-        if matches!(command, DisplayCommand::Image { .. }) {
+        if matches!(
+            command,
+            DisplayCommand::Image { .. } | DisplayCommand::BackgroundImage { .. }
+        ) {
             child_layers.push(browser_layer(
                 child_layers.len() + 1,
                 Some(0),
@@ -3511,7 +3583,10 @@ pub fn browser_layer_metrics(render: &BrowserRender) -> BrowserLayerMetrics {
     for command in &render.display_list {
         let bounds = display_command_bounds(command);
         content_bounds = Some(union_display_bounds(content_bounds, bounds));
-        if matches!(command, DisplayCommand::Image { .. }) {
+        if matches!(
+            command,
+            DisplayCommand::Image { .. } | DisplayCommand::BackgroundImage { .. }
+        ) {
             image_layer_count += 1;
             let area = bounds.width.saturating_mul(bounds.height);
             max_image_layer_area = max_image_layer_area.max(area);
@@ -3675,6 +3750,13 @@ fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
             width,
             height,
             ..
+        }
+        | DisplayCommand::BackgroundImage {
+            x,
+            y,
+            width,
+            height,
+            ..
         } => DisplayCommandBounds {
             x: *x,
             y: *y,
@@ -3804,9 +3886,9 @@ fn display_command_node_bounds(
     }
     match command {
         DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => Vec::new(),
-        DisplayCommand::Rect { .. } | DisplayCommand::Image { .. } => {
-            vec![(node_id, command_bounds)]
-        }
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => vec![(node_id, command_bounds)],
     }
 }
 
@@ -4364,6 +4446,18 @@ fn browser_hit_test(
             url: url.clone(),
             shade: Some(*shade),
         },
+        DisplayCommand::BackgroundImage { url, shade, .. } => BrowserHitTest {
+            command_index,
+            kind: "image".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: None,
+            alt: None,
+            url: url.clone(),
+            shade: Some(*shade),
+        },
     }
 }
 
@@ -4654,6 +4748,147 @@ pub fn rasterize_render(
                     }
                 }
             }
+            DisplayCommand::BackgroundImage {
+                x,
+                y,
+                width: image_width,
+                height,
+                shade,
+                url,
+                size,
+                position,
+                repeat,
+                ..
+            } => {
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
+                let image_width_cells = *image_width;
+                let image_height_cells = *height;
+                let image_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let image_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let clipped_image_height =
+                    visible_bounds.height.saturating_mul(options.cell_height);
+                let image_width = image_width_cells.saturating_mul(options.cell_width);
+                let image_height = image_height_cells.saturating_mul(options.cell_height);
+                let source_offset_x = visible_bounds
+                    .x
+                    .saturating_sub(x)
+                    .saturating_mul(options.cell_width);
+                let source_offset_y = visible_bounds
+                    .y
+                    .saturating_sub(y)
+                    .saturating_mul(options.cell_height);
+                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
+                    draw_background_image_region(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        image_width,
+                        image_height,
+                        *size,
+                        *position,
+                        *repeat,
+                        decoded,
+                    );
+                } else if let Some(decoded) = url
+                    .as_deref()
+                    .and_then(|url| decode_image_reference(&render.source, url))
+                {
+                    draw_background_image_region(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        image_width,
+                        image_height,
+                        *size,
+                        *position,
+                        *repeat,
+                        &decoded,
+                    );
+                } else {
+                    fill_raster_rect(
+                        &mut pixels,
+                        width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        *shade,
+                    );
+                    let original_right = x.saturating_add(image_width_cells);
+                    let original_bottom = y.saturating_add(image_height_cells);
+                    if visible_bounds.y == y {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            1,
+                            96,
+                        );
+                    }
+                    if visible_bounds.y.saturating_add(visible_bounds.height) == original_bottom {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y.saturating_add(clipped_image_height.saturating_sub(1)),
+                            clipped_image_width,
+                            1,
+                            96,
+                        );
+                    }
+                    if visible_bounds.x == x {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x,
+                            image_y,
+                            1,
+                            clipped_image_height,
+                            96,
+                        );
+                    }
+                    if visible_bounds.x.saturating_add(visible_bounds.width) == original_right {
+                        fill_raster_rect(
+                            &mut pixels,
+                            width,
+                            image_x.saturating_add(clipped_image_width.saturating_sub(1)),
+                            image_y,
+                            1,
+                            clipped_image_height,
+                            96,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -4795,6 +5030,9 @@ pub fn browser_text_viewport(
                     visible_bounds,
                     alt.as_deref(),
                 );
+            }
+            DisplayCommand::BackgroundImage { .. } => {
+                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@');
             }
         }
     }
@@ -4974,6 +5212,152 @@ fn draw_decoded_image_region(
                 y.saturating_add(row),
                 *value,
             );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_background_image_region(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    visible_offset_x: usize,
+    visible_offset_y: usize,
+    container_width: usize,
+    container_height: usize,
+    size: BackgroundImageSize,
+    position: BackgroundImagePosition,
+    repeat: BackgroundImageRepeat,
+    decoded: &DecodedImage,
+) {
+    if width == 0
+        || height == 0
+        || container_width == 0
+        || container_height == 0
+        || decoded.width == 0
+        || decoded.height == 0
+    {
+        return;
+    }
+    let (tile_width, tile_height) =
+        background_image_tile_size(container_width, container_height, size, decoded);
+    if tile_width == 0 || tile_height == 0 {
+        return;
+    }
+    let tile_x = background_position_offset(container_width, tile_width, position.x_percent);
+    let tile_y = background_position_offset(container_height, tile_height, position.y_percent);
+    for row in 0..height {
+        let local_y = visible_offset_y.saturating_add(row) as i64;
+        let Some(tile_local_y) =
+            background_tile_local_coordinate(local_y, tile_y, tile_height, repeat)
+        else {
+            continue;
+        };
+        let source_y = tile_local_y.saturating_mul(decoded.height) / tile_height;
+        for column in 0..width {
+            let local_x = visible_offset_x.saturating_add(column) as i64;
+            let Some(tile_local_x) =
+                background_tile_local_coordinate(local_x, tile_x, tile_width, repeat)
+            else {
+                continue;
+            };
+            let source_x = tile_local_x.saturating_mul(decoded.width) / tile_width;
+            let Some(value) = decoded.pixels.get(
+                source_y
+                    .saturating_mul(decoded.width)
+                    .saturating_add(source_x),
+            ) else {
+                continue;
+            };
+            set_raster_pixel(
+                pixels,
+                raster_width,
+                x.saturating_add(column),
+                y.saturating_add(row),
+                *value,
+            );
+        }
+    }
+}
+
+fn background_image_tile_size(
+    container_width: usize,
+    container_height: usize,
+    size: BackgroundImageSize,
+    decoded: &DecodedImage,
+) -> (usize, usize) {
+    match size {
+        BackgroundImageSize::Auto => (decoded.width.max(1), decoded.height.max(1)),
+        BackgroundImageSize::Cover => {
+            if container_width.saturating_mul(decoded.height)
+                >= container_height.saturating_mul(decoded.width)
+            {
+                (
+                    container_width.max(1),
+                    scale_ceil(decoded.height, container_width, decoded.width).max(1),
+                )
+            } else {
+                (
+                    scale_ceil(decoded.width, container_height, decoded.height).max(1),
+                    container_height.max(1),
+                )
+            }
+        }
+        BackgroundImageSize::Contain => {
+            if container_width.saturating_mul(decoded.height)
+                <= container_height.saturating_mul(decoded.width)
+            {
+                (
+                    container_width.max(1),
+                    scale_ceil(decoded.height, container_width, decoded.width).max(1),
+                )
+            } else {
+                (
+                    scale_ceil(decoded.width, container_height, decoded.height).max(1),
+                    container_height.max(1),
+                )
+            }
+        }
+    }
+}
+
+fn scale_ceil(value: usize, numerator: usize, denominator: usize) -> usize {
+    if denominator == 0 {
+        return 0;
+    }
+    let value = value as u128;
+    let numerator = numerator as u128;
+    let denominator = denominator as u128;
+    value
+        .saturating_mul(numerator)
+        .saturating_add(denominator.saturating_sub(1))
+        .saturating_div(denominator)
+        .min(usize::MAX as u128) as usize
+}
+
+fn background_position_offset(container: usize, tile: usize, percent: i32) -> i64 {
+    let delta = container as i128 - tile as i128;
+    delta
+        .saturating_mul(percent as i128)
+        .saturating_div(100)
+        .clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+fn background_tile_local_coordinate(
+    local: i64,
+    tile_offset: i64,
+    tile_size: usize,
+    repeat: BackgroundImageRepeat,
+) -> Option<usize> {
+    let tile_size = i64::try_from(tile_size).ok()?;
+    let relative = local.saturating_sub(tile_offset);
+    match repeat {
+        BackgroundImageRepeat::Repeat => Some(relative.rem_euclid(tile_size) as usize),
+        BackgroundImageRepeat::NoRepeat => {
+            (relative >= 0 && relative < tile_size).then_some(relative as usize)
         }
     }
 }
@@ -10133,6 +10517,18 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.background_image_url =
                     parse_css_image_url(value).or(declarations.background_image_url);
             }
+            "background-size" => {
+                declarations.background_image_size =
+                    parse_css_background_image_size(value).or(declarations.background_image_size);
+            }
+            "background-position" => {
+                declarations.background_image_position = parse_css_background_image_position(value)
+                    .or(declarations.background_image_position);
+            }
+            "background-repeat" => {
+                declarations.background_image_repeat = parse_css_background_image_repeat(value)
+                    .or(declarations.background_image_repeat);
+            }
             "color" => {
                 declarations.text_shade = parse_css_color_shade(value).or(declarations.text_shade);
             }
@@ -10624,6 +11020,140 @@ fn parse_css_image_url(value: &str) -> Option<String> {
         url
     };
     (!url.is_empty()).then(|| url.to_owned())
+}
+
+fn parse_css_background_image_size(value: &str) -> Option<BackgroundImageSize> {
+    let value = value
+        .split(',')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "auto" | "initial" => Some(BackgroundImageSize::Auto),
+        "cover" => Some(BackgroundImageSize::Cover),
+        "contain" => Some(BackgroundImageSize::Contain),
+        _ => None,
+    }
+}
+
+fn parse_css_background_image_repeat(value: &str) -> Option<BackgroundImageRepeat> {
+    let value = value
+        .split(',')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase();
+    if value
+        .split_ascii_whitespace()
+        .any(|token| token == "no-repeat")
+    {
+        Some(BackgroundImageRepeat::NoRepeat)
+    } else if value
+        .split_ascii_whitespace()
+        .any(|token| matches!(token, "repeat" | "repeat-x" | "repeat-y"))
+    {
+        Some(BackgroundImageRepeat::Repeat)
+    } else {
+        None
+    }
+}
+
+fn parse_css_background_image_position(value: &str) -> Option<BackgroundImagePosition> {
+    let layer = value.split(',').next().unwrap_or(value);
+    let tokens = layer
+        .split_ascii_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|ch: char| ch == ',' || ch == ';')
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut x_percent = None;
+    let mut y_percent = None;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        match tokens[index].as_str() {
+            "left" => {
+                let offset = css_position_following_percentage(&tokens, index).unwrap_or(0);
+                x_percent = Some(offset);
+                index += usize::from(
+                    index + 1 < tokens.len() && parse_css_percentage(&tokens[index + 1]).is_some(),
+                );
+            }
+            "right" => {
+                let offset = css_position_following_percentage(&tokens, index).unwrap_or(0);
+                x_percent = Some(100 - offset);
+                index += usize::from(
+                    index + 1 < tokens.len() && parse_css_percentage(&tokens[index + 1]).is_some(),
+                );
+            }
+            "top" => {
+                let offset = css_position_following_percentage(&tokens, index).unwrap_or(0);
+                y_percent = Some(offset);
+                index += usize::from(
+                    index + 1 < tokens.len() && parse_css_percentage(&tokens[index + 1]).is_some(),
+                );
+            }
+            "bottom" => {
+                let offset = css_position_following_percentage(&tokens, index).unwrap_or(0);
+                y_percent = Some(100 - offset);
+                index += usize::from(
+                    index + 1 < tokens.len() && parse_css_percentage(&tokens[index + 1]).is_some(),
+                );
+            }
+            "center" => {
+                if x_percent.is_none() {
+                    x_percent = Some(50);
+                } else if y_percent.is_none() {
+                    y_percent = Some(50);
+                }
+            }
+            token => {
+                if let Some(percent) = parse_css_percentage(token) {
+                    if x_percent.is_none() {
+                        x_percent = Some(percent);
+                    } else if y_percent.is_none() {
+                        y_percent = Some(percent);
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+
+    if x_percent.is_some() && y_percent.is_none() {
+        y_percent = Some(50);
+    }
+    if y_percent.is_some() && x_percent.is_none() {
+        x_percent = Some(50);
+    }
+
+    Some(BackgroundImagePosition {
+        x_percent: x_percent.unwrap_or(0),
+        y_percent: y_percent.unwrap_or(0),
+    })
+}
+
+fn css_position_following_percentage(tokens: &[String], index: usize) -> Option<i32> {
+    tokens
+        .get(index + 1)
+        .and_then(|token| parse_css_percentage(token))
+}
+
+fn parse_css_percentage(value: &str) -> Option<i32> {
+    let numeric = value.trim().strip_suffix('%')?;
+    numeric
+        .parse::<f32>()
+        .ok()
+        .map(|value| value.round() as i32)
 }
 
 fn parse_css_text_align(value: &str) -> Option<TextAlign> {
@@ -11657,10 +12187,17 @@ fn render_node(
                     .map(|shade| (box_x, box_width, start_y, shade))
             });
             let background_image_start = block_box.and_then(|(box_x, box_width, start_y)| {
-                style
-                    .background_image_url
-                    .clone()
-                    .map(|url| (box_x, box_width, start_y, url))
+                style.background_image_url.clone().map(|url| {
+                    (
+                        box_x,
+                        box_width,
+                        start_y,
+                        url,
+                        style.background_image_size,
+                        style.background_image_position,
+                        style.background_image_repeat,
+                    )
+                })
             });
             let overflow_clip_height = match (style.height, style.max_height) {
                 (Some(height), Some(max_height)) => Some(height.min(max_height)),
@@ -11866,13 +12403,18 @@ fn render_node(
             if let Some((box_x, box_width, start_y, shade)) = background_start {
                 renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
             }
-            if let Some((box_x, box_width, start_y, url)) = background_image_start {
+            if let Some((box_x, box_width, start_y, url, size, position, repeat)) =
+                background_image_start
+            {
                 renderer.push_block_background_image(
                     box_x,
                     box_width,
                     start_y,
                     source,
                     &url,
+                    size,
+                    position,
+                    repeat,
                     Some(node_id),
                 );
             }
@@ -12310,6 +12852,9 @@ fn computed_style(
             float: None,
             background_shade: None,
             background_image_url: None,
+            background_image_size: BackgroundImageSize::default(),
+            background_image_position: BackgroundImagePosition::default(),
+            background_image_repeat: BackgroundImageRepeat::default(),
             text_shade: None,
             text_align: None,
             visibility: None,
@@ -12345,6 +12890,9 @@ fn computed_style(
     let mut float = None;
     let mut background_shade = None;
     let mut background_image_url = None;
+    let mut background_image_size = BackgroundImageSize::default();
+    let mut background_image_position = BackgroundImagePosition::default();
+    let mut background_image_repeat = BackgroundImageRepeat::default();
     let mut text_shade = default_text_shade(element);
     let mut text_align = None;
     let mut visibility = None;
@@ -12378,6 +12926,9 @@ fn computed_style(
     let mut float_specificity = 0u32;
     let mut background_specificity = 0u32;
     let mut background_image_specificity = 0u32;
+    let mut background_image_size_specificity = 0u32;
+    let mut background_image_position_specificity = 0u32;
+    let mut background_image_repeat_specificity = 0u32;
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
@@ -12436,6 +12987,25 @@ fn computed_style(
             {
                 background_image_url = Some(rule_background_image_url.clone());
                 background_image_specificity = rule_specificity;
+            }
+            if let Some(rule_background_image_size) = rule.declarations.background_image_size
+                && rule_specificity >= background_image_size_specificity
+            {
+                background_image_size = rule_background_image_size;
+                background_image_size_specificity = rule_specificity;
+            }
+            if let Some(rule_background_image_position) =
+                rule.declarations.background_image_position
+                && rule_specificity >= background_image_position_specificity
+            {
+                background_image_position = rule_background_image_position;
+                background_image_position_specificity = rule_specificity;
+            }
+            if let Some(rule_background_image_repeat) = rule.declarations.background_image_repeat
+                && rule_specificity >= background_image_repeat_specificity
+            {
+                background_image_repeat = rule_background_image_repeat;
+                background_image_repeat_specificity = rule_specificity;
             }
             if let Some(rule_text) = rule.declarations.text_shade
                 && rule_specificity >= text_specificity
@@ -12629,6 +13199,15 @@ fn computed_style(
         if let Some(inline_background_image_url) = inline.background_image_url {
             background_image_url = Some(inline_background_image_url);
         }
+        if let Some(inline_background_image_size) = inline.background_image_size {
+            background_image_size = inline_background_image_size;
+        }
+        if let Some(inline_background_image_position) = inline.background_image_position {
+            background_image_position = inline_background_image_position;
+        }
+        if let Some(inline_background_image_repeat) = inline.background_image_repeat {
+            background_image_repeat = inline_background_image_repeat;
+        }
         if let Some(inline_text) = inline.text_shade {
             text_shade = Some(inline_text);
         }
@@ -12722,6 +13301,9 @@ fn computed_style(
         float,
         background_shade,
         background_image_url,
+        background_image_size,
+        background_image_position,
+        background_image_repeat,
         text_shade,
         text_align,
         visibility,
@@ -13691,6 +14273,46 @@ impl FlowRenderer {
             decoded_width,
             decoded_height,
             decoded_hash,
+        })
+    }
+
+    fn clipped_background_image_command(&self, command: DisplayCommand) -> Option<DisplayCommand> {
+        let DisplayCommand::BackgroundImage {
+            x,
+            y,
+            width,
+            height,
+            shade,
+            url,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+            size,
+            position,
+            repeat,
+        } = command
+        else {
+            return None;
+        };
+        let clipped = self.clipped_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        })?;
+        Some(DisplayCommand::BackgroundImage {
+            x: clipped.x,
+            y: clipped.y,
+            width: clipped.width,
+            height: clipped.height,
+            shade,
+            url,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+            size,
+            position,
+            repeat,
         })
     }
 
@@ -14746,6 +15368,9 @@ impl FlowRenderer {
         start_y: usize,
         source: &str,
         url: &str,
+        size: BackgroundImageSize,
+        position: BackgroundImagePosition,
+        repeat: BackgroundImageRepeat,
         target_node: Option<usize>,
     ) {
         if !self.paint_visible() {
@@ -14753,13 +15378,12 @@ impl FlowRenderer {
         }
         let height = self.next_y.saturating_sub(start_y).max(1);
         let decoded_info = self.cached_decoded_image_info(source, url);
-        let command = DisplayCommand::Image {
+        let command = DisplayCommand::BackgroundImage {
             x,
             y: start_y,
             width,
             height,
             shade: 220,
-            alt: None,
             url: decoded_info
                 .as_ref()
                 .map(|image| image.url.clone())
@@ -14767,8 +15391,11 @@ impl FlowRenderer {
             decoded_width: decoded_info.as_ref().map(|image| image.width),
             decoded_height: decoded_info.as_ref().map(|image| image.height),
             decoded_hash: decoded_info.map(|image| image.pixel_hash),
+            size,
+            position,
+            repeat,
         };
-        if let Some(command) = self.clipped_image_command(command) {
+        if let Some(command) = self.clipped_background_image_command(command) {
             let target = self.node_hit_target(target_node);
             self.push_underlay_command(command, target);
         }
