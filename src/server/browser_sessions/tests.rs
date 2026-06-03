@@ -2131,6 +2131,12 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
+    assert!(html.contains(r#"document.addEventListener("keydown""#));
+    assert!(html.contains("const keyboardDelta"));
+    assert!(html.contains("const handleKeyboardScroll"));
+    assert!(html.contains("isInteractiveTarget(event.target)"));
+    assert!(html.contains("shell.contains(event.target)"));
+    assert!(html.contains(r#"event.key === " " && event.shiftKey"#));
     assert!(html.contains("WheelEvent.DOM_DELTA_LINE"));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
