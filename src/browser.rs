@@ -5036,6 +5036,11 @@ pub fn rasterize_render(
             options,
         );
     }
+    if !raster_viewport_has_visible_text(render, viewport)
+        && let Some(context) = nearby_visual_region_text_context(render, viewport)
+    {
+        draw_raster_text_context(&mut pixels, width, &context, viewport, options);
+    }
 
     Ok(BrowserRaster {
         width,
@@ -5203,6 +5208,11 @@ pub fn browser_text_viewport(
     for (command_index, command) in render.display_list.iter().enumerate() {
         draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
     }
+    if !text_viewport_has_readable_text(&cells)
+        && let Some(context) = nearby_visual_region_text_context(render, viewport)
+    {
+        overlay_text_viewport_context(&mut cells, &context);
+    }
 
     BrowserTextViewportReport {
         source: document_viewport.source,
@@ -5261,6 +5271,154 @@ fn draw_text_viewport_command(
         if let Some(cell) = cells.get_mut(row).and_then(|line| line.get_mut(column)) {
             *cell = ch;
         }
+    }
+}
+
+fn text_viewport_has_readable_text(cells: &[Vec<char>]) -> bool {
+    cells.iter().flatten().any(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn raster_viewport_has_visible_text(render: &BrowserRender, viewport: RasterViewport) -> bool {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .any(|(command_index, command)| {
+            if !display_command_text(command)
+                .is_some_and(|text| text.chars().any(|ch| ch.is_ascii_alphanumeric()))
+            {
+                return false;
+            }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            let command_bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                viewport_fixed,
+                viewport_sticky_top,
+            );
+            intersect_display_bounds_with_viewport(command_bounds, viewport).is_some()
+        })
+}
+
+fn nearby_visual_region_text_context(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> Option<String> {
+    let visual_bounds = render
+        .display_list
+        .iter()
+        .enumerate()
+        .filter_map(|(command_index, command)| {
+            if !display_command_is_visual_fill(command) {
+                return None;
+            }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                viewport_fixed,
+                viewport_sticky_top,
+            );
+            let visible = intersect_display_bounds_with_viewport(bounds, viewport)?;
+            large_text_viewport_visual_fill(viewport, visible).then_some(bounds)
+        })
+        .collect::<Vec<_>>();
+    if visual_bounds.is_empty() {
+        return None;
+    }
+
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .filter_map(|(command_index, command)| {
+            let text = display_command_text(command)?;
+            let text = collapse_ascii_whitespace(text);
+            if text.is_empty() || !text.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+                return None;
+            }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                viewport_fixed,
+                viewport_sticky_top,
+            );
+            if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
+                return None;
+            }
+            if !visual_bounds
+                .iter()
+                .any(|visual| bounds_inside_visual_region(bounds, *visual))
+            {
+                return None;
+            }
+            let distance = if bounds.y < viewport.y {
+                viewport.y.saturating_sub(bounds.y)
+            } else {
+                bounds.y.saturating_sub(viewport.end_y())
+            };
+            Some((distance, text))
+        })
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, text)| text)
+}
+
+fn display_command_text(command: &DisplayCommand) -> Option<&str> {
+    match command {
+        DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+            Some(text.as_str())
+        }
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => None,
+    }
+}
+
+fn display_command_is_visual_fill(command: &DisplayCommand) -> bool {
+    matches!(
+        command,
+        DisplayCommand::Rect { .. }
+            | DisplayCommand::Image { .. }
+            | DisplayCommand::BackgroundImage { .. }
+    )
+}
+
+fn bounds_inside_visual_region(text: DisplayCommandBounds, visual: DisplayCommandBounds) -> bool {
+    let visual_end_x = visual.x.saturating_add(visual.width);
+    let visual_end_y = visual.y.saturating_add(visual.height);
+    text.y >= visual.y
+        && text.y < visual_end_y
+        && text.x < visual_end_x
+        && text.x.saturating_add(text.width) > visual.x
+}
+
+fn overlay_text_viewport_context(cells: &mut [Vec<char>], text: &str) {
+    let Some(line) = cells.first_mut() else {
+        return;
+    };
+    for (column, ch) in text.chars().take(line.len()).enumerate() {
+        if let Some(cell) = line.get_mut(column) {
+            *cell = ch;
+        }
+    }
+}
+
+fn draw_raster_text_context(
+    pixels: &mut [u8],
+    raster_width: usize,
+    text: &str,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+) {
+    for (column, ch) in text.chars().take(viewport.width).enumerate() {
+        let cell_x = options
+            .padding_x
+            .saturating_add(column.saturating_mul(options.cell_width));
+        draw_glyph(pixels, raster_width, cell_x, options.padding_y, ch, 0);
     }
 }
 
