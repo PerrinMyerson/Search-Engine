@@ -9035,7 +9035,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     url.searchParams.set("y", String(y));
     window.location.href = url.toString();
   });
-  shell.addEventListener("keydown", (event) => {
+  const keyboardDelta = (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return null;
+    }
     const pageY = Math.max(1, Math.floor(numberData("viewportHeight") / 2));
     let dx = 0;
     let dy = 0;
@@ -9048,7 +9051,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     } else if (event.key === "ArrowLeft") {
       dx = -1;
     } else if (event.key === "PageDown" || event.key === " ") {
-      dy = pageY;
+      dy = event.key === " " && event.shiftKey ? -pageY : pageY;
     } else if (event.key === "PageUp") {
       dy = -pageY;
     } else if (event.key === "Home") {
@@ -9056,11 +9059,35 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     } else if (event.key === "End") {
       dy = numberData("maxScrollY") - numberData("viewportY");
     } else {
+      return null;
+    }
+    return { dx, dy };
+  };
+  const handleKeyboardScroll = (event) => {
+    const delta = keyboardDelta(event);
+    if (!delta) {
+      return false;
+    }
+    if (navigate(delta.dx, delta.dy)) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  };
+  const isInteractiveTarget = (target) => {
+    if (!target || typeof target.closest !== "function") {
+      return false;
+    }
+    return Boolean(target.closest("input, textarea, select, button, a, summary, [contenteditable='true']"));
+  };
+  shell.addEventListener("keydown", (event) => {
+    handleKeyboardScroll(event);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || shell.contains(event.target) || isInteractiveTarget(event.target)) {
       return;
     }
-    if (navigate(dx, dy)) {
-      event.preventDefault();
-    }
+    handleKeyboardScroll(event);
   });
 })();
 </script>"#
