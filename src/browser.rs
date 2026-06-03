@@ -1306,6 +1306,7 @@ struct CompoundSelector {
     classes: Vec<String>,
     attributes: Vec<AttributeSelector>,
     not_selectors: Vec<CompoundSelector>,
+    first_child: bool,
     universal: bool,
 }
 
@@ -9629,6 +9630,7 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
     let mut classes = Vec::new();
     let mut attributes = Vec::new();
     let mut not_selectors = Vec::new();
+    let mut first_child = false;
     let mut universal = false;
     let mut i = 0usize;
 
@@ -9661,6 +9663,11 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             i = next;
             continue;
         }
+        if selector[i..].starts_with(":first-child") {
+            first_child = true;
+            i += ":first-child".len();
+            continue;
+        }
         if !matches!(prefix, b'#' | b'.') {
             return None;
         }
@@ -9686,13 +9693,20 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         }
     }
 
-    (universal || tag.is_some() || id.is_some() || !classes.is_empty() || !attributes.is_empty())
+    (universal
+        || tag.is_some()
+        || id.is_some()
+        || !classes.is_empty()
+        || !attributes.is_empty()
+        || !not_selectors.is_empty()
+        || first_child)
         .then_some(CompoundSelector {
             tag,
             id,
             classes,
             attributes,
             not_selectors,
+            first_child,
             universal,
         })
 }
@@ -12570,7 +12584,9 @@ fn selector_specificity(selector: &CssSelector) -> u32 {
 
 fn compound_specificity(compound: &CompoundSelector) -> u32 {
     u32::from(compound.id.is_some()) * 100
-        + (compound.classes.len() + compound.attributes.len()) as u32 * 10
+        + (compound.classes.len() + compound.attributes.len() + usize::from(compound.first_child))
+            as u32
+            * 10
         + u32::from(compound.tag.is_some())
         + compound
             .not_selectors
@@ -12662,12 +12678,33 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
     {
         return false;
     }
+    if compound.first_child && !element_is_first_child(dom, node_id) {
+        return false;
+    }
     compound.universal
         || compound.tag.is_some()
         || compound.id.is_some()
         || !compound.classes.is_empty()
         || !compound.attributes.is_empty()
         || !compound.not_selectors.is_empty()
+        || compound.first_child
+}
+
+fn element_is_first_child(dom: &Dom, node_id: usize) -> bool {
+    let Some(parent_id) = dom.nodes.get(node_id).and_then(|node| node.parent) else {
+        return false;
+    };
+    dom.nodes
+        .get(parent_id)
+        .map(|parent| {
+            parent.children.iter().copied().find(|&child_id| {
+                matches!(
+                    dom.nodes.get(child_id).map(|node| &node.kind),
+                    Some(NodeKind::Element(_))
+                )
+            }) == Some(node_id)
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug)]
