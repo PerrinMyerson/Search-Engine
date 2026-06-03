@@ -2828,6 +2828,63 @@ fn pinned_headers_do_not_suppress_visual_viewport_body_context() {
 }
 
 #[test]
+fn mixed_media_viewports_preserve_nearby_body_context() {
+    let render = render_html(
+        "mem://mixed-media-readable-body-context",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .hero { position: relative; height: 240px; background-color: black; color: black; }
+                  .eyebrow { position: absolute; top: 0; left: 0; margin: 0; }
+                  .summary { position: absolute; top: 80px; left: 0; margin: 0; }
+                </style>
+              </head>
+              <body>
+                <section class="hero">
+                  <h1 class="eyebrow">Clinical evidence platform</h1>
+                  <p class="summary">Trusted patient data networks</p>
+                </section>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 36,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 36,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let viewport_text = viewport.lines.join("\n");
+    assert!(viewport_text.contains("Clinical evidence platform"));
+    assert!(viewport_text.contains("Trusted patient data networks"));
+    assert!(viewport_text.contains('#'));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(36),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize mixed media context");
+    let context_pixel_x = raster_options.padding_x.saturating_add(1);
+    let context_pixel_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2);
+    let context_pixel = context_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(context_pixel_x);
+    assert_eq!(raster.pixels[context_pixel], 255);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
