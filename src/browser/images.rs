@@ -1047,6 +1047,9 @@ fn picture_source_lazy_srcset(
             "data-originalset",
             "data-image-srcset",
             "data-img-srcset",
+            "data-current-srcset",
+            "current-srcset",
+            "currentsrcset",
         ],
         viewport_width_css_px,
     )
@@ -1112,6 +1115,9 @@ fn lazy_image_render_source(
                     "data-originalset",
                     "data-image-srcset",
                     "data-img-srcset",
+                    "data-current-srcset",
+                    "current-srcset",
+                    "currentsrcset",
                 ],
             )
             .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
@@ -1128,6 +1134,9 @@ fn lazy_image_render_source(
                     "data-image",
                     "data-image-src",
                     "data-img-src",
+                    "data-current-src",
+                    "current-src",
+                    "currentsrc",
                 ],
             )
             .map(str::to_owned)
