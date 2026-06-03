@@ -23,6 +23,10 @@ use brutal_search::server::run_search_server;
 use brutal_search::sitemap::{
     SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
 };
+use brutal_search::web_search::{
+    WebSearchStorageArtifactState, WebSearchStorageCompactionReport,
+    compact_web_search_storage_from_env,
+};
 use clap::{Parser, Subcommand, ValueEnum};
 
 const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
@@ -147,6 +151,10 @@ enum Command {
         socket: Option<PathBuf>,
         #[arg(long)]
         no_daemon: bool,
+    },
+    CompactWebCache {
+        #[arg(long, default_value = ".brutal-index")]
+        index: PathBuf,
     },
     RecrawlPlan {
         #[arg(long, default_value = ".brutal-index")]
@@ -449,6 +457,10 @@ async fn main() -> Result<()> {
             println!("max_authority_score: {:.4}", manifest.max_authority_score);
             println!("corpus_hash: {}", manifest.corpus_hash);
             print_index_storage_stats(index.root())?;
+        }
+        Command::CompactWebCache { index } => {
+            let report = compact_web_search_storage_from_env(&index)?;
+            print_web_storage_compaction_report(&report);
         }
         Command::RecrawlPlan {
             index,
@@ -866,6 +878,42 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
+    print_web_storage_compaction_artifact(
+        "web-cache",
+        &report.cache_path,
+        report.cache_before,
+        report.cache_after,
+    );
+    print_web_storage_compaction_artifact(
+        "brave-results",
+        &report.result_log_path,
+        report.result_log_before,
+        report.result_log_after,
+    );
+}
+
+fn print_web_storage_compaction_artifact(
+    label: &str,
+    path: &Path,
+    before: WebSearchStorageArtifactState,
+    after: WebSearchStorageArtifactState,
+) {
+    println!("{label}_path: {}", path.display());
+    println!("{label}_bytes_before: {}", before.bytes);
+    println!("{label}_bytes_after: {}", after.bytes);
+    println!(
+        "{label}_bytes_removed: {}",
+        before.bytes.saturating_sub(after.bytes)
+    );
+    println!("{label}_entries_before: {}", before.entries);
+    println!("{label}_entries_after: {}", after.entries);
+    println!(
+        "{label}_entries_removed: {}",
+        before.entries.saturating_sub(after.entries)
+    );
 }
 
 fn collect_web_storage_artifact_stats(
