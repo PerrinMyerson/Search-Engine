@@ -1132,6 +1132,7 @@ impl BrowserSessionRegistry {
         if target_url.trim().is_empty() {
             return self.create_profile_tabs_target(target).await;
         }
+        let target_url = normalize_browser_address_url(&target_url);
 
         let width = parse_usize_param(target, "width", DEFAULT_BROWSER_WIDTH, 40, 160);
         let height = parse_usize_param(target, "height", DEFAULT_BROWSER_HEIGHT, 16, 120);
@@ -7189,8 +7190,75 @@ fn browser_action_url(target: &RequestTarget) -> Result<String, BrowserRouteErro
             "missing browser URL".to_owned(),
         ))
     } else {
-        Ok(url)
+        Ok(normalize_browser_address_url(&url))
     }
+}
+
+fn normalize_browser_address_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty()
+        || browser_address_has_scheme(trimmed)
+        || browser_address_is_file_path(trimmed)
+    {
+        return trimmed.to_owned();
+    }
+
+    let host = browser_address_host_prefix(trimmed);
+    if host.eq_ignore_ascii_case("localhost")
+        || host.starts_with("localhost:")
+        || host.starts_with("127.")
+        || host.starts_with("[::1]")
+    {
+        return format!("http://{trimmed}");
+    }
+    if browser_address_looks_like_host(host) {
+        return format!("https://{trimmed}");
+    }
+
+    trimmed.to_owned()
+}
+
+fn browser_address_has_scheme(value: &str) -> bool {
+    let Some(colon) = value.find(':') else {
+        return false;
+    };
+    let first_delimiter = value
+        .find(|ch| matches!(ch, '/' | '?' | '#'))
+        .unwrap_or(value.len());
+    if colon > first_delimiter {
+        return false;
+    }
+    let scheme = &value[..colon];
+    if scheme.contains('.') || scheme.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    let after_colon = &value[colon + 1..first_delimiter];
+    if !after_colon.is_empty() && after_colon.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+}
+
+fn browser_address_is_file_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with("~/")
+        || Path::new(value).exists()
+}
+
+fn browser_address_host_prefix(value: &str) -> &str {
+    value
+        .split(|ch| matches!(ch, '/' | '?' | '#'))
+        .next()
+        .unwrap_or(value)
+}
+
+fn browser_address_looks_like_host(host: &str) -> bool {
+    let host = host.trim_matches(|ch| matches!(ch, '[' | ']'));
+    !host.is_empty() && (host.contains('.') || host.contains(':'))
 }
 
 fn browser_action_link_text(target: &RequestTarget) -> Result<String, BrowserRouteError> {
@@ -8555,10 +8623,10 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .toolbar span {{ color: #8a929d; background: #eef0f3; }}
 .toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
-.toolbar input[type="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .toolbar button {{ cursor: pointer; background: #2457d6; color: #fff; border-color: #2457d6; }}
 .address-bar {{ margin-bottom: 0; }}
-.address-bar input[type="url"] {{ flex: 1 1 420px; }}
+.address-bar input[name="url"] {{ flex: 1 1 420px; }}
 .secondary-toolbar {{ margin: 0 0 12px; }}
 .viewport-jump {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }}
 .viewport-jump label {{ color: #3a3f45; font-size: 13px; font-weight: 700; }}
@@ -8584,7 +8652,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .session-action {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; }}
 .session-tab-card.current .session-action {{ border-color: #fff; }}
 .session-new {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border: 1px dashed #b7bdc5; border-radius: 6px; padding: 8px; background: #fff; }}
-.session-new input[type="url"], .session-new input[type="search"], .session-new input[type="text"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.session-new input[type="search"], .session-new input[type="text"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .session-new button {{ min-height: 32px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 10px; background: #2457d6; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }}
 .tab-search {{ grid-column: 1 / -1; display: grid; gap: 8px; }}
 .tab-search table {{ width: 100%; border-collapse: collapse; table-layout: fixed; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; overflow: hidden; }}
@@ -8666,7 +8734,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_x" value="{viewport_x}">
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
-<input data-browser-address type="url" name="url" value="{source_attr}" aria-label="Address">
+<input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
 </header>
@@ -11168,7 +11236,7 @@ fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
     let tab_search = render_browser_session_tab_search(payload);
 
     format!(
-        r#"<section class="session-shell"><div class="session-title"><h2>Sessions</h2><div class="resource-actions"><span class="meta">{count} open</span><a class="clear-link" href="{tabs_csv_href}">Tabs CSV</a>{forget_saved}</div></div><div class="session-tabs">{tabs}{jump_form}{label_form}{tab_search}<form class="session-new" action="/browser" method="get"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}"><input type="url" name="url" placeholder="New session URL" aria-label="New session URL"><button type="submit">New</button></form></div></section>"#,
+        r#"<section class="session-shell"><div class="session-title"><h2>Sessions</h2><div class="resource-actions"><span class="meta">{count} open</span><a class="clear-link" href="{tabs_csv_href}">Tabs CSV</a>{forget_saved}</div></div><div class="session-tabs">{tabs}{jump_form}{label_form}{tab_search}<form class="session-new" action="/browser" method="get"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}"><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" placeholder="New session URL" aria-label="New session URL"><button type="submit">New</button></form></div></section>"#,
         count = payload.sessions.len(),
         tabs_csv_href = html_escape::encode_double_quoted_attribute(&tabs_csv_href),
         forget_saved = forget_saved,
