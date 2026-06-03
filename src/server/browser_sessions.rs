@@ -12,9 +12,9 @@ use url::form_urlencoded;
 use crate::browser::{
     BrowserCookie, BrowserFocusedControl, BrowserForm, BrowserImageRenderReport,
     BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender, BrowserRenderOptions,
-    BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport, BrowserSession,
-    BrowserStylesheetRenderReport, BrowserTextViewportOptions, browser_text_viewport,
-    rasterize_render_rgba,
+    BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport,
+    BrowserSession, BrowserStylesheetRenderReport, BrowserTextViewportOptions,
+    browser_text_viewport, rasterize_render_rgba,
 };
 
 use super::{
@@ -30,6 +30,7 @@ const MAX_BROWSER_PROFILE_HISTORY: usize = 200;
 const MAX_VISIBLE_BROWSER_PROFILE_HISTORY: usize = 40;
 const DEFAULT_BULK_BACKGROUND_LINKS: usize = 16;
 const MAX_BULK_BACKGROUND_LINKS: usize = 80;
+const MAX_BROWSER_SESSION_RESOURCES: usize = 120;
 const BROWSER_PROFILE_ENV: &str = "BRUTAL_BROWSER_PROFILE";
 
 pub(super) struct BrowserSessionRegistry {
@@ -8181,11 +8182,8 @@ fn browser_session_payload(
                 ),
             })
             .collect::<Vec<_>>();
-        let resources = render
-            .resources
-            .iter()
-            .take(120)
-            .enumerate()
+        let resources = browser_session_visible_resources(&render.resources)
+            .into_iter()
             .map(|(index, resource)| {
                 let resolved = resource.resolved.clone();
                 BrowserSessionResourcePayload {
@@ -8289,6 +8287,24 @@ fn browser_session_payload(
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
     Ok(payload)
+}
+
+fn browser_session_visible_resources(
+    resources: &[BrowserResource],
+) -> Vec<(usize, &BrowserResource)> {
+    let mut visible = resources.iter().enumerate().collect::<Vec<_>>();
+    visible.sort_by_key(|(index, resource)| (browser_session_resource_priority(resource), *index));
+    visible.truncate(MAX_BROWSER_SESSION_RESOURCES);
+    visible
+}
+
+fn browser_session_resource_priority(resource: &BrowserResource) -> u8 {
+    match resource.kind.as_str() {
+        "image" => 0,
+        "stylesheet" => 1,
+        "script" => 2,
+        _ => 3,
+    }
 }
 
 fn browser_session_viewport_image(

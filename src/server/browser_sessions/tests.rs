@@ -9082,6 +9082,116 @@ async fn browser_session_inspector_hides_empty_resource_actions() {
 }
 
 #[tokio::test]
+async fn browser_session_resources_prioritize_images_inside_capped_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("resource-cap.html");
+    let mut alternates = String::new();
+    for index in 0..130 {
+        alternates.push_str(&format!(
+            r#"<link rel="alternate" href="alternate-{index}.xml">"#
+        ));
+    }
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><title>Resource Cap</title>{alternates}<img src="logo.png" alt="Logo"><link rel="stylesheet" href="app.css"><p>body</p>"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), page.display().to_string())],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+
+    assert_eq!(payload.title, "Resource Cap");
+    assert_eq!(payload.resource_count, 132);
+    assert_eq!(payload.resources.len(), 120);
+    let image = payload
+        .resources
+        .iter()
+        .find(|resource| resource.kind == "image")
+        .expect("image beyond the raw cap should be visible");
+    assert!(image.index >= 120);
+    assert_eq!(image.url, "logo.png");
+    assert!(
+        image
+            .open_url
+            .contains(&format!("resource={}", image.index))
+    );
+    assert!(
+        payload
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "stylesheet" && resource.url == "app.css")
+    );
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("Resources (132)"));
+    assert!(html.contains(">Load 1 image</a>"));
+    assert!(html.contains("action=load-images"));
+    assert!(html.contains("12 more resources omitted."));
+    assert!(html.contains("logo.png"));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["counts"]["resources"], 132);
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
+    );
+
+    let resources_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resources-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resources_json_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported_resources: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_resources["resource_count"], 132);
+    assert_eq!(
+        exported_resources["resources"].as_array().unwrap().len(),
+        120
+    );
+    assert!(
+        exported_resources["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["kind"] == "image" && resource["url"] == "logo.png")
+    );
+
+    let resources_csv_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resources-csv".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resources_csv_export, &payload);
+    assert_eq!(response.status, 200);
+    assert_eq!(response.content_type, "text/csv; charset=utf-8");
+    assert!(response.body.contains("image"));
+    assert!(response.body.contains("logo.png"));
+    assert!(response.body.contains("total_resource_count"));
+}
+
+#[tokio::test]
 async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
