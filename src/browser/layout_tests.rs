@@ -2463,6 +2463,115 @@ fn css_animation_fill_and_negative_z_media_keep_hero_text_visible() {
 }
 
 #[test]
+fn text_viewport_and_raster_keep_text_foreground_over_later_media() {
+    let render = render_html(
+        "mem://truveta-readable-foreground",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .hero { position: relative; height: 6px; }
+                  .copy { position: absolute; top: 0; left: 0; }
+                  .media { position: absolute; top: 0; left: 0; width: 24px; height: 4px; }
+                </style>
+              </head>
+              <body>
+                <section class="hero">
+                  <div class="copy">A Hero</div>
+                  <img class="media" alt="" width="24" height="4">
+                </section>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let paint_order = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                Some(text.as_str())
+            }
+            DisplayCommand::Image { .. } => Some("image"),
+            DisplayCommand::Rect { .. } | DisplayCommand::BackgroundImage { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(paint_order, vec!["A Hero", "image"]);
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "A Hero" =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("foreground text position");
+    let (image_x, image_y, image_width, image_height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("overlapping image position");
+    assert!(image_x <= text_x && text_x < image_x.saturating_add(image_width));
+    assert!(image_y <= text_y && text_y < image_y.saturating_add(image_height));
+
+    let viewport_height = text_y.saturating_add(4).max(4);
+    let viewport_width = text_x
+        .saturating_add("A Hero".len())
+        .saturating_add(4)
+        .max(24);
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: viewport_width,
+            height: viewport_height,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert!(
+        viewport
+            .lines
+            .get(text_y)
+            .is_some_and(|line| line.contains("A Hero"))
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(viewport_width),
+        viewport_height: Some(viewport_height),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize readable foreground");
+    let glyph_pixel_x = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width))
+        .saturating_add(2);
+    let glyph_pixel_y = raster_options
+        .padding_y
+        .saturating_add(text_y.saturating_mul(raster_options.cell_height))
+        .saturating_add(2);
+    let glyph_pixel = glyph_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(glyph_pixel_x);
+    assert_eq!(raster.pixels[glyph_pixel], 0);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
