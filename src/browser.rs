@@ -1218,6 +1218,7 @@ struct ComputedStyle {
     overflow: Overflow,
     position: Position,
     position_top: Option<usize>,
+    z_index: i32,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -1260,6 +1261,7 @@ struct CssDeclarations {
     overflow: Option<Overflow>,
     position: Option<Position>,
     position_top: Option<usize>,
+    z_index: Option<i32>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -10157,6 +10159,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.position_top =
                     parse_css_inset_top(value).or(declarations.position_top);
             }
+            "z-index" => {
+                declarations.z_index = parse_css_z_index(value).or(declarations.z_index);
+            }
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
@@ -10718,6 +10723,14 @@ fn parse_css_inset_top(value: &str) -> Option<usize> {
         .split_ascii_whitespace()
         .next()
         .and_then(|top| parse_css_position_offset(top, CssAxis::Vertical))
+}
+
+fn parse_css_z_index(value: &str) -> Option<i32> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "auto" {
+        return Some(0);
+    }
+    value.parse::<i32>().ok()
 }
 
 fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
@@ -11437,11 +11450,18 @@ fn render_node(
             if let Some(sticky_top) = viewport_sticky_top_entered {
                 renderer.enter_viewport_sticky(sticky_top);
             }
+            let positive_z_layer_entered = style.position != Position::Static && style.z_index > 0;
+            if positive_z_layer_entered {
+                renderer.enter_positive_z_layer(style.z_index);
+            }
             let exit_outer_contexts =
                 |renderer: &mut FlowRenderer,
                  out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>| {
                     if let Some(snapshot) = out_of_flow_entered.take() {
                         renderer.exit_out_of_flow(snapshot);
+                    }
+                    if positive_z_layer_entered {
+                        renderer.exit_positive_z_layer();
                     }
                     if viewport_fixed_entered {
                         renderer.exit_viewport_fixed();
@@ -12297,6 +12317,7 @@ fn computed_style(
             overflow: Overflow::Visible,
             position: Position::Static,
             position_top: None,
+            z_index: 0,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -12331,6 +12352,7 @@ fn computed_style(
     let mut overflow = Overflow::Visible;
     let mut position = Position::Static;
     let mut position_top = None;
+    let mut z_index = 0i32;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -12363,6 +12385,7 @@ fn computed_style(
     let mut overflow_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
+    let mut z_index_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
     let mut letter_spacing_specificity = 0u32;
@@ -12455,6 +12478,12 @@ fn computed_style(
             {
                 position_top = Some(rule_position_top);
                 position_top_specificity = rule_specificity;
+            }
+            if let Some(rule_z_index) = rule.declarations.z_index
+                && rule_specificity >= z_index_specificity
+            {
+                z_index = rule_z_index;
+                z_index_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
                 && rule_specificity >= white_space_specificity
@@ -12621,6 +12650,9 @@ fn computed_style(
         if let Some(inline_position_top) = inline.position_top {
             position_top = Some(inline_position_top);
         }
+        if let Some(inline_z_index) = inline.z_index {
+            z_index = inline_z_index;
+        }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
         }
@@ -12697,6 +12729,7 @@ fn computed_style(
         overflow,
         position,
         position_top,
+        z_index,
         white_space,
         text_transform,
         letter_spacing,
@@ -13228,6 +13261,31 @@ struct ActiveFloat {
     bottom_y: usize,
 }
 
+#[derive(Debug)]
+struct PaintLayerCommands {
+    z_index: i32,
+    underlay_list: Vec<DisplayCommand>,
+    underlay_targets: Vec<DisplayHitTarget>,
+    border_list: Vec<DisplayCommand>,
+    border_targets: Vec<DisplayHitTarget>,
+    display_list: Vec<DisplayCommand>,
+    display_targets: Vec<DisplayHitTarget>,
+}
+
+impl PaintLayerCommands {
+    fn new(z_index: i32) -> Self {
+        Self {
+            z_index,
+            underlay_list: Vec::new(),
+            underlay_targets: Vec::new(),
+            border_list: Vec::new(),
+            border_targets: Vec::new(),
+            display_list: Vec::new(),
+            display_targets: Vec::new(),
+        }
+    }
+}
+
 fn table_spanned_column_width(
     column_widths: &[usize],
     active_cell: TableCellFlow,
@@ -13355,6 +13413,7 @@ struct FlowRenderer {
     positioning_context_stack: Vec<usize>,
     viewport_fixed_depth: usize,
     viewport_sticky_top_stack: Vec<usize>,
+    positive_z_layer_stack: Vec<i32>,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
     underlay_list: Vec<DisplayCommand>,
@@ -13363,6 +13422,7 @@ struct FlowRenderer {
     border_targets: Vec<DisplayHitTarget>,
     display_list: Vec<DisplayCommand>,
     display_targets: Vec<DisplayHitTarget>,
+    positive_z_layers: Vec<PaintLayerCommands>,
     active_clip: Option<DisplayCommandBounds>,
     clip_stack: Vec<Option<DisplayCommandBounds>>,
     decoded_images: Vec<DecodedImageEntry>,
@@ -13413,6 +13473,7 @@ impl FlowRenderer {
             positioning_context_stack: Vec::new(),
             viewport_fixed_depth: 0,
             viewport_sticky_top_stack: Vec::new(),
+            positive_z_layer_stack: Vec::new(),
             table_stack: Vec::new(),
             active_floats: Vec::new(),
             underlay_list: Vec::new(),
@@ -13421,6 +13482,7 @@ impl FlowRenderer {
             border_targets: Vec::new(),
             display_list: Vec::new(),
             display_targets: Vec::new(),
+            positive_z_layers: Vec::new(),
             active_clip: None,
             clip_stack: Vec::new(),
             decoded_images: Vec::new(),
@@ -13434,6 +13496,56 @@ impl FlowRenderer {
             self.decoded_images.push(image.clone());
             self.decoded_image_cache
                 .insert(image.url.clone(), Some(index));
+        }
+    }
+
+    fn positive_z_layer_mut(&mut self, z_index: i32) -> &mut PaintLayerCommands {
+        if let Some(index) = self
+            .positive_z_layers
+            .iter()
+            .position(|layer| layer.z_index == z_index)
+        {
+            return &mut self.positive_z_layers[index];
+        }
+        self.positive_z_layers
+            .push(PaintLayerCommands::new(z_index));
+        self.positive_z_layers.last_mut().unwrap()
+    }
+
+    fn current_positive_z_index(&self) -> Option<i32> {
+        self.positive_z_layer_stack.last().copied()
+    }
+
+    fn push_underlay_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
+        if let Some(z_index) = self.current_positive_z_index() {
+            let layer = self.positive_z_layer_mut(z_index);
+            layer.underlay_list.push(command);
+            layer.underlay_targets.push(target);
+        } else {
+            self.underlay_list.push(command);
+            self.underlay_targets.push(target);
+        }
+    }
+
+    fn push_border_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
+        if let Some(z_index) = self.current_positive_z_index() {
+            let layer = self.positive_z_layer_mut(z_index);
+            layer.border_list.push(command);
+            layer.border_targets.push(target);
+        } else {
+            self.border_list.push(command);
+            self.border_targets.push(target);
+        }
+    }
+
+    fn push_display_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
+        if let Some(z_index) = self.current_positive_z_index() {
+            let layer = self.positive_z_layer_mut(z_index);
+            layer.display_list.push(command);
+            layer.display_targets.push(target);
+        } else {
+            self.display_list.push(command);
+            self.display_targets.push(target);
         }
     }
 
@@ -13501,26 +13613,26 @@ impl FlowRenderer {
         if text.is_empty() {
             return;
         }
-        if shade == 0 {
-            self.display_list.push(DisplayCommand::Text {
+        let command = if shade == 0 {
+            DisplayCommand::Text {
                 x: clipped.x,
                 y: clipped.y,
                 text,
-            });
+            }
         } else {
-            self.display_list.push(DisplayCommand::StyledText {
+            DisplayCommand::StyledText {
                 x: clipped.x,
                 y: clipped.y,
                 text,
                 shade,
-            });
-        }
-        self.display_targets
-            .push(self.text_hit_target(clip_text_hit_target_runs(
-                &target_runs,
-                start,
-                clipped.width,
-            )));
+            }
+        };
+        let target = self.text_hit_target(clip_text_hit_target_runs(
+            &target_runs,
+            start,
+            clipped.width,
+        ));
+        self.push_display_command(command, target);
     }
 
     fn clipped_rect_command(
@@ -13826,8 +13938,8 @@ impl FlowRenderer {
                             background_shade,
                         )
                     {
-                        self.underlay_list.push(command);
-                        self.underlay_targets.push(self.node_hit_target(None));
+                        let target = self.node_hit_target(None);
+                        self.push_underlay_command(command, target);
                     }
                     self.push_text_display_command(run_x, y, run.text, run.shade, run.target_runs);
                 } else {
@@ -13955,6 +14067,14 @@ impl FlowRenderer {
 
     fn viewport_sticky_top(&self) -> Option<usize> {
         self.viewport_sticky_top_stack.last().copied()
+    }
+
+    fn enter_positive_z_layer(&mut self, z_index: i32) {
+        self.positive_z_layer_stack.push(z_index);
+    }
+
+    fn exit_positive_z_layer(&mut self) {
+        self.positive_z_layer_stack.pop();
     }
 
     fn node_hit_target(&self, target_node: Option<usize>) -> DisplayHitTarget {
@@ -14332,8 +14452,8 @@ impl FlowRenderer {
         self.break_line();
         if self.paint_visible() {
             if let Some(command) = self.clipped_rect_command(0, self.next_y, self.width, 1, 96) {
-                self.display_list.push(command);
-                self.display_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_display_command(command, target);
             }
         }
         self.next_y += 1;
@@ -14369,8 +14489,8 @@ impl FlowRenderer {
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
             };
             if let Some(command) = self.clipped_image_command(command) {
-                self.display_list.push(command);
-                self.display_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_display_command(command, target);
             }
         }
         self.next_y = self.next_y.saturating_add(placeholder_height);
@@ -14420,8 +14540,8 @@ impl FlowRenderer {
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
             };
             if let Some(command) = self.clipped_image_command(command) {
-                self.display_list.push(command);
-                self.display_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_display_command(command, target);
             }
         }
         self.active_floats.push(ActiveFloat {
@@ -14540,8 +14660,8 @@ impl FlowRenderer {
             if let Some(command) =
                 self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
             {
-                self.border_list.push(command);
-                self.border_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_border_command(command, target);
             }
         }
         self.next_y = self.next_y.saturating_add(border.width);
@@ -14566,8 +14686,8 @@ impl FlowRenderer {
         if let Some(command) =
             self.clipped_rect_command(x, start_y, border_width, height, border.shade)
         {
-            self.border_list.push(command);
-            self.border_targets.push(self.node_hit_target(target_node));
+            let target = self.node_hit_target(target_node);
+            self.push_border_command(command, target);
         }
         if width > border_width {
             if let Some(command) = self.clipped_rect_command(
@@ -14577,8 +14697,8 @@ impl FlowRenderer {
                 height,
                 border.shade,
             ) {
-                self.border_list.push(command);
-                self.border_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_border_command(command, target);
             }
         }
     }
@@ -14594,8 +14714,8 @@ impl FlowRenderer {
             if let Some(command) =
                 self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
             {
-                self.border_list.push(command);
-                self.border_targets.push(self.node_hit_target(target_node));
+                let target = self.node_hit_target(target_node);
+                self.push_border_command(command, target);
             }
         }
         self.next_y = self.next_y.saturating_add(border.width);
@@ -14614,9 +14734,8 @@ impl FlowRenderer {
         }
         let height = self.next_y.saturating_sub(start_y).max(1);
         if let Some(command) = self.clipped_rect_command(x, start_y, width, height, shade) {
-            self.underlay_list.push(command);
-            self.underlay_targets
-                .push(self.node_hit_target(target_node));
+            let target = self.node_hit_target(target_node);
+            self.push_underlay_command(command, target);
         }
     }
 
@@ -14650,9 +14769,8 @@ impl FlowRenderer {
             decoded_hash: decoded_info.map(|image| image.pixel_hash),
         };
         if let Some(command) = self.clipped_image_command(command) {
-            self.underlay_list.push(command);
-            self.underlay_targets
-                .push(self.node_hit_target(target_node));
+            let target = self.node_hit_target(target_node);
+            self.push_underlay_command(command, target);
         }
     }
 
@@ -14662,6 +14780,15 @@ impl FlowRenderer {
         self.underlay_targets.append(&mut self.border_targets);
         self.underlay_list.append(&mut self.display_list);
         self.underlay_targets.append(&mut self.display_targets);
+        self.positive_z_layers.sort_by_key(|layer| layer.z_index);
+        for layer in &mut self.positive_z_layers {
+            self.underlay_list.append(&mut layer.underlay_list);
+            self.underlay_targets.append(&mut layer.underlay_targets);
+            self.underlay_list.append(&mut layer.border_list);
+            self.underlay_targets.append(&mut layer.border_targets);
+            self.underlay_list.append(&mut layer.display_list);
+            self.underlay_targets.append(&mut layer.display_targets);
+        }
         debug_assert_eq!(self.underlay_list.len(), self.underlay_targets.len());
         FlowOutput {
             text: self.lines.join("\n"),

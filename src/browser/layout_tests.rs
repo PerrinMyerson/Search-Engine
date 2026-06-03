@@ -2365,6 +2365,42 @@ fn css_absolute_top_uses_positioned_containing_block_start() {
 }
 
 #[test]
+fn css_positive_z_index_positions_foreground_above_later_media() {
+    let render = render_html(
+        "mem://z-index-stacking",
+        br#"
+            <html><head><style>
+              .hero { position: relative; height: 48px; }
+              .copy { position: absolute; top: 0; z-index: 2; }
+              .media { position: absolute; top: 0; z-index: 1; }
+            </style></head><body>
+              <section class="hero">
+                <div class="copy">Hero copy</div>
+                <img class="media" alt="decor" width="80" height="24">
+              </section>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Image { .. } => Some("image".to_owned()),
+                DisplayCommand::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["image".to_owned(), "Hero copy".to_owned()]
+    );
+}
+
+#[test]
 fn css_overflow_hidden_clips_paint_and_flow_extent() {
     let render = render_html(
         "mem://overflow-hidden",
