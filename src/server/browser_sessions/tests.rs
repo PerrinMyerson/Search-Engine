@@ -8597,6 +8597,12 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("sessionStorage.removeItem(stateKey)"));
     assert!(html.contains("AbortController"));
     assert!(html.contains("requestTimeoutMs"));
+    assert!(html.contains("timeoutSeconds"));
+    assert!(html.contains("updateProgress"));
+    assert!(html.contains("elapsed, timeout"));
+    assert!(html.contains("window.setInterval(updateProgress, 1000)"));
+    assert!(html.contains("window.clearInterval(progress)"));
+    assert!(html.contains("Visual render complete. Opening page..."));
     assert!(html.contains("timed out"));
     assert!(!html.contains("action=run-scripts"));
     assert!(html.contains(r#"<span class="meta">0 images, 1 stylesheet</span>"#));

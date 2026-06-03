@@ -8733,6 +8733,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const runningRefreshDelayMs = 5000;
   const runningStaleAfterMs = 45000;
   const requestTimeoutMs = 90000;
+  const timeoutSeconds = Math.round(requestTimeoutMs / 1000);
   const status = document.querySelector("[data-auto-visual-status]");
   const setStatus = (message) => {{
     if (status) {{
@@ -8760,7 +8761,13 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     if (!url) {{
       return;
     }}
-    setStatus(label);
+    const startedAt = Date.now();
+    const updateProgress = () => {{
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      setStatus(`${{label}} ${{elapsedSeconds}}s elapsed, timeout ${{timeoutSeconds}}s...`);
+    }};
+    updateProgress();
+    const progress = window.setInterval(updateProgress, 1000);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs);
     try {{
@@ -8779,6 +8786,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
       throw error;
     }} finally {{
       window.clearTimeout(timeout);
+      window.clearInterval(progress);
     }}
   }};
   (async () => {{
@@ -8786,6 +8794,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     await request("Loading images...", loadImagesUrl);
     sessionStorage.setItem(stateKey, "done");
     if (refreshUrl) {{
+      setStatus("Visual render complete. Opening page...");
       window.location.replace(refreshUrl);
     }}
   }})().catch((error) => {{
