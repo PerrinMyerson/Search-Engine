@@ -803,10 +803,12 @@ fn collect_resources_at(
             "img" => {
                 push_src_resource(resources, source, element, "image");
                 push_srcset_resources(resources, source, element, "image_candidate");
+                push_image_alias_resources(resources, source, element);
             }
             "source" if parent_element_tag_is(dom, node_id, "picture") => {
                 push_src_resource(resources, source, element, "image");
                 push_srcset_resources(resources, source, element, "image_candidate");
+                push_image_alias_resources(resources, source, element);
             }
             "source" => {
                 push_src_resource(resources, source, element, "media_source");
@@ -881,6 +883,62 @@ fn push_srcset_resources(
         push_resource(resources, source, element, kind, &element.tag, &url);
     }
 }
+
+fn push_image_alias_resources(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    element: &ElementData,
+) {
+    for attr_name in IMAGE_SRC_ALIAS_ATTRS {
+        if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
+            && !url.trim().is_empty()
+        {
+            push_resource(resources, source, element, "image", &element.tag, url);
+        }
+    }
+
+    for attr_name in IMAGE_SRCSET_ALIAS_ATTRS {
+        let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
+            continue;
+        };
+        for url in srcset_candidate_urls(srcset) {
+            push_resource(
+                resources,
+                source,
+                element,
+                "image_candidate",
+                &element.tag,
+                &url,
+            );
+        }
+    }
+}
+
+const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
+    "data-src",
+    "data-lazy-src",
+    "data-original-url",
+    "data-original",
+    "data-original-src",
+    "data-image",
+    "data-image-src",
+    "data-img-src",
+    "data-current-src",
+    "current-src",
+    "currentsrc",
+];
+
+const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
+    "data-srcset",
+    "data-lazy-srcset",
+    "data-original-srcset",
+    "data-originalset",
+    "data-image-srcset",
+    "data-img-srcset",
+    "data-current-srcset",
+    "current-srcset",
+    "currentsrcset",
+];
 
 fn push_link_image_resources(
     resources: &mut Vec<BrowserResource>,
