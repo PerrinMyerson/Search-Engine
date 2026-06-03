@@ -820,11 +820,22 @@ struct IndexStorageStats {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WebStorageArtifactStats {
     name: &'static str,
+    bytes: u64,
     entries: usize,
     unique_entries: usize,
     duplicate_entries: usize,
     oldest_fetched_at_unix: Option<u64>,
     newest_fetched_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebStoragePressureSummary {
+    artifact_count: usize,
+    bytes: u64,
+    entries: usize,
+    duplicate_entries: usize,
+    stale_artifacts: usize,
+    suggested_dry_runs: usize,
 }
 
 fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
@@ -869,6 +880,11 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
             artifact.name, artifact.bytes
         );
     }
+    let now = unix_now();
+    let stale_secs = web_storage_stale_threshold_secs();
+    for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
+        println!("{line}");
+    }
     for artifact in stats.web_artifacts {
         println!(
             "web_storage_artifact_entries: {} {}",
@@ -894,8 +910,6 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
                 artifact.name, newest
             );
         }
-        let now = unix_now();
-        let stale_secs = web_storage_stale_threshold_secs();
         if let Some(age_secs) = web_storage_oldest_age_secs(&artifact, now) {
             println!(
                 "web_storage_artifact_oldest_age_secs: {} {}",
@@ -910,6 +924,75 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn web_storage_pressure_summary_lines(
+    artifacts: &[WebStorageArtifactStats],
+    now: u64,
+    stale_secs: u64,
+) -> Vec<String> {
+    let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
+    let mut lines = vec![
+        format!(
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} duplicates={} stale_artifacts={} suggested_dry_runs={}",
+            summary.artifact_count,
+            summary.bytes,
+            summary.entries,
+            summary.duplicate_entries,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
+        ),
+        format!("web_storage_pressure_artifacts: {}", summary.artifact_count),
+        format!("web_storage_pressure_bytes: {}", summary.bytes),
+        format!("web_storage_pressure_entries: {}", summary.entries),
+        format!(
+            "web_storage_pressure_duplicate_entries: {}",
+            summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_pressure_stale_artifacts: {}",
+            summary.stale_artifacts
+        ),
+    ];
+    if summary.suggested_dry_runs > 0 {
+        lines.push(format!(
+            "web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries {}",
+            summary.entries.max(1)
+        ));
+    }
+    lines
+}
+
+fn web_storage_pressure_summary(
+    artifacts: &[WebStorageArtifactStats],
+    now: u64,
+    stale_secs: u64,
+) -> WebStoragePressureSummary {
+    WebStoragePressureSummary {
+        artifact_count: artifacts.len(),
+        bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.bytes)
+        }),
+        entries: artifacts.iter().map(|artifact| artifact.entries).sum(),
+        duplicate_entries: artifacts
+            .iter()
+            .map(|artifact| artifact.duplicate_entries)
+            .sum(),
+        stale_artifacts: artifacts
+            .iter()
+            .filter(|artifact| {
+                stale_secs > 0
+                    && web_storage_oldest_age_secs(artifact, now)
+                        .is_some_and(|age_secs| age_secs > stale_secs)
+            })
+            .count(),
+        suggested_dry_runs: artifacts
+            .iter()
+            .filter(|artifact| {
+                web_storage_compaction_suggestion(artifact, now, stale_secs).is_some()
+            })
+            .count(),
+    }
 }
 
 fn web_storage_compaction_suggestion(
@@ -1024,8 +1107,13 @@ fn collect_web_storage_artifact_stats(
 ) -> Result<WebStorageArtifactStats> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("open web storage artifact {}", path.display()))?;
+    let bytes = file
+        .metadata()
+        .with_context(|| format!("read web storage artifact metadata {}", path.display()))?
+        .len();
     let mut stats = WebStorageArtifactStats {
         name,
+        bytes,
         entries: 0,
         unique_entries: 0,
         duplicate_entries: 0,
@@ -1213,6 +1301,7 @@ mod tests {
             vec![
                 WebStorageArtifactStats {
                     name: "web-cache.jsonl",
+                    bytes: 48,
                     entries: 2,
                     unique_entries: 0,
                     duplicate_entries: 0,
@@ -1221,6 +1310,7 @@ mod tests {
                 },
                 WebStorageArtifactStats {
                     name: "brave-results.jsonl",
+                    bytes: 24,
                     entries: 1,
                     unique_entries: 0,
                     duplicate_entries: 0,
@@ -1264,9 +1354,11 @@ mod tests {
             collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
 
         assert_eq!(cache_stats.entries, 3);
+        assert_eq!(cache_stats.bytes, 147);
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(log_stats.entries, 2);
+        assert_eq!(log_stats.bytes, 214);
         assert_eq!(log_stats.unique_entries, 1);
         assert_eq!(log_stats.duplicate_entries, 1);
     }
@@ -1275,6 +1367,7 @@ mod tests {
     fn web_storage_compaction_suggestion_points_to_dry_run() {
         let duplicate_artifact = WebStorageArtifactStats {
             name: "web-cache.jsonl",
+            bytes: 120,
             entries: 3,
             unique_entries: 2,
             duplicate_entries: 1,
@@ -1283,6 +1376,7 @@ mod tests {
         };
         let large_artifact = WebStorageArtifactStats {
             name: "brave-results.jsonl",
+            bytes: 4096,
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             duplicate_entries: 0,
@@ -1291,6 +1385,7 @@ mod tests {
         };
         let small_clean_artifact = WebStorageArtifactStats {
             name: "web-cache.jsonl",
+            bytes: 80,
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
@@ -1326,6 +1421,7 @@ mod tests {
     fn web_storage_compaction_suggestion_flags_stale_artifacts() {
         let stale_artifact = WebStorageArtifactStats {
             name: "web-cache.jsonl",
+            bytes: 120,
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
@@ -1334,6 +1430,7 @@ mod tests {
         };
         let fresh_artifact = WebStorageArtifactStats {
             name: "brave-results.jsonl",
+            bytes: 90,
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
@@ -1347,6 +1444,43 @@ mod tests {
             Some("brutal-search compact-web-cache --dry-run --min-entries 1")
         );
         assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
+    }
+
+    #[test]
+    fn web_storage_pressure_summary_lines_report_aggregate_pressure() {
+        let lines = web_storage_pressure_summary_lines(
+            &[
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    bytes: 120,
+                    entries: 3,
+                    unique_entries: 2,
+                    duplicate_entries: 1,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    bytes: 90,
+                    entries: 2,
+                    unique_entries: 2,
+                    duplicate_entries: 0,
+                    oldest_fetched_at_unix: Some(190),
+                    newest_fetched_at_unix: Some(200),
+                },
+            ],
+            200,
+            60,
+        );
+
+        assert!(lines.contains(
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 duplicates=1 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
+        ));
     }
 
     #[test]
