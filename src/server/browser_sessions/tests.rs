@@ -2168,6 +2168,9 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(r#"<span>Left</span>"#));
     assert!(html.contains(r#">Right</a>"#));
+    assert!(html.contains(r#"<span>Page left</span>"#));
+    assert!(html.contains(r#">Page right</a>"#));
+    assert!(html.contains(r#"data-browser-viewport-page-controls"#));
     assert!(html.contains("<span>Page up</span>"));
     assert!(html.contains("<span>Line up</span>"));
     assert!(html.contains(">Line down</a>"));
@@ -2246,6 +2249,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(">Line up</a>"));
     assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
+    assert!(html.contains(">Page left</a>"));
+    assert!(html.contains(">Page right</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(&format!(
@@ -2265,6 +2270,18 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#">Reload tab</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
+    let page_left_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", format!("-{}", payload.width.max(1)))],
+        &payload,
+    );
+    let page_right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", payload.width.max(1).to_string())],
+        &payload,
+    );
     assert!(html.contains(&format!(
         r#"href="{}">Current view</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
@@ -2272,6 +2289,14 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(&format!(
         r#"href="{}">Reload tab</a>"#,
         html_escape::encode_double_quoted_attribute(&reload_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"href="{}">Page left</a>"#,
+        html_escape::encode_double_quoted_attribute(&page_left_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"href="{}">Page right</a>"#,
+        html_escape::encode_double_quoted_attribute(&page_right_href)
     )));
     assert!(html.contains(r#"class="viewport-command-jump""#));
     assert!(html.contains(&format!(
@@ -2470,6 +2495,45 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&line_up).await.unwrap();
     assert_eq!(payload.viewport_x, 8);
     assert_eq!(payload.viewport_y, expected_line_up_y);
+
+    let page_right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", payload.width.max(1).to_string())],
+        &payload,
+    );
+    let page_right = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(page_right_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    let expected_page_right_x = payload
+        .viewport_x
+        .saturating_add(payload.width)
+        .min(payload.max_scroll_x);
+    let expected_page_right_y = payload.viewport_y;
+    let (payload, _) = registry.apply_target(&page_right).await.unwrap();
+    assert_eq!(payload.viewport_x, expected_page_right_x);
+    assert_eq!(payload.viewport_y, expected_page_right_y);
+
+    let page_left_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", format!("-{}", payload.width.max(1)))],
+        &payload,
+    );
+    let page_left = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(page_left_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    let expected_page_left_x = payload.viewport_x.saturating_sub(payload.width);
+    let expected_page_left_y = payload.viewport_y;
+    let (payload, _) = registry.apply_target(&page_left).await.unwrap();
+    assert_eq!(payload.viewport_x, expected_page_left_x);
+    assert_eq!(payload.viewport_y, expected_page_left_y);
 
     let jump_viewport = RequestTarget {
         path: "/browser".to_owned(),

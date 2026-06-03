@@ -6027,28 +6027,35 @@ async fn apply_browser_action(
         BrowserSessionAction::Scroll { dx, dy } => {
             web_session.viewport_x = apply_scroll_delta(web_session.viewport_x, dx);
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, dy);
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::Top => {
             web_session.viewport_y = 0;
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::Bottom => {
             web_session.viewport_y = usize::MAX;
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::PageUp => {
             web_session.viewport_y = apply_scroll_delta(
                 web_session.viewport_y,
                 -(web_session.height.max(1) as isize),
             );
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::PageDown => {
             web_session.viewport_y =
                 apply_scroll_delta(web_session.viewport_y, web_session.height.max(1) as isize);
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::LineUp => {
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, -1);
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::LineDown => {
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, 1);
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::Fill {
             form_index,
@@ -11486,9 +11493,23 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
+    let page_left_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", format!("-{}", payload.width.max(1)))],
+        payload,
+    );
     let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
+    let page_right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", payload.width.max(1).to_string())],
+        payload,
+    );
     let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let can_scroll_left = payload.viewport_x > 0;
+    let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
@@ -11500,7 +11521,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     let page_state = render_browser_session_viewport_page_state(payload);
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div>{page_state}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div>{page_state}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls">{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -11514,10 +11535,12 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         visual_status = visual_status,
         page_state = page_state,
+        page_left = nav_control(can_scroll_left, "Page left", &page_left_href),
         top = nav_control(can_scroll_up, "Top", &top_href),
         page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
         page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
         bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
+        page_right = nav_control(can_scroll_right, "Page right", &page_right_href),
         common = browser_session_common_hidden_inputs(payload),
     )
 }
@@ -13501,6 +13524,23 @@ fn apply_scroll_delta(current: usize, delta: isize) -> usize {
     } else {
         current.saturating_add(delta as usize)
     }
+}
+
+fn normalize_browser_session_viewport(web_session: &mut BrowserWebSession) {
+    let Some(render) = web_session.session.current() else {
+        return;
+    };
+    let viewport = browser_text_viewport(
+        render,
+        BrowserTextViewportOptions {
+            x: web_session.viewport_x,
+            y: web_session.viewport_y,
+            width: web_session.width,
+            height: web_session.height,
+        },
+    );
+    web_session.viewport_x = viewport.x;
+    web_session.viewport_y = viewport.y;
 }
 
 fn parse_usize_param(
