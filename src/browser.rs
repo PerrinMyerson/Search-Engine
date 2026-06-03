@@ -1249,6 +1249,57 @@ impl Position {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CssPositionOffset {
+    cells: isize,
+    percent_basis_points: i32,
+}
+
+impl CssPositionOffset {
+    fn resolve(self, basis: usize) -> isize {
+        let percent_cells =
+            (basis as i64).saturating_mul(self.percent_basis_points as i64) / 10_000;
+        self.cells.saturating_add(percent_cells as isize)
+    }
+
+    fn is_zero(self) -> bool {
+        self.cells == 0 && self.percent_basis_points == 0
+    }
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            cells: self.cells.saturating_add(other.cells),
+            percent_basis_points: self
+                .percent_basis_points
+                .saturating_add(other.percent_basis_points),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CssTranslate {
+    x: CssPositionOffset,
+    y: CssPositionOffset,
+}
+
+impl CssTranslate {
+    fn add_x(&mut self, offset: CssPositionOffset) {
+        self.x = self.x.add(offset);
+    }
+
+    fn add_y(&mut self, offset: CssPositionOffset) {
+        self.y = self.y.add(offset);
+    }
+}
+
+fn saturating_add_signed(base: usize, offset: isize) -> usize {
+    if offset >= 0 {
+        base.saturating_add(offset as usize)
+    } else {
+        base.saturating_sub(offset.unsigned_abs())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoxSizing {
     ContentBox,
@@ -1284,7 +1335,10 @@ struct ComputedStyle {
     animation_reveals_opacity: bool,
     overflow: Overflow,
     position: Position,
-    position_top: Option<usize>,
+    position_top: Option<CssPositionOffset>,
+    position_left: Option<CssPositionOffset>,
+    position_right: Option<CssPositionOffset>,
+    transform_translate: CssTranslate,
     z_index: i32,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
@@ -1313,6 +1367,66 @@ impl ComputedStyle {
     fn suppresses_paint(&self) -> bool {
         self.opacity == PaintOpacity::Transparent && !self.animation_reveals_opacity
     }
+
+    fn positioned_outer_width(&self, available_width: usize) -> usize {
+        let horizontal_box_extra = self
+            .padding
+            .left
+            .saturating_add(self.padding.right)
+            .saturating_add(
+                self.border
+                    .map(|border| border.width.saturating_mul(2))
+                    .unwrap_or(0),
+            );
+        let mut width = match (self.width, self.box_sizing) {
+            (Some(width), BoxSizing::ContentBox) => width.saturating_add(horizontal_box_extra),
+            (Some(width), BoxSizing::BorderBox) => width,
+            (None, _) => available_width,
+        };
+        if let Some(max_width) = self.max_width {
+            let max_outer_width = match self.box_sizing {
+                BoxSizing::ContentBox => max_width.saturating_add(horizontal_box_extra),
+                BoxSizing::BorderBox => max_width,
+            };
+            width = width.min(max_outer_width);
+        }
+        if self.min_width > 0 {
+            let min_outer_width = match self.box_sizing {
+                BoxSizing::ContentBox => self.min_width.saturating_add(horizontal_box_extra),
+                BoxSizing::BorderBox => self.min_width,
+            };
+            width = width.max(min_outer_width);
+        }
+        width.clamp(1, available_width.max(1))
+    }
+
+    fn positioned_outer_height(&self) -> usize {
+        self.height.unwrap_or(0).max(self.min_height).max(1)
+    }
+
+    fn horizontal_projection_offset(&self, containing_width: usize) -> isize {
+        let own_width = self.positioned_outer_width(containing_width);
+        let mut offset = if let Some(left) = self.position_left {
+            left.resolve(containing_width)
+        } else if let Some(right) = self.position_right {
+            containing_width as isize - own_width as isize - right.resolve(containing_width)
+        } else {
+            0
+        };
+        offset = offset.saturating_add(self.transform_translate.x.resolve(own_width));
+        offset
+    }
+
+    fn vertical_projection_offset(&self) -> Option<isize> {
+        let has_top = self.position_top.is_some();
+        let own_height = self.positioned_outer_height();
+        let offset = self
+            .position_top
+            .map(|top| top.resolve(0))
+            .unwrap_or(0)
+            .saturating_add(self.transform_translate.y.resolve(own_height));
+        (has_top || !self.transform_translate.y.is_zero()).then_some(offset)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1337,7 +1451,10 @@ struct CssDeclarations {
     animation_reveals_opacity: Option<bool>,
     overflow: Option<Overflow>,
     position: Option<Position>,
-    position_top: Option<usize>,
+    position_top: Option<CssPositionOffset>,
+    position_left: Option<CssPositionOffset>,
+    position_right: Option<CssPositionOffset>,
+    transform_translate: Option<CssTranslate>,
     z_index: Option<i32>,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
@@ -10567,9 +10684,31 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.position_top = parse_css_position_offset(value, CssAxis::Vertical)
                     .or(declarations.position_top);
             }
+            "left" | "inset-inline-start" => {
+                declarations.position_left = parse_css_position_offset(value, CssAxis::Horizontal)
+                    .or(declarations.position_left);
+            }
+            "right" | "inset-inline-end" => {
+                declarations.position_right = parse_css_position_offset(value, CssAxis::Horizontal)
+                    .or(declarations.position_right);
+            }
+            "inset-block-start" => {
+                declarations.position_top = parse_css_position_offset(value, CssAxis::Vertical)
+                    .or(declarations.position_top);
+            }
             "inset" => {
-                declarations.position_top =
-                    parse_css_inset_top(value).or(declarations.position_top);
+                let inset = parse_css_inset_offsets(value);
+                declarations.position_top = inset.top.or(declarations.position_top);
+                declarations.position_right = inset.right.or(declarations.position_right);
+                declarations.position_left = inset.left.or(declarations.position_left);
+            }
+            "transform" | "-webkit-transform" => {
+                declarations.transform_translate =
+                    parse_css_transform_translate(value).or(declarations.transform_translate);
+            }
+            "translate" => {
+                declarations.transform_translate =
+                    parse_css_translate_property(value).or(declarations.transform_translate);
             }
             "z-index" => {
                 declarations.z_index = parse_css_z_index(value).or(declarations.z_index);
@@ -10796,12 +10935,15 @@ const CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS: f32 = 44.0;
 
 fn parse_css_length_pixels(value: &str) -> Option<f32> {
     let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%')
-        || value.starts_with('-')
-        || value == "auto"
-        || value == "inherit"
-        || value == "initial"
-    {
+    if value.starts_with('-') {
+        return None;
+    }
+    parse_css_signed_length_pixels(&value)
+}
+
+fn parse_css_signed_length_pixels(value: &str) -> Option<f32> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value.contains('%') || value == "auto" || value == "inherit" || value == "initial" {
         return None;
     }
     let (numeric, multiplier) =
@@ -11306,15 +11448,182 @@ fn parse_css_position(value: &str) -> Option<Position> {
     }
 }
 
-fn parse_css_position_offset(value: &str, axis: CssAxis) -> Option<usize> {
-    parse_css_dimension_length(value, axis)
+fn parse_css_position_offset(value: &str, axis: CssAxis) -> Option<CssPositionOffset> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "auto" || value == "inherit" || value == "initial" {
+        return None;
+    }
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.trim().parse::<f32>().ok()?;
+        if !percent.is_finite() {
+            return None;
+        }
+        return Some(CssPositionOffset {
+            cells: 0,
+            percent_basis_points: (percent * 100.0).round() as i32,
+        });
+    }
+    let pixels = parse_css_signed_length_pixels(&value)?;
+    let cell_px = css_axis_cell_px(axis);
+    let cells = if pixels == 0.0 {
+        0
+    } else {
+        let sign = if pixels < 0.0 { -1 } else { 1 };
+        sign * (pixels.abs() / cell_px).ceil() as isize
+    };
+    Some(CssPositionOffset {
+        cells,
+        percent_basis_points: 0,
+    })
 }
 
-fn parse_css_inset_top(value: &str) -> Option<usize> {
-    value
-        .split_ascii_whitespace()
-        .next()
-        .and_then(|top| parse_css_position_offset(top, CssAxis::Vertical))
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParsedPositionOffsets {
+    top: Option<CssPositionOffset>,
+    right: Option<CssPositionOffset>,
+    left: Option<CssPositionOffset>,
+}
+
+fn parse_css_inset_offsets(value: &str) -> ParsedPositionOffsets {
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let top = parts
+        .first()
+        .and_then(|top| parse_css_position_offset(top, CssAxis::Vertical));
+    let right_token = match parts.len() {
+        0 | 1 => parts.first(),
+        _ => parts.get(1),
+    };
+    let left_token = match parts.len() {
+        0 | 1 => parts.first(),
+        2 | 3 => parts.get(1),
+        _ => parts.get(3),
+    };
+    ParsedPositionOffsets {
+        top,
+        right: right_token.and_then(|right| parse_css_position_offset(right, CssAxis::Horizontal)),
+        left: left_token.and_then(|left| parse_css_position_offset(left, CssAxis::Horizontal)),
+    }
+}
+
+fn parse_css_transform_translate(value: &str) -> Option<CssTranslate> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "inherit" || value == "initial" {
+        return None;
+    }
+    if value == "none" {
+        return Some(CssTranslate::default());
+    }
+
+    let mut translate = CssTranslate::default();
+    let mut saw_transform = false;
+    for args in css_function_arguments(&value, "translate") {
+        saw_transform = true;
+        let args = split_css_transform_arguments(args);
+        if let Some(x) = args
+            .first()
+            .and_then(|x| parse_css_position_offset(x, CssAxis::Horizontal))
+        {
+            translate.add_x(x);
+        }
+        if let Some(y) = args
+            .get(1)
+            .and_then(|y| parse_css_position_offset(y, CssAxis::Vertical))
+        {
+            translate.add_y(y);
+        }
+    }
+    for args in css_function_arguments(&value, "translatex") {
+        saw_transform = true;
+        if let Some(x) = split_css_transform_arguments(args)
+            .first()
+            .and_then(|x| parse_css_position_offset(x, CssAxis::Horizontal))
+        {
+            translate.add_x(x);
+        }
+    }
+    for args in css_function_arguments(&value, "translatey") {
+        saw_transform = true;
+        if let Some(y) = split_css_transform_arguments(args)
+            .first()
+            .and_then(|y| parse_css_position_offset(y, CssAxis::Vertical))
+        {
+            translate.add_y(y);
+        }
+    }
+
+    saw_transform.then_some(translate)
+}
+
+fn parse_css_translate_property(value: &str) -> Option<CssTranslate> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "none" {
+        return Some(CssTranslate::default());
+    }
+    let args = split_css_transform_arguments(&value);
+    let mut translate = CssTranslate::default();
+    if let Some(x) = args
+        .first()
+        .and_then(|x| parse_css_position_offset(x, CssAxis::Horizontal))
+    {
+        translate.add_x(x);
+    }
+    if let Some(y) = args
+        .get(1)
+        .and_then(|y| parse_css_position_offset(y, CssAxis::Vertical))
+    {
+        translate.add_y(y);
+    }
+    (!args.is_empty()).then_some(translate)
+}
+
+fn css_function_arguments<'a>(value: &'a str, name: &str) -> Vec<&'a str> {
+    let mut args = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(relative_start) = value[cursor..].find(name) {
+        let name_start = cursor.saturating_add(relative_start);
+        let open = name_start.saturating_add(name.len());
+        if !value[open..].starts_with('(') {
+            cursor = open;
+            continue;
+        }
+        let args_start = open.saturating_add(1);
+        let mut depth = 1usize;
+        for (offset, ch) in value[args_start..].char_indices() {
+            match ch {
+                '(' => depth = depth.saturating_add(1),
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let args_end = args_start.saturating_add(offset);
+                        args.push(value[args_start..args_end].trim());
+                        cursor = args_end.saturating_add(1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth > 0 {
+            break;
+        }
+    }
+    args
+}
+
+fn split_css_transform_arguments(value: &str) -> Vec<&str> {
+    if value.contains(',') {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
+    } else {
+        value
+            .split_ascii_whitespace()
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
+    }
 }
 
 fn parse_css_z_index(value: &str) -> Option<i32> {
@@ -12022,20 +12331,31 @@ fn render_node(
                 renderer.enter_transparent_opacity();
             }
             let out_of_flow_y = style.position.is_out_of_flow().then(|| {
-                style
-                    .position_top
-                    .map(|top| renderer.current_positioning_context_y().saturating_add(top))
+                style.vertical_projection_offset().map(|offset| {
+                    saturating_add_signed(renderer.current_positioning_context_y(), offset)
+                })
             });
             let mut out_of_flow_entered = style
                 .position
                 .is_out_of_flow()
                 .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
+            let mut horizontal_projection_entered = style
+                .position
+                .is_out_of_flow()
+                .then(|| {
+                    renderer.enter_horizontal_projection(
+                        style.horizontal_projection_offset(renderer.available_width()),
+                    )
+                })
+                .flatten();
             let viewport_fixed_entered = style.position == Position::Fixed;
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
             }
             let viewport_sticky_top_entered = if style.position == Position::Sticky {
-                style.position_top
+                style
+                    .vertical_projection_offset()
+                    .map(|offset| saturating_add_signed(0, offset))
             } else {
                 None
             };
@@ -12046,42 +12366,59 @@ fn render_node(
             if positive_z_layer_entered {
                 renderer.enter_positive_z_layer(style.z_index);
             }
-            let exit_outer_contexts =
-                |renderer: &mut FlowRenderer,
-                 out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>| {
-                    if let Some(snapshot) = out_of_flow_entered.take() {
-                        renderer.exit_out_of_flow(snapshot);
-                    }
-                    if positive_z_layer_entered {
-                        renderer.exit_positive_z_layer();
-                    }
-                    if viewport_fixed_entered {
-                        renderer.exit_viewport_fixed();
-                    }
-                    if viewport_sticky_top_entered.is_some() {
-                        renderer.exit_viewport_sticky();
-                    }
-                    if opacity_entered {
-                        renderer.exit_transparent_opacity();
-                    }
-                    if visibility_entered.is_some() {
-                        renderer.exit_visibility();
-                    }
-                };
+            let exit_outer_contexts = |renderer: &mut FlowRenderer,
+                                       out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>,
+                                       horizontal_projection_entered: &mut Option<
+                FlowHorizontalProjectionSnapshot,
+            >| {
+                if let Some(snapshot) = horizontal_projection_entered.take() {
+                    renderer.exit_horizontal_projection(snapshot);
+                }
+                if let Some(snapshot) = out_of_flow_entered.take() {
+                    renderer.exit_out_of_flow(snapshot);
+                }
+                if positive_z_layer_entered {
+                    renderer.exit_positive_z_layer();
+                }
+                if viewport_fixed_entered {
+                    renderer.exit_viewport_fixed();
+                }
+                if viewport_sticky_top_entered.is_some() {
+                    renderer.exit_viewport_sticky();
+                }
+                if opacity_entered {
+                    renderer.exit_transparent_opacity();
+                }
+                if visibility_entered.is_some() {
+                    renderer.exit_visibility();
+                }
+            };
 
             if element.tag == "br" {
                 renderer.break_line();
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             if element.tag == "wbr" {
                 renderer.push_word_break_opportunity();
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             if element.tag == "hr" {
                 renderer.push_horizontal_rule(Some(node_id));
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             if element.tag == "img" {
@@ -12120,7 +12457,11 @@ fn render_node(
                         Some(node_id),
                     );
                 }
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             if is_replaced_media_element(&element.tag) {
@@ -12145,14 +12486,22 @@ fn render_node(
                         Some(node_id),
                     );
                 }
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
                     renderer.push_inline_widget(&label, Some(node_id));
                 }
-                exit_outer_contexts(renderer, &mut out_of_flow_entered);
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
                 return;
             }
             let text_shade_entered = style.text_shade;
@@ -12517,7 +12866,11 @@ fn render_node(
             if table_entered {
                 renderer.exit_table();
             }
-            exit_outer_contexts(renderer, &mut out_of_flow_entered);
+            exit_outer_contexts(
+                renderer,
+                &mut out_of_flow_entered,
+                &mut horizontal_projection_entered,
+            );
         }
     }
 }
@@ -12945,6 +13298,9 @@ fn computed_style(
             overflow: Overflow::Visible,
             position: Position::Static,
             position_top: None,
+            position_left: None,
+            position_right: None,
+            transform_translate: CssTranslate::default(),
             z_index: 0,
             white_space: None,
             text_transform: None,
@@ -12984,6 +13340,9 @@ fn computed_style(
     let mut overflow = Overflow::Visible;
     let mut position = Position::Static;
     let mut position_top = None;
+    let mut position_left = None;
+    let mut position_right = None;
+    let mut transform_translate = CssTranslate::default();
     let mut z_index = 0i32;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
@@ -13021,6 +13380,9 @@ fn computed_style(
     let mut overflow_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
+    let mut position_left_specificity = 0u32;
+    let mut position_right_specificity = 0u32;
+    let mut transform_translate_specificity = 0u32;
     let mut z_index_specificity = 0u32;
     let mut white_space_specificity = 0u32;
     let mut text_transform_specificity = 0u32;
@@ -13140,6 +13502,24 @@ fn computed_style(
             {
                 position_top = Some(rule_position_top);
                 position_top_specificity = rule_specificity;
+            }
+            if let Some(rule_position_left) = rule.declarations.position_left
+                && rule_specificity >= position_left_specificity
+            {
+                position_left = Some(rule_position_left);
+                position_left_specificity = rule_specificity;
+            }
+            if let Some(rule_position_right) = rule.declarations.position_right
+                && rule_specificity >= position_right_specificity
+            {
+                position_right = Some(rule_position_right);
+                position_right_specificity = rule_specificity;
+            }
+            if let Some(rule_transform_translate) = rule.declarations.transform_translate
+                && rule_specificity >= transform_translate_specificity
+            {
+                transform_translate = rule_transform_translate;
+                transform_translate_specificity = rule_specificity;
             }
             if let Some(rule_z_index) = rule.declarations.z_index
                 && rule_specificity >= z_index_specificity
@@ -13324,6 +13704,15 @@ fn computed_style(
         if let Some(inline_position_top) = inline.position_top {
             position_top = Some(inline_position_top);
         }
+        if let Some(inline_position_left) = inline.position_left {
+            position_left = Some(inline_position_left);
+        }
+        if let Some(inline_position_right) = inline.position_right {
+            position_right = Some(inline_position_right);
+        }
+        if let Some(inline_transform_translate) = inline.transform_translate {
+            transform_translate = inline_transform_translate;
+        }
         if let Some(inline_z_index) = inline.z_index {
             z_index = inline_z_index;
         }
@@ -13407,6 +13796,9 @@ fn computed_style(
         overflow,
         position,
         position_top,
+        position_left,
+        position_right,
+        transform_translate,
         z_index,
         white_space,
         text_transform,
@@ -13910,6 +14302,12 @@ struct FlowOutOfFlowSnapshot {
     pending_text_indent: Option<usize>,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
+}
+
+#[derive(Debug)]
+struct FlowHorizontalProjectionSnapshot {
+    left_inset: usize,
+    right_inset: usize,
 }
 
 #[derive(Debug)]
@@ -14848,6 +15246,31 @@ impl FlowRenderer {
             self.next_y = y;
         }
         snapshot
+    }
+
+    fn enter_horizontal_projection(
+        &mut self,
+        offset: isize,
+    ) -> Option<FlowHorizontalProjectionSnapshot> {
+        if offset == 0 {
+            return None;
+        }
+        let snapshot = FlowHorizontalProjectionSnapshot {
+            left_inset: self.left_inset,
+            right_inset: self.right_inset,
+        };
+        if offset > 0 {
+            self.left_inset = self.left_inset.saturating_add(offset as usize);
+        } else {
+            self.left_inset = self.left_inset.saturating_sub(offset.unsigned_abs());
+        }
+        Some(snapshot)
+    }
+
+    fn exit_horizontal_projection(&mut self, snapshot: FlowHorizontalProjectionSnapshot) {
+        self.break_line();
+        self.left_inset = snapshot.left_inset;
+        self.right_inset = snapshot.right_inset;
     }
 
     fn exit_out_of_flow(&mut self, snapshot: FlowOutOfFlowSnapshot) {
