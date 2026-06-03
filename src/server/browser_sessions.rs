@@ -589,6 +589,7 @@ struct BrowserSessionResourcesExportPayload<'a> {
 #[derive(Debug, Serialize)]
 struct BrowserSessionResourceActionUrls {
     fetch_resources: Option<String>,
+    make_visual: Option<String>,
     apply_stylesheets: Option<String>,
     run_scripts: Option<String>,
     load_images: Option<String>,
@@ -835,6 +836,7 @@ struct BrowserSessionStateExportActionUrls {
     label_tab_search_results: Option<String>,
     clear_tab_search_labels: Option<String>,
     fetch_resources: Option<String>,
+    make_visual: Option<String>,
     apply_stylesheets: Option<String>,
     run_scripts: Option<String>,
     load_images: Option<String>,
@@ -967,6 +969,7 @@ enum BrowserSessionAction {
     ForgetClosedSession(String),
     ForgetProfileClosed(usize),
     FetchResources,
+    MakeVisual,
     ApplyStylesheets,
     RunScripts,
     LoadImages,
@@ -5873,6 +5876,30 @@ async fn apply_browser_action(
                 })?;
             web_session.resource_report = Some(browser_session_resource_report_from_fetch(report));
         }
+        BrowserSessionAction::MakeVisual => {
+            let stylesheet_report = web_session
+                .session
+                .render_current_with_stylesheets(web_session.max_bytes)
+                .await
+                .map_err(|error| {
+                    BrowserRouteError::Upstream(format!(
+                        "browser visual stylesheet render failed: {error:#}"
+                    ))
+                })?;
+            let image_report = web_session
+                .session
+                .render_current_with_images(web_session.max_bytes)
+                .await
+                .map_err(|error| {
+                    BrowserRouteError::Upstream(format!(
+                        "browser visual image render failed: {error:#}"
+                    ))
+                })?;
+            web_session.resource_report = Some(browser_session_resource_report_from_make_visual(
+                browser_session_resource_report_from_stylesheets(stylesheet_report),
+                browser_session_resource_report_from_images(image_report),
+            ));
+        }
         BrowserSessionAction::ApplyStylesheets => {
             let report = web_session
                 .session
@@ -6865,6 +6892,9 @@ fn browser_action(target: &RequestTarget) -> Result<BrowserSessionAction, Browse
         "fetch-resources" | "fetch_resources" | "resources" => {
             Ok(BrowserSessionAction::FetchResources)
         }
+        "make-visual" | "make_visual" | "visual" | "visual-render" | "visual_render" => {
+            Ok(BrowserSessionAction::MakeVisual)
+        }
         "apply-styles" | "apply_styles" | "styles" | "stylesheets" => {
             Ok(BrowserSessionAction::ApplyStylesheets)
         }
@@ -7398,6 +7428,7 @@ fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool
     matches!(
         action,
         BrowserSessionAction::FetchResources
+            | BrowserSessionAction::MakeVisual
             | BrowserSessionAction::ApplyStylesheets
             | BrowserSessionAction::RunScripts
             | BrowserSessionAction::LoadImages
@@ -7801,6 +7832,28 @@ fn browser_session_resource_report_from_fetch(
             .into_iter()
             .map(browser_session_resource_fetch_payload)
             .collect(),
+    }
+}
+
+fn browser_session_resource_report_from_make_visual(
+    stylesheets: BrowserSessionResourceReportPayload,
+    images: BrowserSessionResourceReportPayload,
+) -> BrowserSessionResourceReportPayload {
+    let applied = stylesheets.applied.unwrap_or(0);
+    let decoded = images.decoded.unwrap_or(0);
+    let mut resources = stylesheets.resources;
+    resources.extend(images.resources);
+    BrowserSessionResourceReportPayload {
+        action: "Make visual".to_owned(),
+        page_source: images.page_source,
+        total: stylesheets.total + images.total,
+        fetched: stylesheets.fetched + images.fetched,
+        cached: stylesheets.cached + images.cached,
+        failed: stylesheets.failed + images.failed,
+        skipped: stylesheets.skipped + images.skipped,
+        applied: Some(applied),
+        decoded: Some(decoded),
+        resources,
     }
 }
 
@@ -8822,6 +8875,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector h3 {{ margin: 0 0 8px; font-size: 14px; letter-spacing: 0; }}
 .browser-inspector .section-title {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
 .clear-link {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; white-space: nowrap; }}
+.clear-link.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .resource-actions {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
 .resource-report {{ display: grid; gap: 6px; margin: 8px 0 10px; color: #3a3f45; font-size: 12px; }}
 .resource-report-summary {{ color: #5d636b; overflow-wrap: anywhere; }}
@@ -8962,10 +9016,14 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }
 
     let action_urls = browser_session_state_action_urls(payload);
-    if action_urls.apply_stylesheets.is_none() && action_urls.load_images.is_none() {
+    if action_urls.make_visual.is_none()
+        && action_urls.apply_stylesheets.is_none()
+        && action_urls.load_images.is_none()
+    {
         return String::new();
     }
 
+    let make_visual = action_urls.make_visual.unwrap_or_default();
     let apply_stylesheets = action_urls.apply_stylesheets.unwrap_or_default();
     let load_images = action_urls.load_images.unwrap_or_default();
     let refresh_url = browser_session_action_href(&payload.id, "current", &[], payload);
@@ -8978,6 +9036,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         r#"<div class="auto-visual-status" data-auto-visual-status>Preparing visual render...</div>
 <script>
 (() => {{
+  const makeVisualUrl = {make_visual};
   const applyStylesheetsUrl = {apply_stylesheets};
   const loadImagesUrl = {load_images};
   const refreshUrl = {refresh_url};
@@ -9096,8 +9155,12 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }}
   }};
   (async () => {{
-    await request("Applying styles...", applyStylesheetsUrl);
-    await request("Loading images...", loadImagesUrl);
+    if (makeVisualUrl) {{
+      await request("Making visual...", makeVisualUrl);
+    }} else {{
+      await request("Applying styles...", applyStylesheetsUrl);
+      await request("Loading images...", loadImagesUrl);
+    }}
     sessionStorage.setItem(stateKey, "done");
     if (refreshUrl) {{
       setStatus("Visual render complete. Opening page...");
@@ -9110,6 +9173,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   }});
 }})();
 </script>"#,
+        make_visual = browser_json_script_string(&make_visual),
         apply_stylesheets = browser_json_script_string(&apply_stylesheets),
         load_images = browser_json_script_string(&load_images),
         refresh_url = browser_json_script_string(&refresh_url),
@@ -9607,6 +9671,8 @@ fn browser_session_resource_action_urls(
     BrowserSessionResourceActionUrls {
         fetch_resources: (payload.resource_count > 0)
             .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
+        make_visual: (payload.resource_stylesheet_count > 0 || payload.resource_image_count > 0)
+            .then(|| browser_session_action_href(&payload.id, "make-visual", &[], payload)),
         apply_stylesheets: (payload.resource_stylesheet_count > 0)
             .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
         run_scripts: (payload.resource_script_count > 0)
@@ -10001,6 +10067,7 @@ fn browser_session_state_action_urls(
                 browser_session_action_href(&payload.id, "clear-tab-search-labels", &[], payload)
             }),
         fetch_resources: resource_action_urls.fetch_resources,
+        make_visual: resource_action_urls.make_visual,
         apply_stylesheets: resource_action_urls.apply_stylesheets,
         run_scripts: resource_action_urls.run_scripts,
         load_images: resource_action_urls.load_images,
@@ -12273,6 +12340,11 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
 
     let action_urls = browser_session_resource_action_urls(payload);
     let mut actions = String::new();
+    actions.push_str(&browser_session_resource_action_link_with_class(
+        action_urls.make_visual.as_deref(),
+        "Make visual",
+        "clear-link primary-action",
+    ));
     actions.push_str(&browser_session_resource_action_link(
         action_urls.fetch_resources.as_deref(),
         "Fetch resources",
@@ -12312,9 +12384,18 @@ fn render_browser_session_resource_quick_actions(payload: &BrowserSessionPayload
 }
 
 fn browser_session_resource_action_link(href: Option<&str>, label: &str) -> String {
+    browser_session_resource_action_link_with_class(href, label, "clear-link")
+}
+
+fn browser_session_resource_action_link_with_class(
+    href: Option<&str>,
+    label: &str,
+    class: &str,
+) -> String {
     href.map_or_else(String::new, |href| {
         format!(
-            r#"<a class="clear-link" href="{href}">{label}</a>"#,
+            r#"<a class="{class}" href="{href}">{label}</a>"#,
+            class = html_escape::encode_double_quoted_attribute(class),
             href = html_escape::encode_double_quoted_attribute(href),
             label = html_escape::encode_text(label),
         )
@@ -12367,6 +12448,17 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
         )
     };
+    let make_visual_control =
+        if payload.resource_stylesheet_count == 0 && payload.resource_image_count == 0 {
+            String::new()
+        } else {
+            let make_visual_href =
+                browser_session_action_href(&payload.id, "make-visual", &[], payload);
+            format!(
+                r#"<a class="clear-link primary-action" href="{make_visual_href}">Make visual</a>"#,
+                make_visual_href = html_escape::encode_double_quoted_attribute(&make_visual_href),
+            )
+        };
     let styles_control = if payload.resource_stylesheet_count == 0 {
         String::new()
     } else {
@@ -12465,13 +12557,14 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
         rows.push_str(r#"<tr><td colspan="6">No subresources discovered.</td></tr>"#);
     }
     format!(
-        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}{fetch_control}{styles_control}{scripts_control}{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
+        r#"<section><div class="section-title"><h3>Resources ({count})</h3><div class="resource-actions"><span class="meta">{resource_summary}</span><a class="clear-link" href="{resources_json_href}">Resources JSON</a><a class="clear-link" href="{resources_csv_href}">Resources CSV</a>{open_resource_controls}{fetch_control}{make_visual_control}{styles_control}{scripts_control}{load_images_control}{clear_report}</div></div>{report}<table><thead><tr><th>Kind</th><th>Initiator</th><th>URL</th><th>Resolved</th><th>Details</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table></section>"#,
         count = payload.resource_count,
         resource_summary = html_escape::encode_text(&resource_summary),
         resources_json_href = html_escape::encode_double_quoted_attribute(&resources_json_href),
         resources_csv_href = html_escape::encode_double_quoted_attribute(&resources_csv_href),
         open_resource_controls = open_resource_controls,
         fetch_control = fetch_control,
+        make_visual_control = make_visual_control,
         styles_control = styles_control,
         scripts_control = scripts_control,
         load_images_control = load_images_control,
