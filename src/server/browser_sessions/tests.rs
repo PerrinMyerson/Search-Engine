@@ -2245,7 +2245,7 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
         path: "/browser".to_owned(),
         params: vec![("url".to_owned(), first.display().to_string())],
     };
-    let (payload, _) = registry.create_target(&create_first).await.unwrap();
+    let (payload, back_href) = registry.create_target(&create_first).await.unwrap();
     let first_id = payload.id.clone();
     assert_eq!(payload.sessions.len(), 1);
     assert_eq!(payload.sessions[0].id, first_id);
@@ -2257,6 +2257,8 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(!payload.sessions[0].can_move_right);
     assert!(payload.sessions[0].move_right_url.is_empty());
     assert!(payload.sessions[0].clear_label_url.is_empty());
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(!html.contains(r#"class="browser-tab-strip""#));
 
     let create_second = RequestTarget {
         path: "/browser".to_owned(),
@@ -2299,6 +2301,19 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(!payload.sessions[0].current);
     assert!(payload.sessions[1].current);
     let html = render_browser_session_page(&payload, &back_href);
+    let tab_strip_index = html
+        .find(r#"class="browser-tab-strip""#)
+        .expect("primary tab strip should render for multiple tabs");
+    let page_head_index = html
+        .find(r#"class="browser-page-head""#)
+        .expect("page heading should render");
+    assert!(tab_strip_index < page_head_index);
+    assert!(html.contains(r#"aria-label="Open browser tabs""#));
+    assert!(html.contains(r#"class="browser-tab-pill""#));
+    assert!(html.contains(r#"class="browser-tab-pill current""#));
+    assert!(html.contains(r#"aria-current="page""#));
+    assert!(html.contains(">1 · One</strong>"));
+    assert!(html.contains(">2 · Two</strong>"));
     assert!(html.contains(">Duplicate tab</a>"));
     assert!(html.contains(">Pin tab</a>"));
     assert!(html.contains(">Pin</a>"));
@@ -2333,6 +2348,8 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(!payload.sessions[1].pinned);
     assert!(payload.sessions[1].current);
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-tab-pill pinned""#));
+    assert!(html.contains(">1 · Pinned · One</strong>"));
     assert!(html.contains("Pinned · One"));
     assert!(html.contains(">Unpin</a>"));
     assert!(html.contains(">Pin tab</a>"));
@@ -2359,6 +2376,7 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .contains("action=clear-tab-label")
     );
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(">1 · Pinned · Research one</strong>"));
     assert!(html.contains("Pinned · Research one"));
     assert!(html.contains(">Clear label</a>"));
     assert!(html.contains("Search tabs"));
