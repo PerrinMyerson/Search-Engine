@@ -1404,12 +1404,10 @@ impl BrowserSessionRegistry {
         web_session.max_bytes =
             parse_optional_usize_param(target, "max_bytes", 64 * 1024, 16 * 1024 * 1024)
                 .unwrap_or(web_session.max_bytes);
-        web_session.viewport_x = parse_optional_usize_param(target, "x", 0, usize::MAX)
-            .or_else(|| parse_optional_usize_param(target, "viewport_x", 0, usize::MAX))
-            .unwrap_or(web_session.viewport_x);
-        web_session.viewport_y = parse_optional_usize_param(target, "y", 0, usize::MAX)
-            .or_else(|| parse_optional_usize_param(target, "viewport_y", 0, usize::MAX))
-            .unwrap_or(web_session.viewport_y);
+        web_session.viewport_x =
+            browser_session_target_viewport_x(target, &action).unwrap_or(web_session.viewport_x);
+        web_session.viewport_y =
+            browser_session_target_viewport_y(target, &action).unwrap_or(web_session.viewport_y);
         if let Some(return_href) = target.param("from") {
             web_session.back_href = sanitized_search_return_href(Some(&return_href));
         }
@@ -5631,6 +5629,32 @@ fn browser_session_matches_query(id: &str, session: &BrowserWebSession, needle: 
             .contains(needle)
             || render.source.to_lowercase().contains(needle)
     })
+}
+
+fn browser_session_target_viewport_x(
+    target: &RequestTarget,
+    action: &BrowserSessionAction,
+) -> Option<usize> {
+    parse_optional_usize_param(target, "viewport_x", 0, usize::MAX).or_else(|| {
+        browser_session_action_allows_xy_viewport_alias(action)
+            .then(|| parse_optional_usize_param(target, "x", 0, usize::MAX))
+            .flatten()
+    })
+}
+
+fn browser_session_target_viewport_y(
+    target: &RequestTarget,
+    action: &BrowserSessionAction,
+) -> Option<usize> {
+    parse_optional_usize_param(target, "viewport_y", 0, usize::MAX).or_else(|| {
+        browser_session_action_allows_xy_viewport_alias(action)
+            .then(|| parse_optional_usize_param(target, "y", 0, usize::MAX))
+            .flatten()
+    })
+}
+
+fn browser_session_action_allows_xy_viewport_alias(action: &BrowserSessionAction) -> bool {
+    !matches!(action, BrowserSessionAction::ClickAt { .. })
 }
 
 async fn apply_browser_action(
