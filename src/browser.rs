@@ -5184,10 +5184,10 @@ pub fn browser_text_viewport(
         match command {
             DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
             DisplayCommand::Rect { .. } => {
-                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '#')
+                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '#')
             }
             DisplayCommand::Image { alt, .. } => {
-                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '@');
                 overlay_text_viewport_image_alt(
                     &mut cells,
                     viewport,
@@ -5196,7 +5196,7 @@ pub fn browser_text_viewport(
                 );
             }
             DisplayCommand::BackgroundImage { .. } => {
-                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '@');
             }
         }
     }
@@ -5287,6 +5287,50 @@ fn fill_text_viewport_empty_cells(
     }
 }
 
+fn fill_text_viewport_visual_cells(
+    cells: &mut [Vec<char>],
+    viewport: RasterViewport,
+    bounds: DisplayCommandBounds,
+    ch: char,
+) {
+    if large_text_viewport_visual_fill(viewport, bounds) {
+        fill_text_viewport_sparse_cells(cells, viewport, bounds, ch);
+    } else {
+        fill_text_viewport_empty_cells(cells, viewport, bounds, ch);
+    }
+}
+
+fn large_text_viewport_visual_fill(viewport: RasterViewport, bounds: DisplayCommandBounds) -> bool {
+    bounds.width >= viewport.width.saturating_div(2).max(1)
+        && bounds.height >= viewport.height.saturating_div(2).max(1)
+}
+
+fn fill_text_viewport_sparse_cells(
+    cells: &mut [Vec<char>],
+    viewport: RasterViewport,
+    bounds: DisplayCommandBounds,
+    ch: char,
+) {
+    let start_y = bounds.y.saturating_sub(viewport.y);
+    let end_y = start_y.saturating_add(bounds.height).min(cells.len());
+    let start_x = bounds.x.saturating_sub(viewport.x);
+    let end_x = start_x.saturating_add(bounds.width).min(viewport.width);
+    for row in start_y..end_y {
+        if let Some(line) = cells.get_mut(row) {
+            for column in start_x..end_x {
+                if (row.saturating_add(column)) % 8 != 0 {
+                    continue;
+                }
+                if let Some(cell) = line.get_mut(column)
+                    && *cell == ' '
+                {
+                    *cell = ch;
+                }
+            }
+        }
+    }
+}
+
 fn overlay_text_viewport_image_alt(
     cells: &mut [Vec<char>],
     viewport: RasterViewport,
@@ -5339,6 +5383,7 @@ fn trim_trailing_spaces(mut line: String) -> String {
 }
 
 fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch: char, ink: u8) {
+    let ink = contrasting_glyph_ink(pixels, width, cell_x, cell_y, ch, ink);
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
         for column in 0..5 {
             if (mask & (1 << (4 - column))) == 0 {
@@ -5352,6 +5397,43 @@ fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch:
                 ink,
             );
         }
+    }
+}
+
+fn contrasting_glyph_ink(
+    pixels: &[u8],
+    width: usize,
+    cell_x: usize,
+    cell_y: usize,
+    ch: char,
+    ink: u8,
+) -> u8 {
+    let mut total = 0usize;
+    let mut count = 0usize;
+    for (row, mask) in glyph_rows(ch).iter().enumerate() {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            let pixel_x = cell_x.saturating_add(1 + column);
+            let pixel_y = cell_y.saturating_add(2 + row);
+            let index = pixel_y.saturating_mul(width).saturating_add(pixel_x);
+            if let Some(pixel) = pixels.get(index) {
+                total = total.saturating_add(*pixel as usize);
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    if count == 0 {
+        return ink;
+    }
+    let background = total / count;
+    if ink.abs_diff(background as u8) >= 96 {
+        ink
+    } else if background < 128 {
+        255
+    } else {
+        0
     }
 }
 

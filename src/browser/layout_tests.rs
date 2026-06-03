@@ -2572,6 +2572,55 @@ fn text_viewport_and_raster_keep_text_foreground_over_later_media() {
 }
 
 #[test]
+fn post_visual_viewports_keep_text_and_fills_readable() {
+    let render = render_html(
+        "mem://post-visual-readable-fill",
+        br#"
+            <html><body>
+              <section style="height:240px; background-color:black; color:black">
+                Readable hero
+              </section>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 3,
+            width: 24,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains('#'));
+    assert!(
+        scrolled
+            .lines
+            .iter()
+            .all(|line| line.chars().filter(|ch| *ch == '#').count() < 8)
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(24),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize readable contrast");
+    let glyph_pixel_x = raster_options.padding_x.saturating_add(2);
+    let glyph_pixel_y = raster_options.padding_y.saturating_add(2);
+    let glyph_pixel = glyph_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(glyph_pixel_x);
+    assert_eq!(raster.pixels[glyph_pixel], 255);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
