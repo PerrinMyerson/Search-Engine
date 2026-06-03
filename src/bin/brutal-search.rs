@@ -1,8 +1,8 @@
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use brutal_search::crawler::{
     CrawlBoundary, CrawlOptions, crawl_many, domain_to_seed, load_domain_file, load_seed_file,
 };
@@ -24,6 +24,20 @@ use brutal_search::sitemap::{
     SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
 };
 use clap::{Parser, Subcommand, ValueEnum};
+
+const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
+    "manifest.json",
+    "docs.bin",
+    "field_docs.bin",
+    "lexicon.bin",
+    "postings.bin",
+    "texts.bin",
+    "frontier.bin",
+    "crawl-docs.jsonl",
+    "web-cache.jsonl",
+    "brave-results.jsonl",
+    "bench-status.json",
+];
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -434,6 +448,7 @@ async fn main() -> Result<()> {
             println!("skipped_thin: {}", manifest.skipped_thin_count);
             println!("max_authority_score: {:.4}", manifest.max_authority_score);
             println!("corpus_hash: {}", manifest.corpus_hash);
+            print_index_storage_stats(index.root())?;
         }
         Command::RecrawlPlan {
             index,
@@ -655,6 +670,7 @@ async fn try_daemon_stats(
             println!("skipped_thin: {skipped_thin_count}");
             println!("max_authority_score: {max_authority_score:.4}");
             println!("corpus_hash: {corpus_hash}");
+            print_index_storage_stats(index)?;
             Ok(true)
         }
         DaemonResponse::Error { message } => bail!(message),
@@ -758,6 +774,57 @@ fn print_build_stats(stats: &brutal_search::BuildStats) {
     println!("corpus_hash: {}", stats.corpus_hash);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexStorageArtifact {
+    name: &'static str,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexStorageStats {
+    total_bytes: u64,
+    artifacts: Vec<IndexStorageArtifact>,
+}
+
+fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
+    let mut stats = IndexStorageStats {
+        total_bytes: 0,
+        artifacts: Vec::new(),
+    };
+
+    for name in INDEX_STORAGE_ARTIFACTS {
+        let path = index.join(name);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("read index storage artifact {}", path.display()));
+            }
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let bytes = metadata.len();
+        stats.total_bytes = stats.total_bytes.saturating_add(bytes);
+        stats.artifacts.push(IndexStorageArtifact { name, bytes });
+    }
+
+    Ok(stats)
+}
+
+fn print_index_storage_stats(index: &Path) -> Result<()> {
+    let stats = collect_index_storage_stats(index)?;
+    println!("index_storage_bytes: {}", stats.total_bytes);
+    for artifact in stats.artifacts {
+        println!(
+            "index_storage_artifact_bytes: {} {}",
+            artifact.name, artifact.bytes
+        );
+    }
+    Ok(())
+}
+
 async fn run_recrawl_scheduler_cli(options: RecrawlSchedulerOptions) -> Result<()> {
     let mut round = 0usize;
     loop {
@@ -817,4 +884,49 @@ fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry
     }
     (*writer).flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_storage_stats_sum_known_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.json"), b"12345").unwrap();
+        std::fs::write(dir.path().join("web-cache.jsonl"), b"cached").unwrap();
+        std::fs::write(dir.path().join("brave-results.jsonl"), b"log").unwrap();
+        std::fs::write(dir.path().join("untracked.tmp"), b"ignore me").unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+
+        assert_eq!(stats.total_bytes, 14);
+        assert_eq!(
+            stats.artifacts,
+            vec![
+                IndexStorageArtifact {
+                    name: "manifest.json",
+                    bytes: 5
+                },
+                IndexStorageArtifact {
+                    name: "web-cache.jsonl",
+                    bytes: 6
+                },
+                IndexStorageArtifact {
+                    name: "brave-results.jsonl",
+                    bytes: 3
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn index_storage_stats_skip_missing_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+
+        assert_eq!(stats.total_bytes, 0);
+        assert!(stats.artifacts.is_empty());
+    }
 }
