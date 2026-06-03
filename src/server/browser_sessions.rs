@@ -8528,6 +8528,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let primary_input_controls = render_browser_session_primary_input_controls(payload);
     let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
+    let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
@@ -8792,6 +8793,15 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
 .viewport-scroll-controls[data-scroll-pending="true"] a {{ cursor: wait; opacity: 0.72; }}
 .viewport-scroll-feedback {{ color: #5d636b; border-color: transparent !important; background: transparent !important; }}
+.viewport-command-strip {{ display: grid; gap: 8px; border: 1px solid #d3d8df; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
+.viewport-command-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
+.viewport-command-strip .resource-actions {{ flex: 1 1 auto; }}
+.viewport-state-chip {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #f7f7f5; color: #3a3f45; font-size: 12px; font-weight: 800; white-space: nowrap; }}
+.viewport-command-jump {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
+.viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
+.viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
+.viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
+.viewport-command-strip[data-resource-pending="true"] a[href^="/browser"], .viewport-command-strip[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
 .find-bar input[type="search"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -8916,6 +8926,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {find_controls}
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary">
+{viewport_command_strip}
 {resource_quick_actions}
 {viewport_scroll_controls}
 {viewport_status}
@@ -8995,6 +9006,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_jump = viewport_jump,
         viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
+        viewport_command_strip = viewport_command_strip,
         resource_quick_actions = resource_quick_actions,
         viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
@@ -11414,6 +11426,74 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
         page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
         right = nav_control(can_scroll_right, "Right", &right_href),
         bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
+    )
+}
+
+fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload) -> String {
+    let action_urls = browser_session_resource_action_urls(payload);
+    let mut visual_actions = String::new();
+    visual_actions.push_str(
+        &browser_session_resource_action_link_with_class_and_attributes(
+            action_urls.make_visual.as_deref(),
+            "Make visual",
+            "clear-link primary-action",
+            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#,
+        ),
+    );
+    visual_actions.push_str(&browser_session_resource_action_link_with_status(
+        action_urls.apply_stylesheets.as_deref(),
+        "Apply styles",
+        "Applying styles...",
+    ));
+    visual_actions.push_str(&browser_session_resource_action_link_with_status(
+        action_urls.run_scripts.as_deref(),
+        "Run scripts",
+        "Running scripts...",
+    ));
+    let load_images_label = format!(
+        "Load {}",
+        browser_resource_count_label(payload.resource_image_count, "image", "images")
+    );
+    visual_actions.push_str(&browser_session_resource_action_link_with_status(
+        action_urls.load_images.as_deref(),
+        &load_images_label,
+        "Loading images...",
+    ));
+
+    let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
+    let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
+    let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
+    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
+    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let can_scroll_up = payload.viewport_y > 0;
+    let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
+    let percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
+    let visual_status = if visual_actions.is_empty() {
+        r#"<span class="resource-action-status">No visual resources</span>"#.to_owned()
+    } else {
+        r#"<span class="resource-visual-status resource-action-status" data-browser-visual-status data-browser-resource-status-output aria-live="polite"></span>"#.to_owned()
+    };
+
+    format!(
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div><div class="viewport-command-row"><nav class="viewport-scroll-controls" aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form></div></section>"#,
+        id = html_escape::encode_text(&payload.id),
+        width = payload.width,
+        height = payload.height,
+        x = payload.viewport_x,
+        max_x = payload.max_scroll_x,
+        y = payload.viewport_y,
+        max_y = payload.max_scroll_y,
+        percent = percent,
+        visual_actions = visual_actions,
+        current_href = html_escape::encode_double_quoted_attribute(&current_href),
+        reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        visual_status = visual_status,
+        top = nav_control(can_scroll_up, "Top", &top_href),
+        page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
+        page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
+        bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
+        common = browser_session_common_hidden_inputs(payload),
     )
 }
 
