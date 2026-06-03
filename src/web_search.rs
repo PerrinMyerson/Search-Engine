@@ -60,12 +60,20 @@ pub struct WebSearchStorageCompactionReport {
     pub cache_after: WebSearchStorageArtifactState,
     pub result_log_before: WebSearchStorageArtifactState,
     pub result_log_after: WebSearchStorageArtifactState,
+    pub skipped: bool,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebSearchStorageArtifactState {
     pub bytes: u64,
     pub entries: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WebSearchStorageCompactionOptions {
+    pub dry_run: bool,
+    pub min_entries: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +291,7 @@ impl WebSearchService {
 
 pub fn compact_web_search_storage_from_env(
     index_dir: &Path,
+    options: WebSearchStorageCompactionOptions,
 ) -> Result<WebSearchStorageCompactionReport> {
     let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
         .map(PathBuf::from)
@@ -302,6 +311,7 @@ pub fn compact_web_search_storage_from_env(
         cache_ttl_secs,
         cache_max_entries,
         result_log_max_entries,
+        options,
     )
 }
 
@@ -311,14 +321,20 @@ fn compact_web_search_storage(
     cache_ttl_secs: u64,
     cache_max_entries: usize,
     result_log_max_entries: usize,
+    options: WebSearchStorageCompactionOptions,
 ) -> Result<WebSearchStorageCompactionReport> {
     let cache_before = web_storage_artifact_state(&cache_path)?;
     let result_log_before = web_storage_artifact_state(&result_log_path)?;
+    let max_entries_before = cache_before.entries.max(result_log_before.entries);
+    let skipped =
+        options.dry_run || (options.min_entries > 0 && max_entries_before < options.min_entries);
 
-    if cache_path.exists() {
+    if !skipped && cache_path.exists() {
         let _ = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
     }
-    enforce_result_log_retention(&result_log_path, result_log_max_entries)?;
+    if !skipped {
+        enforce_result_log_retention(&result_log_path, result_log_max_entries)?;
+    }
 
     let cache_after = web_storage_artifact_state(&cache_path)?;
     let result_log_after = web_storage_artifact_state(&result_log_path)?;
@@ -329,6 +345,8 @@ fn compact_web_search_storage(
         cache_after,
         result_log_before,
         result_log_after,
+        skipped,
+        dry_run: options.dry_run,
     })
 }
 
@@ -1140,6 +1158,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            WebSearchStorageCompactionOptions::default(),
         )
         .unwrap();
 
@@ -1152,6 +1171,91 @@ mod tests {
         let cache = fs::read_to_string(cache_path).unwrap();
         assert!(cache.contains("https://example.com/new"));
         assert!(!cache.contains("https://example.com/old"));
+    }
+
+    #[test]
+    fn compact_web_search_storage_dry_run_reports_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/new", now)],
+            },
+        )
+        .unwrap();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now.saturating_sub(1),
+                results: vec![web_result("https://example.com/old", now.saturating_sub(1))],
+            },
+        )
+        .unwrap();
+        let before = fs::read_to_string(&cache_path).unwrap();
+
+        let report = compact_web_search_storage(
+            cache_path.clone(),
+            result_log_path,
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            WebSearchStorageCompactionOptions {
+                dry_run: true,
+                min_entries: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(report.dry_run);
+        assert!(report.skipped);
+        assert_eq!(report.cache_before, report.cache_after);
+        assert_eq!(fs::read_to_string(cache_path).unwrap(), before);
+    }
+
+    #[test]
+    fn compact_web_search_storage_min_entries_skips_small_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/new", now)],
+            },
+        )
+        .unwrap();
+
+        let report = compact_web_search_storage(
+            cache_path,
+            result_log_path,
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            WebSearchStorageCompactionOptions {
+                dry_run: false,
+                min_entries: 2,
+            },
+        )
+        .unwrap();
+
+        assert!(!report.dry_run);
+        assert!(report.skipped);
+        assert_eq!(report.cache_before, report.cache_after);
     }
 
     #[test]

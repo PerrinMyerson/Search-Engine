@@ -24,8 +24,8 @@ use brutal_search::sitemap::{
     SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
 };
 use brutal_search::web_search::{
-    WebSearchStorageArtifactState, WebSearchStorageCompactionReport,
-    compact_web_search_storage_from_env,
+    WebSearchStorageArtifactState, WebSearchStorageCompactionOptions,
+    WebSearchStorageCompactionReport, compact_web_search_storage_from_env,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -155,6 +155,10 @@ enum Command {
     CompactWebCache {
         #[arg(long, default_value = ".brutal-index")]
         index: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 0)]
+        min_entries: usize,
     },
     RecrawlPlan {
         #[arg(long, default_value = ".brutal-index")]
@@ -458,8 +462,18 @@ async fn main() -> Result<()> {
             println!("corpus_hash: {}", manifest.corpus_hash);
             print_index_storage_stats(index.root())?;
         }
-        Command::CompactWebCache { index } => {
-            let report = compact_web_search_storage_from_env(&index)?;
+        Command::CompactWebCache {
+            index,
+            dry_run,
+            min_entries,
+        } => {
+            let report = compact_web_search_storage_from_env(
+                &index,
+                WebSearchStorageCompactionOptions {
+                    dry_run,
+                    min_entries,
+                },
+            )?;
             print_web_storage_compaction_report(&report);
         }
         Command::RecrawlPlan {
@@ -881,6 +895,8 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
 }
 
 fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
+    println!("dry_run: {}", report.dry_run);
+    println!("skipped: {}", report.skipped);
     print_web_storage_compaction_artifact(
         "web-cache",
         &report.cache_path,
