@@ -2899,6 +2899,108 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn image_resource_reporting_distinguishes_decode_outcomes() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let gif_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\0\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let decoded_path = dir.path().join("decoded.png");
+    let unsupported_path = dir.path().join("spinner.gif");
+    let undecoded_path = dir.path().join("broken.png");
+    let missing_path = dir.path().join("missing.jpg");
+    fs::write(&decoded_path, png_bytes).unwrap();
+    fs::write(&unsupported_path, gif_bytes).unwrap();
+    fs::write(&undecoded_path, b"not actually a png").unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <img src="decoded.png" alt="Decoded" width="16" height="24">
+            <img src="spinner.gif" alt="Unsupported" width="16" height="24">
+            <img src="broken.png" alt="Undecoded" width="16" height="24">
+            <img src="missing.jpg" alt="Missing" width="16" height="24">
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 4);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 1);
+
+    let decoded_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == decoded_path.display().to_string())
+        .unwrap();
+    assert_eq!(decoded_fetch.status, "fetched");
+    assert_eq!(
+        decoded_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(decoded_fetch.decoded_width, Some(2));
+    assert_eq!(decoded_fetch.decoded_height, Some(2));
+    assert_eq!(
+        decoded_fetch.decoded_hash.as_deref(),
+        Some(expected_hash.as_str())
+    );
+    assert_eq!(decoded_fetch.image_decode_error, None);
+
+    let unsupported_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == unsupported_path.display().to_string())
+        .unwrap();
+    assert_eq!(unsupported_fetch.status, "fetched");
+    assert_eq!(
+        unsupported_fetch.image_decode_status.as_deref(),
+        Some("unsupported_format")
+    );
+    assert_eq!(
+        unsupported_fetch.image_decode_error.as_deref(),
+        Some("unsupported image content type: image/gif")
+    );
+    assert_eq!(unsupported_fetch.decoded_hash, None);
+
+    let undecoded_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == undecoded_path.display().to_string())
+        .unwrap();
+    assert_eq!(undecoded_fetch.status, "fetched");
+    assert_eq!(
+        undecoded_fetch.image_decode_status.as_deref(),
+        Some("undecoded")
+    );
+    assert_eq!(
+        undecoded_fetch.image_decode_error.as_deref(),
+        Some("image bytes did not match a supported decoder")
+    );
+
+    let missing_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == missing_path.display().to_string())
+        .unwrap();
+    assert_eq!(missing_fetch.status, "failed");
+    assert_eq!(
+        missing_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        missing_fetch.image_decode_error.as_deref(),
+        Some("resource failed before decode")
+    );
+}
+
 fn tiny_test_png_rgb_with_sub_filter() -> Vec<u8> {
     let filtered_scanlines = [0, 0, 0, 0, 255, 255, 255, 1, 255, 0, 0, 1, 0, 255];
     encode_test_png(2, 2, 2, &filtered_scanlines)
