@@ -5075,6 +5075,7 @@ fn draw_raster_text_command(
     if y < viewport.y || y >= viewport.end_y() {
         return;
     }
+    let text = readable_display_text(text);
     for (column_offset, ch) in text.chars().enumerate() {
         let document_column = x.saturating_add(column_offset);
         if document_column < viewport.x || document_column >= viewport.end_x() {
@@ -5263,6 +5264,7 @@ fn draw_text_viewport_command(
         return;
     }
     let row = y.saturating_sub(viewport.y);
+    let text = readable_display_text(text);
     for (column_offset, ch) in text.chars().enumerate() {
         let document_column = x.saturating_add(column_offset);
         if document_column < viewport.x || document_column >= viewport.end_x() {
@@ -5311,6 +5313,7 @@ fn raster_viewport_has_meaningful_visible_text(
         let Some(text) = display_command_text(command) else {
             continue;
         };
+        let text = readable_display_text(text);
         if !text.chars().any(|ch| ch.is_ascii_alphanumeric()) {
             continue;
         }
@@ -5438,7 +5441,8 @@ fn nearby_visual_region_text_context(
         .enumerate()
         .filter_map(|(command_index, command)| {
             let text = display_command_text(command)?;
-            let text = collapse_ascii_whitespace(text);
+            let text = readable_display_text(text);
+            let text = collapse_ascii_whitespace(&text);
             if text.is_empty() || !text.chars().any(|ch| ch.is_ascii_alphanumeric()) {
                 return None;
             }
@@ -5480,6 +5484,66 @@ fn display_command_text(command: &DisplayCommand) -> Option<&str> {
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => None,
     }
+}
+
+fn readable_display_text(text: &str) -> String {
+    collapse_repeated_glyph_runs(text).unwrap_or_else(|| text.to_owned())
+}
+
+fn collapse_repeated_glyph_runs(text: &str) -> Option<String> {
+    let mut runs = Vec::new();
+    let mut chars = text.chars();
+    let mut current = chars.next()?;
+    let mut current_len = 1usize;
+    for ch in chars {
+        if ch == current {
+            current_len = current_len.saturating_add(1);
+        } else {
+            runs.push((current, current_len));
+            current = ch;
+            current_len = 1;
+        }
+    }
+    runs.push((current, current_len));
+
+    let repeated_non_space_runs = runs
+        .iter()
+        .filter(|(ch, len)| !ch.is_whitespace() && *len >= 2)
+        .count();
+    if repeated_non_space_runs < 3 {
+        return None;
+    }
+
+    let scale = runs
+        .iter()
+        .filter(|(ch, _)| !ch.is_whitespace())
+        .map(|(_, len)| *len)
+        .reduce(gcd_usize)?;
+    if !(2..=4).contains(&scale) {
+        return None;
+    }
+    if runs
+        .iter()
+        .any(|(ch, len)| !ch.is_whitespace() && *len % scale != 0)
+    {
+        return None;
+    }
+
+    let mut collapsed = String::with_capacity(text.chars().count() / scale.max(1));
+    for (ch, len) in runs {
+        let count = if len % scale == 0 { len / scale } else { len };
+        collapsed.extend(std::iter::repeat(ch).take(count.max(1)));
+    }
+    (collapsed.chars().count() < text.chars().count()).then_some(collapsed)
+}
+
+fn gcd_usize(mut left: usize, mut right: usize) -> usize {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }
 
 fn display_command_is_visual_fill(command: &DisplayCommand) -> bool {

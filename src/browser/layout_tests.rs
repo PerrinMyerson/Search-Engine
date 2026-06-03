@@ -1295,13 +1295,18 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
     assert_eq!(
         viewport.lines,
         vec![
-            "HHHeeerrrooo".to_owned(),
-            "HHHeeerrrooo".to_owned(),
-            "HHHeeerrrooo".to_owned(),
+            "Hero".to_owned(),
+            "Hero".to_owned(),
+            "Hero".to_owned(),
             String::new(),
             "Body".to_owned(),
         ]
     );
+    assert_eq!(
+        collapse_repeated_glyph_runs("TTrruuvveettaa  DDaattaa").as_deref(),
+        Some("Truveta Data")
+    );
+    assert_eq!(collapse_repeated_glyph_runs("bookkeeper"), None);
 }
 
 #[test]
