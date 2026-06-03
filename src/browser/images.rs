@@ -1658,12 +1658,9 @@ fn parse_srcset_candidate_descriptors<'a>(
 }
 
 pub(super) fn srcset_candidate_urls(srcset: &str) -> Vec<String> {
-    srcset_candidate_strings(srcset)
+    parse_srcset_candidates(srcset)
         .into_iter()
-        .filter_map(|raw_candidate| {
-            let url = raw_candidate.split_ascii_whitespace().next()?.trim();
-            (!url.is_empty()).then(|| url.to_owned())
-        })
+        .map(|candidate| candidate.url)
         .collect()
 }
 
