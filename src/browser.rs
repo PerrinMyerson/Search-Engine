@@ -12039,6 +12039,15 @@ fn render_node(
                         image_source.as_deref(),
                         Some(node_id),
                     );
+                } else if is_row_item {
+                    renderer.push_inline_image_placeholder(
+                        image_width,
+                        image_height,
+                        element.alt.clone(),
+                        source,
+                        image_source.as_deref(),
+                        Some(node_id),
+                    );
                 } else {
                     renderer.push_image_placeholder(
                         image_width,
@@ -12055,14 +12064,25 @@ fn render_node(
             if is_replaced_media_element(&element.tag) {
                 let (media_width, media_height) =
                     replaced_media_placeholder_extent(element, &style, renderer);
-                renderer.push_image_placeholder(
-                    media_width,
-                    media_height,
-                    replaced_media_alt(element),
-                    source,
-                    replaced_media_render_source(element),
-                    Some(node_id),
-                );
+                if is_row_item {
+                    renderer.push_inline_image_placeholder(
+                        media_width,
+                        media_height,
+                        replaced_media_alt(element),
+                        source,
+                        replaced_media_render_source(element),
+                        Some(node_id),
+                    );
+                } else {
+                    renderer.push_image_placeholder(
+                        media_width,
+                        media_height,
+                        replaced_media_alt(element),
+                        source,
+                        replaced_media_render_source(element),
+                        Some(node_id),
+                    );
+                }
                 exit_outer_contexts(renderer, &mut out_of_flow_entered);
                 return;
             }
@@ -13794,6 +13814,7 @@ fn element_is_first_child(dom: &Dom, node_id: usize) -> bool {
 
 #[derive(Debug)]
 struct TextRun {
+    start_x: usize,
     text: String,
     shade: u8,
     background_shade: Option<u8>,
@@ -13806,6 +13827,7 @@ struct FlowOutOfFlowSnapshot {
     lines_len: usize,
     current_runs: Vec<TextRun>,
     current_width: usize,
+    inline_replaced_height: usize,
     pending_inter_word_space: Option<usize>,
     soft_break_opportunity: bool,
     next_y: usize,
@@ -13960,6 +13982,7 @@ struct FlowRenderer {
     lines: Vec<String>,
     current_runs: Vec<TextRun>,
     current_width: usize,
+    inline_replaced_height: usize,
     pending_inter_word_space: Option<usize>,
     soft_break_opportunity: bool,
     next_y: usize,
@@ -14020,6 +14043,7 @@ impl FlowRenderer {
             lines: Vec::new(),
             current_runs: Vec::new(),
             current_width: 0,
+            inline_replaced_height: 0,
             pending_inter_word_space: None,
             soft_break_opportunity: false,
             next_y: 0,
@@ -14539,16 +14563,23 @@ impl FlowRenderer {
         self.soft_break_opportunity = false;
         self.pending_inter_word_space = None;
         let line_height = self.line_height.max(1);
+        let row_height = line_height.max(self.inline_replaced_height);
         if !self.current_runs.is_empty() {
             let y = self.next_y;
             let align_offset = self
                 .text_align
                 .offset(self.available_width(), self.current_width);
-            let mut run_x = self.box_x().saturating_add(align_offset);
             let mut text = String::new();
             let runs = std::mem::take(&mut self.current_runs);
             for run in runs {
                 let run_width = run.text.chars().count();
+                if run.start_x > text.chars().count() {
+                    text.push_str(&" ".repeat(run.start_x.saturating_sub(text.chars().count())));
+                }
+                let run_x = self
+                    .box_x()
+                    .saturating_add(align_offset)
+                    .saturating_add(run.start_x);
                 if run.visible {
                     text.push_str(&run.text);
                     if let Some(background_shade) = run.background_shade
@@ -14567,20 +14598,22 @@ impl FlowRenderer {
                 } else {
                     text.push_str(&" ".repeat(run_width));
                 }
-                run_x = run_x.saturating_add(run_width);
             }
             self.lines.push(text);
-            self.push_line_height_gaps(line_height);
-            self.next_y = self.next_y.saturating_add(line_height);
+            self.push_line_height_gaps(row_height);
+            self.next_y = self.next_y.saturating_add(row_height);
+        } else if self.inline_replaced_height > 0 {
+            self.next_y = self.next_y.saturating_add(self.inline_replaced_height);
         }
         self.current_width = 0;
+        self.inline_replaced_height = 0;
     }
 
     fn force_line_break(&mut self) {
         self.soft_break_opportunity = false;
         self.pending_inter_word_space = None;
         let line_height = self.line_height.max(1);
-        if self.current_runs.is_empty() {
+        if self.current_runs.is_empty() && self.inline_replaced_height == 0 {
             self.lines.push(String::new());
             self.push_line_height_gaps(line_height);
             self.next_y = self.next_y.saturating_add(line_height);
@@ -14623,12 +14656,14 @@ impl FlowRenderer {
             piece
         };
         let piece = piece.as_str();
+        let run_start = self.current_width;
         self.current_width = self.current_width.saturating_add(piece.chars().count());
         let visible = self.paint_visible();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
             && last.background_shade == self.text_background_shade
             && last.visible == visible
+            && last.start_x.saturating_add(last.text.chars().count()) == run_start
         {
             let start = last.text.chars().count();
             last.text.push_str(piece);
@@ -14638,6 +14673,7 @@ impl FlowRenderer {
         let mut target_runs = Vec::new();
         push_text_hit_target_run(&mut target_runs, 0, piece, target_node);
         self.current_runs.push(TextRun {
+            start_x: run_start,
             text: piece.to_owned(),
             shade: self.text_shade,
             background_shade: self.text_background_shade,
@@ -14724,6 +14760,7 @@ impl FlowRenderer {
             lines_len: self.lines.len(),
             current_runs: std::mem::take(&mut self.current_runs),
             current_width: std::mem::take(&mut self.current_width),
+            inline_replaced_height: std::mem::take(&mut self.inline_replaced_height),
             pending_inter_word_space: self.pending_inter_word_space.take(),
             soft_break_opportunity: std::mem::take(&mut self.soft_break_opportunity),
             next_y: self.next_y,
@@ -14742,6 +14779,7 @@ impl FlowRenderer {
         self.lines.truncate(snapshot.lines_len);
         self.current_runs = snapshot.current_runs;
         self.current_width = snapshot.current_width;
+        self.inline_replaced_height = snapshot.inline_replaced_height;
         self.pending_inter_word_space = snapshot.pending_inter_word_space;
         self.soft_break_opportunity = snapshot.soft_break_opportunity;
         self.next_y = snapshot.next_y;
@@ -15079,6 +15117,72 @@ impl FlowRenderer {
             }
         }
         self.next_y += 1;
+    }
+
+    fn push_inline_image_placeholder(
+        &mut self,
+        width: usize,
+        height: usize,
+        alt: Option<String>,
+        source: &str,
+        url: Option<&str>,
+        target_node: Option<usize>,
+    ) {
+        self.soft_break_opportunity = false;
+        let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
+        let placeholder_height = if decoded_info.is_some() {
+            height.max(1)
+        } else {
+            height.min(MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT).max(1)
+        };
+        let image_width = width.min(self.available_width()).max(1);
+        let pending_space = if self.current_width > 0 {
+            self.pending_inter_word_space.take().unwrap_or(0)
+        } else {
+            self.pending_inter_word_space = None;
+            0
+        };
+        if self.current_width > 0
+            && self
+                .effective_current_width()
+                .saturating_add(pending_space)
+                .saturating_add(image_width)
+                > self.available_width()
+        {
+            self.break_line();
+        } else if pending_space > 0 {
+            self.current_width = self.current_width.saturating_add(pending_space);
+        }
+        if self.current_width == 0 {
+            self.push_pending_text_indent();
+        }
+        if self.current_width > 0
+            && self.current_width.saturating_add(image_width) > self.available_width()
+        {
+            self.break_line();
+        }
+        let remaining_width = self.available_width().saturating_sub(self.current_width);
+        let image_width = image_width.min(remaining_width.max(1));
+        if self.paint_visible() {
+            let command = DisplayCommand::Image {
+                x: self.box_x().saturating_add(self.current_width),
+                y: self.next_y,
+                width: image_width,
+                height: placeholder_height,
+                shade: 220,
+                alt,
+                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                decoded_width: decoded_info.as_ref().map(|image| image.width),
+                decoded_height: decoded_info.as_ref().map(|image| image.height),
+                decoded_hash: decoded_info.map(|image| image.pixel_hash),
+            };
+            if let Some(command) = self.clipped_image_command(command) {
+                let target = self.node_hit_target(target_node);
+                self.push_display_command(command, target);
+            }
+        }
+        self.current_width = self.current_width.saturating_add(image_width);
+        self.inline_replaced_height = self.inline_replaced_height.max(placeholder_height);
     }
 
     fn push_image_placeholder(

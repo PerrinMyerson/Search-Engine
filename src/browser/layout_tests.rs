@@ -528,6 +528,99 @@ fn css_flex_container_lays_out_block_children_in_row() {
 }
 
 #[test]
+fn css_flex_row_images_reserve_inline_space_before_text() {
+    let render = render_html(
+        "mem://css-flex-row-image",
+        br#"
+            <html><body>
+              <section style="display:flex"><img alt="chart" width="24" height="24"><div>Hero copy</div></section>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 2,
+                shade: 220,
+                alt: Some("chart".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 3,
+                y: 0,
+                text: " Hero copy".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn css_flex_row_images_keep_following_text_on_row() {
+    let render = render_html(
+        "mem://css-flex-row-image",
+        br#"
+            <html><body>
+              <section style="display:flex">
+                <img alt="chart" width="16" height="24">
+                <div>Hero copy</div>
+              </section>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+                shade: 220,
+                alt: Some("chart".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 0,
+                text: " Hero copy".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_inline_block_menu_items_keep_block_links_on_row() {
     let render = render_html(
         "mem://css-inline-block-menu-links",
