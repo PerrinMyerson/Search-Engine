@@ -7881,6 +7881,9 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         local_storage: Vec::new(),
         session_storage: Vec::new(),
         resource_count: 0,
+        resource_image_count: 0,
+        resource_stylesheet_count: 0,
+        resource_script_count: 0,
         resources: Vec::new(),
         resource_report: None,
     };
@@ -9108,6 +9111,9 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
 
     assert_eq!(payload.title, "Resource Cap");
     assert_eq!(payload.resource_count, 132);
+    assert_eq!(payload.resource_image_count, 1);
+    assert_eq!(payload.resource_stylesheet_count, 1);
+    assert_eq!(payload.resource_script_count, 0);
     assert_eq!(payload.resources.len(), 120);
     let image = payload
         .resources
@@ -9130,6 +9136,9 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Resources (132)"));
+    assert!(
+        html.contains(r#"<span class="meta">1 image, 1 stylesheet, 130 other resources</span>"#)
+    );
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains("action=load-images"));
     assert!(html.contains("12 more resources omitted."));
@@ -9146,6 +9155,10 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
     assert_eq!(response.status, 200);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert_eq!(exported["counts"]["resources"], 132);
+    assert_eq!(exported["counts"]["resource_images"], 1);
+    assert_eq!(exported["counts"]["resource_stylesheets"], 1);
+    assert_eq!(exported["counts"]["resource_scripts"], 0);
+    assert_eq!(exported["counts"]["resource_others"], 130);
     assert!(
         exported["action_urls"]["load_images"]
             .as_str()
@@ -9164,6 +9177,11 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
     assert_eq!(response.status, 200);
     let exported_resources: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert_eq!(exported_resources["resource_count"], 132);
+    assert_eq!(exported_resources["displayed_resource_count"], 120);
+    assert_eq!(exported_resources["image_count"], 1);
+    assert_eq!(exported_resources["stylesheet_count"], 1);
+    assert_eq!(exported_resources["script_count"], 0);
+    assert_eq!(exported_resources["other_count"], 130);
     assert_eq!(
         exported_resources["resources"].as_array().unwrap().len(),
         120

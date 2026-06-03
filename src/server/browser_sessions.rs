@@ -204,6 +204,9 @@ struct BrowserSessionPayload {
     local_storage: Vec<BrowserLocalStorageEntry>,
     session_storage: Vec<BrowserLocalStorageEntry>,
     resource_count: usize,
+    resource_image_count: usize,
+    resource_stylesheet_count: usize,
+    resource_script_count: usize,
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
 }
@@ -572,6 +575,11 @@ struct BrowserSessionResourcesExportPayload<'a> {
     title: &'a str,
     source: &'a str,
     resource_count: usize,
+    displayed_resource_count: usize,
+    image_count: usize,
+    stylesheet_count: usize,
+    script_count: usize,
+    other_count: usize,
     resources: &'a [BrowserSessionResourcePayload],
     csv_url: String,
     session_state_url: String,
@@ -713,6 +721,10 @@ struct BrowserSessionStateExportCounts {
     tab_search_results: usize,
     dom_nodes: usize,
     resources: usize,
+    resource_images: usize,
+    resource_stylesheets: usize,
+    resource_scripts: usize,
+    resource_others: usize,
     cookies: usize,
     local_storage: usize,
     session_storage: usize,
@@ -8182,6 +8194,7 @@ fn browser_session_payload(
                 ),
             })
             .collect::<Vec<_>>();
+        let resource_kind_counts = browser_session_resource_kind_counts(&render.resources);
         let resources = browser_session_visible_resources(&render.resources)
             .into_iter()
             .map(|(index, resource)| {
@@ -8280,6 +8293,9 @@ fn browser_session_payload(
             local_storage: web_session.session.local_storage_entries(),
             session_storage: web_session.session.session_storage_entries(),
             resource_count: render.resources.len(),
+            resource_image_count: resource_kind_counts.images,
+            resource_stylesheet_count: resource_kind_counts.stylesheets,
+            resource_script_count: resource_kind_counts.scripts,
             resources,
             resource_report: web_session.resource_report.clone(),
         }
@@ -8287,6 +8303,28 @@ fn browser_session_payload(
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
     Ok(payload)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BrowserSessionResourceKindCounts {
+    images: usize,
+    stylesheets: usize,
+    scripts: usize,
+}
+
+fn browser_session_resource_kind_counts(
+    resources: &[BrowserResource],
+) -> BrowserSessionResourceKindCounts {
+    let mut counts = BrowserSessionResourceKindCounts::default();
+    for resource in resources {
+        match resource.kind.as_str() {
+            "image" => counts.images += 1,
+            "stylesheet" => counts.stylesheets += 1,
+            "script" => counts.scripts += 1,
+            _ => {}
+        }
+    }
+    counts
 }
 
 fn browser_session_visible_resources(
@@ -9397,6 +9435,14 @@ fn browser_session_state_export_payload(
             tab_search_results: payload.tab_search_results.len(),
             dom_nodes: payload.dom_node_count,
             resources: payload.resource_count,
+            resource_images: payload.resource_image_count,
+            resource_stylesheets: payload.resource_stylesheet_count,
+            resource_scripts: payload.resource_script_count,
+            resource_others: payload.resource_count.saturating_sub(
+                payload.resource_image_count
+                    + payload.resource_stylesheet_count
+                    + payload.resource_script_count,
+            ),
             cookies: payload.cookies.len(),
             local_storage: payload.local_storage.len(),
             session_storage: payload.session_storage.len(),
@@ -9487,6 +9533,15 @@ fn browser_session_resources_export_payload(
         title: &payload.title,
         source: &payload.source,
         resource_count: payload.resource_count,
+        displayed_resource_count: payload.resources.len(),
+        image_count: payload.resource_image_count,
+        stylesheet_count: payload.resource_stylesheet_count,
+        script_count: payload.resource_script_count,
+        other_count: payload.resource_count.saturating_sub(
+            payload.resource_image_count
+                + payload.resource_stylesheet_count
+                + payload.resource_script_count,
+        ),
         resources: &payload.resources,
         csv_url: browser_session_api_href(&payload.id, "resources-csv", payload),
         session_state_url: browser_session_api_href(&payload.id, "session-state", payload),
@@ -9867,23 +9922,16 @@ fn browser_session_state_action_urls(
             }),
         fetch_resources: (payload.resource_count > 0)
             .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
-        apply_stylesheets: browser_session_has_resource_kind(payload, "stylesheet")
+        apply_stylesheets: (payload.resource_stylesheet_count > 0)
             .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
-        run_scripts: browser_session_has_resource_kind(payload, "script")
+        run_scripts: (payload.resource_script_count > 0)
             .then(|| browser_session_action_href(&payload.id, "run-scripts", &[], payload)),
-        load_images: browser_session_has_resource_kind(payload, "image")
+        load_images: (payload.resource_image_count > 0)
             .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
         clear_resource_report: payload.resource_report.as_ref().map(|_| {
             browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
         }),
     }
-}
-
-fn browser_session_has_resource_kind(payload: &BrowserSessionPayload, kind: &str) -> bool {
-    payload
-        .resources
-        .iter()
-        .any(|resource| resource.kind == kind)
 }
 
 fn browser_tab_search_results_can_move(payload: &BrowserSessionPayload, to_front: bool) -> bool {
@@ -12125,39 +12173,28 @@ fn render_browser_session_storage(
 }
 
 fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
-    let image_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "image")
-        .count();
-    let stylesheet_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "stylesheet")
-        .count();
-    let script_count = payload
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == "script")
-        .count();
-    let summarized_count = image_count + stylesheet_count + script_count;
-    let other_count = payload.resources.len().saturating_sub(summarized_count);
-    let image_count_label = browser_resource_count_label(image_count, "image", "images");
+    let image_count_label =
+        browser_resource_count_label(payload.resource_image_count, "image", "images");
     let mut resource_summary = vec![image_count_label.clone()];
-    if stylesheet_count > 0 {
+    if payload.resource_stylesheet_count > 0 {
         resource_summary.push(browser_resource_count_label(
-            stylesheet_count,
+            payload.resource_stylesheet_count,
             "stylesheet",
             "stylesheets",
         ));
     }
-    if script_count > 0 {
+    if payload.resource_script_count > 0 {
         resource_summary.push(browser_resource_count_label(
-            script_count,
+            payload.resource_script_count,
             "script",
             "scripts",
         ));
     }
+    let other_count = payload.resource_count.saturating_sub(
+        payload.resource_image_count
+            + payload.resource_stylesheet_count
+            + payload.resource_script_count,
+    );
     if other_count > 0 {
         resource_summary.push(browser_resource_count_label(
             other_count,
@@ -12175,7 +12212,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             fetch_href = html_escape::encode_double_quoted_attribute(&fetch_href),
         )
     };
-    let styles_control = if stylesheet_count == 0 {
+    let styles_control = if payload.resource_stylesheet_count == 0 {
         String::new()
     } else {
         let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
@@ -12184,7 +12221,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             styles_href = html_escape::encode_double_quoted_attribute(&styles_href),
         )
     };
-    let scripts_control = if script_count == 0 {
+    let scripts_control = if payload.resource_script_count == 0 {
         String::new()
     } else {
         let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
@@ -12193,7 +12230,7 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
             scripts_href = html_escape::encode_double_quoted_attribute(&scripts_href),
         )
     };
-    let load_images_control = if image_count == 0 {
+    let load_images_control = if payload.resource_image_count == 0 {
         String::new()
     } else {
         let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
