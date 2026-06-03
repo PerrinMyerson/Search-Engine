@@ -1,8 +1,9 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use flate2::read::ZlibDecoder;
+use image::{ColorType, ImageDecoder};
 use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat as JpegPixelFormat};
 use memchr::memchr;
 use url::Url;
@@ -15,6 +16,7 @@ use super::{
 
 const MAX_DECODED_IMAGE_SIDE: usize = 4096;
 const MAX_JPEG_DECODED_BYTES: usize = MAX_DECODED_IMAGE_SIDE * MAX_DECODED_IMAGE_SIDE * 4;
+const MAX_WEBP_DECODED_BYTES: u64 = MAX_JPEG_DECODED_BYTES as u64;
 
 #[derive(Debug, Clone)]
 pub(super) struct DecodedImage {
@@ -143,16 +145,27 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
         "png" | "image/png" => decode_simple_png(bytes),
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
         | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
+        "webp" | "image/webp" => decode_webp(bytes),
         _ => None,
     }
 }
 
 fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
-    is_jpeg_bytes(bytes).then(|| decode_jpeg(bytes)).flatten()
+    if is_jpeg_bytes(bytes) {
+        decode_jpeg(bytes)
+    } else if is_webp_bytes(bytes) {
+        decode_webp(bytes)
+    } else {
+        None
+    }
 }
 
 fn is_jpeg_bytes(bytes: &[u8]) -> bool {
     matches!(bytes, [0xff, 0xd8, 0xff, ..])
+}
+
+fn is_webp_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
 }
 
 fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
@@ -521,6 +534,80 @@ fn push_png_grayscale_pixels(row: &[u8], color_type: u8, pixels: &mut Vec<u8>) {
 
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     decode_jpeg_with_max_side(bytes, MAX_DECODED_IMAGE_SIDE)
+}
+
+fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
+    if !is_webp_bytes(bytes) {
+        return None;
+    }
+    let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+    let (width, height) = decoder.dimensions();
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_DECODED_IMAGE_SIDE
+        || height > MAX_DECODED_IMAGE_SIDE
+    {
+        return None;
+    }
+    let total_bytes = decoder.total_bytes();
+    if total_bytes == 0 || total_bytes > MAX_WEBP_DECODED_BYTES {
+        return None;
+    }
+    let color_type = decoder.color_type();
+    let mut decoded = vec![0u8; usize::try_from(total_bytes).ok()?];
+    decoder.read_image(&mut decoded).ok()?;
+    let pixel_count = width.checked_mul(height)?;
+    let pixels = image_pixels_to_grayscale(&decoded, color_type, pixel_count)?;
+    Some(DecodedImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn image_pixels_to_grayscale(
+    decoded: &[u8],
+    color_type: ColorType,
+    pixel_count: usize,
+) -> Option<Vec<u8>> {
+    let mut pixels = Vec::with_capacity(pixel_count);
+    match color_type {
+        ColorType::L8 => {
+            if decoded.len() != pixel_count {
+                return None;
+            }
+            pixels.extend_from_slice(decoded);
+        }
+        ColorType::La8 => {
+            if decoded.len() != pixel_count.checked_mul(2)? {
+                return None;
+            }
+            for gray_alpha in decoded.chunks_exact(2) {
+                pixels.push(blend_gray_over_white(gray_alpha[0], gray_alpha[1]));
+            }
+        }
+        ColorType::Rgb8 => {
+            if decoded.len() != pixel_count.checked_mul(3)? {
+                return None;
+            }
+            for rgb in decoded.chunks_exact(3) {
+                pixels.push(rgb_to_gray(rgb[0], rgb[1], rgb[2]));
+            }
+        }
+        ColorType::Rgba8 => {
+            if decoded.len() != pixel_count.checked_mul(4)? {
+                return None;
+            }
+            for rgba in decoded.chunks_exact(4) {
+                let gray = rgb_to_gray(rgba[0], rgba[1], rgba[2]);
+                pixels.push(blend_gray_over_white(gray, rgba[3]));
+            }
+        }
+        _ => return None,
+    }
+    (pixels.len() == pixel_count).then_some(pixels)
 }
 
 fn decode_jpeg_with_max_side(bytes: &[u8], max_side: usize) -> Option<DecodedImage> {
@@ -909,8 +996,23 @@ pub(super) fn tiny_test_jpeg_data_url() -> String {
 }
 
 #[cfg(test)]
+pub(super) fn tiny_test_webp_bytes() -> Vec<u8> {
+    decode_base64(TINY_TEST_WEBP_BASE64).unwrap()
+}
+
+#[cfg(test)]
+pub(super) fn tiny_test_webp_data_url() -> String {
+    format!("data:image/webp;base64,{TINY_TEST_WEBP_BASE64}")
+}
+
+#[cfg(test)]
 fn test_jpeg_data_url_with_mime_type(mime_type: &str) -> String {
     format!("data:{mime_type};base64,{TINY_TEST_JPEG_BASE64}")
+}
+
+#[cfg(test)]
+fn test_webp_data_url_with_mime_type(mime_type: &str) -> String {
+    format!("data:{mime_type};base64,{TINY_TEST_WEBP_BASE64}")
 }
 
 #[cfg(test)]
@@ -1026,6 +1128,9 @@ const GRAYSCALE_TEST_JPEG_BASE64: &str = concat!(
 );
 
 #[cfg(test)]
+const TINY_TEST_WEBP_BASE64: &str = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1087,6 +1192,25 @@ mod tests {
         assert!((186..=196).contains(&decoded.pixels[3]));
         assert!(decoded.pixels[4] >= 250);
         assert!((24..=34).contains(&decoded.pixels[5]));
+    }
+
+    #[test]
+    fn decodes_webp_bytes_by_content_type_and_extension() {
+        let bytes = tiny_test_webp_bytes();
+
+        let decoded = decode_image_bytes("image/webp; charset=binary", &bytes).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+        assert_eq!(decoded.pixels.len(), 1);
+
+        let decoded = decode_image_bytes("webp", &bytes).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+
+        let decoded =
+            decode_cached_resource_image("https://example.test/photo.webp", None, &bytes).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
     }
 
     #[test]
@@ -1171,6 +1295,24 @@ mod tests {
         let decoded = decode_image_reference("mem://page", &data_url).unwrap();
         assert_eq!(decoded.width, 2);
         assert_eq!(decoded.height, 2);
+    }
+
+    #[test]
+    fn decodes_webp_by_signature_when_type_and_extension_do_not_match() {
+        let bytes = tiny_test_webp_bytes();
+        let decoded = decode_cached_resource_image(
+            "https://example.test/image.bin",
+            Some("application/octet-stream"),
+            &bytes,
+        )
+        .unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
+
+        let data_url = test_webp_data_url_with_mime_type("application/octet-stream");
+        let decoded = decode_image_reference("mem://page", &data_url).unwrap();
+        assert_eq!(decoded.width, 1);
+        assert_eq!(decoded.height, 1);
     }
 
     #[test]
