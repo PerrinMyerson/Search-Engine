@@ -2294,6 +2294,93 @@ fn css_zero_opacity_suppresses_paint_without_collapsing_layout() {
 }
 
 #[test]
+fn css_animation_fill_and_negative_z_media_keep_hero_text_visible() {
+    let render = render_html(
+        "mem://truveta-hero-paint",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .hero { position: relative; height: 48px; }
+                  .hero-copy { position: absolute; top: 0; }
+                  .hero-media { position: absolute; top: 0; z-index: -1; }
+                  .animated-fill {
+                    opacity: 0;
+                    -webkit-animation-fill-mode: both !important;
+                    animation-fill-mode: both !important;
+                    animation-name: et_pb_fade;
+                  }
+                  .animated-shorthand {
+                    opacity: 0;
+                    animation: et_pb_fade 1s forwards;
+                  }
+                  .hidden-menu { opacity: 0; }
+                </style>
+              </head>
+              <body>
+                <section class="hero">
+                  <div class="hero-copy">Saving Lives with Data</div>
+                  <img class="hero-media" alt="" width="320" height="48">
+                </section>
+                <div class="animated-fill">Truveta Data</div>
+                <div class="animated-shorthand">Truveta Intelligence</div>
+                <div class="hidden-menu">Hidden Mega Menu</div>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let paint_order = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image { .. } => Some("image".to_owned()),
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                Some(text.clone())
+            }
+            DisplayCommand::Rect { .. } | DisplayCommand::BackgroundImage { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paint_order,
+        vec![
+            "image".to_owned(),
+            "Saving Lives with Data".to_owned(),
+            "Truveta Data".to_owned(),
+            "Truveta Intelligence".to_owned(),
+        ]
+    );
+    assert!(
+        !render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .any(|text| text.contains("Hidden Mega Menu"))
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 40,
+            height: 6,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert!(viewport.lines[0].starts_with("Saving Lives with Data"));
+    assert!(viewport.lines.join("\n").contains("Truveta Data"));
+    assert!(viewport.lines.join("\n").contains("Truveta Intelligence"));
+}
+
+#[test]
 fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
     let render = render_html(
         "mem://positioned-out-of-flow",
