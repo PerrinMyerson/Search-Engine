@@ -44,6 +44,15 @@ pub(super) struct DecodedImageInfo {
     pub(super) pixel_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ImageDecodeDiagnostic {
+    pub(super) status: &'static str,
+    pub(super) error: Option<String>,
+    pub(super) width: Option<usize>,
+    pub(super) height: Option<usize>,
+    pub(super) pixel_hash: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DecodedImageEntry {
     pub(super) url: String,
@@ -121,6 +130,127 @@ fn decode_cached_resource_image(
     image_type
         .and_then(|image_type| decode_image_bytes(&image_type, bytes))
         .or_else(|| decode_sniffed_image_bytes(bytes))
+}
+
+pub(super) fn image_decode_diagnostic(
+    url: &str,
+    content_type: Option<&str>,
+    bytes: &[u8],
+) -> ImageDecodeDiagnostic {
+    if let Some(decoded) = decode_cached_resource_image(url, content_type, bytes) {
+        return ImageDecodeDiagnostic {
+            status: "decoded",
+            error: None,
+            width: Some(decoded.width),
+            height: Some(decoded.height),
+            pixel_hash: Some(decoded.pixel_hash()),
+        };
+    }
+
+    if let Some(error) = unsupported_image_format_error(url, content_type, bytes) {
+        return ImageDecodeDiagnostic {
+            status: "unsupported_format",
+            error: Some(error),
+            width: None,
+            height: None,
+            pixel_hash: None,
+        };
+    }
+
+    ImageDecodeDiagnostic {
+        status: "undecoded",
+        error: Some("image bytes did not match a supported decoder".to_owned()),
+        width: None,
+        height: None,
+        pixel_hash: None,
+    }
+}
+
+fn unsupported_image_format_error(
+    url: &str,
+    content_type: Option<&str>,
+    bytes: &[u8],
+) -> Option<String> {
+    if let Some(content_type) = content_type
+        && image_content_type_declares_unsupported_format(content_type)
+    {
+        return Some(format!(
+            "unsupported image content type: {}",
+            normalized_image_mime_type(content_type)
+        ));
+    }
+    if let Some(extension) = image_extension_from_url(url)
+        && unsupported_image_extension(&extension)
+    {
+        return Some(format!("unsupported image extension: .{extension}"));
+    }
+    unsupported_image_signature(bytes)
+        .map(|format| format!("unsupported image byte signature: {format}"))
+}
+
+fn image_content_type_declares_unsupported_format(content_type: &str) -> bool {
+    let mime = normalized_image_mime_type(content_type);
+    !mime.is_empty()
+        && mime
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+        && !image_mime_type_supported(&mime)
+}
+
+fn normalized_image_mime_type(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn image_extension_from_url(url: &str) -> Option<String> {
+    let path = Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
+    Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+}
+
+fn unsupported_image_extension(extension: &str) -> bool {
+    matches!(
+        extension,
+        "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
+    )
+}
+
+fn unsupported_image_signature(bytes: &[u8]) -> Option<&'static str> {
+    if matches!(bytes, [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..]) {
+        Some("image/gif")
+    } else if matches!(bytes, [b'B', b'M', ..]) {
+        Some("image/bmp")
+    } else if matches!(bytes, [0, 0, 1, 0, ..]) {
+        Some("image/x-icon")
+    } else if matches!(bytes, [b'I', b'I', b'*', 0, ..] | [b'M', b'M', 0, b'*', ..]) {
+        Some("image/tiff")
+    } else if is_isobmff_image_type(bytes, &["avif", "avis"]) {
+        Some("image/avif")
+    } else if is_isobmff_image_type(bytes, &["heic", "heix", "hevc", "hevx", "mif1", "msf1"]) {
+        Some("image/heif")
+    } else {
+        None
+    }
+}
+
+fn is_isobmff_image_type(bytes: &[u8], brands: &[&str]) -> bool {
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return false;
+    }
+    bytes[8..]
+        .chunks_exact(4)
+        .take(8)
+        .filter_map(|brand| std::str::from_utf8(brand).ok())
+        .any(|brand| brands.iter().any(|expected| brand == *expected))
 }
 
 pub(super) fn decode_image_reference(source: &str, url: &str) -> Option<DecodedImage> {
@@ -1794,7 +1924,7 @@ fn picture_source_type_supported(element: &ElementData) -> bool {
         .is_none_or(|source_type| image_mime_type_supported(source_type))
 }
 
-fn image_mime_type_supported(source_type: &str) -> bool {
+pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
     let source_type = source_type
         .split(';')
         .next()
@@ -1914,21 +2044,10 @@ fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
             && !image_mime_type_supported(mime);
     }
 
-    let path = Url::parse(url)
-        .ok()
-        .map(|url| url.path().to_owned())
-        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
-    let Some(extension) = Path::new(&path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-    else {
+    let Some(extension) = image_extension_from_url(url) else {
         return false;
     };
-    matches!(
-        extension.as_str(),
-        "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
-    )
+    unsupported_image_extension(&extension)
 }
 
 fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {

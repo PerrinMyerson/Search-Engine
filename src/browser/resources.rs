@@ -11,7 +11,9 @@ use reqwest::header::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::images::{image_render_source, srcset_candidate_urls};
+use super::images::{
+    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, srcset_candidate_urls,
+};
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +51,16 @@ pub struct BrowserResourceFetch {
     pub bytes: usize,
     pub content_type: Option<String>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_decode_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_decode_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_width: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_height: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +116,100 @@ struct BrowserCachedResource {
     content_type: Option<String>,
 }
 
+struct BrowserResourceFetchArgs {
+    resource: BrowserResource,
+    status: String,
+    source: Option<String>,
+    bytes: usize,
+    content_type: Option<String>,
+    error: Option<String>,
+}
+
+impl BrowserResourceFetch {
+    fn from_args(args: BrowserResourceFetchArgs, image_bytes: Option<&[u8]>) -> Self {
+        let image_report = image_resource_fetch_decode_report(
+            &args.resource,
+            &args.status,
+            args.content_type.as_deref(),
+            image_bytes,
+        );
+        let (image_decode_status, image_decode_error, decoded_width, decoded_height, decoded_hash) =
+            image_report
+                .map(|report| {
+                    (
+                        Some(report.status.to_owned()),
+                        report.error,
+                        report.width,
+                        report.height,
+                        report.pixel_hash,
+                    )
+                })
+                .unwrap_or((None, None, None, None, None));
+
+        Self {
+            resource: args.resource,
+            status: args.status,
+            source: args.source,
+            bytes: args.bytes,
+            content_type: args.content_type,
+            error: args.error,
+            image_decode_status,
+            image_decode_error,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+        }
+    }
+}
+
+fn image_resource_fetch_decode_report(
+    resource: &BrowserResource,
+    status: &str,
+    content_type: Option<&str>,
+    bytes: Option<&[u8]>,
+) -> Option<ImageDecodeDiagnostic> {
+    if !resource_may_be_image(resource, content_type) {
+        return None;
+    }
+
+    let Some(bytes) = bytes else {
+        return Some(ImageDecodeDiagnostic {
+            status: "not_fetched",
+            error: (!matches!(status, "fetched" | "cached"))
+                .then(|| format!("resource {status} before decode")),
+            width: None,
+            height: None,
+            pixel_hash: None,
+        });
+    };
+
+    Some(image_decode_diagnostic(
+        &resource.resolved,
+        content_type,
+        bytes,
+    ))
+}
+
+fn resource_may_be_image(resource: &BrowserResource, content_type: Option<&str>) -> bool {
+    matches!(
+        resource.kind.as_str(),
+        "image" | "image_candidate" | "background_image" | "poster" | "icon"
+    ) || matches!(resource.initiator.as_str(), "img" | "source" | "picture")
+        || resource
+            .type_hint
+            .as_deref()
+            .is_some_and(media_type_declares_image)
+        || content_type.is_some_and(media_type_declares_image)
+        || url_likely_supported_image(&resource.url)
+}
+
+fn media_type_declares_image(media_type: &str) -> bool {
+    let media_type = media_type.split(';').next().unwrap_or(media_type).trim();
+    media_type
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+}
+
 impl BrowserResourceCache {
     pub(super) fn len(&self) -> usize {
         self.entries.len()
@@ -144,20 +250,34 @@ pub(super) async fn fetch_resource_with_cache(
     cache: &mut BrowserResourceCache,
 ) -> BrowserResourceFetch {
     if let Some(cached) = cache.entries.get(&resource.resolved) {
-        return BrowserResourceFetch {
-            resource,
-            status: "cached".to_owned(),
-            source: Some(cached.source.clone()),
-            bytes: cached.bytes.len(),
-            content_type: cached.content_type.clone(),
-            error: None,
-        };
+        return BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource,
+                status: "cached".to_owned(),
+                source: Some(cached.source.clone()),
+                bytes: cached.bytes.len(),
+                content_type: cached.content_type.clone(),
+                error: None,
+            },
+            Some(cached.bytes.as_slice()),
+        );
     }
 
     if resource.resolved.starts_with("data:") {
         return match load_data_url_resource(&resource.resolved, max_resource_bytes) {
             Ok((source, bytes, content_type)) => {
                 let byte_len = bytes.len();
+                let fetch = BrowserResourceFetch::from_args(
+                    BrowserResourceFetchArgs {
+                        resource: resource.clone(),
+                        status: "cached".to_owned(),
+                        source: Some(source.clone()),
+                        bytes: byte_len,
+                        content_type: Some(content_type.clone()),
+                        error: None,
+                    },
+                    Some(bytes.as_slice()),
+                );
                 cache.entries.insert(
                     resource.resolved.clone(),
                     BrowserCachedResource {
@@ -166,40 +286,50 @@ pub(super) async fn fetch_resource_with_cache(
                         content_type: Some(content_type.clone()),
                     },
                 );
-                BrowserResourceFetch {
-                    resource,
-                    status: "cached".to_owned(),
-                    source: Some(source),
-                    bytes: byte_len,
-                    content_type: Some(content_type),
-                    error: None,
-                }
+                fetch
             }
-            Err(error) => BrowserResourceFetch {
-                resource,
-                status: "failed".to_owned(),
-                source: None,
-                bytes: 0,
-                content_type: None,
-                error: Some(error.to_string()),
-            },
+            Err(error) => BrowserResourceFetch::from_args(
+                BrowserResourceFetchArgs {
+                    resource,
+                    status: "failed".to_owned(),
+                    source: None,
+                    bytes: 0,
+                    content_type: None,
+                    error: Some(error.to_string()),
+                },
+                None,
+            ),
         };
     }
 
     if unsupported_resource_target(&resource.resolved) {
-        return BrowserResourceFetch {
-            resource,
-            status: "skipped".to_owned(),
-            source: None,
-            bytes: 0,
-            content_type: None,
-            error: Some("unsupported resource scheme".to_owned()),
-        };
+        return BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource,
+                status: "skipped".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some("unsupported resource scheme".to_owned()),
+            },
+            None,
+        );
     }
 
     match load_resource_target(&resource.resolved, max_resource_bytes, cookie_jar).await {
         Ok((source, bytes, content_type)) => {
             let byte_len = bytes.len();
+            let fetch = BrowserResourceFetch::from_args(
+                BrowserResourceFetchArgs {
+                    resource: resource.clone(),
+                    status: "fetched".to_owned(),
+                    source: Some(source.clone()),
+                    bytes: byte_len,
+                    content_type: content_type.clone(),
+                    error: None,
+                },
+                Some(bytes.as_slice()),
+            );
             cache.entries.insert(
                 resource.resolved.clone(),
                 BrowserCachedResource {
@@ -208,23 +338,19 @@ pub(super) async fn fetch_resource_with_cache(
                     content_type: content_type.clone(),
                 },
             );
-            BrowserResourceFetch {
-                resource,
-                status: "fetched".to_owned(),
-                source: Some(source),
-                bytes: byte_len,
-                content_type,
-                error: None,
-            }
+            fetch
         }
-        Err(error) => BrowserResourceFetch {
-            resource,
-            status: "failed".to_owned(),
-            source: None,
-            bytes: 0,
-            content_type: None,
-            error: Some(error.to_string()),
-        },
+        Err(error) => BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource,
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some(error.to_string()),
+            },
+            None,
+        ),
     }
 }
 
