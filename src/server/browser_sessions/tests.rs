@@ -2266,8 +2266,17 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
         r#"<span class="viewport-state-chip">y 4/{}</span>"#,
         payload.max_scroll_y
     )));
-    assert!(html.contains(r#">Current view</a>"#));
-    assert!(html.contains(r#">Reload tab</a>"#));
+    assert!(html.contains(r#"data-browser-viewport-state-row"#));
+    assert!(html.contains(r#"data-browser-viewport-state-group aria-label="Viewport state""#));
+    assert!(html.contains(r#"data-browser-viewport-page-actions aria-label="Page actions""#));
+    assert!(html.contains(r#"data-browser-viewport-session-actions aria-label="Session actions""#));
+    assert!(html.contains(r#"<span class="viewport-command-label">State</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Page</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Session</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Jump</span>"#));
+    assert!(html.contains(r#">Refresh viewport</a>"#));
+    assert!(html.contains(r#">Reload page</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
     let page_left_href = browser_session_action_href(
@@ -2283,11 +2292,11 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
         &payload,
     );
     assert!(html.contains(&format!(
-        r#"href="{}">Current view</a>"#,
+        r#"href="{}">Refresh viewport</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Reload tab</a>"#,
+        r#"href="{}">Reload page</a>"#,
         html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(html.contains(&format!(
@@ -9292,16 +9301,24 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     )));
     assert!(html.contains(r#"<span class="viewport-state-chip">viewport 40x16</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">y 2/"#));
-    assert!(html.contains(r#">Current view</a>"#));
-    assert!(html.contains(r#">Reload tab</a>"#));
+    assert!(html.contains(r#"data-browser-viewport-state-row"#));
+    assert!(html.contains(r#"data-browser-viewport-page-actions aria-label="Page actions""#));
+    assert!(html.contains(r#"data-browser-viewport-session-actions aria-label="Session actions""#));
+    assert!(html.contains(r#"<span class="viewport-command-label">State</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Page</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Session</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Jump</span>"#));
+    assert!(html.contains(r#">Refresh viewport</a>"#));
+    assert!(html.contains(r#">Reload page</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
     assert!(html.contains(&format!(
-        r#"href="{}">Current view</a>"#,
+        r#"href="{}">Refresh viewport</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Reload tab</a>"#,
+        r#"href="{}">Reload page</a>"#,
         html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(html.contains(r#"class="viewport-command-jump""#));
