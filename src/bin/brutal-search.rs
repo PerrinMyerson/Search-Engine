@@ -784,12 +784,22 @@ struct IndexStorageArtifact {
 struct IndexStorageStats {
     total_bytes: u64,
     artifacts: Vec<IndexStorageArtifact>,
+    web_artifacts: Vec<WebStorageArtifactStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebStorageArtifactStats {
+    name: &'static str,
+    entries: usize,
+    oldest_fetched_at_unix: Option<u64>,
+    newest_fetched_at_unix: Option<u64>,
 }
 
 fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
     let mut stats = IndexStorageStats {
         total_bytes: 0,
         artifacts: Vec::new(),
+        web_artifacts: Vec::new(),
     };
 
     for name in INDEX_STORAGE_ARTIFACTS {
@@ -808,6 +818,11 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         let bytes = metadata.len();
         stats.total_bytes = stats.total_bytes.saturating_add(bytes);
         stats.artifacts.push(IndexStorageArtifact { name, bytes });
+        if matches!(*name, "web-cache.jsonl" | "brave-results.jsonl") {
+            stats
+                .web_artifacts
+                .push(collect_web_storage_artifact_stats(name, &path)?);
+        }
     }
 
     Ok(stats)
@@ -822,7 +837,74 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
             artifact.name, artifact.bytes
         );
     }
+    for artifact in stats.web_artifacts {
+        println!(
+            "web_storage_artifact_entries: {} {}",
+            artifact.name, artifact.entries
+        );
+        if let Some(oldest) = artifact.oldest_fetched_at_unix {
+            println!(
+                "web_storage_artifact_oldest_fetched_at_unix: {} {}",
+                artifact.name, oldest
+            );
+        }
+        if let Some(newest) = artifact.newest_fetched_at_unix {
+            println!(
+                "web_storage_artifact_newest_fetched_at_unix: {} {}",
+                artifact.name, newest
+            );
+        }
+    }
     Ok(())
+}
+
+fn collect_web_storage_artifact_stats(
+    name: &'static str,
+    path: &Path,
+) -> Result<WebStorageArtifactStats> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open web storage artifact {}", path.display()))?;
+    let mut stats = WebStorageArtifactStats {
+        name,
+        entries: 0,
+        oldest_fetched_at_unix: None,
+        newest_fetched_at_unix: None,
+    };
+
+    for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web storage artifact {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        stats.entries += 1;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(fetched_at_unix) = value
+            .get("fetched_at_unix")
+            .and_then(|value| value.as_u64())
+        else {
+            continue;
+        };
+        stats.oldest_fetched_at_unix = Some(
+            stats
+                .oldest_fetched_at_unix
+                .map_or(fetched_at_unix, |oldest| oldest.min(fetched_at_unix)),
+        );
+        stats.newest_fetched_at_unix = Some(
+            stats
+                .newest_fetched_at_unix
+                .map_or(fetched_at_unix, |newest| newest.max(fetched_at_unix)),
+        );
+    }
+
+    Ok(stats)
 }
 
 async fn run_recrawl_scheduler_cli(options: RecrawlSchedulerOptions) -> Result<()> {
@@ -894,13 +976,21 @@ mod tests {
     fn index_storage_stats_sum_known_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("manifest.json"), b"12345").unwrap();
-        std::fs::write(dir.path().join("web-cache.jsonl"), b"cached").unwrap();
-        std::fs::write(dir.path().join("brave-results.jsonl"), b"log").unwrap();
+        std::fs::write(
+            dir.path().join("web-cache.jsonl"),
+            b"{\"fetched_at_unix\":100}\n{\"fetched_at_unix\":120}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("brave-results.jsonl"),
+            b"{\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("untracked.tmp"), b"ignore me").unwrap();
 
         let stats = collect_index_storage_stats(dir.path()).unwrap();
 
-        assert_eq!(stats.total_bytes, 14);
+        assert_eq!(stats.total_bytes, 77);
         assert_eq!(
             stats.artifacts,
             vec![
@@ -910,12 +1000,29 @@ mod tests {
                 },
                 IndexStorageArtifact {
                     name: "web-cache.jsonl",
-                    bytes: 6
+                    bytes: 48
                 },
                 IndexStorageArtifact {
                     name: "brave-results.jsonl",
-                    bytes: 3
+                    bytes: 24
                 }
+            ]
+        );
+        assert_eq!(
+            stats.web_artifacts,
+            vec![
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    entries: 2,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    entries: 1,
+                    oldest_fetched_at_unix: Some(130),
+                    newest_fetched_at_unix: Some(130),
+                },
             ]
         );
     }
@@ -928,5 +1035,6 @@ mod tests {
 
         assert_eq!(stats.total_bytes, 0);
         assert!(stats.artifacts.is_empty());
+        assert!(stats.web_artifacts.is_empty());
     }
 }

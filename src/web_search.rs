@@ -79,16 +79,16 @@ struct CachedWebSearch {
     results: Vec<WebSearchResult>,
 }
 
-#[derive(Debug, Serialize)]
-struct WebSearchResultLogEntry<'a> {
-    query: &'a str,
-    normalized_query: &'a str,
-    provider: &'a str,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WebSearchResultLogEntry {
+    query: String,
+    normalized_query: String,
+    provider: String,
     fetched_at_unix: u64,
     rank: usize,
-    title: &'a str,
-    url: &'a str,
-    snippet: &'a str,
+    title: String,
+    url: String,
+    snippet: String,
     score: f32,
 }
 
@@ -542,14 +542,14 @@ fn append_result_log(
         .with_context(|| format!("open web search result log {}", path.display()))?;
     for (index, result) in results.iter().enumerate() {
         let entry = WebSearchResultLogEntry {
-            query,
-            normalized_query,
-            provider,
+            query: query.to_owned(),
+            normalized_query: normalized_query.to_owned(),
+            provider: provider.to_owned(),
             fetched_at_unix: result.fetched_at_unix,
             rank: index + 1,
-            title: &result.title,
-            url: &result.url,
-            snippet: &result.snippet,
+            title: result.title.clone(),
+            url: result.url.clone(),
+            snippet: result.snippet.clone(),
             score: result.score,
         };
         serde_json::to_writer(&mut file, &entry)?;
@@ -567,15 +567,45 @@ fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
 
     let file = fs::File::open(path)
         .with_context(|| format!("open web search result log {}", path.display()))?;
-    let entries = BufReader::new(file)
-        .lines()
-        .filter_map(|line| match line {
-            Ok(line) if line.trim().is_empty() => None,
-            other => Some(other),
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("read web search result log {}", path.display()))?;
-    if entries.len() <= max_entries {
+    let mut entries = Vec::new();
+    let mut line_count = 0usize;
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web search result log {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            line_count += 1;
+            continue;
+        }
+        line_count += 1;
+        match serde_json::from_str::<WebSearchResultLogEntry>(&line) {
+            Ok(entry) => entries.push(entry),
+            Err(error) => eprintln!(
+                "web search result log skipped invalid line {} in {}: {error}",
+                line_no + 1,
+                path.display()
+            ),
+        }
+    }
+
+    let original_entries = entries.len();
+    let mut seen = HashSet::new();
+    let mut retained = Vec::new();
+    for entry in entries.into_iter().rev() {
+        if seen.insert(result_log_dedupe_key(&entry)) {
+            retained.push(entry);
+        }
+        if retained.len() >= max_entries {
+            break;
+        }
+    }
+    retained.reverse();
+
+    if retained.len() == original_entries && line_count == original_entries {
         return Ok(());
     }
 
@@ -583,8 +613,8 @@ fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
     {
         let mut file = fs::File::create(&tmp_path)
             .with_context(|| format!("create web search result log temp {}", tmp_path.display()))?;
-        for line in entries.iter().skip(entries.len() - max_entries) {
-            file.write_all(line.as_bytes())?;
+        for entry in &retained {
+            serde_json::to_writer(&mut file, entry)?;
             file.write_all(b"\n")?;
         }
         file.flush()?;
@@ -597,6 +627,15 @@ fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
         )
     })?;
     Ok(())
+}
+
+fn result_log_dedupe_key(entry: &WebSearchResultLogEntry) -> (String, String, usize, String) {
+    (
+        entry.normalized_query.clone(),
+        entry.provider.clone(),
+        entry.rank,
+        entry.url.clone(),
+    )
 }
 
 fn take_results(mut results: Vec<WebSearchResult>, limit: usize) -> Vec<WebSearchResult> {
@@ -952,6 +991,40 @@ mod tests {
         assert!(lines.contains("https://example.com/two"));
         assert!(lines.contains("https://example.com/three"));
         assert!(lines.contains("https://example.com/four"));
+    }
+
+    #[test]
+    fn append_result_log_dedupes_repeated_returned_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        let results = [
+            web_result("https://example.com/one", 100),
+            web_result("https://example.com/two", 101),
+        ];
+
+        append_result_log(
+            &path,
+            "Repeated Query",
+            "repeated query",
+            "brave",
+            &results,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+        )
+        .unwrap();
+        append_result_log(
+            &path,
+            "Repeated Query",
+            "repeated query",
+            "brave",
+            &results,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+        assert_eq!(lines.matches("https://example.com/one").count(), 1);
+        assert_eq!(lines.matches("https://example.com/two").count(), 1);
     }
 
     #[tokio::test]
