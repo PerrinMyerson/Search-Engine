@@ -8790,6 +8790,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-scroll-controls {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
 .viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
+.viewport-scroll-controls[data-scroll-pending="true"] a {{ cursor: wait; opacity: 0.72; }}
+.viewport-scroll-feedback {{ color: #5d636b; border-color: transparent !important; background: transparent !important; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
 .find-bar input[type="search"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -9053,11 +9055,11 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
       status.textContent = message;
     }}
   }};
-  const autoVisualControls = Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"));
+  const autoVisualControls = () => Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"));
   let autoVisualControlsBlocked = true;
   const setAutoVisualControlsBusy = (busy) => {{
     autoVisualControlsBlocked = busy;
-    for (const control of autoVisualControls) {{
+    for (const control of autoVisualControls()) {{
       if (busy) {{
         control.dataset.autoVisualPending = "true";
         control.setAttribute("aria-busy", "true");
@@ -9084,27 +9086,29 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const showAutoVisualControlStatus = () => setStatus("Visual render is still running. Please wait...");
   const guardAutoVisualControls = () => {{
     setAutoVisualControlsBusy(true);
-    for (const control of autoVisualControls) {{
-      control.addEventListener("click", (event) => {{
-        if (!autoVisualControlsBlocked) {{
-          return;
-        }}
-        const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
-        const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("a, button") : null;
-        if (!target || !isBrowserActionLink(target)) {{
-          return;
-        }}
-        event.preventDefault();
-        showAutoVisualControlStatus();
-      }});
-      control.addEventListener("submit", (event) => {{
-        if (!autoVisualControlsBlocked) {{
-          return;
-        }}
-        event.preventDefault();
-        showAutoVisualControlStatus();
-      }});
-    }}
+    document.addEventListener("click", (event) => {{
+      if (!autoVisualControlsBlocked) {{
+        return;
+      }}
+      const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+      const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-auto-visual-control] a, [data-browser-auto-visual-control] button") : null;
+      if (!target || !isBrowserActionLink(target)) {{
+        return;
+      }}
+      event.preventDefault();
+      showAutoVisualControlStatus();
+    }});
+    document.addEventListener("submit", (event) => {{
+      if (!autoVisualControlsBlocked) {{
+        return;
+      }}
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || !target.closest("[data-browser-auto-visual-control]")) {{
+        return;
+      }}
+      event.preventDefault();
+      showAutoVisualControlStatus();
+    }});
   }};
   guardAutoVisualControls();
   const scheduleRefresh = (message, delayMs) => {{
@@ -9302,6 +9306,21 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return;
   }
   const raster = shell.querySelector(".browser-raster");
+  const controls = document.querySelector("[data-browser-viewport-controls]");
+  const status = document.querySelector("[data-browser-viewport-status]");
+  const setViewportPending = (message) => {
+    shell.dataset.viewportPending = "true";
+    shell.setAttribute("aria-busy", "true");
+    if (controls) {
+      controls.dataset.scrollPending = "true";
+      controls.setAttribute("aria-busy", "true");
+    }
+    if (status) {
+      status.dataset.viewportPending = "true";
+      status.setAttribute("aria-busy", "true");
+      status.setAttribute("aria-label", message);
+    }
+  };
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);
     return Number.isFinite(value) ? value : 0;
@@ -9322,6 +9341,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.scrollUrl, window.location.href);
     url.searchParams.set("dx", String(appliedDx));
     url.searchParams.set("dy", String(appliedDy));
+    setViewportPending("Scrolling browser viewport...");
     window.location.href = url.toString();
     return true;
   };
@@ -9366,7 +9386,16 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.clickUrl, window.location.href);
     url.searchParams.set("x", String(x));
     url.searchParams.set("y", String(y));
+    setViewportPending("Activating browser viewport...");
     window.location.href = url.toString();
+  });
+  document.addEventListener("click", (event) => {
+    const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-viewport-controls] a[href]") : null;
+    if (!target) {
+      return;
+    }
+    setViewportPending("Scrolling browser viewport...");
   });
   const keyboardDelta = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) {

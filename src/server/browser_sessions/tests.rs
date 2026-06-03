@@ -2296,8 +2296,15 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
     assert!(html.contains(r#"document.addEventListener("keydown""#));
+    assert!(html.contains(r#"document.addEventListener("click""#));
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
+    assert!(html.contains("setViewportPending"));
+    assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
+    assert!(html.contains(r#"controls.dataset.scrollPending = "true""#));
+    assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
+    assert!(html.contains("Scrolling browser viewport..."));
+    assert!(html.contains("Activating browser viewport..."));
     assert!(html.contains("isInteractiveTarget(event.target)"));
     assert!(html.contains("shell.contains(event.target)"));
     assert!(html.contains(r#"event.key === " " && event.shiftKey"#));
@@ -9625,6 +9632,10 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains("Loading images..."));
     assert!(html.contains("sessionStorage"));
     assert!(html.contains(r#"document.querySelector("[data-auto-visual-" + "status]")"#));
+    assert!(html.contains(r#"const autoVisualControls = () => Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"))"#));
+    assert!(html.contains(r#"document.addEventListener("click", (event) =>"#));
+    assert!(html.contains(r#"document.addEventListener("submit", (event) =>"#));
+    assert!(html.contains(r#"eventTarget.closest("[data-browser-auto-visual-control] a, [data-browser-auto-visual-control] button")"#));
     assert!(html.contains(r#"shell.dataset.pendingAutoVisual = "true""#));
     assert!(html.contains(r#"shell.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("showPendingAutoVisualStatus"));
