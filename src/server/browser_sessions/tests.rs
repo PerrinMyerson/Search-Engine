@@ -2215,6 +2215,19 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Right</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
+    assert!(html.contains(r#"data-browser-viewport-status"#));
+    assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
+    assert!(html.contains(&format!("<span>y 4/{}</span>", payload.max_scroll_y)));
+    assert!(html.contains(&format!(
+        "<span>{}%</span>",
+        browser_scroll_percent(payload.viewport_y, payload.max_scroll_y)
+    )));
+    assert!(html.contains(&format!(r#"aria-valuemax="{}""#, payload.max_scroll_y)));
+    assert!(html.contains(r#"aria-valuenow="4""#));
+    assert!(html.contains(&format!(
+        r#"style="width: {}%;""#,
+        browser_scroll_percent(payload.viewport_y, payload.max_scroll_y)
+    )));
     assert!(html.contains(r#"name="viewport_x" value="8""#));
     assert!(html.contains(r#"name="viewport_y" value="4""#));
     assert!(html.contains("viewport-jump"));
@@ -2229,6 +2242,9 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
+    let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
+    let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    assert!(status_index < raster_index);
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
