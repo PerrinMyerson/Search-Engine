@@ -9136,11 +9136,15 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains("Resources (132)"));
+    assert!(html.contains(r#"data-browser-resource-actions"#));
     assert!(
         html.contains(r#"<span class="meta">1 image, 1 stylesheet, 130 other resources</span>"#)
     );
     assert!(html.contains(">Load 1 image</a>"));
     assert!(html.contains("action=load-images"));
+    assert!(html.contains(">Fetch resources</a>"));
+    assert!(html.contains(">Apply styles</a>"));
+    assert!(html.contains(">Resources JSON</a>"));
     assert!(html.contains("12 more resources omitted."));
     assert!(html.contains("logo.png"));
 
@@ -9182,6 +9186,31 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
     assert_eq!(exported_resources["stylesheet_count"], 1);
     assert_eq!(exported_resources["script_count"], 0);
     assert_eq!(exported_resources["other_count"], 130);
+    assert!(
+        exported_resources["action_urls"]["fetch_resources"]
+            .as_str()
+            .unwrap()
+            .contains("action=fetch-resources")
+    );
+    assert!(
+        exported_resources["action_urls"]["apply_stylesheets"]
+            .as_str()
+            .unwrap()
+            .contains("action=apply-styles")
+    );
+    assert!(exported_resources["action_urls"]["run_scripts"].is_null());
+    assert!(
+        exported_resources["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
+    );
+    assert!(
+        exported_resources["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("viewport_y=0")
+    );
     assert_eq!(
         exported_resources["resources"].as_array().unwrap().len(),
         120
