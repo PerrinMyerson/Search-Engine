@@ -5213,7 +5213,7 @@ pub fn browser_text_viewport(
     for (command_index, command) in render.display_list.iter().enumerate() {
         draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
     }
-    if text_viewport_needs_readable_context(&cells)
+    if text_viewport_needs_readable_context(&cells, render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
         overlay_text_viewport_context(&mut cells, &context);
@@ -5283,17 +5283,13 @@ fn draw_text_viewport_command(
     }
 }
 
-fn text_viewport_needs_readable_context(cells: &[Vec<char>]) -> bool {
-    let Some(width) = cells.first().map(Vec::len) else {
-        return false;
-    };
+fn text_viewport_needs_readable_context(
+    cells: &[Vec<char>],
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> bool {
     let has_visual_fill = cells.iter().flatten().any(|ch| matches!(*ch, '#' | '@'));
-    has_visual_fill && !cells.iter().any(|line| text_row_is_meaningful(line, width))
-}
-
-fn text_row_is_meaningful(line: &[char], width: usize) -> bool {
-    line.iter().filter(|ch| ch.is_ascii_alphanumeric()).count()
-        >= meaningful_text_row_threshold(width)
+    has_visual_fill && !viewport_has_meaningful_visible_text(render, viewport, false)
 }
 
 fn meaningful_text_row_threshold(width: usize) -> usize {
@@ -5307,12 +5303,13 @@ fn raster_viewport_needs_readable_context(
     if !raster_viewport_has_large_visual_fill(render, viewport) {
         return false;
     }
-    !raster_viewport_has_meaningful_visible_text(render, viewport)
+    !viewport_has_meaningful_visible_text(render, viewport, false)
 }
 
-fn raster_viewport_has_meaningful_visible_text(
+fn viewport_has_meaningful_visible_text(
     render: &BrowserRender,
     viewport: RasterViewport,
+    include_pinned: bool,
 ) -> bool {
     let mut row_text_counts = vec![0usize; viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
@@ -5325,6 +5322,9 @@ fn raster_viewport_has_meaningful_visible_text(
         }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        if !include_pinned && (viewport_fixed || viewport_sticky_top.is_some()) {
+            continue;
+        }
         let command_bounds = display_command_bounds_for_viewport(
             command,
             viewport,

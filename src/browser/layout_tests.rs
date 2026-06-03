@@ -2778,6 +2778,56 @@ fn sparse_visual_viewports_prioritize_meaningful_document_flow_text() {
 }
 
 #[test]
+fn pinned_headers_do_not_suppress_visual_viewport_body_context() {
+    let render = render_html(
+        "mem://pinned-header-readable-body-context",
+        br#"
+            <html><body>
+              <div style="position:fixed; top:0">Pinned navigation menu</div>
+              <p style="margin:0">Patient outcomes summary</p>
+              <section style="height:240px; background-color:black"></section>
+              <ul style="margin:0"><li>Follow up item</li></ul>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 36,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 4,
+            width: 36,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains("Pinned navigation menu"));
+    assert!(scrolled_text.contains("Patient outcomes summary"));
+    assert!(scrolled_text.contains('#'));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(4),
+        viewport_width: Some(36),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize pinned body context");
+    let context_pixel_x = raster_options.padding_x.saturating_add(1);
+    let context_pixel_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2);
+    let context_pixel = context_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(context_pixel_x);
+    assert_eq!(raster.pixels[context_pixel], 255);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
