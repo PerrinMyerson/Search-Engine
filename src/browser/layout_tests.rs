@@ -1223,6 +1223,88 @@ fn css_line_height_adds_visual_row_spacing() {
 }
 
 #[test]
+fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
+    let render = render_html(
+        "mem://font-size-scale",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .hero {
+                    font-size: clamp(32px, 6vw, 72px);
+                    line-height: 48px;
+                  }
+                </style>
+              </head>
+              <body>
+                <div class="hero">Hero</div>
+                <div>Body</div>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "HHHeeerrrooo\n\n\n\nBody");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "HHHeeerrrooo".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "HHHeeerrrooo".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "HHHeeerrrooo".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Body".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(
+        display_command_bounds(&render.display_list[0]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 1,
+        }
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 16,
+            height: 5,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert_eq!(
+        viewport.lines,
+        vec![
+            "HHHeeerrrooo".to_owned(),
+            "HHHeeerrrooo".to_owned(),
+            "HHHeeerrrooo".to_owned(),
+            String::new(),
+            "Body".to_owned(),
+        ]
+    );
+}
+
+#[test]
 fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
     let render = render_html(
         "mem://text-indent",

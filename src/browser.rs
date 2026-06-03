@@ -1348,6 +1348,7 @@ struct ComputedStyle {
     word_break: Option<WordBreak>,
     text_indent: Option<usize>,
     line_height: Option<usize>,
+    font_scale: Option<usize>,
     box_sizing: BoxSizing,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
@@ -1464,6 +1465,7 @@ struct CssDeclarations {
     word_break: Option<WordBreak>,
     text_indent: Option<usize>,
     line_height: Option<usize>,
+    font_scale: Option<usize>,
     box_sizing: Option<BoxSizing>,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
@@ -10744,6 +10746,13 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.line_height =
                     parse_css_line_height(value).or(declarations.line_height);
             }
+            "font-size" => {
+                declarations.font_scale = parse_css_font_scale(value).or(declarations.font_scale);
+            }
+            "font" => {
+                declarations.font_scale =
+                    parse_css_font_shorthand_scale(value).or(declarations.font_scale);
+            }
             "box-sizing" => {
                 declarations.box_sizing = parse_css_box_sizing(value).or(declarations.box_sizing);
             }
@@ -11755,6 +11764,108 @@ fn parse_css_line_height(value: &str) -> Option<usize> {
         .map(|rows| rows.clamp(1, 16))
 }
 
+fn parse_css_font_scale(value: &str) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    match value.as_str() {
+        "xx-small" | "x-small" | "small" | "medium" | "smaller" => return Some(1),
+        "large" | "x-large" | "larger" => return Some(2),
+        "xx-large" | "xxx-large" => return Some(3),
+        "inherit" | "initial" | "unset" | "revert" | "normal" => return None,
+        _ => {}
+    }
+    css_font_scale_from_pixels(parse_css_font_size_pixels(&value)?)
+}
+
+fn parse_css_font_shorthand_scale(value: &str) -> Option<usize> {
+    for token in split_css_top_level_whitespace(value) {
+        let size = token
+            .split_once('/')
+            .map(|(size, _)| size)
+            .unwrap_or(token.as_str());
+        if let Some(scale) = parse_css_font_scale(size) {
+            return Some(scale);
+        }
+    }
+    None
+}
+
+fn parse_css_font_size_pixels(value: &str) -> Option<f32> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.parse::<f32>().ok()?;
+        return percent.is_finite().then_some(16.0 * percent / 100.0);
+    }
+    if let Some(args) = css_function_arguments(&value, "clamp").first() {
+        let args = split_css_transform_arguments(args);
+        let minimum = args.first().and_then(|arg| parse_css_font_size_pixels(arg));
+        let preferred = args.get(1).and_then(|arg| parse_css_font_size_pixels(arg));
+        let maximum = args.get(2).and_then(|arg| parse_css_font_size_pixels(arg));
+        return match (minimum, preferred, maximum) {
+            (Some(minimum), Some(preferred), Some(maximum)) => {
+                Some(preferred.clamp(minimum, maximum))
+            }
+            (_, Some(preferred), _) => Some(preferred),
+            (_, _, Some(maximum)) => Some(maximum),
+            (Some(minimum), _, _) => Some(minimum),
+            _ => None,
+        };
+    }
+    if let Some(args) = css_function_arguments(&value, "max").first() {
+        return split_css_transform_arguments(args)
+            .into_iter()
+            .filter_map(parse_css_font_size_pixels)
+            .reduce(f32::max);
+    }
+    if let Some(args) = css_function_arguments(&value, "min").first() {
+        return split_css_transform_arguments(args)
+            .into_iter()
+            .filter_map(parse_css_font_size_pixels)
+            .reduce(f32::min);
+    }
+    parse_css_length_pixels(&value)
+}
+
+fn css_font_scale_from_pixels(pixels: f32) -> Option<usize> {
+    if !pixels.is_finite() || pixels <= 0.0 {
+        return None;
+    }
+    Some(match pixels {
+        pixels if pixels >= 64.0 => 4,
+        pixels if pixels >= 40.0 => 3,
+        pixels if pixels >= 22.0 => 2,
+        _ => 1,
+    })
+}
+
+fn split_css_top_level_whitespace(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    for ch in value.chars() {
+        match ch {
+            '(' => {
+                depth = depth.saturating_add(1);
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ch if ch.is_ascii_whitespace() && depth == 0 => {
+                if !current.trim().is_empty() {
+                    tokens.push(current.trim().to_owned());
+                    current.clear();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_owned());
+    }
+    tokens
+}
+
 fn parse_css_list_style(value: &str) -> Option<CssListStyleType> {
     value
         .split_ascii_whitespace()
@@ -12517,6 +12628,7 @@ fn render_node(
             let word_break_entered = style.word_break;
             let text_indent_entered = style.text_indent;
             let line_height_entered = style.line_height;
+            let font_scale_entered = style.font_scale;
             let block_flow = style.display.is_block_flow() && !is_row_item;
             let margin = if block_flow {
                 style.margin
@@ -12684,6 +12796,9 @@ fn render_node(
             if let Some(line_height) = line_height_entered {
                 renderer.enter_line_height(line_height);
             }
+            if let Some(font_scale) = font_scale_entered {
+                renderer.enter_font_scale(font_scale);
+            }
             let text_indent_block_entered = if block_flow {
                 renderer.enter_block_text_indent();
                 true
@@ -12777,6 +12892,9 @@ fn render_node(
             }
             if text_indent_block_entered {
                 renderer.exit_block_text_indent();
+            }
+            if font_scale_entered.is_some() {
+                renderer.exit_font_scale();
             }
             if line_height_entered.is_some() {
                 renderer.exit_line_height();
@@ -12933,6 +13051,10 @@ fn render_contents_node(
     if let Some(line_height) = line_height_entered {
         renderer.enter_line_height(line_height);
     }
+    let font_scale_entered = style.font_scale;
+    if let Some(font_scale) = font_scale_entered {
+        renderer.enter_font_scale(font_scale);
+    }
 
     render_children(
         dom,
@@ -12944,6 +13066,9 @@ fn render_contents_node(
         children_are_row_items,
     );
 
+    if font_scale_entered.is_some() {
+        renderer.exit_font_scale();
+    }
     if line_height_entered.is_some() {
         renderer.exit_line_height();
     }
@@ -13310,6 +13435,7 @@ fn computed_style(
             word_break: None,
             text_indent: None,
             line_height: None,
+            font_scale: None,
             box_sizing: BoxSizing::ContentBox,
             list_style_type: None,
             border: None,
@@ -13352,6 +13478,7 @@ fn computed_style(
     let mut word_break = None;
     let mut text_indent = None;
     let mut line_height = None;
+    let mut font_scale = None;
     let mut box_sizing = BoxSizing::ContentBox;
     let mut list_style_type = None;
     let mut border = None;
@@ -13392,6 +13519,7 @@ fn computed_style(
     let mut word_break_specificity = 0u32;
     let mut text_indent_specificity = 0u32;
     let mut line_height_specificity = 0u32;
+    let mut font_scale_specificity = 0u32;
     let mut box_sizing_specificity = 0u32;
     let mut list_style_type_specificity = 0u32;
     let mut border_specificity = 0u32;
@@ -13575,6 +13703,12 @@ fn computed_style(
                 line_height = Some(rule_line_height);
                 line_height_specificity = rule_specificity;
             }
+            if let Some(rule_font_scale) = rule.declarations.font_scale
+                && rule_specificity >= font_scale_specificity
+            {
+                font_scale = Some(rule_font_scale);
+                font_scale_specificity = rule_specificity;
+            }
             if let Some(rule_box_sizing) = rule.declarations.box_sizing
                 && rule_specificity >= box_sizing_specificity
             {
@@ -13740,6 +13874,9 @@ fn computed_style(
         if let Some(inline_line_height) = inline.line_height {
             line_height = Some(inline_line_height);
         }
+        if let Some(inline_font_scale) = inline.font_scale {
+            font_scale = Some(inline_font_scale);
+        }
         if let Some(inline_box_sizing) = inline.box_sizing {
             box_sizing = inline_box_sizing;
         }
@@ -13808,6 +13945,7 @@ fn computed_style(
         word_break,
         text_indent,
         line_height,
+        font_scale,
         box_sizing,
         list_style_type,
         border,
@@ -14285,6 +14423,7 @@ struct TextRun {
     start_x: usize,
     text: String,
     shade: u8,
+    font_scale: usize,
     background_shade: Option<u8>,
     visible: bool,
     target_runs: Vec<TextHitTargetRun>,
@@ -14402,8 +14541,9 @@ fn push_text_hit_target_run(
     start: usize,
     piece: &str,
     target_node: Option<usize>,
+    font_scale: usize,
 ) {
-    let width = piece.chars().count();
+    let width = text_cell_width(piece, font_scale);
     if width == 0 {
         return;
     }
@@ -14423,6 +14563,37 @@ fn push_text_hit_target_run(
 
 fn text_char_slice(text: &str, start: usize, width: usize) -> String {
     text.chars().skip(start).take(width).collect()
+}
+
+fn text_cell_width(text: &str, font_scale: usize) -> usize {
+    text.chars().count().saturating_mul(font_scale.max(1))
+}
+
+fn scaled_text_char_range(
+    start: usize,
+    width: usize,
+    font_scale: usize,
+    char_count: usize,
+) -> (usize, usize) {
+    let font_scale = font_scale.max(1);
+    let start_char = start / font_scale;
+    let end_char = start
+        .saturating_add(width)
+        .saturating_add(font_scale.saturating_sub(1))
+        / font_scale;
+    (start_char.min(char_count), end_char.min(char_count))
+}
+
+fn scaled_text_for_line(text: &str, font_scale: usize) -> String {
+    let font_scale = font_scale.max(1);
+    if font_scale == 1 {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text_cell_width(text, font_scale));
+    for ch in text.chars() {
+        out.extend(std::iter::repeat(ch).take(font_scale));
+    }
+    out
 }
 
 fn clip_text_hit_target_runs(
@@ -14489,6 +14660,8 @@ struct FlowRenderer {
     pending_text_indent_stack: Vec<Option<usize>>,
     line_height: usize,
     line_height_stack: Vec<usize>,
+    font_scale: usize,
+    font_scale_stack: Vec<usize>,
     positioning_context_stack: Vec<usize>,
     viewport_fixed_depth: usize,
     viewport_sticky_top_stack: Vec<usize>,
@@ -14550,6 +14723,8 @@ impl FlowRenderer {
             pending_text_indent_stack: Vec::new(),
             line_height: 1,
             line_height_stack: Vec::new(),
+            font_scale: 1,
+            font_scale_stack: Vec::new(),
             positioning_context_stack: Vec::new(),
             viewport_fixed_depth: 0,
             viewport_sticky_top_stack: Vec::new(),
@@ -14677,42 +14852,58 @@ impl FlowRenderer {
         y: usize,
         text: String,
         shade: u8,
+        font_scale: usize,
         target_runs: Vec<TextHitTargetRun>,
     ) {
+        let font_scale = font_scale.max(1);
         let bounds = DisplayCommandBounds {
             x,
             y,
-            width: text.chars().count(),
-            height: 1,
+            width: text_cell_width(&text, font_scale),
+            height: font_scale,
         };
         let Some(clipped) = self.clipped_bounds(bounds) else {
             return;
         };
+        let char_count = text.chars().count();
         let start = clipped.x.saturating_sub(x);
-        let text = text_char_slice(&text, start, clipped.width);
+        let (start_char, end_char) =
+            scaled_text_char_range(start, clipped.width, font_scale, char_count);
+        let text = text_char_slice(&text, start_char, end_char.saturating_sub(start_char));
         if text.is_empty() {
             return;
         }
-        let command = if shade == 0 {
-            DisplayCommand::Text {
-                x: clipped.x,
-                y: clipped.y,
-                text,
-            }
-        } else {
-            DisplayCommand::StyledText {
-                x: clipped.x,
-                y: clipped.y,
-                text,
-                shade,
-            }
-        };
+        let command_x = x.saturating_add(start_char.saturating_mul(font_scale));
+        let command_width = text_cell_width(&text, font_scale);
         let target = self.text_hit_target(clip_text_hit_target_runs(
             &target_runs,
-            start,
-            clipped.width,
+            start_char.saturating_mul(font_scale),
+            command_width,
         ));
-        self.push_display_command(command, target);
+        let text = scaled_text_for_line(&text, font_scale);
+        let row_start = clipped.y.saturating_sub(y);
+        let row_end = clipped
+            .y
+            .saturating_add(clipped.height)
+            .saturating_sub(y)
+            .min(font_scale);
+        for row_offset in row_start..row_end {
+            let command = if shade == 0 {
+                DisplayCommand::Text {
+                    x: command_x,
+                    y: y.saturating_add(row_offset),
+                    text: text.clone(),
+                }
+            } else {
+                DisplayCommand::StyledText {
+                    x: command_x,
+                    y: y.saturating_add(row_offset),
+                    text: text.clone(),
+                    shade,
+                }
+            };
+            self.push_display_command(command, target.clone());
+        }
     }
 
     fn clipped_rect_command(
@@ -14929,11 +15120,11 @@ impl FlowRenderer {
     }
 
     fn inter_word_space_width(&self) -> usize {
-        1usize.saturating_add(self.word_spacing)
+        self.font_scale.max(1).saturating_add(self.word_spacing)
     }
 
     fn push_inter_word_space_width(&mut self, width: usize, target_node: Option<usize>) {
-        self.push_text_run_piece_unspaced(&" ".repeat(width), target_node);
+        self.push_fixed_space_width(width, target_node);
     }
 
     fn push_word_break_opportunity(&mut self) {
@@ -15019,7 +15210,7 @@ impl FlowRenderer {
         if line_was_empty {
             self.push_pending_text_indent();
         }
-        let width = text.chars().count();
+        let width = text_cell_width(text, self.font_scale);
         if width == 0 {
             return;
         }
@@ -15037,7 +15228,15 @@ impl FlowRenderer {
         self.soft_break_opportunity = false;
         self.pending_inter_word_space = None;
         let line_height = self.line_height.max(1);
-        let row_height = line_height.max(self.inline_replaced_height);
+        let text_row_height = self
+            .current_runs
+            .iter()
+            .map(|run| run.font_scale.max(1))
+            .max()
+            .unwrap_or(1);
+        let row_height = line_height
+            .max(self.inline_replaced_height)
+            .max(text_row_height);
         if !self.current_runs.is_empty() {
             let y = self.next_y;
             let align_offset = self
@@ -15046,7 +15245,7 @@ impl FlowRenderer {
             let mut text = String::new();
             let runs = std::mem::take(&mut self.current_runs);
             for run in runs {
-                let run_width = run.text.chars().count();
+                let run_width = text_cell_width(&run.text, run.font_scale);
                 if run.start_x > text.chars().count() {
                     text.push_str(&" ".repeat(run.start_x.saturating_sub(text.chars().count())));
                 }
@@ -15055,20 +15254,27 @@ impl FlowRenderer {
                     .saturating_add(align_offset)
                     .saturating_add(run.start_x);
                 if run.visible {
-                    text.push_str(&run.text);
                     if let Some(background_shade) = run.background_shade
                         && let Some(command) = self.clipped_rect_command(
                             run_x,
                             y,
                             run_width,
-                            line_height,
+                            row_height,
                             background_shade,
                         )
                     {
                         let target = self.node_hit_target(None);
                         self.push_underlay_command(command, target);
                     }
-                    self.push_text_display_command(run_x, y, run.text, run.shade, run.target_runs);
+                    text.push_str(&scaled_text_for_line(&run.text, run.font_scale));
+                    self.push_text_display_command(
+                        run_x,
+                        y,
+                        run.text,
+                        run.shade,
+                        run.font_scale,
+                        run.target_runs,
+                    );
                 } else {
                     text.push_str(&" ".repeat(run_width));
                 }
@@ -15131,25 +15337,37 @@ impl FlowRenderer {
         };
         let piece = piece.as_str();
         let run_start = self.current_width;
-        self.current_width = self.current_width.saturating_add(piece.chars().count());
+        let piece_width = text_cell_width(piece, self.font_scale);
+        self.current_width = self.current_width.saturating_add(piece_width);
         let visible = self.paint_visible();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
+            && last.font_scale == self.font_scale
             && last.background_shade == self.text_background_shade
             && last.visible == visible
-            && last.start_x.saturating_add(last.text.chars().count()) == run_start
+            && last
+                .start_x
+                .saturating_add(text_cell_width(&last.text, last.font_scale))
+                == run_start
         {
-            let start = last.text.chars().count();
+            let start = text_cell_width(&last.text, last.font_scale);
             last.text.push_str(piece);
-            push_text_hit_target_run(&mut last.target_runs, start, piece, target_node);
+            push_text_hit_target_run(
+                &mut last.target_runs,
+                start,
+                piece,
+                target_node,
+                self.font_scale,
+            );
             return;
         }
         let mut target_runs = Vec::new();
-        push_text_hit_target_run(&mut target_runs, 0, piece, target_node);
+        push_text_hit_target_run(&mut target_runs, 0, piece, target_node, self.font_scale);
         self.current_runs.push(TextRun {
             start_x: run_start,
             text: piece.to_owned(),
             shade: self.text_shade,
+            font_scale: self.font_scale,
             background_shade: self.text_background_shade,
             visible,
             target_runs,
@@ -15161,8 +15379,44 @@ impl FlowRenderer {
             return;
         };
         if indent > 0 {
-            self.push_text_run_piece_unspaced(&" ".repeat(indent), None);
+            self.push_fixed_space_width(indent, None);
         }
+    }
+
+    fn push_fixed_space_width(&mut self, width: usize, target_node: Option<usize>) {
+        if width == 0 {
+            return;
+        }
+        let run_start = self.current_width;
+        self.current_width = self.current_width.saturating_add(width);
+        let visible = self.paint_visible();
+        let piece = " ".repeat(width);
+        if let Some(last) = self.current_runs.last_mut()
+            && last.shade == self.text_shade
+            && last.font_scale == 1
+            && last.background_shade == self.text_background_shade
+            && last.visible == visible
+            && last
+                .start_x
+                .saturating_add(text_cell_width(&last.text, last.font_scale))
+                == run_start
+        {
+            let start = text_cell_width(&last.text, last.font_scale);
+            last.text.push_str(&piece);
+            push_text_hit_target_run(&mut last.target_runs, start, &piece, target_node, 1);
+            return;
+        }
+        let mut target_runs = Vec::new();
+        push_text_hit_target_run(&mut target_runs, 0, &piece, target_node, 1);
+        self.current_runs.push(TextRun {
+            start_x: run_start,
+            text: piece,
+            shade: self.text_shade,
+            font_scale: 1,
+            background_shade: self.text_background_shade,
+            visible,
+            target_runs,
+        });
     }
 
     fn enter_positioning_context(&mut self, y: usize) {
@@ -15300,7 +15554,9 @@ impl FlowRenderer {
         let gap_units = self
             .letter_spacing
             .saturating_mul(char_count.saturating_sub(1));
-        char_count.saturating_add(gap_units / CSS_TEXT_CELL_UNITS)
+        char_count
+            .saturating_add(gap_units / CSS_TEXT_CELL_UNITS)
+            .saturating_mul(self.font_scale.max(1))
     }
 
     fn apply_letter_spacing(&self, text: &str) -> String {
@@ -15497,6 +15753,15 @@ impl FlowRenderer {
 
     fn exit_line_height(&mut self) {
         self.line_height = self.line_height_stack.pop().unwrap_or(1);
+    }
+
+    fn enter_font_scale(&mut self, font_scale: usize) {
+        self.font_scale_stack.push(self.font_scale);
+        self.font_scale = font_scale.clamp(1, 4);
+    }
+
+    fn exit_font_scale(&mut self) {
+        self.font_scale = self.font_scale_stack.pop().unwrap_or(1);
     }
 
     fn enter_table(&mut self, column_widths: Vec<usize>) {
