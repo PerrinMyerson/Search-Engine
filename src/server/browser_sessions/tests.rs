@@ -9029,6 +9029,196 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 }
 
 #[tokio::test]
+async fn browser_session_make_visual_applies_styles_and_loads_images() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let image_body =
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##.to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (body, content_type) = if request_line.contains(" /app.css ") {
+                (b".hero { color: #113355; }".to_vec(), "text/css")
+            } else if request_line.contains(" /tile.svg ") {
+                (image_body.clone(), "image/svg+xml")
+            } else {
+                let lines = (0..40)
+                    .map(|index| format!("visual line {index:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (
+                    format!(
+                        r#"<!doctype html><title>Make Visual</title><link rel="stylesheet" href="/app.css"><p class="hero">visual page</p><img src="/tile.svg" alt="Tile image"><pre>{lines}</pre>"#
+                    )
+                    .into_bytes(),
+                    "text/html",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), format!("http://{addr}/visual")),
+            ("from".to_owned(), "/search?q=visual".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "16".to_owned()),
+            ("viewport_y".to_owned(), "2".to_owned()),
+            ("max_bytes".to_owned(), "2097152".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Make Visual");
+    assert_eq!(payload.resource_count, 2);
+    assert_eq!(payload.resource_stylesheet_count, 1);
+    assert_eq!(payload.resource_image_count, 1);
+    assert_eq!(payload.viewport_y, 2);
+    assert_eq!(payload.max_bytes, 2_097_152);
+    let session_id = payload.id.clone();
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(">Make visual</a>"));
+    assert!(html.contains("action=make-visual"));
+    assert!(html.contains(r#"class="clear-link primary-action""#));
+    assert!(html.contains("Making visual..."));
+    assert!(html.contains(r#"data-browser-auto-visual-control"#));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    let make_visual_href = exported["action_urls"]["make_visual"].as_str().unwrap();
+    assert!(make_visual_href.contains("action=make-visual"));
+    assert!(make_visual_href.contains("width=40"));
+    assert!(make_visual_href.contains("height=16"));
+    assert!(make_visual_href.contains("viewport_y=2"));
+    assert!(make_visual_href.contains("max_bytes=2097152"));
+    assert!(make_visual_href.contains("from=%2Fsearch%3Fq%3Dvisual"));
+    assert!(
+        exported["action_urls"]["apply_stylesheets"]
+            .as_str()
+            .unwrap()
+            .contains("action=apply-styles")
+    );
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
+    );
+
+    let resources_json_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "resources-json".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&resources_json_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported_resources: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert!(
+        exported_resources["action_urls"]["make_visual"]
+            .as_str()
+            .unwrap()
+            .contains("action=make-visual")
+    );
+
+    let make_visual = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(make_visual_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    let (payload, back_href) = registry.apply_target(&make_visual).await.unwrap();
+    server.await.unwrap();
+
+    assert_eq!(payload.id, session_id);
+    assert_eq!(payload.viewport_x, 0);
+    assert_eq!(payload.viewport_y, 2);
+    assert_eq!(payload.max_bytes, 2_097_152);
+    let report = payload.resource_report.as_ref().unwrap();
+    assert_eq!(report.action, "Make visual");
+    assert_eq!(report.total, 2);
+    assert_eq!(report.fetched, 2);
+    assert_eq!(report.cached, 0);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.applied, Some(1));
+    assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.resources.len(), 2);
+    assert!(report.resources.iter().any(|resource| {
+        resource.kind == "stylesheet"
+            && resource.status == "fetched"
+            && resource
+                .content_type
+                .as_deref()
+                .is_some_and(|content_type| content_type == "text/css")
+    }));
+    assert!(report.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.status == "fetched"
+            && resource
+                .content_type
+                .as_deref()
+                .is_some_and(|content_type| content_type == "image/svg+xml")
+    }));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(!html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains(
+        "Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1"
+    ));
+    assert!(html.contains("Report JSON"));
+    assert!(html.contains("format=resource-report-json"));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["resource_report"]["action"], "Make visual");
+    assert_eq!(exported["resource_report"]["total"], 2);
+    assert_eq!(exported["resource_report"]["fetched"], 2);
+    assert_eq!(exported["resource_report"]["applied"], 1);
+    assert_eq!(exported["resource_report"]["decoded"], 1);
+    assert_eq!(exported["resource_report"]["resources"], 2);
+    assert_eq!(
+        exported["resource_report"]["fetches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn browser_session_registry_waits_for_in_flight_resource_action_before_scroll() {
     use std::sync::Arc;
     use std::time::Duration;
