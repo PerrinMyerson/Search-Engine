@@ -4826,6 +4826,62 @@ async fn image_css_background_coverage_fetches_lazy_alias_resources() {
 }
 
 #[tokio::test]
+async fn image_style_background_fetches_lazy_background_alias_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let wide = dir.path().join("wide.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&wide, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <section data-background-image="url('hero.webp')">Hero</section>
+            <section data-bgset="wide.avif 320w, wide.webp 640w">Wide</section>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 2);
+
+    let hero_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero.display().to_string())
+        .unwrap();
+    assert_eq!(hero_fetch.resource.kind, "background_image");
+    assert_eq!(hero_fetch.resource.initiator, "section");
+    assert_eq!(hero_fetch.resource.url, "hero.webp");
+    assert_eq!(hero_fetch.status, "fetched");
+    assert_eq!(hero_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(hero_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(hero_fetch.decoded_hash.is_some());
+
+    let wide_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == wide.display().to_string())
+        .unwrap();
+    assert_eq!(wide_fetch.resource.kind, "background_image");
+    assert_eq!(wide_fetch.resource.initiator, "section");
+    assert_eq!(wide_fetch.resource.url, "wide.webp");
+    assert_eq!(wide_fetch.status, "fetched");
+    assert_eq!(wide_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(wide_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(wide_fetch.decoded_hash.is_some());
+}
+
+#[tokio::test]
 async fn external_stylesheets_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

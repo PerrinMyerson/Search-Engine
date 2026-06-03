@@ -780,6 +780,7 @@ fn collect_selected_image_resources_at(
         } else if let Some(url) = selected_replaced_media_image_url(element) {
             push_resource(resources, source, element, "image", &element.tag, url);
         }
+        push_selected_background_alias_resource(resources, source, element, viewport_width_css_px);
     }
 
     for &child in &node.children {
@@ -840,6 +841,8 @@ fn collect_resources_at(
         {
             push_resource(resources, source, element, "poster", &element.tag, poster);
         }
+
+        push_background_alias_resources(resources, source, element);
     }
 
     for &child in &node.children {
@@ -938,6 +941,118 @@ const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-current-srcset",
     "current-srcset",
     "currentsrcset",
+];
+
+fn push_selected_background_alias_resource(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    element: &ElementData,
+    viewport_width_css_px: usize,
+) {
+    for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
+        if let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str)
+            && let Some(url) = selected_srcset_candidate(srcset, None, viewport_width_css_px)
+        {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                &url,
+            );
+            return;
+        }
+    }
+
+    for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
+        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
+            && let Some(url) = background_image_url_from_attr_value(value)
+        {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                url,
+            );
+            return;
+        }
+    }
+}
+
+fn push_background_alias_resources(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    element: &ElementData,
+) {
+    for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
+        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
+            && let Some(url) = background_image_url_from_attr_value(value)
+        {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                url,
+            );
+        }
+    }
+
+    for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
+        let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
+            continue;
+        };
+        for url in srcset_candidate_urls(srcset) {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                &url,
+            );
+        }
+    }
+}
+
+fn background_image_url_from_attr_value(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(inner) = value
+        .strip_prefix("url(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let url = inner.trim().trim_matches(['"', '\'']);
+        return (!url.is_empty()).then_some(url);
+    }
+    if value.contains(';') || value.contains('{') || value.contains('}') {
+        return None;
+    }
+    Some(value)
+}
+
+const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
+    "data-bg",
+    "data-bg-src",
+    "data-background",
+    "data-background-image",
+    "data-background-src",
+    "data-lazy-bg",
+    "data-lazy-background",
+    "data-lazy-background-image",
+];
+
+const BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
+    "data-bgset",
+    "data-background-srcset",
+    "data-lazy-bgset",
+    "data-lazy-background-srcset",
 ];
 
 fn push_link_image_resources(
