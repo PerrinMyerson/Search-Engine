@@ -5514,15 +5514,33 @@ fn nearby_visual_region_text_context(
             let inside_visual = visual_bounds
                 .iter()
                 .any(|visual| bounds_inside_visual_region(bounds, *visual));
-            if !inside_visual && !bounds_near_visual_viewport(bounds, viewport) {
+            let visual_distance = visual_bounds
+                .iter()
+                .filter_map(|visual| bounds_visual_region_distance(bounds, *visual))
+                .min();
+            let near_visual = visual_distance
+                .is_some_and(|distance| distance <= bounds_visual_region_search_rows(viewport));
+            let near_viewport = bounds_near_visual_viewport(bounds, viewport);
+            if !inside_visual && !near_visual && !near_viewport {
                 return None;
             }
-            let distance = if bounds.y < viewport.y {
+            let viewport_distance = if bounds.y < viewport.y {
                 viewport.y.saturating_sub(bounds.y)
             } else {
                 bounds.y.saturating_sub(viewport.end_y())
             };
-            let rank = usize::from(!inside_visual);
+            let rank = if inside_visual {
+                0
+            } else if near_visual {
+                1
+            } else {
+                2
+            };
+            let distance = if near_visual {
+                visual_distance.unwrap_or(viewport_distance)
+            } else {
+                viewport_distance
+            };
             Some((rank, distance, text))
         })
         .min_by_key(|(rank, distance, _)| (*rank, *distance))
@@ -5669,6 +5687,30 @@ fn bounds_near_visual_viewport(text: DisplayCommandBounds, viewport: RasterViewp
         return viewport.y.saturating_sub(text.y) <= search_rows;
     }
     text.y.saturating_sub(viewport.end_y()) <= search_rows
+}
+
+fn bounds_visual_region_search_rows(viewport: RasterViewport) -> usize {
+    viewport.height.saturating_mul(2).max(4)
+}
+
+fn bounds_visual_region_distance(
+    text: DisplayCommandBounds,
+    visual: DisplayCommandBounds,
+) -> Option<usize> {
+    let horizontal_overlap = text.x < visual.x.saturating_add(visual.width)
+        && text.x.saturating_add(text.width) > visual.x;
+    if !horizontal_overlap {
+        return None;
+    }
+    let text_end_y = text.y.saturating_add(text.height);
+    let visual_end_y = visual.y.saturating_add(visual.height);
+    if text_end_y < visual.y {
+        Some(visual.y.saturating_sub(text_end_y))
+    } else if visual_end_y < text.y {
+        Some(text.y.saturating_sub(visual_end_y))
+    } else {
+        Some(0)
+    }
 }
 
 fn overlay_text_viewport_context(cells: &mut [Vec<char>], text: &str) {
