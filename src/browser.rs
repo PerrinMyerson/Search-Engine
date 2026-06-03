@@ -11221,13 +11221,45 @@ fn parse_css_image_url(value: &str) -> Option<String> {
     if value.eq_ignore_ascii_case("none") {
         return None;
     }
-    let lower = value.to_ascii_lowercase();
-    let start = lower.find("url(")?;
-    let payload_start = start.saturating_add(4);
-    let payload_end = value[payload_start..]
-        .find(')')
-        .map(|offset| payload_start.saturating_add(offset))?;
-    let url = value[payload_start..payload_end].trim();
+    split_css_top_level_commas(value)
+        .into_iter()
+        .find_map(|layer| parse_css_image_layer_url(&layer))
+}
+
+fn parse_css_image_layer_url(value: &str) -> Option<String> {
+    parse_css_image_set_url(value).or_else(|| parse_css_url_function(value))
+}
+
+fn parse_css_url_function(value: &str) -> Option<String> {
+    parse_css_image_url_token(css_first_function_arguments(value, &["url"])?)
+}
+
+fn parse_css_image_set_url(value: &str) -> Option<String> {
+    let args = css_first_function_arguments(value, &["image-set", "-webkit-image-set"])?;
+    split_css_top_level_commas(args)
+        .into_iter()
+        .find_map(|candidate| parse_css_image_set_candidate_url(&candidate))
+}
+
+fn parse_css_image_set_candidate_url(candidate: &str) -> Option<String> {
+    let url = parse_css_url_function(candidate).or_else(|| parse_css_quoted_url(candidate))?;
+    css_image_url_supported(&url, candidate).then_some(url)
+}
+
+fn parse_css_quoted_url(value: &str) -> Option<String> {
+    let value = value.trim_start();
+    let quote = value.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let end = value[1..]
+        .find(quote as char)
+        .map(|offset| 1usize.saturating_add(offset))?;
+    parse_css_image_url_token(&value[..=end])
+}
+
+fn parse_css_image_url_token(value: &str) -> Option<String> {
+    let url = value.trim();
     if url.is_empty() {
         return None;
     }
@@ -11243,11 +11275,30 @@ fn parse_css_image_url(value: &str) -> Option<String> {
     (!url.is_empty()).then(|| url.to_owned())
 }
 
-fn parse_css_background_image_size(value: &str) -> Option<BackgroundImageSize> {
-    let value = value
-        .split(',')
+fn css_image_url_supported(url: &str, candidate: &str) -> bool {
+    let candidate = candidate.to_ascii_lowercase();
+    if candidate.contains("image/avif") || url_has_extension(url, "avif") {
+        return false;
+    }
+    true
+}
+
+fn url_has_extension(url: &str, extension: &str) -> bool {
+    let base = url
+        .split(['?', '#'])
         .next()
-        .unwrap_or(value)
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    base.rsplit('.')
+        .next()
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(extension))
+}
+
+fn parse_css_background_image_size(value: &str) -> Option<BackgroundImageSize> {
+    let value = split_css_top_level_commas(value)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| value.to_owned())
         .trim()
         .trim_end_matches(';')
         .to_ascii_lowercase();
@@ -11260,10 +11311,10 @@ fn parse_css_background_image_size(value: &str) -> Option<BackgroundImageSize> {
 }
 
 fn parse_css_background_image_repeat(value: &str) -> Option<BackgroundImageRepeat> {
-    let value = value
-        .split(',')
+    let value = split_css_top_level_commas(value)
+        .into_iter()
         .next()
-        .unwrap_or(value)
+        .unwrap_or_else(|| value.to_owned())
         .trim()
         .trim_end_matches(';')
         .to_ascii_lowercase();
@@ -11283,7 +11334,10 @@ fn parse_css_background_image_repeat(value: &str) -> Option<BackgroundImageRepea
 }
 
 fn parse_css_background_image_position(value: &str) -> Option<BackgroundImagePosition> {
-    let layer = value.split(',').next().unwrap_or(value);
+    let layer = split_css_top_level_commas(value)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| value.to_owned());
     let tokens = layer
         .split_ascii_whitespace()
         .map(|token| {
@@ -11642,6 +11696,63 @@ fn css_function_arguments<'a>(value: &'a str, name: &str) -> Vec<&'a str> {
     args
 }
 
+fn css_first_function_arguments<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
+    let lower = value.to_ascii_lowercase();
+    let mut best_match = None;
+    for name in names {
+        let name = name.to_ascii_lowercase();
+        let mut cursor = 0usize;
+        while let Some(relative_start) = lower[cursor..].find(&name) {
+            let name_start = cursor.saturating_add(relative_start);
+            let open = name_start.saturating_add(name.len());
+            let previous = value[..name_start].chars().next_back();
+            if previous
+                .is_none_or(|ch| !matches!(ch, '-' | '_' | 'a'..='z' | 'A'..='Z' | '0'..='9'))
+                && value[open..].starts_with('(')
+                && best_match.is_none_or(|(best_start, _)| name_start < best_start)
+            {
+                best_match = Some((name_start, name.len()));
+                break;
+            }
+            cursor = open;
+        }
+    }
+    let (name_start, name_len) = best_match?;
+    let args_start = name_start.saturating_add(name_len).saturating_add(1);
+    let args_end = find_css_function_close(value, args_start)?;
+    Some(value[args_start..args_end].trim())
+}
+
+fn find_css_function_close(value: &str, args_start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, ch) in value[args_start..].char_indices() {
+        if let Some(quote_ch) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(args_start.saturating_add(offset));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn split_css_transform_arguments(value: &str) -> Vec<&str> {
     if value.contains(',') {
         value
@@ -11879,6 +11990,52 @@ fn split_css_top_level_whitespace(value: &str) -> Vec<String> {
                     tokens.push(current.trim().to_owned());
                     current.clear();
                 }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_owned());
+    }
+    tokens
+}
+
+fn split_css_top_level_commas(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in value.chars() {
+        if let Some(quote_ch) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            '(' => {
+                depth = depth.saturating_add(1);
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                if !current.trim().is_empty() {
+                    tokens.push(current.trim().to_owned());
+                }
+                current.clear();
             }
             _ => current.push(ch),
         }
