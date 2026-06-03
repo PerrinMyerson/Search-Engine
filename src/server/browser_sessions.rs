@@ -8801,7 +8801,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
-.viewport-command-strip[data-resource-pending="true"] a[href^="/browser"], .viewport-command-strip[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
+.viewport-command-strip[data-resource-pending="true"] a[href^="/browser"], .viewport-command-strip[data-visual-pending="true"] .primary-action, .viewport-command-strip[data-scroll-pending="true"] a[href^="/browser"], .viewport-command-strip[data-scroll-pending="true"] button {{ cursor: wait; opacity: 0.72; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
 .find-bar input[type="search"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -9319,24 +9319,27 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return;
   }
   const raster = shell.querySelector(".browser-raster");
-  const controls = document.querySelector("[data-browser-viewport-controls]");
+  const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
   const status = document.querySelector("[data-browser-viewport-status]");
-  const feedback = document.querySelector("[data-browser-viewport-feedback]");
+  const feedbackTargets = Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
+  const setViewportFeedback = (message) => {
+    for (const feedback of feedbackTargets) {
+      feedback.textContent = message;
+    }
+  };
   const setViewportPending = (message) => {
     shell.dataset.viewportPending = "true";
     shell.setAttribute("aria-busy", "true");
-    if (controls) {
-      controls.dataset.scrollPending = "true";
-      controls.setAttribute("aria-busy", "true");
+    for (const control of controls) {
+      control.dataset.scrollPending = "true";
+      control.setAttribute("aria-busy", "true");
     }
     if (status) {
       status.dataset.viewportPending = "true";
       status.setAttribute("aria-busy", "true");
       status.setAttribute("aria-label", message);
     }
-    if (feedback) {
-      feedback.textContent = message;
-    }
+    setViewportFeedback(message);
   };
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);
@@ -9353,6 +9356,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const appliedDx = nextX - x;
     const appliedDy = nextY - y;
     if (appliedDx === 0 && appliedDy === 0) {
+      if (dy < 0 && y <= 0) {
+        setViewportFeedback("Already at top.");
+      } else if (dy > 0 && y >= maxY) {
+        setViewportFeedback("Already at bottom.");
+      } else if (dx < 0 && x <= 0) {
+        setViewportFeedback("Already at left edge.");
+      } else if (dx > 0 && x >= maxX) {
+        setViewportFeedback("Already at right edge.");
+      } else {
+        setViewportFeedback("Viewport is already at that position.");
+      }
       return false;
     }
     const url = new URL(shell.dataset.scrollUrl, window.location.href);
@@ -9379,8 +9393,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   shell.addEventListener("wheel", (event) => {
     const dx = wheelCells(event.deltaX, event.deltaMode, numberData("viewportWidth"));
     const dy = wheelCells(event.deltaY, event.deltaMode, numberData("viewportHeight"));
-    if ((dx || dy) && navigate(dx, dy)) {
+    if (dx || dy) {
       event.preventDefault();
+      navigate(dx, dy);
     }
   }, { passive: false });
   shell.addEventListener("click", (event) => {
@@ -9434,9 +9449,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     } else if (event.key === "PageUp") {
       dy = -pageY;
     } else if (event.key === "Home") {
-      dy = -numberData("viewportY");
+      dy = numberData("viewportY") > 0 ? -numberData("viewportY") : -1;
     } else if (event.key === "End") {
-      dy = numberData("maxScrollY") - numberData("viewportY");
+      const remainingY = numberData("maxScrollY") - numberData("viewportY");
+      dy = remainingY > 0 ? remainingY : 1;
     } else {
       return null;
     }
@@ -9447,11 +9463,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!delta) {
       return false;
     }
-    if (navigate(delta.dx, delta.dy)) {
-      event.preventDefault();
-      return true;
-    }
-    return false;
+    event.preventDefault();
+    navigate(delta.dx, delta.dy);
+    return true;
   };
   const isInteractiveTarget = (target) => {
     if (!target || typeof target.closest !== "function") {
@@ -11476,7 +11490,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     };
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div><div class="viewport-command-row"><nav class="viewport-scroll-controls" aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row"><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span><div class="resource-actions">{visual_actions}<a class="clear-link" href="{current_href}">Current view</a><a class="clear-link" href="{reload_href}">Reload tab</a>{visual_status}</div></div><div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls aria-label="Primary viewport scroll controls">{top}{page_up}{page_down}{bottom}</nav><form class="viewport-command-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,

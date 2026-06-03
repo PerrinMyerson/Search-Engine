@@ -2340,18 +2340,35 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(html.contains("setViewportPending"));
+    assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(
-        r#"const feedback = document.querySelector("[data-browser-viewport-feedback]")"#
+        r#"const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"))"#
     ));
+    assert!(html.contains(
+        r#"const feedbackTargets = Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"))"#
+    ));
+    assert!(html.contains("const setViewportFeedback"));
+    assert!(html.contains("for (const feedback of feedbackTargets)"));
     assert!(html.contains("feedback.textContent = message"));
     assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
-    assert!(html.contains(r#"controls.dataset.scrollPending = "true""#));
+    assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
     assert!(html.contains("Scrolling browser viewport..."));
     assert!(html.contains("Activating browser viewport..."));
+    assert!(html.contains("Already at top."));
+    assert!(html.contains("Already at bottom."));
+    assert!(html.contains("Already at left edge."));
+    assert!(html.contains("Already at right edge."));
+    assert!(html.contains("Viewport is already at that position."));
+    assert!(html.contains(r#"event.preventDefault();"#));
     assert!(html.contains("isInteractiveTarget(event.target)"));
     assert!(html.contains("shell.contains(event.target)"));
     assert!(html.contains(r#"event.key === " " && event.shiftKey"#));
+    assert!(html.contains(r#"dy = numberData("viewportY") > 0 ? -numberData("viewportY") : -1"#));
+    assert!(
+        html.contains(r#"const remainingY = numberData("maxScrollY") - numberData("viewportY")"#)
+    );
+    assert!(html.contains("dy = remainingY > 0 ? remainingY : 1"));
     assert!(html.contains("WheelEvent.DOM_DELTA_LINE"));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
