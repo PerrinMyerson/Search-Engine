@@ -2021,6 +2021,17 @@ fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option
     candidates.first().map(|candidate| candidate.url.clone())
 }
 
+pub(super) fn selected_srcset_candidate(
+    srcset: &str,
+    sizes: Option<&str>,
+    viewport_width_css_px: usize,
+) -> Option<String> {
+    choose_srcset_candidate(
+        srcset,
+        srcset_target_width_from_sizes(sizes, viewport_width_css_px),
+    )
+}
+
 fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCandidate> {
     let supported = candidates
         .iter()

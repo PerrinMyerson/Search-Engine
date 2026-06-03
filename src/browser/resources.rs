@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::images::{
-    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, srcset_candidate_urls,
+    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, selected_srcset_candidate,
+    srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -764,7 +765,13 @@ fn collect_selected_image_resources_at(
         {
             push_resource(resources, source, element, "image", "img", &url);
         } else if element.tag == "link" && link_preloads_image(element) {
-            push_link_image_resources(resources, source, element, true);
+            push_link_image_resources(
+                resources,
+                source,
+                element,
+                true,
+                Some(viewport_width_css_px),
+            );
         } else if element.tag == "video"
             && let Some(poster) = element.poster.as_deref().map(str::trim)
             && !poster.is_empty()
@@ -820,7 +827,7 @@ fn collect_resources_at(
                     let kind = link_resource_kind(element);
                     push_resource(resources, source, element, &kind, "link", href);
                 }
-                push_link_image_resources(resources, source, element, false);
+                push_link_image_resources(resources, source, element, false, None);
             }
             _ => {}
         }
@@ -880,8 +887,20 @@ fn push_link_image_resources(
     source: &str,
     element: &ElementData,
     include_href: bool,
+    selected_viewport_width_css_px: Option<usize>,
 ) {
     if !link_preloads_image(element) {
+        return;
+    }
+    if let Some(viewport_width_css_px) = selected_viewport_width_css_px
+        && let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str)
+        && let Some(url) = selected_srcset_candidate(
+            srcset,
+            element.attrs.get("imagesizes").map(String::as_str),
+            viewport_width_css_px,
+        )
+    {
+        push_resource(resources, source, element, "image", "link", &url);
         return;
     }
     if include_href
