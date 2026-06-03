@@ -437,6 +437,32 @@ fn css_modern_display_values_map_to_flow_and_suppress_markers() {
 }
 
 #[test]
+fn css_first_child_selector_restores_first_hidden_slide() {
+    let render = render_html(
+        "mem://css-first-child-slider",
+        br#"
+            <html><head><style>
+              .slider .slide { display: none; background-color: black; }
+              .slider .slide:first-child { display: block; }
+            </style></head><body>
+              <div class="slider">
+                <div class="slide">Visible slide</div>
+                <div class="slide">Hidden slide</div>
+              </div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Visible slide\nAfter");
+    assert!(!render.text.contains("Hidden slide"));
+}
+
+#[test]
 fn css_flex_container_lays_out_block_children_in_row() {
     let render = render_html(
         "mem://css-flex-row-children",
