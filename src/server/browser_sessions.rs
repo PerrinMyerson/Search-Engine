@@ -8381,6 +8381,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport = render_browser_session_viewport(payload);
     let viewport_image = render_browser_session_viewport_image(payload);
     let primary_input_controls = render_browser_session_primary_input_controls(payload);
+    let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
@@ -8633,6 +8634,11 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-jump label {{ color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-jump input[type="number"] {{ width: 96px; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .viewport-jump button {{ min-height: 32px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 10px; background: #2457d6; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.viewport-status {{ display: grid; gap: 6px; margin: 8px 0 10px; }}
+.viewport-status-text {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: #3a3f45; font-size: 13px; font-weight: 700; }}
+.viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
+.viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
+.viewport-scroll-meter span {{ display: block; height: 100%; background: #2457d6; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
 .find-bar input[type="search"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -8748,6 +8754,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {find_controls}
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary">
+{viewport_status}
 {viewport_image}
 {primary_input_controls}
 {viewport_jump}
@@ -8822,6 +8829,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         history_index = payload.current_history_index.map_or(0, |index| index + 1),
         history_len = payload.history_len,
         viewport_jump = viewport_jump,
+        viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
         viewport_image = viewport_image,
         primary_input_controls = primary_input_controls,
@@ -11111,6 +11119,36 @@ fn render_browser_session_find_match_links(payload: &BrowserSessionPayload) -> S
 
 fn render_browser_session_viewport(payload: &BrowserSessionPayload) -> String {
     render_browser_session_highlighted_text(&payload.viewport, &payload.find_query)
+}
+
+fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> String {
+    let vertical_percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
+    let meter_percent = if payload.max_scroll_y == 0 {
+        100
+    } else {
+        vertical_percent
+    };
+    let vertical_percent_label = if payload.max_scroll_y == 0 {
+        String::new()
+    } else {
+        format!(r#"<span>{vertical_percent}%</span>"#)
+    };
+    format!(
+        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span>x {x}/{max_x}</span><span>y {y}/{max_y}</span>{vertical_percent_label}</div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        x = payload.viewport_x,
+        max_x = payload.max_scroll_x,
+        y = payload.viewport_y,
+        max_y = payload.max_scroll_y,
+        vertical_percent_label = vertical_percent_label,
+        meter_percent = meter_percent,
+    )
+}
+
+fn browser_scroll_percent(value: usize, max: usize) -> usize {
+    if max == 0 {
+        return 100;
+    }
+    ((value.min(max) as u128 * 100) / max as u128) as usize
 }
 
 fn render_browser_session_viewport_jump(payload: &BrowserSessionPayload) -> String {
