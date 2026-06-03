@@ -1266,13 +1266,15 @@ fn srcset_target_width_from_sizes(
 }
 
 fn parse_sizes_attribute(sizes: &str, viewport_width_css_px: usize) -> Option<usize> {
-    sizes.split(',').find_map(|candidate| {
-        let candidate = candidate.trim();
-        if candidate.is_empty() {
-            return None;
-        }
-        parse_sizes_candidate(candidate, viewport_width_css_px)
-    })
+    split_css_top_level_commas(sizes)
+        .into_iter()
+        .find_map(|candidate| {
+            let candidate = candidate.trim();
+            if candidate.is_empty() {
+                return None;
+            }
+            parse_sizes_candidate(candidate, viewport_width_css_px)
+        })
 }
 
 fn parse_sizes_candidate(candidate: &str, viewport_width_css_px: usize) -> Option<usize> {
@@ -1288,6 +1290,14 @@ fn parse_sizes_candidate(candidate: &str, viewport_width_css_px: usize) -> Optio
 }
 
 fn parse_source_size_dimension(value: &str, viewport_width_css_px: usize) -> Option<usize> {
+    let pixels = parse_source_size_value(value, viewport_width_css_px)?;
+    if !pixels.is_finite() || pixels <= 0.0 {
+        return None;
+    }
+    Some(pixels.ceil() as usize)
+}
+
+fn parse_source_size_value(value: &str, viewport_width_css_px: usize) -> Option<f64> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("auto") {
         return None;
@@ -1296,17 +1306,47 @@ fn parse_source_size_dimension(value: &str, viewport_width_css_px: usize) -> Opt
         let value = &value[5..value.len() - 1];
         return parse_source_size_calc(value, viewport_width_css_px);
     }
+    if value.len() >= 5 && value[..4].eq_ignore_ascii_case("min(") && value.ends_with(')') {
+        let value = &value[4..value.len() - 1];
+        let values = parse_source_size_function_args(value, viewport_width_css_px)?;
+        return values.into_iter().reduce(f64::min);
+    }
+    if value.len() >= 5 && value[..4].eq_ignore_ascii_case("max(") && value.ends_with(')') {
+        let value = &value[4..value.len() - 1];
+        let values = parse_source_size_function_args(value, viewport_width_css_px)?;
+        return values.into_iter().reduce(f64::max);
+    }
+    if value.len() >= 7 && value[..6].eq_ignore_ascii_case("clamp(") && value.ends_with(')') {
+        let value = &value[6..value.len() - 1];
+        let values = parse_source_size_function_args(value, viewport_width_css_px)?;
+        if values.len() != 3 {
+            return None;
+        }
+        if values[0] > values[2] {
+            return None;
+        }
+        return Some(values[1].clamp(values[0], values[2]));
+    }
     if let Some(vw) = value.strip_suffix("vw") {
         let vw = vw.trim().parse::<f64>().ok()?;
         if !vw.is_finite() || vw <= 0.0 || viewport_width_css_px == 0 {
             return None;
         }
-        return Some(((viewport_width_css_px as f64) * vw / 100.0).ceil() as usize);
+        return Some((viewport_width_css_px as f64) * vw / 100.0);
     }
-    parse_css_pixel_dimension(value)
+    let pixels = value.trim_end_matches("px").trim().parse::<f64>().ok()?;
+    pixels.is_finite().then_some(pixels)
 }
 
-fn parse_source_size_calc(expression: &str, viewport_width_css_px: usize) -> Option<usize> {
+fn parse_source_size_function_args(value: &str, viewport_width_css_px: usize) -> Option<Vec<f64>> {
+    let values = split_css_top_level_commas(value)
+        .into_iter()
+        .map(|arg| parse_source_size_value(arg, viewport_width_css_px))
+        .collect::<Option<Vec<_>>>()?;
+    (!values.is_empty()).then_some(values)
+}
+
+fn parse_source_size_calc(expression: &str, viewport_width_css_px: usize) -> Option<f64> {
     let mut total = 0.0f64;
     let mut sign = 1.0f64;
     let mut term_start = 0usize;
@@ -1331,7 +1371,7 @@ fn parse_source_size_calc(expression: &str, viewport_width_css_px: usize) -> Opt
     if !total.is_finite() || total <= 0.0 {
         return None;
     }
-    Some(total.ceil() as usize)
+    Some(total)
 }
 
 fn parse_source_size_calc_term(term: &str, viewport_width_css_px: usize) -> Option<f64> {
@@ -1344,6 +1384,25 @@ fn parse_source_size_calc_term(term: &str, viewport_width_css_px: usize) -> Opti
     }
     let px = term.trim_end_matches("px").trim().parse::<f64>().ok()?;
     px.is_finite().then_some(px)
+}
+
+fn split_css_top_level_commas(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, byte) in input.as_bytes().iter().enumerate() {
+        match byte {
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(&input[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&input[start..]);
+    parts
 }
 
 fn matching_closing_paren(input: &str, open_index: usize) -> Option<usize> {
