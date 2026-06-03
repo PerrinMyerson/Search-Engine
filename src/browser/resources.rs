@@ -624,11 +624,21 @@ fn collect_selected_image_resources_at(
         return;
     };
 
-    if let NodeKind::Element(element) = &node.kind
-        && element.tag == "img"
-        && let Some(url) = image_render_source(dom, node_id, element, viewport_width_css_px)
-    {
-        push_resource(resources, source, element, "image", "img", &url);
+    if let NodeKind::Element(element) = &node.kind {
+        if element.tag == "img"
+            && let Some(url) = image_render_source(dom, node_id, element, viewport_width_css_px)
+        {
+            push_resource(resources, source, element, "image", "img", &url);
+        } else if element.tag == "link" && link_preloads_image(element) {
+            push_link_image_resources(resources, source, element, true);
+        } else if element.tag == "video"
+            && let Some(poster) = element.poster.as_deref().map(str::trim)
+            && !poster.is_empty()
+        {
+            push_resource(resources, source, element, "poster", "video", poster);
+        } else if let Some(url) = selected_replaced_media_image_url(element) {
+            push_resource(resources, source, element, "image", &element.tag, url);
+        }
     }
 
     for &child in &node.children {
@@ -673,9 +683,10 @@ fn collect_resources_at(
                 if let Some(href) = element.href.as_deref().map(str::trim)
                     && !href.is_empty()
                 {
-                    let kind = link_resource_kind(element.rel.as_deref());
+                    let kind = link_resource_kind(element);
                     push_resource(resources, source, element, &kind, "link", href);
                 }
+                push_link_image_resources(resources, source, element, false);
             }
             _ => {}
         }
@@ -730,6 +741,29 @@ fn push_srcset_resources(
     }
 }
 
+fn push_link_image_resources(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    element: &ElementData,
+    include_href: bool,
+) {
+    if !link_preloads_image(element) {
+        return;
+    }
+    if include_href
+        && let Some(href) = element.href.as_deref().map(str::trim)
+        && !href.is_empty()
+    {
+        push_resource(resources, source, element, "image", "link", href);
+    }
+    let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str) else {
+        return;
+    };
+    for url in srcset_candidate_urls(srcset) {
+        push_resource(resources, source, element, "image_candidate", "link", &url);
+    }
+}
+
 fn push_resource(
     resources: &mut Vec<BrowserResource>,
     source: &str,
@@ -750,27 +784,69 @@ fn push_resource(
     });
 }
 
-fn link_resource_kind(rel: Option<&str>) -> String {
-    let rel = rel.unwrap_or_default().to_ascii_lowercase();
-    if rel
-        .split_ascii_whitespace()
-        .any(|item| item == "stylesheet")
-    {
+fn link_resource_kind(element: &ElementData) -> String {
+    if link_rel_contains(element.rel.as_deref(), "stylesheet") {
         "stylesheet".to_owned()
-    } else if rel.split_ascii_whitespace().any(|item| item == "icon") {
+    } else if link_rel_contains(element.rel.as_deref(), "icon") {
         "icon".to_owned()
-    } else if rel.split_ascii_whitespace().any(|item| item == "preload") {
+    } else if link_preloads_image(element) {
+        "image".to_owned()
+    } else if link_rel_contains(element.rel.as_deref(), "preload") {
         "preload".to_owned()
-    } else if rel
-        .split_ascii_whitespace()
-        .any(|item| item == "modulepreload")
-    {
+    } else if link_rel_contains(element.rel.as_deref(), "modulepreload") {
         "modulepreload".to_owned()
-    } else if rel.split_ascii_whitespace().any(|item| item == "manifest") {
+    } else if link_rel_contains(element.rel.as_deref(), "manifest") {
         "manifest".to_owned()
     } else {
         "link".to_owned()
     }
+}
+
+fn link_rel_contains(rel: Option<&str>, needle: &str) -> bool {
+    rel.unwrap_or_default()
+        .split_ascii_whitespace()
+        .any(|item| item.eq_ignore_ascii_case(needle))
+}
+
+fn link_preloads_image(element: &ElementData) -> bool {
+    link_rel_contains(element.rel.as_deref(), "preload")
+        && element
+            .attrs
+            .get("as")
+            .is_some_and(|as_attr| as_attr.trim().eq_ignore_ascii_case("image"))
+}
+
+fn selected_replaced_media_image_url(element: &ElementData) -> Option<&str> {
+    let url = match element.tag.as_str() {
+        "object" => element.data.as_deref(),
+        "embed" => element.src.as_deref(),
+        _ => None,
+    }?
+    .trim();
+    (!url.is_empty() && url_likely_supported_image(url)).then_some(url)
+}
+
+fn url_likely_supported_image(url: &str) -> bool {
+    let url = url.trim();
+    if url
+        .get(..11)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
+    {
+        return true;
+    }
+    let path = Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
+    Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "svg" | "png" | "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "webp"
+            )
+        })
 }
 
 #[cfg(test)]

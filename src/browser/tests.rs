@@ -2310,6 +2310,96 @@ async fn session_render_images_decodes_css_background_image_resource() {
 }
 
 #[tokio::test]
+async fn image_resource_bundle_decodes_replaced_media_image_resources() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let poster = dir.path().join("poster.png");
+    let object = dir.path().join("object.png");
+    let embed = dir.path().join("embed.webp");
+    fs::write(&poster, &png_bytes).unwrap();
+    fs::write(&object, &png_bytes).unwrap();
+    fs::write(&embed, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before media</p>
+            <video poster="poster.png" width="16" height="24"></video>
+            <object data="object.png" width="16" height="24"></object>
+            <embed src="embed.webp" width="16" height="24">
+            <p>After media</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 3);
+    assert_eq!(report.decoded, 3);
+    assert_eq!(report.failed, 0);
+    assert!(report.fetches.iter().any(|fetch| {
+        fetch.resource.kind == "poster"
+            && fetch.resource.initiator == "video"
+            && fetch.resource.resolved == poster.display().to_string()
+            && fetch.status == "fetched"
+            && fetch.content_type.as_deref() == Some("image/png")
+    }));
+    assert!(report.fetches.iter().any(|fetch| {
+        fetch.resource.kind == "image"
+            && fetch.resource.initiator == "object"
+            && fetch.resource.resolved == object.display().to_string()
+            && fetch.status == "fetched"
+    }));
+    assert!(report.fetches.iter().any(|fetch| {
+        fetch.resource.kind == "image"
+            && fetch.resource.initiator == "embed"
+            && fetch.resource.resolved == embed.display().to_string()
+            && fetch.status == "fetched"
+            && fetch.content_type.as_deref() == Some("image/webp")
+    }));
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 3);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &poster.display().to_string() && *hash == expected_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &object.display().to_string() && *hash == expected_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(_),
+                ..
+            } if url == &embed.display().to_string()
+        )
+    }));
+}
+
+#[tokio::test]
 async fn session_render_images_decodes_http_resource_cache_pixels() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -3922,6 +4012,44 @@ fn discovers_static_subresources() {
     }));
     assert!(render.resources.iter().any(|resource| {
         resource.kind == "object" && resource.resolved == "https://example.com/app/thing.swf"
+    }));
+}
+
+#[test]
+fn image_resource_bundle_discovers_image_preload_subresources() {
+    let render = render_html(
+        "https://example.com/app/page.html",
+        br#"
+            <html><head>
+              <link rel="preload" as="image" href="/img/hero.jpg" imagesrcset="/img/hero.webp 640w, /img/hero@2x.jpg 1280w" imagesizes="100vw" type="image/webp">
+              <link rel="preload" as="font" href="/fonts/app.woff2">
+            </head><body></body></html>
+            "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.initiator == "link"
+            && resource.url == "/img/hero.jpg"
+            && resource.resolved == "https://example.com/img/hero.jpg"
+            && resource.rel.as_deref() == Some("preload")
+            && resource.type_hint.as_deref() == Some("image/webp")
+    }));
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.initiator == "link"
+            && resource.url == "/img/hero.webp"
+            && resource.resolved == "https://example.com/img/hero.webp"
+    }));
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.initiator == "link"
+            && resource.url == "/img/hero@2x.jpg"
+            && resource.resolved == "https://example.com/img/hero@2x.jpg"
+    }));
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "preload" && resource.resolved == "https://example.com/fonts/app.woff2"
     }));
 }
 
