@@ -2598,6 +2598,7 @@ fn post_visual_viewports_keep_text_and_fills_readable() {
         },
     );
     let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains("Readable hero"));
     assert!(scrolled_text.contains('#'));
     assert!(
         scrolled
@@ -2618,6 +2619,21 @@ fn post_visual_viewports_keep_text_and_fills_readable() {
         .saturating_mul(raster.width)
         .saturating_add(glyph_pixel_x);
     assert_eq!(raster.pixels[glyph_pixel], 255);
+
+    let scrolled_raster_options = BrowserRasterOptions {
+        viewport_y: Some(3),
+        viewport_width: Some(24),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let scrolled_raster =
+        rasterize_render(&render, scrolled_raster_options).expect("rasterize scrolled context");
+    let scrolled_glyph_pixel_x = scrolled_raster_options.padding_x.saturating_add(2);
+    let scrolled_glyph_pixel_y = scrolled_raster_options.padding_y.saturating_add(2);
+    let scrolled_glyph_pixel = scrolled_glyph_pixel_y
+        .saturating_mul(scrolled_raster.width)
+        .saturating_add(scrolled_glyph_pixel_x);
+    assert_eq!(scrolled_raster.pixels[scrolled_glyph_pixel], 255);
 }
 
 #[test]
