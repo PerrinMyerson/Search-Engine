@@ -58,8 +58,10 @@ pub struct WebSearchStorageCompactionReport {
     pub result_log_path: PathBuf,
     pub cache_before: WebSearchStorageArtifactState,
     pub cache_after: WebSearchStorageArtifactState,
+    pub cache_projected_after: WebSearchStorageArtifactState,
     pub result_log_before: WebSearchStorageArtifactState,
     pub result_log_after: WebSearchStorageArtifactState,
+    pub result_log_projected_after: WebSearchStorageArtifactState,
     pub skipped: bool,
     pub dry_run: bool,
 }
@@ -326,13 +328,26 @@ fn compact_web_search_storage(
     let cache_before = web_storage_artifact_state(&cache_path)?;
     let result_log_before = web_storage_artifact_state(&result_log_path)?;
     let max_entries_before = cache_before.entries.max(result_log_before.entries);
-    let skipped =
-        options.dry_run || (options.min_entries > 0 && max_entries_before < options.min_entries);
+    let skipped = options.min_entries > 0 && max_entries_before < options.min_entries;
+    let should_compact = !skipped && !options.dry_run;
+    let should_project = !skipped && options.dry_run;
 
-    if !skipped && cache_path.exists() {
+    let (cache_projected_after, result_log_projected_after) = if should_project {
+        projected_web_search_storage_state(
+            &cache_path,
+            &result_log_path,
+            cache_ttl_secs,
+            cache_max_entries,
+            result_log_max_entries,
+        )?
+    } else {
+        (cache_before, result_log_before)
+    };
+
+    if should_compact && cache_path.exists() {
         let _ = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
     }
-    if !skipped {
+    if should_compact {
         enforce_result_log_retention(&result_log_path, result_log_max_entries)?;
     }
 
@@ -343,11 +358,81 @@ fn compact_web_search_storage(
         result_log_path,
         cache_before,
         cache_after,
+        cache_projected_after,
         result_log_before,
         result_log_after,
+        result_log_projected_after,
         skipped,
         dry_run: options.dry_run,
     })
+}
+
+fn projected_web_search_storage_state(
+    cache_path: &Path,
+    result_log_path: &Path,
+    cache_ttl_secs: u64,
+    cache_max_entries: usize,
+    result_log_max_entries: usize,
+) -> Result<(WebSearchStorageArtifactState, WebSearchStorageArtifactState)> {
+    let temp_dir = WebStorageProjectionTempDir::create()?;
+    let temp_cache_path = temp_dir.path().join("web-cache.jsonl");
+    let temp_result_log_path = temp_dir.path().join("brave-results.jsonl");
+
+    if cache_path.exists() {
+        fs::copy(cache_path, &temp_cache_path).with_context(|| {
+            format!(
+                "copy web cache {} to dry-run temp {}",
+                cache_path.display(),
+                temp_cache_path.display()
+            )
+        })?;
+        let _ = WebResultCache::load(temp_cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
+    }
+    if result_log_path.exists() {
+        fs::copy(result_log_path, &temp_result_log_path).with_context(|| {
+            format!(
+                "copy web result log {} to dry-run temp {}",
+                result_log_path.display(),
+                temp_result_log_path.display()
+            )
+        })?;
+        enforce_result_log_retention(&temp_result_log_path, result_log_max_entries)?;
+    }
+
+    Ok((
+        web_storage_artifact_state(&temp_cache_path)?,
+        web_storage_artifact_state(&temp_result_log_path)?,
+    ))
+}
+
+struct WebStorageProjectionTempDir {
+    path: PathBuf,
+}
+
+impl WebStorageProjectionTempDir {
+    fn create() -> Result<Self> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "brutal-web-storage-projection-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&path)
+            .with_context(|| format!("create web storage dry-run temp dir {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WebStorageProjectionTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn web_storage_artifact_state(path: &Path) -> Result<WebSearchStorageArtifactState> {
@@ -1217,8 +1302,10 @@ mod tests {
         .unwrap();
 
         assert!(report.dry_run);
-        assert!(report.skipped);
+        assert!(!report.skipped);
         assert_eq!(report.cache_before, report.cache_after);
+        assert!(report.cache_projected_after.bytes < report.cache_before.bytes);
+        assert!(report.cache_projected_after.entries < report.cache_before.entries);
         assert_eq!(fs::read_to_string(cache_path).unwrap(), before);
     }
 
@@ -1256,6 +1343,7 @@ mod tests {
         assert!(!report.dry_run);
         assert!(report.skipped);
         assert_eq!(report.cache_before, report.cache_after);
+        assert_eq!(report.cache_before, report.cache_projected_after);
     }
 
     #[test]

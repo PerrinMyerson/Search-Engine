@@ -958,12 +958,14 @@ fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport
         &report.cache_path,
         report.cache_before,
         report.cache_after,
+        report.cache_projected_after,
     );
     print_web_storage_compaction_artifact(
         "brave-results",
         &report.result_log_path,
         report.result_log_before,
         report.result_log_after,
+        report.result_log_projected_after,
     );
 }
 
@@ -972,20 +974,48 @@ fn print_web_storage_compaction_artifact(
     path: &Path,
     before: WebSearchStorageArtifactState,
     after: WebSearchStorageArtifactState,
+    projected_after: WebSearchStorageArtifactState,
 ) {
-    println!("{label}_path: {}", path.display());
-    println!("{label}_bytes_before: {}", before.bytes);
-    println!("{label}_bytes_after: {}", after.bytes);
-    println!(
-        "{label}_bytes_removed: {}",
-        before.bytes.saturating_sub(after.bytes)
-    );
-    println!("{label}_entries_before: {}", before.entries);
-    println!("{label}_entries_after: {}", after.entries);
-    println!(
-        "{label}_entries_removed: {}",
-        before.entries.saturating_sub(after.entries)
-    );
+    for line in web_storage_compaction_artifact_lines(label, path, before, after, projected_after) {
+        println!("{line}");
+    }
+}
+
+fn web_storage_compaction_artifact_lines(
+    label: &str,
+    path: &Path,
+    before: WebSearchStorageArtifactState,
+    after: WebSearchStorageArtifactState,
+    projected_after: WebSearchStorageArtifactState,
+) -> Vec<String> {
+    vec![
+        format!("{label}_path: {}", path.display()),
+        format!("{label}_bytes_before: {}", before.bytes),
+        format!("{label}_bytes_after: {}", after.bytes),
+        format!("{label}_bytes_projected_after: {}", projected_after.bytes),
+        format!(
+            "{label}_bytes_removed: {}",
+            before.bytes.saturating_sub(after.bytes)
+        ),
+        format!(
+            "{label}_bytes_projected_removed: {}",
+            before.bytes.saturating_sub(projected_after.bytes)
+        ),
+        format!("{label}_entries_before: {}", before.entries),
+        format!("{label}_entries_after: {}", after.entries),
+        format!(
+            "{label}_entries_projected_after: {}",
+            projected_after.entries
+        ),
+        format!(
+            "{label}_entries_removed: {}",
+            before.entries.saturating_sub(after.entries)
+        ),
+        format!(
+            "{label}_entries_projected_removed: {}",
+            before.entries.saturating_sub(projected_after.entries)
+        ),
+    ]
 }
 
 fn collect_web_storage_artifact_stats(
@@ -1317,5 +1347,32 @@ mod tests {
             Some("brutal-search compact-web-cache --dry-run --min-entries 1")
         );
         assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
+    }
+
+    #[test]
+    fn web_storage_compaction_artifact_lines_include_projected_savings() {
+        let lines = web_storage_compaction_artifact_lines(
+            "web-cache",
+            Path::new("/tmp/web-cache.jsonl"),
+            WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 6,
+            },
+            WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 6,
+            },
+            WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 4,
+            },
+        );
+
+        assert!(lines.contains(&"web-cache_bytes_projected_after: 80".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_projected_removed: 40".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_after: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
     }
 }
