@@ -8237,6 +8237,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let keyboard_controls = render_browser_session_keyboard_controls(payload);
     let inspector = render_browser_session_inspector(payload);
     let session_tabs = render_browser_session_tabs(payload);
+    let primary_tab_strip = render_browser_session_primary_tab_strip(payload);
     let closed_sessions = render_browser_session_closed_sessions(payload);
     let bookmarks = render_browser_session_bookmarks(payload);
     let profile_history = render_browser_session_profile_history(payload);
@@ -8471,6 +8472,14 @@ h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 8px; margin: -18px -18px 14px; padding: 10px 18px 8px; background: rgba(247, 247, 245, 0.96); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
 .browser-primary-nav {{ margin-bottom: 0; }}
+.browser-tab-strip {{ display: flex; gap: 6px; overflow-x: auto; margin: 0 0 10px; padding: 2px 0 4px; scrollbar-gutter: stable; }}
+.browser-tab-pill {{ flex: 0 0 clamp(150px, 22vw, 230px); min-width: 0; display: grid; gap: 2px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 7px 9px; background: #fff; color: #20242a; text-decoration: none; }}
+.browser-tab-pill:hover {{ text-decoration: none; border-color: #8f98a3; }}
+.browser-tab-pill.current {{ background: #191a1c; color: #fff; border-color: #191a1c; }}
+.browser-tab-pill.pinned {{ border-left: 4px solid #2457d6; padding-left: 6px; }}
+.browser-tab-pill strong, .browser-tab-pill span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.browser-tab-pill strong {{ font-size: 13px; font-weight: 800; }}
+.browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
 .browser-page-head {{ margin: 12px 0 10px; }}
 .browser-page-head h1 {{ margin-top: 0; }}
 .toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }}
@@ -8592,6 +8601,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
 </header>
+{primary_tab_strip}
 <section class="browser-page-head">
 <h1>{heading}</h1>
 <div class="meta">{source}</div>
@@ -8679,6 +8689,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         click_controls = click_controls,
         keyboard_controls = keyboard_controls,
         find_controls = find_controls,
+        primary_tab_strip = primary_tab_strip,
         session_tabs = session_tabs,
         closed_sessions = closed_sessions,
         bookmarks = bookmarks,
@@ -10843,6 +10854,41 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
             .filter(|candidate| candidate.eq_ignore_ascii_case(needle))
             .map(|_| index)
     })
+}
+
+fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> String {
+    if payload.sessions.len() <= 1 {
+        return String::new();
+    }
+
+    let mut tabs = String::new();
+    for session in &payload.sessions {
+        let class = match (session.current, session.pinned) {
+            (true, true) => "browser-tab-pill current pinned",
+            (true, false) => "browser-tab-pill current",
+            (false, true) => "browser-tab-pill pinned",
+            (false, false) => "browser-tab-pill",
+        };
+        let aria_current = if session.current {
+            r#" aria-current="page""#
+        } else {
+            ""
+        };
+        let pinned_marker = if session.pinned { "Pinned · " } else { "" };
+        let _ = write!(
+            tabs,
+            r#"<a class="{class}" href="{href}"{aria_current}><strong>{position} · {pinned_marker}{title}</strong><span>{source}</span></a>"#,
+            class = class,
+            href = html_escape::encode_double_quoted_attribute(&session.action_url),
+            aria_current = aria_current,
+            position = session.position,
+            pinned_marker = pinned_marker,
+            title = html_escape::encode_text(&session.title),
+            source = html_escape::encode_text(&session.source),
+        );
+    }
+
+    format!(r#"<nav class="browser-tab-strip" aria-label="Open browser tabs">{tabs}</nav>"#)
 }
 
 fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
