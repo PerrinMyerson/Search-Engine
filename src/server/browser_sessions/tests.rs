@@ -2126,15 +2126,20 @@ async fn browser_session_registry_find_jumps_to_match_column() {
 async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("wide.html");
+    let stylesheet = dir.path().join("style.css");
     let wide_lines = (0..30)
         .map(|index| {
             format!("{index:02} ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
         })
         .collect::<Vec<_>>()
         .join("\n");
+    std::fs::write(&stylesheet, "pre { color: #111; }").unwrap();
     std::fs::write(
         &page,
-        format!(r#"<!doctype html><title>Wide</title><pre>{wide_lines}</pre>"#),
+        format!(
+            r#"<!doctype html><title>Wide</title><link rel="stylesheet" href="{}"><pre>{wide_lines}</pre>"#,
+            stylesheet.display()
+        ),
     )
     .unwrap();
 
@@ -2158,6 +2163,12 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains("<span>Up</span>"));
     assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Bottom</a>"));
+    assert!(html.contains(r#"data-browser-viewport-controls"#));
+    assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
+    assert!(html.contains("<span>Page up</span>"));
+    assert!(html.contains("<span>Line up</span>"));
+    assert!(html.contains(">Line down</a>"));
+    assert!(html.contains(">Page down</a>"));
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
         params: vec![
@@ -2174,6 +2185,20 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
             .as_str()
             .unwrap()
             .contains("action=bottom")
+    );
+    assert!(exported["action_urls"]["page_up"].is_null());
+    assert!(exported["action_urls"]["line_up"].is_null());
+    assert!(
+        exported["action_urls"]["page_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=page-down")
+    );
+    assert!(
+        exported["action_urls"]["line_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=line-down")
     );
     assert!(
         exported["action_urls"]["scroll_down"]
@@ -2214,6 +2239,10 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(">Up</a>"));
     assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Right</a>"));
+    assert!(html.contains(">Page up</a>"));
+    assert!(html.contains(">Line up</a>"));
+    assert!(html.contains(">Line down</a>"));
+    assert!(html.contains(">Page down</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-status"#));
     assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
@@ -2294,11 +2323,85 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
             .contains("action=bottom")
     );
     assert!(
+        exported["action_urls"]["page_up"]
+            .as_str()
+            .unwrap()
+            .contains("action=page-up")
+    );
+    assert!(
+        exported["action_urls"]["line_up"]
+            .as_str()
+            .unwrap()
+            .contains("action=line-up")
+    );
+    assert!(
+        exported["action_urls"]["page_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=page-down")
+    );
+    assert!(
+        exported["action_urls"]["line_down"]
+            .as_str()
+            .unwrap()
+            .contains("action=line-down")
+    );
+    assert!(
         exported["action_urls"]["scroll_down"]
             .as_str()
             .unwrap()
             .contains("action=scroll")
     );
+
+    let apply_styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], &payload);
+    let apply_styles = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(
+            apply_styles_href.trim_start_matches("/browser?").as_bytes(),
+        )
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect(),
+    };
+    let (payload, _) = registry.apply_target(&apply_styles).await.unwrap();
+    assert_eq!(payload.viewport_x, 8);
+    assert_eq!(payload.viewport_y, 4);
+    assert!(
+        payload
+            .resource_report
+            .as_ref()
+            .is_some_and(|report| report.action == "Apply styles")
+    );
+
+    let page_down = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "page-down".to_owned()),
+            ("viewport_x".to_owned(), payload.viewport_x.to_string()),
+            ("viewport_y".to_owned(), payload.viewport_y.to_string()),
+        ],
+    };
+    let expected_page_down_y = payload
+        .viewport_y
+        .saturating_add(payload.height)
+        .min(payload.max_scroll_y);
+    let (payload, _) = registry.apply_target(&page_down).await.unwrap();
+    assert_eq!(payload.viewport_x, 8);
+    assert_eq!(payload.viewport_y, expected_page_down_y);
+
+    let line_up = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "line-up".to_owned()),
+            ("viewport_x".to_owned(), payload.viewport_x.to_string()),
+            ("viewport_y".to_owned(), payload.viewport_y.to_string()),
+        ],
+    };
+    let expected_line_up_y = payload.viewport_y.saturating_sub(1);
+    let (payload, _) = registry.apply_target(&line_up).await.unwrap();
+    assert_eq!(payload.viewport_x, 8);
+    assert_eq!(payload.viewport_y, expected_line_up_y);
 
     let jump_viewport = RequestTarget {
         path: "/browser".to_owned(),
@@ -2339,6 +2442,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
             .contains("action=scroll")
     );
     assert!(exported["action_urls"]["bottom"].is_null());
+    assert!(exported["action_urls"]["page_down"].is_null());
+    assert!(exported["action_urls"]["line_down"].is_null());
     assert!(exported["action_urls"]["scroll_down"].is_null());
 
     let duplicate_href = browser_session_new_session_href(&payload.source, &payload);

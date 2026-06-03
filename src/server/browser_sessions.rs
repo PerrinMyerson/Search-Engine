@@ -784,6 +784,10 @@ struct BrowserSessionStateExportActionUrls {
     reload: String,
     top: Option<String>,
     bottom: Option<String>,
+    page_up: Option<String>,
+    page_down: Option<String>,
+    line_up: Option<String>,
+    line_down: Option<String>,
     scroll_up: Option<String>,
     scroll_down: Option<String>,
     scroll_left: Option<String>,
@@ -998,6 +1002,10 @@ enum BrowserSessionAction {
     },
     Top,
     Bottom,
+    PageUp,
+    PageDown,
+    LineUp,
+    LineDown,
     Fill {
         form_index: usize,
         name: String,
@@ -5999,6 +6007,22 @@ async fn apply_browser_action(
         BrowserSessionAction::Bottom => {
             web_session.viewport_y = usize::MAX;
         }
+        BrowserSessionAction::PageUp => {
+            web_session.viewport_y = apply_scroll_delta(
+                web_session.viewport_y,
+                -(web_session.height.max(1) as isize),
+            );
+        }
+        BrowserSessionAction::PageDown => {
+            web_session.viewport_y =
+                apply_scroll_delta(web_session.viewport_y, web_session.height.max(1) as isize);
+        }
+        BrowserSessionAction::LineUp => {
+            web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, -1);
+        }
+        BrowserSessionAction::LineDown => {
+            web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, 1);
+        }
         BrowserSessionAction::Fill {
             form_index,
             name,
@@ -7093,6 +7117,10 @@ fn browser_action(target: &RequestTarget) -> Result<BrowserSessionAction, Browse
         }
         "top" => Ok(BrowserSessionAction::Top),
         "bottom" => Ok(BrowserSessionAction::Bottom),
+        "page-up" | "page_up" | "pageup" => Ok(BrowserSessionAction::PageUp),
+        "page-down" | "page_down" | "pagedown" => Ok(BrowserSessionAction::PageDown),
+        "line-up" | "line_up" | "up-one" | "up_one" => Ok(BrowserSessionAction::LineUp),
+        "line-down" | "line_down" | "down-one" | "down_one" => Ok(BrowserSessionAction::LineDown),
         "fill" => Ok(BrowserSessionAction::Fill {
             form_index: browser_action_index(target, "form", "form index")?,
             name: target
@@ -8448,6 +8476,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
+    let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
@@ -8705,6 +8734,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
 .viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
 .viewport-scroll-meter span {{ display: block; height: 100%; background: #2457d6; }}
+.viewport-scroll-controls {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
+.viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
 .find-bar input[type="search"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -8826,6 +8858,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary">
 {resource_quick_actions}
+{viewport_scroll_controls}
 {viewport_status}
 {viewport_image}
 {primary_input_controls}
@@ -8904,6 +8937,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
         resource_quick_actions = resource_quick_actions,
+        viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
         primary_input_controls = primary_input_controls,
         viewport = viewport,
@@ -9680,6 +9714,14 @@ fn browser_session_state_action_urls(
             .then(|| browser_session_action_href(&payload.id, "top", &[], payload)),
         bottom: (payload.viewport_y < payload.max_scroll_y)
             .then(|| browser_session_action_href(&payload.id, "bottom", &[], payload)),
+        page_up: (payload.viewport_y > 0)
+            .then(|| browser_session_action_href(&payload.id, "page-up", &[], payload)),
+        page_down: (payload.viewport_y < payload.max_scroll_y)
+            .then(|| browser_session_action_href(&payload.id, "page-down", &[], payload)),
+        line_up: (payload.viewport_y > 0)
+            .then(|| browser_session_action_href(&payload.id, "line-up", &[], payload)),
+        line_down: (payload.viewport_y < payload.max_scroll_y)
+            .then(|| browser_session_action_href(&payload.id, "line-down", &[], payload)),
         scroll_up: (payload.viewport_y > 0).then(|| {
             browser_session_action_href(
                 &payload.id,
@@ -11241,6 +11283,26 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
         max_y = payload.max_scroll_y,
         vertical_percent_label = vertical_percent_label,
         meter_percent = meter_percent,
+    )
+}
+
+fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
+    let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
+    let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
+    let line_up_href = browser_session_action_href(&payload.id, "line-up", &[], payload);
+    let line_down_href = browser_session_action_href(&payload.id, "line-down", &[], payload);
+    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
+    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let can_scroll_up = payload.viewport_y > 0;
+    let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
+    format!(
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{page_up}{line_up}{line_down}{page_down}{bottom}</nav>"#,
+        top = nav_control(can_scroll_up, "Top", &top_href),
+        page_up = nav_control(can_scroll_up, "Page up", &page_up_href),
+        line_up = nav_control(can_scroll_up, "Line up", &line_up_href),
+        line_down = nav_control(can_scroll_down, "Line down", &line_down_href),
+        page_down = nav_control(can_scroll_down, "Page down", &page_down_href),
+        bottom = nav_control(can_scroll_down, "Bottom", &bottom_href),
     )
 }
 
