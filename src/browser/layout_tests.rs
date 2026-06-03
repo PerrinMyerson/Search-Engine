@@ -463,6 +463,37 @@ fn css_first_child_selector_restores_first_hidden_slide() {
 }
 
 #[test]
+fn css_media_rules_do_not_leak_hidden_hero_text() {
+    let render = render_html(
+        "mem://css-media-hidden-hero",
+        br#"
+            <html><head><style>
+              .hero-title { display: block; }
+              @media (max-width: 600px) {
+                .unused { color: red; }
+                .hero-title { display: none; }
+              }
+              .hero-subtitle { display: block; }
+            </style></head><body>
+              <section>
+                <h1 class="hero-title">Saving Lives with Data</h1>
+                <p class="hero-subtitle">Real-time intelligence</p>
+              </section>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(
+        render.text,
+        "Saving Lives with Data\nReal-time intelligence"
+    );
+}
+
+#[test]
 fn css_flex_container_lays_out_block_children_in_row() {
     let render = render_html(
         "mem://css-flex-row-children",
