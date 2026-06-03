@@ -837,6 +837,7 @@ struct WebStoragePressureSummary {
     bytes: u64,
     entries: usize,
     duplicate_entries: usize,
+    max_entries_per_query: usize,
     stale_artifacts: usize,
     suggested_dry_runs: usize,
 }
@@ -961,6 +962,10 @@ fn web_storage_pressure_summary_lines(
             summary.duplicate_entries
         ),
         format!(
+            "web_storage_pressure_max_entries_per_query: {}",
+            summary.max_entries_per_query
+        ),
+        format!(
             "web_storage_pressure_stale_artifacts: {}",
             summary.stale_artifacts
         ),
@@ -989,6 +994,11 @@ fn web_storage_pressure_summary(
             .iter()
             .map(|artifact| artifact.duplicate_entries)
             .sum(),
+        max_entries_per_query: artifacts
+            .iter()
+            .map(|artifact| artifact.max_entries_per_query)
+            .max()
+            .unwrap_or(0),
         stale_artifacts: artifacts
             .iter()
             .filter(|artifact| {
@@ -1523,6 +1533,7 @@ mod tests {
         ));
         assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
         assert!(lines.contains(
             &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
         ));
