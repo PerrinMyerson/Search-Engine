@@ -2381,6 +2381,71 @@ fn css_animation_fill_and_negative_z_media_keep_hero_text_visible() {
 }
 
 #[test]
+fn css_viewport_units_size_first_viewport_hero() {
+    let render = render_html(
+        "mem://viewport-unit-hero",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .hero {
+                    position: relative;
+                    inline-size: 100dvw;
+                    width: 100vw;
+                    block-size: 100vh;
+                    min-block-size: 100svh;
+                    background-color: white;
+                  }
+                  .hero-copy {
+                    position: absolute;
+                    top: 0;
+                  }
+                </style>
+              </head>
+              <body>
+                <section class="hero">
+                  <div class="hero-copy">Hero headline</div>
+                </section>
+                <p>Below fold</p>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 44,
+            ..
+        }
+    )));
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Text { y: 44, text, .. }
+            | DisplayCommand::StyledText { y: 44, text, .. }
+            if text == "Below fold"
+    )));
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 100,
+            height: 44,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert!(viewport.lines[0].starts_with("Hero headline"));
+    assert!(!viewport.lines.join("\n").contains("Below fold"));
+}
+
+#[test]
 fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
     let render = render_html(
         "mem://positioned-out-of-flow",

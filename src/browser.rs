@@ -10685,7 +10685,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     }
                 }
             }
-            "width" => {
+            "width" | "inline-size" => {
                 declarations.width =
                     parse_css_dimension_length(value, CssAxis::Horizontal).or(declarations.width);
             }
@@ -10697,7 +10697,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.min_width = parse_css_dimension_length(value, CssAxis::Horizontal)
                     .or(declarations.min_width);
             }
-            "height" => {
+            "height" | "block-size" => {
                 declarations.height =
                     parse_css_dimension_length(value, CssAxis::Vertical).or(declarations.height);
             }
@@ -10705,7 +10705,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.max_height = parse_css_dimension_length(value, CssAxis::Vertical)
                     .or(declarations.max_height);
             }
-            "min-height" => {
+            "min-height" | "min-block-size" => {
                 declarations.min_height = parse_css_dimension_length(value, CssAxis::Vertical)
                     .or(declarations.min_height);
             }
@@ -10791,6 +10791,8 @@ fn css_axis_cell_px(axis: CssAxis) -> f32 {
 }
 
 const CSS_TEXT_CELL_UNITS: usize = 256;
+const CSS_DEFAULT_VIEWPORT_WIDTH_CELLS: f32 = 100.0;
+const CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS: f32 = 44.0;
 
 fn parse_css_length_pixels(value: &str) -> Option<f32> {
     let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
@@ -10802,19 +10804,48 @@ fn parse_css_length_pixels(value: &str) -> Option<f32> {
     {
         return None;
     }
-    let (numeric, multiplier) = if let Some(numeric) = value.strip_suffix("rem") {
-        (numeric, 16.0)
-    } else if let Some(numeric) = value.strip_suffix("em") {
-        (numeric, 16.0)
-    } else if let Some(numeric) = value.strip_suffix("ch") {
-        (numeric, 8.0)
-    } else if let Some(numeric) = value.strip_suffix("px") {
-        (numeric, 1.0)
-    } else {
-        (value.as_str(), 1.0)
-    };
+    let (numeric, multiplier) =
+        if let Some((numeric, multiplier)) = parse_css_viewport_unit_length(&value) {
+            (numeric, multiplier)
+        } else if let Some(numeric) = value.strip_suffix("rem") {
+            (numeric, 16.0)
+        } else if let Some(numeric) = value.strip_suffix("em") {
+            (numeric, 16.0)
+        } else if let Some(numeric) = value.strip_suffix("ch") {
+            (numeric, 8.0)
+        } else if let Some(numeric) = value.strip_suffix("px") {
+            (numeric, 1.0)
+        } else {
+            (value.as_str(), 1.0)
+        };
     let pixels = numeric.parse::<f32>().ok()? * multiplier;
     pixels.is_finite().then_some(pixels)
+}
+
+fn parse_css_viewport_unit_length(value: &str) -> Option<(&str, f32)> {
+    let viewport_width_px =
+        CSS_DEFAULT_VIEWPORT_WIDTH_CELLS * css_axis_cell_px(CssAxis::Horizontal);
+    let viewport_height_px =
+        CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS * css_axis_cell_px(CssAxis::Vertical);
+    let viewport_min_px = viewport_width_px.min(viewport_height_px);
+    let viewport_max_px = viewport_width_px.max(viewport_height_px);
+    for (unit, unit_px) in [
+        ("svw", viewport_width_px / 100.0),
+        ("lvw", viewport_width_px / 100.0),
+        ("dvw", viewport_width_px / 100.0),
+        ("svh", viewport_height_px / 100.0),
+        ("lvh", viewport_height_px / 100.0),
+        ("dvh", viewport_height_px / 100.0),
+        ("vmin", viewport_min_px / 100.0),
+        ("vmax", viewport_max_px / 100.0),
+        ("vw", viewport_width_px / 100.0),
+        ("vh", viewport_height_px / 100.0),
+    ] {
+        if let Some(numeric) = value.strip_suffix(unit) {
+            return Some((numeric, unit_px));
+        }
+    }
+    None
 }
 
 fn css_length_cells(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
