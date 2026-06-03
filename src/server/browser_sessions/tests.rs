@@ -8697,9 +8697,14 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("action=fetch-resources"));
     assert!(html.contains("action=apply-styles"));
     assert!(html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Preparing visual render"));
     assert!(html.contains("Applying styles..."));
     assert!(html.contains("sessionStorage"));
+    assert!(html.contains("guardAutoVisualControls"));
+    assert!(html.contains("Visual render is still running. Please wait..."));
+    assert!(html.contains(r#"pathname === "/browser""#));
+    assert!(html.contains("setAutoVisualControlsBusy(false)"));
     assert!(html.contains("Visual render is still running. Refreshing soon..."));
     assert!(html.contains("sessionStorage.removeItem(stateKey)"));
     assert!(html.contains("AbortController"));
@@ -9093,12 +9098,15 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(r#"<span class="meta">1 image</span>"#));
     assert!(html.contains("action=load-images"));
     assert!(html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Preparing visual render"));
     assert!(html.contains("Loading images..."));
     assert!(html.contains("sessionStorage"));
     assert!(html.contains(r#"document.querySelector("[data-auto-visual-" + "status]")"#));
     assert!(html.contains(r#"shell.dataset.pendingAutoVisual = "true""#));
     assert!(html.contains(r#"shell.setAttribute("aria-busy", "true")"#));
+    assert!(html.contains("showPendingAutoVisualStatus"));
+    assert!(html.contains(r#"{ passive: false }"#));
     let auto_guard_index = html
         .find("const pendingAutoVisual")
         .expect("viewport script should guard auto-visual pages");
