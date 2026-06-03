@@ -1147,6 +1147,84 @@ fn selects_descriptorless_jpeg_srcset_candidate_as_default_density() {
 }
 
 #[test]
+fn ignores_jpeg_srcset_candidate_with_invalid_descriptor() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let bad_jpeg = dir.path().join("bad.jpg");
+    let valid_jpeg = dir.path().join("valid.jpg");
+    fs::write(&bad_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&valid_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "valid.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" srcset="bad.jpg 1x bogus, valid.jpg" alt="Invalid Descriptor JPEG" width="80" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Invalid Descriptor JPEG".to_owned()),
+            url: Some("valid.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
+fn ignores_jpeg_srcset_candidate_with_mixed_descriptors() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let bad_jpeg = dir.path().join("bad.jpg");
+    let small_jpeg = dir.path().join("small.jpg");
+    let large_jpeg = dir.path().join("large.jpg");
+    fs::write(&bad_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" sizes="160px" srcset="bad.jpg 160w 1x, small.jpg 160w, large.jpg 320w" alt="Mixed Descriptor JPEG" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+            shade: 220,
+            alt: Some("Mixed Descriptor JPEG".to_owned()),
+            url: Some("small.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
 fn selects_viewport_width_jpeg_srcset_candidate_without_width_attr() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

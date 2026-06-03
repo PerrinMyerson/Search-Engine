@@ -1609,20 +1609,7 @@ fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
             if url.is_empty() {
                 return None;
             }
-            let mut width = None;
-            let mut density_milli = None;
-            let mut has_descriptor = false;
-            for descriptor in parts {
-                has_descriptor = true;
-                if let Some(parsed_width) = parse_srcset_width_descriptor(descriptor) {
-                    width = Some(parsed_width);
-                } else if let Some(parsed_density) = parse_srcset_density_descriptor(descriptor) {
-                    density_milli = Some(parsed_density);
-                }
-            }
-            if !has_descriptor {
-                density_milli = Some(1_000);
-            }
+            let (width, density_milli) = parse_srcset_candidate_descriptors(parts)?;
             Some(SrcsetCandidate {
                 url: url.to_owned(),
                 width,
@@ -1631,6 +1618,43 @@ fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
             })
         })
         .collect()
+}
+
+fn parse_srcset_candidate_descriptors<'a>(
+    descriptors: impl Iterator<Item = &'a str>,
+) -> Option<(Option<usize>, Option<usize>)> {
+    let mut width = None;
+    let mut density_milli = None;
+    let mut future_compat_h = None;
+    let mut has_descriptor = false;
+    for descriptor in descriptors {
+        has_descriptor = true;
+        if let Some(parsed_width) = parse_srcset_width_descriptor(descriptor) {
+            if width.is_some() || density_milli.is_some() {
+                return None;
+            }
+            width = Some(parsed_width);
+        } else if let Some(parsed_density) = parse_srcset_density_descriptor(descriptor) {
+            if width.is_some() || density_milli.is_some() || future_compat_h.is_some() {
+                return None;
+            }
+            density_milli = Some(parsed_density);
+        } else if let Some(parsed_height) = parse_srcset_height_descriptor(descriptor) {
+            if density_milli.is_some() || future_compat_h.is_some() {
+                return None;
+            }
+            future_compat_h = Some(parsed_height);
+        } else {
+            return None;
+        }
+    }
+    if !has_descriptor {
+        density_milli = Some(1_000);
+    }
+    if future_compat_h.is_some() && width.is_none() {
+        return None;
+    }
+    Some((width, density_milli))
 }
 
 pub(super) fn srcset_candidate_urls(srcset: &str) -> Vec<String> {
@@ -1690,6 +1714,11 @@ fn skip_ascii_whitespace(input: &str, mut index: usize) -> usize {
 fn parse_srcset_width_descriptor(descriptor: &str) -> Option<usize> {
     let width = descriptor.strip_suffix('w')?.parse::<usize>().ok()?;
     (width > 0).then_some(width)
+}
+
+fn parse_srcset_height_descriptor(descriptor: &str) -> Option<usize> {
+    let height = descriptor.strip_suffix('h')?.parse::<usize>().ok()?;
+    (height > 0).then_some(height)
 }
 
 fn parse_srcset_density_descriptor(descriptor: &str) -> Option<usize> {
