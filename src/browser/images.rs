@@ -1002,17 +1002,15 @@ pub(super) fn image_render_source(
                 .and_then(|srcset| choose_srcset_candidate(srcset, srcset_target_width))
         })
         .or_else(|| element.src.clone());
-    if selected_source
-        .as_deref()
-        .is_none_or(is_lazy_image_placeholder_src)
-        && let Some(lazy_source) = lazy_image_render_source(
-            dom,
-            node_id,
-            element,
-            srcset_target_width,
-            viewport_width_css_px,
-        )
-    {
+    if selected_source.as_deref().is_none_or(|source| {
+        is_lazy_image_placeholder_src(source) || image_source_clearly_unsupported(source)
+    }) && let Some(lazy_source) = lazy_image_render_source(
+        dom,
+        node_id,
+        element,
+        srcset_target_width,
+        viewport_width_css_px,
+    ) {
         return Some(lazy_source);
     }
     selected_source
@@ -1192,6 +1190,10 @@ fn is_empty_picture_placeholder_source(element: &ElementData, srcset: &str) -> b
     }
     let urls = srcset_candidate_urls(srcset);
     !urls.is_empty() && urls.iter().all(|url| is_lazy_image_placeholder_src(url))
+}
+
+fn image_source_clearly_unsupported(url: &str) -> bool {
+    srcset_candidate_clearly_unsupported(url)
 }
 
 #[cfg(test)]
