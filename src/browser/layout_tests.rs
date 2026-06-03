@@ -2086,6 +2086,64 @@ Tail"
 }
 
 #[test]
+fn css_zero_opacity_suppresses_paint_without_collapsing_layout() {
+    let render = render_html(
+        "mem://opacity-zero-paint",
+        br#"
+            <html>
+              <head>
+                <style>
+                  #mega-menu-wrap #mega-menu > li.mega-menu-item {
+                    display: inline-block;
+                  }
+                  #mega-menu-wrap #mega-menu li.mega-menu-item > ul.mega-sub-menu {
+                    display: block;
+                    opacity: 0;
+                    position: absolute;
+                  }
+                </style>
+              </head>
+              <body>
+                <p>Before <span style="opacity:0">Hidden</span> After</p>
+                <nav id="mega-menu-wrap">
+                  <ul id="mega-menu">
+                    <li class="mega-menu-item">
+                      <a>Data</a>
+                      <ul class="mega-sub-menu">
+                        <li>Truveta Data</li>
+                        <li style="opacity:1">Capabilities</li>
+                      </ul>
+                    </li>
+                  </ul>
+                </nav>
+                <p>Hero copy</p>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Before        After\nData\nHero copy");
+    assert!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .all(|text| !text.contains("Hidden")
+                && !text.contains("Truveta Data")
+                && !text.contains("Capabilities"))
+    );
+}
+
+#[test]
 fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
     let render = render_html(
         "mem://positioned-out-of-flow",
