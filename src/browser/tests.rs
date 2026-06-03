@@ -3497,6 +3497,27 @@ fn discovers_data_url_srcset_resource_without_truncating_payload() {
     }));
 }
 
+#[test]
+fn skips_invalid_jpeg_srcset_candidate_resources() {
+    let render = render_html(
+        "https://example.com/app/page.html",
+        br#"<html><body><img src="fallback.jpg" srcset="bad.jpg 1x bogus, mixed.jpg 160w 1x, valid.jpg" alt="Hero"></body></html>"#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.resolved == "https://example.com/app/valid.jpg"
+    }));
+    assert!(!render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate" && resource.resolved == "https://example.com/app/bad.jpg"
+    }));
+    assert!(!render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.resolved == "https://example.com/app/mixed.jpg"
+    }));
+}
+
 #[tokio::test]
 async fn fetches_current_resources_and_uses_session_cache() {
     let dir = tempfile::tempdir().unwrap();
