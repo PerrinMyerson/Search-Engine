@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard, Notify};
 use url::form_urlencoded;
 
 use crate::browser::{
@@ -37,6 +38,7 @@ pub(super) struct BrowserSessionRegistry {
     profile_path: Option<PathBuf>,
     profile_error: Mutex<Option<String>>,
     sessions: Mutex<HashMap<String, BrowserWebSession>>,
+    in_flight_sessions: Mutex<HashMap<String, Arc<Notify>>>,
     closed_sessions: Mutex<Vec<BrowserClosedSession>>,
     bookmarks: Mutex<Vec<BrowserStoredBookmark>>,
     profile_tabs: Mutex<Vec<BrowserStoredProfileTab>>,
@@ -58,6 +60,7 @@ impl BrowserSessionRegistry {
             profile_path: None,
             profile_error: Mutex::new(None),
             sessions: Mutex::new(HashMap::new()),
+            in_flight_sessions: Mutex::new(HashMap::new()),
             closed_sessions: Mutex::new(Vec::new()),
             bookmarks: Mutex::new(Vec::new()),
             profile_tabs: Mutex::new(Vec::new()),
@@ -112,6 +115,7 @@ impl BrowserSessionRegistry {
             profile_path: Some(path),
             profile_error: Mutex::new(profile_error),
             sessions: Mutex::new(HashMap::new()),
+            in_flight_sessions: Mutex::new(HashMap::new()),
             closed_sessions: Mutex::new(Vec::new()),
             bookmarks: Mutex::new(bookmarks),
             profile_tabs: Mutex::new(profile_tabs),
@@ -1191,6 +1195,55 @@ impl BrowserSessionRegistry {
         Ok((payload, back_href))
     }
 
+    async fn take_session_for_action(
+        &self,
+        id: &str,
+        mark_in_flight: bool,
+    ) -> Result<BrowserWebSession, BrowserRouteError> {
+        loop {
+            let mut in_flight_sessions = self.in_flight_sessions.lock().await;
+            let mut sessions = self.sessions.lock().await;
+            if let Some(web_session) = sessions.remove(id) {
+                if mark_in_flight {
+                    in_flight_sessions.insert(id.to_owned(), Arc::new(Notify::new()));
+                }
+                return Ok(web_session);
+            }
+            let Some(notify) = in_flight_sessions.get(id).cloned() else {
+                return Err(BrowserRouteError::NotFound(format!(
+                    "browser session {id} not found"
+                )));
+            };
+            let notified = notify.notified();
+            drop(sessions);
+            drop(in_flight_sessions);
+            notified.await;
+        }
+    }
+
+    async fn return_session_after_action<'a>(
+        &'a self,
+        id: &str,
+        web_session: BrowserWebSession,
+        notify_in_flight_waiters: bool,
+    ) -> MutexGuard<'a, HashMap<String, BrowserWebSession>> {
+        if notify_in_flight_waiters {
+            let mut in_flight_sessions = self.in_flight_sessions.lock().await;
+            let mut sessions = self.sessions.lock().await;
+            sessions.insert(id.to_owned(), web_session);
+            let notify = in_flight_sessions.remove(id);
+            drop(in_flight_sessions);
+            if let Some(notify) = notify {
+                notify.notify_waiters();
+            }
+            return sessions;
+        }
+
+        let mut sessions = self.sessions.lock().await;
+        sessions.insert(id.to_owned(), web_session);
+        sessions
+    }
+
     async fn create_profile_tabs_target(
         &self,
         target: &RequestTarget,
@@ -1303,10 +1356,11 @@ impl BrowserSessionRegistry {
         let action = browser_action(target)?;
         let should_record_profile_visit = browser_action_records_profile_visit(&action);
         let should_record_profile_tabs = browser_action_records_profile_tabs(&action);
+        let notifies_in_flight_waiters = browser_action_marks_session_in_flight(&action);
 
-        let mut web_session = self.sessions.lock().await.remove(&id).ok_or_else(|| {
-            BrowserRouteError::NotFound(format!("browser session {id} not found"))
-        })?;
+        let mut web_session = self
+            .take_session_for_action(&id, notifies_in_flight_waiters)
+            .await?;
 
         web_session.width =
             parse_optional_usize_param(target, "width", 40, 160).unwrap_or(web_session.width);
@@ -1844,7 +1898,10 @@ impl BrowserSessionRegistry {
         let mut payload = match result {
             Ok(payload) => payload,
             Err(error) => {
-                self.sessions.lock().await.insert(id.clone(), web_session);
+                let sessions = self
+                    .return_session_after_action(&id, web_session, notifies_in_flight_waiters)
+                    .await;
+                drop(sessions);
                 return Err(error);
             }
         };
@@ -1852,8 +1909,9 @@ impl BrowserSessionRegistry {
         if should_record_profile_visit {
             self.record_browser_profile_visit(&payload).await;
         }
-        let mut sessions = self.sessions.lock().await;
-        sessions.insert(id.clone(), web_session);
+        let sessions = self
+            .return_session_after_action(&id, web_session, notifies_in_flight_waiters)
+            .await;
         if should_record_profile_tabs {
             self.record_browser_profile_tabs(&sessions, &id).await;
         }
@@ -7214,6 +7272,16 @@ fn browser_action_records_profile_tabs(action: &BrowserSessionAction) -> bool {
         BrowserSessionAction::ClearProfileTabs
             | BrowserSessionAction::SearchTabs(_)
             | BrowserSessionAction::ClearTabSearch
+    )
+}
+
+fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool {
+    matches!(
+        action,
+        BrowserSessionAction::FetchResources
+            | BrowserSessionAction::ApplyStylesheets
+            | BrowserSessionAction::RunScripts
+            | BrowserSessionAction::LoadImages
     )
 }
 

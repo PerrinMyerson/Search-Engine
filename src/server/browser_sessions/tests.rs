@@ -8775,6 +8775,117 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
 }
 
 #[tokio::test]
+async fn browser_session_registry_waits_for_in_flight_resource_action_before_scroll() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (css_requested_tx, css_requested_rx) = oneshot::channel::<()>();
+    let (release_css_tx, release_css_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let mut css_requested_tx = Some(css_requested_tx);
+        let mut release_css_rx = Some(release_css_rx);
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (body, content_type) = if request_line.contains(" /slow.css ") {
+                if let Some(tx) = css_requested_tx.take() {
+                    let _ = tx.send(());
+                }
+                if let Some(rx) = release_css_rx.take() {
+                    let _ = rx.await;
+                }
+                ("pre { color: #102030; }".to_owned(), "text/css")
+            } else {
+                let lines = (0..40)
+                    .map(|index| format!("line {index:02} direct session action"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (
+                    format!(
+                        r#"<!doctype html><title>Slow CSS</title><link rel="stylesheet" href="/slow.css"><pre>{lines}</pre>"#
+                    ),
+                    "text/html",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let registry = Arc::new(BrowserSessionRegistry::default());
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), format!("http://{addr}/doc")),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "16".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Slow CSS");
+    assert!(payload.max_scroll_y > 0);
+    let session_id = payload.id.clone();
+
+    let apply_styles = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "apply-styles".to_owned()),
+        ],
+    };
+    let apply_registry = Arc::clone(&registry);
+    let apply_task = tokio::spawn(async move { apply_registry.apply_target(&apply_styles).await });
+    css_requested_rx.await.unwrap();
+
+    let scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "3".to_owned()),
+        ],
+    };
+    let scroll_registry = Arc::clone(&registry);
+    let scroll_task = tokio::spawn(async move { scroll_registry.apply_target(&scroll).await });
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    assert!(
+        !scroll_task.is_finished(),
+        "scroll should wait for the in-flight resource action instead of returning not found"
+    );
+
+    release_css_tx.send(()).unwrap();
+    let (styled_payload, _) = apply_task.await.unwrap().unwrap();
+    assert_eq!(styled_payload.id, session_id);
+    assert_eq!(
+        styled_payload.resource_report.as_ref().unwrap().action,
+        "Apply styles"
+    );
+
+    let (scrolled_payload, _) = scroll_task.await.unwrap().unwrap();
+    assert_eq!(scrolled_payload.id, session_id);
+    assert_eq!(scrolled_payload.viewport_y, 3);
+    assert!(
+        scrolled_payload
+            .resource_report
+            .as_ref()
+            .is_some_and(|report| report.action == "Apply styles")
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn browser_session_inspector_hides_empty_resource_actions() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("plain.html");
