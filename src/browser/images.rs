@@ -1077,6 +1077,9 @@ fn picture_source_attr<'a>(
             if is_empty_picture_placeholder_source(element, srcset) {
                 continue;
             }
+            if srcset_all_candidates_clearly_unsupported(srcset) {
+                continue;
+            }
             return Some(PictureSourceSet {
                 srcset,
                 sizes: first_non_empty_attr(element, &["sizes"]),
@@ -2028,6 +2031,14 @@ fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCan
     } else {
         supported
     }
+}
+
+fn srcset_all_candidates_clearly_unsupported(srcset: &str) -> bool {
+    let candidates = parse_srcset_candidates(srcset);
+    !candidates.is_empty()
+        && candidates
+            .iter()
+            .all(|candidate| srcset_candidate_clearly_unsupported(&candidate.url))
 }
 
 fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
