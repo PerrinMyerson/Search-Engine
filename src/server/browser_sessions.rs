@@ -8515,7 +8515,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 pre {{ white-space: pre-wrap; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; padding: 16px; line-height: 1.35; overflow: auto; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
 pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 1px; }}
 .auto-visual-status {{ margin: 12px 0 8px; color: #5d636b; font-size: 13px; font-weight: 700; }}
-.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; }}
+.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
@@ -8789,9 +8789,11 @@ fn browser_json_script_string(value: &str) -> String {
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
     if let Some(image) = &payload.viewport_image {
         let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
+        let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="Rendered browser viewport"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="Rendered browser viewport"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
+            click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_x = payload.viewport_x,
             viewport_y = payload.viewport_y,
             viewport_width = payload.width,
@@ -8820,6 +8822,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   if (!shell) {
     return;
   }
+  const raster = shell.querySelector(".browser-raster");
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);
     return Number.isFinite(value) ? value : 0;
@@ -8864,6 +8867,28 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       event.preventDefault();
     }
   }, { passive: false });
+  shell.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.defaultPrevented || !raster) {
+      return;
+    }
+    const rect = raster.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    const relativeX = event.clientX - rect.left;
+    const relativeY = event.clientY - rect.top;
+    if (relativeX < 0 || relativeY < 0 || relativeX > rect.width || relativeY > rect.height) {
+      return;
+    }
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const x = clamp(Math.floor(relativeX / rect.width * viewportWidth), 0, viewportWidth - 1);
+    const y = clamp(Math.floor(relativeY / rect.height * viewportHeight), 0, viewportHeight - 1);
+    const url = new URL(shell.dataset.clickUrl, window.location.href);
+    url.searchParams.set("x", String(x));
+    url.searchParams.set("y", String(y));
+    window.location.href = url.toString();
+  });
   shell.addEventListener("keydown", (event) => {
     const pageY = Math.max(1, Math.floor(numberData("viewportHeight") / 2));
     let dx = 0;

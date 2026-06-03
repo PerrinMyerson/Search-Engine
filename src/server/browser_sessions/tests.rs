@@ -2115,12 +2115,14 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"name="y" value="4""#));
     assert!(html.contains(r#"data-browser-viewport-scroll"#));
     assert!(html.contains(r#"data-scroll-url="/browser?"#));
+    assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-viewport-x="8""#));
     assert!(html.contains(r#"data-viewport-y="4""#));
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
     assert!(html.contains(r#"addEventListener("wheel""#));
+    assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
     assert!(html.contains("WheelEvent.DOM_DELTA_LINE"));
     let response = browser_session_api_response(&state_export, &payload);
@@ -7585,6 +7587,13 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
         params: vec![("url".to_owned(), first.display().to_string())],
     };
     let (payload, _) = registry.create_target(&create).await.unwrap();
+    let html = render_browser_session_page(&payload, "/search?q=button");
+    assert!(html.contains(r#"data-click-url="/browser?"#));
+    assert!(html.contains("action=click-at"));
+    assert!(html.contains(r#"addEventListener("click""#));
+    assert!(html.contains("getBoundingClientRect"));
+    assert!(html.contains(r#"url.searchParams.set("x""#));
+    assert!(html.contains(r#"url.searchParams.set("y""#));
 
     let click = RequestTarget {
         path: "/browser".to_owned(),
