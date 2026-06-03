@@ -8063,6 +8063,79 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert!(payload.viewport.contains("Clicked"));
 }
 
+#[tokio::test]
+async fn browser_session_registry_click_at_keeps_point_coords_separate_from_viewport_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("scrolled-button.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html>
+<html><head><title>Scrolled Button</title></head><body>
+<div>Top row</div>
+<div>Middle row</div>
+<button onclick="document.querySelector('#out').innerText = 'Clicked'">Press</button>
+<div id="out">Waiting</div>
+<div>Bottom row one</div>
+<div>Bottom row two</div>
+<div>Bottom row three</div>
+<div>Bottom row four</div>
+<div>Bottom row five</div>
+<div>Bottom row six</div>
+<div>Bottom row seven</div>
+<div>Bottom row eight</div>
+<div>Bottom row nine</div>
+<div>Bottom row ten</div>
+<div>Bottom row eleven</div>
+<div>Bottom row twelve</div>
+<div>Bottom row thirteen</div>
+<div>Bottom row fourteen</div>
+<div>Bottom row fifteen</div>
+<div>Bottom row sixteen</div>
+<div>Bottom row seventeen</div>
+<div>Bottom row eighteen</div>
+<div>Bottom row nineteen</div>
+<div>Bottom row twenty</div>
+</body></html>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("height".to_owned(), "3".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let session_id = payload.id.clone();
+    let button_y = payload
+        .viewport
+        .lines()
+        .position(|line| line.contains("Press"))
+        .expect("button should render in initial viewport");
+    assert!(button_y > 0, "button must be below the top row");
+    assert!(
+        payload.max_scroll_y >= button_y,
+        "fixture must support scrolling to the button"
+    );
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("viewport_x".to_owned(), "0".to_owned()),
+            ("viewport_y".to_owned(), button_y.to_string()),
+            ("x".to_owned(), "0".to_owned()),
+            ("y".to_owned(), "0".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.viewport_y, button_y);
+    assert!(payload.viewport.contains("Clicked"));
+}
+
 #[test]
 fn browser_session_find_highlighting_escapes_viewport_text() {
     let rendered =
