@@ -1307,6 +1307,28 @@ enum BoxSizing {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssDimension {
+    Cells(usize),
+    Percent(i32),
+}
+
+impl CssDimension {
+    fn zero() -> Self {
+        Self::Cells(0)
+    }
+
+    fn resolve(self, basis: usize) -> usize {
+        match self {
+            Self::Cells(cells) => cells,
+            Self::Percent(basis_points) => {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.max(0) as usize
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CssListStyleType {
     NoMarker,
     Disc,
@@ -1354,14 +1376,14 @@ struct ComputedStyle {
     border: Option<BorderPaint>,
     padding: BoxSpacing,
     margin: BoxSpacing,
-    width: Option<usize>,
-    max_width: Option<usize>,
-    min_width: usize,
-    height: Option<usize>,
-    max_height: Option<usize>,
+    width: Option<CssDimension>,
+    max_width: Option<CssDimension>,
+    min_width: CssDimension,
+    height: Option<CssDimension>,
+    max_height: Option<CssDimension>,
     margin_left_auto: bool,
     margin_right_auto: bool,
-    min_height: usize,
+    min_height: CssDimension,
 }
 
 impl ComputedStyle {
@@ -1379,22 +1401,26 @@ impl ComputedStyle {
                     .map(|border| border.width.saturating_mul(2))
                     .unwrap_or(0),
             );
-        let mut width = match (self.width, self.box_sizing) {
+        let mut width = match (
+            self.width.map(|width| width.resolve(available_width)),
+            self.box_sizing,
+        ) {
             (Some(width), BoxSizing::ContentBox) => width.saturating_add(horizontal_box_extra),
             (Some(width), BoxSizing::BorderBox) => width,
             (None, _) => available_width,
         };
-        if let Some(max_width) = self.max_width {
+        if let Some(max_width) = self.max_width.map(|width| width.resolve(available_width)) {
             let max_outer_width = match self.box_sizing {
                 BoxSizing::ContentBox => max_width.saturating_add(horizontal_box_extra),
                 BoxSizing::BorderBox => max_width,
             };
             width = width.min(max_outer_width);
         }
-        if self.min_width > 0 {
+        let min_width = self.min_width.resolve(available_width);
+        if min_width > 0 {
             let min_outer_width = match self.box_sizing {
-                BoxSizing::ContentBox => self.min_width.saturating_add(horizontal_box_extra),
-                BoxSizing::BorderBox => self.min_width,
+                BoxSizing::ContentBox => min_width.saturating_add(horizontal_box_extra),
+                BoxSizing::BorderBox => min_width,
             };
             width = width.max(min_outer_width);
         }
@@ -1402,7 +1428,37 @@ impl ComputedStyle {
     }
 
     fn positioned_outer_height(&self) -> usize {
-        self.height.unwrap_or(0).max(self.min_height).max(1)
+        self.height
+            .map(|height| height.resolve(default_vertical_dimension_basis()))
+            .unwrap_or(0)
+            .max(self.min_height.resolve(default_vertical_dimension_basis()))
+            .max(1)
+    }
+
+    fn resolved_width(&self, basis: usize) -> Option<usize> {
+        self.width.map(|width| width.resolve(basis))
+    }
+
+    fn resolved_max_width(&self, basis: usize) -> Option<usize> {
+        self.max_width.map(|width| width.resolve(basis))
+    }
+
+    fn resolved_min_width(&self, basis: usize) -> usize {
+        self.min_width.resolve(basis)
+    }
+
+    fn resolved_height(&self) -> Option<usize> {
+        self.height
+            .map(|height| height.resolve(default_vertical_dimension_basis()))
+    }
+
+    fn resolved_max_height(&self) -> Option<usize> {
+        self.max_height
+            .map(|height| height.resolve(default_vertical_dimension_basis()))
+    }
+
+    fn resolved_min_height(&self) -> usize {
+        self.min_height.resolve(default_vertical_dimension_basis())
     }
 
     fn horizontal_projection_offset(&self, containing_width: usize) -> isize {
@@ -1471,14 +1527,14 @@ struct CssDeclarations {
     border: Option<BorderPaint>,
     padding: Option<BoxSpacing>,
     margin: Option<BoxSpacing>,
-    width: Option<usize>,
-    max_width: Option<usize>,
-    min_width: Option<usize>,
-    height: Option<usize>,
-    max_height: Option<usize>,
+    width: Option<CssDimension>,
+    max_width: Option<CssDimension>,
+    min_width: Option<CssDimension>,
+    height: Option<CssDimension>,
+    max_height: Option<CssDimension>,
     margin_left_auto: Option<bool>,
     margin_right_auto: Option<bool>,
-    min_height: Option<usize>,
+    min_height: Option<CssDimension>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10858,27 +10914,27 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             }
             "width" | "inline-size" => {
                 declarations.width =
-                    parse_css_dimension_length(value, CssAxis::Horizontal).or(declarations.width);
+                    parse_css_dimension(value, CssAxis::Horizontal).or(declarations.width);
             }
             "max-width" | "max-inline-size" => {
-                declarations.max_width = parse_css_dimension_length(value, CssAxis::Horizontal)
-                    .or(declarations.max_width);
+                declarations.max_width =
+                    parse_css_dimension(value, CssAxis::Horizontal).or(declarations.max_width);
             }
             "min-width" | "min-inline-size" => {
-                declarations.min_width = parse_css_dimension_length(value, CssAxis::Horizontal)
-                    .or(declarations.min_width);
+                declarations.min_width =
+                    parse_css_dimension(value, CssAxis::Horizontal).or(declarations.min_width);
             }
             "height" | "block-size" => {
                 declarations.height =
-                    parse_css_dimension_length(value, CssAxis::Vertical).or(declarations.height);
+                    parse_css_dimension(value, CssAxis::Vertical).or(declarations.height);
             }
             "max-height" | "max-block-size" => {
-                declarations.max_height = parse_css_dimension_length(value, CssAxis::Vertical)
-                    .or(declarations.max_height);
+                declarations.max_height =
+                    parse_css_dimension(value, CssAxis::Vertical).or(declarations.max_height);
             }
             "min-height" | "min-block-size" => {
-                declarations.min_height = parse_css_dimension_length(value, CssAxis::Vertical)
-                    .or(declarations.min_height);
+                declarations.min_height =
+                    parse_css_dimension(value, CssAxis::Vertical).or(declarations.min_height);
             }
             _ => {}
         }
@@ -11142,7 +11198,31 @@ fn parse_css_box_spacing_length(value: &str, axis: CssAxis) -> Option<usize> {
 }
 
 fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
-    css_length_cells(value, axis, 512)
+    let basis = match axis {
+        CssAxis::Horizontal => default_horizontal_dimension_basis(),
+        CssAxis::Vertical => default_vertical_dimension_basis(),
+    };
+    Some(parse_css_dimension(value, axis)?.resolve(basis))
+}
+
+fn parse_css_dimension(value: &str, axis: CssAxis) -> Option<CssDimension> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.trim().parse::<f32>().ok()?;
+        if !percent.is_finite() || percent < 0.0 {
+            return None;
+        }
+        return Some(CssDimension::Percent((percent * 100.0).round() as i32));
+    }
+    css_length_cells(&value, axis, 512).map(CssDimension::Cells)
+}
+
+fn default_horizontal_dimension_basis() -> usize {
+    CSS_DEFAULT_VIEWPORT_WIDTH_CELLS as usize
+}
+
+fn default_vertical_dimension_basis() -> usize {
+    CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS as usize
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -12826,40 +12906,7 @@ fn render_node(
             }
             let width_inset = if block_flow {
                 let available_width = renderer.available_width();
-                let horizontal_box_extra = style
-                    .padding
-                    .left
-                    .saturating_add(style.padding.right)
-                    .saturating_add(
-                        style
-                            .border
-                            .map(|border| border.width.saturating_mul(2))
-                            .unwrap_or(0),
-                    );
-                let mut block_width = match (style.width, style.box_sizing) {
-                    (Some(width), BoxSizing::ContentBox) => {
-                        width.saturating_add(horizontal_box_extra)
-                    }
-                    (Some(width), BoxSizing::BorderBox) => width,
-                    (None, _) => available_width,
-                };
-                if let Some(max_width) = style.max_width {
-                    let max_outer_width = match style.box_sizing {
-                        BoxSizing::ContentBox => max_width.saturating_add(horizontal_box_extra),
-                        BoxSizing::BorderBox => max_width,
-                    };
-                    block_width = block_width.min(max_outer_width);
-                }
-                if style.min_width > 0 {
-                    let min_outer_width = match style.box_sizing {
-                        BoxSizing::ContentBox => {
-                            style.min_width.saturating_add(horizontal_box_extra)
-                        }
-                        BoxSizing::BorderBox => style.min_width,
-                    };
-                    block_width = block_width.max(min_outer_width);
-                }
-                let block_width = block_width.clamp(1, available_width);
+                let block_width = style.positioned_outer_width(available_width);
                 let remaining_width = available_width.saturating_sub(block_width);
                 let left_inset = if style.margin_left_auto && style.margin_right_auto {
                     remaining_width / 2
@@ -12922,7 +12969,9 @@ fn render_node(
                     )
                 })
             });
-            let overflow_clip_height = match (style.height, style.max_height) {
+            let style_height = style.resolved_height();
+            let style_max_height = style.resolved_max_height();
+            let overflow_clip_height = match (style_height, style_max_height) {
                 (Some(height), Some(max_height)) => Some(height.min(max_height)),
                 (Some(height), None) => Some(height),
                 (None, Some(max_height)) => Some(max_height),
@@ -12937,7 +12986,7 @@ fn render_node(
                     height: overflow_clip_height
                         .unwrap_or_else(|| usize::MAX.saturating_sub(clip_y)),
                 });
-                Some((clip_y, style.height.is_some(), overflow_clip_height))
+                Some((clip_y, style_height.is_some(), overflow_clip_height))
             } else {
                 None
             };
@@ -13113,7 +13162,10 @@ fn render_node(
                 renderer.push_vertical_space(padding.bottom);
             }
             if let Some((_, _, start_y)) = block_box {
-                let block_height = style.height.unwrap_or(0).max(style.min_height);
+                let block_height = style
+                    .resolved_height()
+                    .unwrap_or(0)
+                    .max(style.resolved_min_height());
                 renderer.ensure_current_row_at_least(start_y.saturating_add(block_height));
             }
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
@@ -13365,23 +13417,29 @@ fn image_placeholder_extent(
     renderer: &FlowRenderer,
     intrinsic_size: Option<(usize, usize)>,
 ) -> (usize, usize) {
+    let width_basis = renderer.available_width().max(1);
+    let height_basis = default_vertical_dimension_basis();
     let attr_width = element
         .attrs
         .get("width")
-        .and_then(|value| parse_pixel_dimension_cells(value, 8));
+        .and_then(|value| parse_css_dimension(value, CssAxis::Horizontal))
+        .map(|width| width.resolve(width_basis));
     let attr_height = element
         .attrs
         .get("height")
-        .and_then(|value| parse_pixel_dimension_cells(value, 12));
+        .and_then(|value| parse_css_dimension(value, CssAxis::Vertical))
+        .map(|height| height.resolve(height_basis));
     let (decoded_width, decoded_height) = intrinsic_size.unzip();
     let (ratio_width, ratio_height) = match (attr_width, attr_height) {
         (Some(width), Some(height)) => (Some(width), Some(height)),
         _ => (decoded_width, decoded_height),
     };
-    let (mut width, mut height) = match (style.width, style.height) {
+    let style_width = style.resolved_width(width_basis);
+    let style_height = style.resolved_height();
+    let (mut width, mut height) = match (style_width, style_height) {
         (Some(width), Some(height)) => (width, height),
         (Some(width), None) => {
-            let width = constrain_image_width(width, style);
+            let width = constrain_image_width(width, style, width_basis);
             let height = ratio_width
                 .zip(ratio_height)
                 .and_then(|(intrinsic_width, intrinsic_height)| {
@@ -13429,27 +13487,27 @@ fn image_placeholder_extent(
             (None, None) => (decoded_width.unwrap_or(10), decoded_height.unwrap_or(4)),
         },
     };
-    width = constrain_image_width(width, style);
+    width = constrain_image_width(width, style, width_basis);
     height = constrain_image_height(height, style);
-    (width.clamp(1, renderer.available_width()), height)
+    (width.clamp(1, width_basis), height)
 }
 
-fn constrain_image_width(width: usize, style: &ComputedStyle) -> usize {
-    let width = if let Some(max_width) = style.max_width {
+fn constrain_image_width(width: usize, style: &ComputedStyle, basis: usize) -> usize {
+    let width = if let Some(max_width) = style.resolved_max_width(basis) {
         width.min(max_width)
     } else {
         width
     };
-    width.max(style.min_width)
+    width.max(style.resolved_min_width(basis))
 }
 
 fn constrain_image_height(height: usize, style: &ComputedStyle) -> usize {
-    let height = if let Some(max_height) = style.max_height {
+    let height = if let Some(max_height) = style.resolved_max_height() {
         height.min(max_height)
     } else {
         height
     };
-    height.max(style.min_height).clamp(1, 24)
+    height.max(style.resolved_min_height()).clamp(1, 24)
 }
 
 fn scale_image_dimension(
@@ -13479,7 +13537,7 @@ fn replaced_media_placeholder_extent(
     let (width, height) = image_placeholder_extent(element, style, renderer, None);
     let has_explicit_height = style.height.is_some() || element.attrs.contains_key("height");
     if element.tag == "audio" && !has_explicit_height {
-        return (width, 1usize.max(style.min_height).clamp(1, 24));
+        return (width, 1usize.max(style.resolved_min_height()).clamp(1, 24));
     }
     (width, height)
 }
@@ -13571,15 +13629,6 @@ fn select_render_text(dom: &Dom, node_id: usize) -> String {
     format!("[{label}]")
 }
 
-fn parse_pixel_dimension_cells(value: &str, cell_px: usize) -> Option<usize> {
-    let trimmed = value.trim().trim_end_matches("px").trim();
-    if trimmed.contains('%') || trimmed.is_empty() {
-        return None;
-    }
-    let pixels = trimmed.parse::<usize>().ok()?;
-    (pixels > 0).then_some(pixels.div_ceil(cell_px))
-}
-
 fn computed_style(
     dom: &Dom,
     node_id: usize,
@@ -13623,12 +13672,12 @@ fn computed_style(
             margin: BoxSpacing::default(),
             width: None,
             max_width: None,
-            min_width: 0,
+            min_width: CssDimension::zero(),
             height: None,
             max_height: None,
             margin_left_auto: false,
             margin_right_auto: false,
-            min_height: 0,
+            min_height: CssDimension::zero(),
         };
     }
     let mut display = default_display(&element.tag);
@@ -13666,12 +13715,12 @@ fn computed_style(
     let mut margin = default_margin(&element.tag);
     let mut width = None;
     let mut max_width = None;
-    let mut min_width = 0usize;
+    let mut min_width = CssDimension::zero();
     let mut height = None;
     let mut max_height = None;
     let mut margin_left_auto = false;
     let mut margin_right_auto = false;
-    let mut min_height = 0usize;
+    let mut min_height = CssDimension::zero();
     let mut display_specificity = 0u32;
     let mut float_specificity = 0u32;
     let mut background_specificity = 0u32;
@@ -14415,11 +14464,14 @@ fn table_column_layout_width(
     let Some(NodeKind::Element(element)) = dom.nodes.get(column_id).map(|node| &node.kind) else {
         return None;
     };
-    let style_width = computed_style(dom, column_id, element, css_cascade).width;
+    let style_width = computed_style(dom, column_id, element, css_cascade)
+        .width
+        .map(|width| width.resolve(default_horizontal_dimension_basis()));
     let attr_width = element
         .attrs
         .get("width")
-        .and_then(|value| parse_css_dimension_length(value, CssAxis::Horizontal));
+        .and_then(|value| parse_css_dimension(value, CssAxis::Horizontal))
+        .map(|width| width.resolve(default_horizontal_dimension_basis()));
     style_width.or(attr_width)
 }
 

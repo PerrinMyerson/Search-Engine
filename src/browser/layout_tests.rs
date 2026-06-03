@@ -3272,6 +3272,66 @@ fn css_image_single_axis_size_preserves_intrinsic_aspect_ratio() {
 }
 
 #[test]
+fn css_percent_media_dimensions_preserve_readable_flow() {
+    let render = render_html(
+        "mem://css-percent-media-dimensions",
+        br#"
+            <html><body>
+              <img alt="hero" width="400" height="200" style="width:50%; max-height:10%">
+              <img alt="badge" width="50%" height="24">
+              <div style="width:50%; margin-left:auto; margin-right:auto">Centered</div>
+              <p>After media</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Centered\nAfter media");
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("hero".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 4,
+                width: 10,
+                height: 2,
+                shade: 220,
+                alt: Some("badge".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 5,
+                y: 6,
+                text: "Centered".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "After media".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn css_max_height_limits_image_placeholder_extent() {
     let render = render_html(
         "mem://css-max-height-image",
