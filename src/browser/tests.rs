@@ -1710,7 +1710,45 @@ fn skips_data_empty_picture_placeholder_source_for_img_fallback() {
 }
 
 #[test]
-fn skips_unsupported_picture_source_type_for_img_jpeg_fallback() {
+fn selects_picture_webp_source_srcset_before_img_src() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let webp = dir.path().join("hero.webp");
+    let fallback_jpeg = dir.path().join("fallback.jpg");
+    fs::write(&webp, tiny_test_webp_bytes()).unwrap();
+    fs::write(&fallback_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "hero.webp").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><picture><source type="image/webp; charset=binary" srcset="hero.webp 80w"><img src="fallback.jpg" alt="WebP picture" width="80" height="24"></picture></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("WebP picture".to_owned()),
+            url: Some("hero.webp".to_owned()),
+            decoded_width: Some(1),
+            decoded_height: Some(1),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
+fn skips_unsupported_picture_avif_source_type_for_img_jpeg_fallback() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     let jpeg = dir.path().join("fallback.jpg");
@@ -1720,7 +1758,7 @@ fn skips_unsupported_picture_source_type_for_img_jpeg_fallback() {
     let decoded_info = decoded_image_entry(&source, "fallback.jpg").unwrap().info();
     let render = render_html(
             &source,
-            br#"<html><body><picture><source type="image/webp" srcset="hero.webp 80w"><source type="image/avif" srcset="hero.avif 80w"><img src="fallback.jpg" alt="JPEG fallback" width="80" height="24"></picture></body></html>"#,
+            br#"<html><body><picture><source type="image/avif" srcset="hero.avif 80w"><img src="fallback.jpg" alt="JPEG fallback" width="80" height="24"></picture></body></html>"#,
             BrowserRenderOptions {
                 width: 40,
                 ..BrowserRenderOptions::default()
