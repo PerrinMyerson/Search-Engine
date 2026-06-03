@@ -9074,10 +9074,13 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
     if let Some(image) = &payload.viewport_image {
         let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
         let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
+        let viewport_accessibility_label = "Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view";
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="Rendered browser viewport"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
+            viewport_accessibility_label =
+                html_escape::encode_double_quoted_attribute(viewport_accessibility_label),
             viewport_x = payload.viewport_x,
             viewport_y = payload.viewport_y,
             viewport_width = payload.width,

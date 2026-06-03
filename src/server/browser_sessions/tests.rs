@@ -2254,6 +2254,12 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
+    assert!(html.contains(
+        r#"aria-label="Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view""#
+    ));
+    assert!(html.contains(
+        r#"title="Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view""#
+    ));
     let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     assert!(status_index < raster_index);
