@@ -8634,6 +8634,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-jump label {{ color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-jump input[type="number"] {{ width: 96px; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .viewport-jump button {{ min-height: 32px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 10px; background: #2457d6; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }}
+.viewport-jump-range {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .viewport-status {{ display: grid; gap: 6px; margin: 8px 0 10px; }}
 .viewport-status-text {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
@@ -11153,7 +11154,7 @@ fn browser_scroll_percent(value: usize, max: usize) -> usize {
 
 fn render_browser_session_viewport_jump(payload: &BrowserSessionPayload) -> String {
     format!(
-        r#"<form class="viewport-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-viewport-x">x</label><input id="browser-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x"><label for="browser-viewport-y">y</label><input id="browser-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y"><button type="submit">Jump viewport</button></form>"#,
+        r#"<form class="viewport-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-viewport-x">x</label><input id="browser-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x" aria-describedby="browser-viewport-range"><label for="browser-viewport-y">y</label><input id="browser-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y" aria-describedby="browser-viewport-range"><span id="browser-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump viewport</button></form>"#,
         common = browser_session_common_hidden_inputs(payload),
         x = payload.viewport_x,
         max_x = payload.max_scroll_x,

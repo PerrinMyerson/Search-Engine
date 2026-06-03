@@ -2235,12 +2235,16 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"name="x" value="8""#));
     assert!(html.contains(r#"name="y" value="4""#));
     assert!(html.contains(&format!(
-        r#"id="browser-viewport-x" type="number" min="0" max="{}" name="x" value="8""#,
+        r#"id="browser-viewport-x" type="number" min="0" max="{}" name="x" value="8" aria-label="Viewport x" aria-describedby="browser-viewport-range""#,
         payload.max_scroll_x
     )));
     assert!(html.contains(&format!(
-        r#"id="browser-viewport-y" type="number" min="0" max="{}" name="y" value="4""#,
+        r#"id="browser-viewport-y" type="number" min="0" max="{}" name="y" value="4" aria-label="Viewport y" aria-describedby="browser-viewport-range""#,
         payload.max_scroll_y
+    )));
+    assert!(html.contains(&format!(
+        r#"<span id="browser-viewport-range" class="viewport-jump-range">range x 0-{}, y 0-{}</span>"#,
+        payload.max_scroll_x, payload.max_scroll_y
     )));
     assert!(html.contains(r#"data-browser-viewport-scroll"#));
     assert!(html.contains(r#"data-scroll-url="/browser?"#));
