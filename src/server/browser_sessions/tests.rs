@@ -1064,7 +1064,7 @@ async fn browser_session_registry_duplicates_existing_sessions() {
     assert!(payload.viewport.contains("duplicate destination"));
 
     let html = render_browser_session_page(&payload, &back_href);
-    let duplicate_marker = ">Duplicate tab</a>";
+    let duplicate_marker = ">Duplicate current</a>";
     let marker_index = html.find(duplicate_marker).unwrap();
     let href_start = html[..marker_index].rfind("href=\"").unwrap() + "href=\"".len();
     let href_end = href_start + html[href_start..marker_index].find('"').unwrap();
@@ -2635,8 +2635,13 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(html.contains(r#"aria-current="page""#));
     assert!(html.contains(">1 · One</strong>"));
     assert!(html.contains(">2 · Two</strong>"));
-    assert!(html.contains(">Duplicate tab</a>"));
-    assert!(html.contains(">Pin tab</a>"));
+    assert!(html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(&format!(r#"<span>session {}</span>"#, payload.id)));
+    assert!(html.contains(r#"<span>tab 2/2</span>"#));
+    assert!(html.contains(r#"<span>active</span>"#));
+    assert!(html.contains(r#"<span>history 1/1</span>"#));
+    assert!(html.contains(">Duplicate current</a>"));
+    assert!(html.contains(">Pin current</a>"));
     assert!(html.contains(">Pin</a>"));
     assert!(html.contains(">Close tab</a>"));
     assert!(html.contains(">Prev tab</a>"));
@@ -2673,7 +2678,7 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(html.contains(">1 · Pinned · One</strong>"));
     assert!(html.contains("Pinned · One"));
     assert!(html.contains(">Unpin</a>"));
-    assert!(html.contains(">Pin tab</a>"));
+    assert!(html.contains(">Pin current</a>"));
     assert!(html.contains("Label current tab"));
 
     let label_first = RequestTarget {
@@ -9204,6 +9209,12 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains("Making visual..."));
     assert!(html.contains("Making page readable..."));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
+    assert!(html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(
+        r#"href="/search?q=visual" title="Return to /search?q=visual">Return to results</a>"#
+    ));
+    assert!(html.contains(r#"<span>from /search?q=visual</span>"#));
+    assert!(html.contains(&format!(r#"<span>session {}</span>"#, payload.id)));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(r#"data-browser-viewport-page-state"#));
     assert!(html.contains(r#"<span class="viewport-state-chip">Ready</span>"#));
