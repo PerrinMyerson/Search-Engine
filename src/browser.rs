@@ -2954,11 +2954,17 @@ impl BrowserSession {
             .render
             .viewport_width
             .saturating_mul(8);
-        let image_resources = collect_selected_image_resources(
+        let mut image_resources = collect_selected_image_resources(
             &self.entries[current_index].page_state.dom,
             &page_source,
             viewport_width_css_px,
         );
+        let css_cascade = parse_css(&self.entries[current_index].page_state.css_text);
+        image_resources.extend(collect_css_background_image_resources(
+            &self.entries[current_index].page_state.dom,
+            &page_source,
+            &css_cascade,
+        ));
         let mut fetches = Vec::with_capacity(image_resources.len());
 
         for resource in image_resources {
@@ -3320,7 +3326,12 @@ fn render_page_state_with_timings(
     let title = dom_title(&page_state.dom);
     let links = collect_links(&page_state.dom, source);
     let forms = collect_forms(&page_state.dom, source);
-    let resources = collect_resources(&page_state.dom, source);
+    let mut resources = collect_resources(&page_state.dom, source);
+    resources.extend(collect_css_background_image_resources(
+        &page_state.dom,
+        source,
+        &css_cascade,
+    ));
     let collect_us = collect_start.elapsed().as_micros();
 
     let layout_start = Instant::now();
@@ -11178,6 +11189,129 @@ fn collect_text(dom: &Dom, node_id: usize, out: &mut String) {
             }
         }
     }
+}
+
+fn collect_css_background_image_resources(
+    dom: &Dom,
+    source: &str,
+    css_cascade: &CssCascade,
+) -> Vec<BrowserResource> {
+    let mut resources = Vec::new();
+    let mut seen = HashSet::new();
+    collect_css_background_image_resources_at(
+        dom,
+        0,
+        source,
+        css_cascade,
+        false,
+        &mut resources,
+        &mut seen,
+    );
+    resources
+}
+
+fn collect_css_background_image_resources_at(
+    dom: &Dom,
+    node_id: usize,
+    source: &str,
+    css_cascade: &CssCascade,
+    is_row_item: bool,
+    resources: &mut Vec<BrowserResource>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+
+    match &node.kind {
+        NodeKind::Document | NodeKind::DocumentFragment => {
+            for &child in &node.children {
+                collect_css_background_image_resources_at(
+                    dom,
+                    child,
+                    source,
+                    css_cascade,
+                    false,
+                    resources,
+                    seen,
+                );
+            }
+        }
+        NodeKind::Text(_) => {}
+        NodeKind::Element(element) => {
+            let style = computed_style(dom, node_id, element, css_cascade);
+            if style.display == Display::None {
+                return;
+            }
+            let children_are_row_items = style.display.lays_out_children_in_row();
+            if style.display == Display::Contents {
+                for &child in &node.children {
+                    if children_are_row_items
+                        && !row_layout_child_participates(dom, child, css_cascade)
+                    {
+                        continue;
+                    }
+                    collect_css_background_image_resources_at(
+                        dom,
+                        child,
+                        source,
+                        css_cascade,
+                        children_are_row_items,
+                        resources,
+                        seen,
+                    );
+                }
+                return;
+            }
+            if style.display.is_block_flow()
+                && !is_row_item
+                && let Some(url) = style.background_image_url.as_deref()
+            {
+                push_css_background_image_resource(resources, seen, source, url);
+            }
+            for &child in &node.children {
+                if children_are_row_items && !row_layout_child_participates(dom, child, css_cascade)
+                {
+                    continue;
+                }
+                collect_css_background_image_resources_at(
+                    dom,
+                    child,
+                    source,
+                    css_cascade,
+                    children_are_row_items,
+                    resources,
+                    seen,
+                );
+            }
+        }
+    }
+}
+
+fn push_css_background_image_resource(
+    resources: &mut Vec<BrowserResource>,
+    seen: &mut HashSet<String>,
+    source: &str,
+    url: &str,
+) {
+    let url = url.trim();
+    if url.is_empty() {
+        return;
+    }
+    let resolved = resolve_browser_href(source, url);
+    if !seen.insert(resolved.clone()) {
+        return;
+    }
+    resources.push(BrowserResource {
+        kind: "background_image".to_owned(),
+        initiator: "css".to_owned(),
+        url: url.to_owned(),
+        resolved,
+        rel: None,
+        media: None,
+        alt: None,
+        type_hint: None,
+    });
 }
 
 fn render_children(

@@ -1970,6 +1970,71 @@ async fn session_render_images_decodes_data_url_image_resource() {
 }
 
 #[tokio::test]
+async fn session_render_images_decodes_css_background_image_resource() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let tile = dir.path().join("tile.png");
+    fs::write(&tile, png_bytes).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head><style>
+            .hero {
+                background: linear-gradient(#fff, #eee), url('tile.png');
+                min-height: 24px;
+            }
+        </style></head><body><p>Before bg</p><section class="hero">Background</section><p>After bg</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 1);
+    assert_eq!(report.fetches[0].resource.kind, "background_image");
+    assert_eq!(report.fetches[0].resource.initiator, "css");
+    assert_eq!(report.fetches[0].resource.url, "tile.png");
+    assert_eq!(
+        report.fetches[0].resource.resolved,
+        tile.display().to_string()
+    );
+    assert_eq!(report.fetches[0].status, "fetched");
+    assert_eq!(report.fetches[0].content_type.as_deref(), Some("image/png"));
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, report.fetches[0].bytes);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+
+    let render = session.current().unwrap();
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "background_image"
+            && resource.initiator == "css"
+            && resource.resolved == tile.display().to_string()
+    }));
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                alt: None,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &tile.display().to_string() && *hash == expected_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn session_render_images_decodes_http_resource_cache_pixels() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -3583,6 +3648,47 @@ fn discovers_static_subresources() {
     assert!(render.resources.iter().any(|resource| {
         resource.kind == "object" && resource.resolved == "https://example.com/app/thing.swf"
     }));
+}
+
+#[test]
+fn discovers_css_background_image_subresources() {
+    let render = render_html(
+        "https://example.com/app/page.html",
+        br#"
+            <html><head><style>
+              .hero { background-image: linear-gradient(#fff, #eee), url('/img/hero-bg.png'); }
+              .inline { display: block; }
+              .hidden { display: none; background-image: url('/img/hidden.png'); }
+            </style></head><body>
+              <section class="hero">Hero</section>
+              <section class="inline" style="background-image: url('inline-bg.png')">Inline</section>
+              <section class="hidden">Hidden</section>
+            </body></html>
+            "#,
+        BrowserRenderOptions::default(),
+    );
+
+    let background_resources = render
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == "background_image")
+        .collect::<Vec<_>>();
+    assert_eq!(background_resources.len(), 2);
+    assert!(background_resources.iter().any(|resource| {
+        resource.initiator == "css"
+            && resource.url == "/img/hero-bg.png"
+            && resource.resolved == "https://example.com/img/hero-bg.png"
+    }));
+    assert!(background_resources.iter().any(|resource| {
+        resource.initiator == "css"
+            && resource.url == "inline-bg.png"
+            && resource.resolved == "https://example.com/app/inline-bg.png"
+    }));
+    assert!(
+        !background_resources
+            .iter()
+            .any(|resource| resource.resolved.ends_with("/img/hidden.png"))
+    );
 }
 
 #[test]
