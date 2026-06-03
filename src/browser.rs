@@ -1281,6 +1281,7 @@ struct ComputedStyle {
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
     opacity: PaintOpacity,
+    animation_reveals_opacity: bool,
     overflow: Overflow,
     position: Position,
     position_top: Option<usize>,
@@ -1308,6 +1309,12 @@ struct ComputedStyle {
     min_height: usize,
 }
 
+impl ComputedStyle {
+    fn suppresses_paint(&self) -> bool {
+        self.opacity == PaintOpacity::Transparent && !self.animation_reveals_opacity
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CssRule {
     selector: CssSelector,
@@ -1327,6 +1334,7 @@ struct CssDeclarations {
     text_align: Option<TextAlign>,
     visibility: Option<Visibility>,
     opacity: Option<PaintOpacity>,
+    animation_reveals_opacity: Option<bool>,
     overflow: Option<Overflow>,
     position: Option<Position>,
     position_top: Option<usize>,
@@ -10541,6 +10549,14 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "opacity" => {
                 declarations.opacity = parse_css_opacity(value).or(declarations.opacity);
             }
+            "animation-fill-mode" | "-webkit-animation-fill-mode" => {
+                declarations.animation_reveals_opacity = parse_css_animation_reveals_opacity(value)
+                    .or(declarations.animation_reveals_opacity);
+            }
+            "animation" | "-webkit-animation" => {
+                declarations.animation_reveals_opacity = parse_css_animation_reveals_opacity(value)
+                    .or(declarations.animation_reveals_opacity);
+            }
             "overflow" | "overflow-x" | "overflow-y" => {
                 declarations.overflow = parse_css_overflow(value).or(declarations.overflow);
             }
@@ -11193,6 +11209,21 @@ fn parse_css_opacity(value: &str) -> Option<PaintOpacity> {
     } else {
         None
     }
+}
+
+fn parse_css_animation_reveals_opacity(value: &str) -> Option<bool> {
+    let mut saw_fill_mode = None;
+    for token in value.split_ascii_whitespace() {
+        let token = token
+            .trim_matches(|ch: char| ch == ',' || ch == ';')
+            .to_ascii_lowercase();
+        match token.as_str() {
+            "forwards" | "both" => return Some(true),
+            "none" | "backwards" => saw_fill_mode = Some(false),
+            _ => {}
+        }
+    }
+    saw_fill_mode
 }
 
 fn parse_css_overflow(value: &str) -> Option<Overflow> {
@@ -11955,7 +11986,7 @@ fn render_node(
             if let Some(visibility) = visibility_entered {
                 renderer.enter_visibility(visibility);
             }
-            let opacity_entered = style.opacity == PaintOpacity::Transparent;
+            let opacity_entered = style.suppresses_paint();
             if opacity_entered {
                 renderer.enter_transparent_opacity();
             }
@@ -11980,7 +12011,7 @@ fn render_node(
             if let Some(sticky_top) = viewport_sticky_top_entered {
                 renderer.enter_viewport_sticky(sticky_top);
             }
-            let positive_z_layer_entered = style.position != Position::Static && style.z_index > 0;
+            let positive_z_layer_entered = style.position != Position::Static && style.z_index != 0;
             if positive_z_layer_entered {
                 renderer.enter_positive_z_layer(style.z_index);
             }
@@ -12474,7 +12505,7 @@ fn render_contents_node(
     if let Some(visibility) = visibility_entered {
         renderer.enter_visibility(visibility);
     }
-    let opacity_entered = style.opacity == PaintOpacity::Transparent;
+    let opacity_entered = style.suppresses_paint();
     if opacity_entered {
         renderer.enter_transparent_opacity();
     }
@@ -12879,6 +12910,7 @@ fn computed_style(
             text_align: None,
             visibility: None,
             opacity: PaintOpacity::Opaque,
+            animation_reveals_opacity: false,
             overflow: Overflow::Visible,
             position: Position::Static,
             position_top: None,
@@ -12917,6 +12949,7 @@ fn computed_style(
     let mut text_align = None;
     let mut visibility = None;
     let mut opacity = PaintOpacity::Opaque;
+    let mut animation_reveals_opacity = false;
     let mut overflow = Overflow::Visible;
     let mut position = Position::Static;
     let mut position_top = None;
@@ -12953,6 +12986,7 @@ fn computed_style(
     let mut text_align_specificity = 0u32;
     let mut visibility_specificity = 0u32;
     let mut opacity_specificity = 0u32;
+    let mut animation_reveals_opacity_specificity = 0u32;
     let mut overflow_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
@@ -13050,6 +13084,13 @@ fn computed_style(
             {
                 opacity = rule_opacity;
                 opacity_specificity = rule_specificity;
+            }
+            if let Some(rule_animation_reveals_opacity) =
+                rule.declarations.animation_reveals_opacity
+                && rule_specificity >= animation_reveals_opacity_specificity
+            {
+                animation_reveals_opacity = rule_animation_reveals_opacity;
+                animation_reveals_opacity_specificity = rule_specificity;
             }
             if let Some(rule_overflow) = rule.declarations.overflow
                 && rule_specificity >= overflow_specificity
@@ -13240,6 +13281,9 @@ fn computed_style(
         if let Some(inline_opacity) = inline.opacity {
             opacity = inline_opacity;
         }
+        if let Some(inline_animation_reveals_opacity) = inline.animation_reveals_opacity {
+            animation_reveals_opacity = inline_animation_reveals_opacity;
+        }
         if let Some(inline_overflow) = inline.overflow {
             overflow = inline_overflow;
         }
@@ -13328,6 +13372,7 @@ fn computed_style(
         text_align,
         visibility,
         opacity,
+        animation_reveals_opacity,
         overflow,
         position,
         position_top,
@@ -15507,27 +15552,46 @@ impl FlowRenderer {
 
     fn finish(mut self) -> FlowOutput {
         self.break_line();
-        self.underlay_list.append(&mut self.border_list);
-        self.underlay_targets.append(&mut self.border_targets);
-        self.underlay_list.append(&mut self.display_list);
-        self.underlay_targets.append(&mut self.display_targets);
         self.positive_z_layers.sort_by_key(|layer| layer.z_index);
+        let mut display_list = Vec::new();
+        let mut hit_targets = Vec::new();
         for layer in &mut self.positive_z_layers {
-            self.underlay_list.append(&mut layer.underlay_list);
-            self.underlay_targets.append(&mut layer.underlay_targets);
-            self.underlay_list.append(&mut layer.border_list);
-            self.underlay_targets.append(&mut layer.border_targets);
-            self.underlay_list.append(&mut layer.display_list);
-            self.underlay_targets.append(&mut layer.display_targets);
+            if layer.z_index < 0 {
+                append_paint_layer_commands(&mut display_list, &mut hit_targets, layer);
+            }
         }
-        debug_assert_eq!(self.underlay_list.len(), self.underlay_targets.len());
+        display_list.append(&mut self.underlay_list);
+        hit_targets.append(&mut self.underlay_targets);
+        display_list.append(&mut self.border_list);
+        hit_targets.append(&mut self.border_targets);
+        display_list.append(&mut self.display_list);
+        hit_targets.append(&mut self.display_targets);
+        for layer in &mut self.positive_z_layers {
+            if layer.z_index > 0 {
+                append_paint_layer_commands(&mut display_list, &mut hit_targets, layer);
+            }
+        }
+        debug_assert_eq!(display_list.len(), hit_targets.len());
         FlowOutput {
             text: self.lines.join("\n"),
-            display_list: self.underlay_list,
-            hit_targets: self.underlay_targets,
+            display_list,
+            hit_targets,
             decoded_images: self.decoded_images,
         }
     }
+}
+
+fn append_paint_layer_commands(
+    display_list: &mut Vec<DisplayCommand>,
+    hit_targets: &mut Vec<DisplayHitTarget>,
+    layer: &mut PaintLayerCommands,
+) {
+    display_list.append(&mut layer.underlay_list);
+    hit_targets.append(&mut layer.underlay_targets);
+    display_list.append(&mut layer.border_list);
+    hit_targets.append(&mut layer.border_targets);
+    display_list.append(&mut layer.display_list);
+    hit_targets.append(&mut layer.display_targets);
 }
 
 #[derive(Debug)]
