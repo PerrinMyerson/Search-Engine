@@ -2885,6 +2885,86 @@ fn mixed_media_viewports_preserve_nearby_body_context() {
 }
 
 #[test]
+fn decoded_image_viewports_preserve_following_body_context() {
+    let image_url = tiny_test_jpeg_data_url();
+    let cached_image = decoded_image_entry("mem://decoded-image-context", &image_url)
+        .expect("decode tiny jpeg fixture");
+    let html = format!(
+        r#"
+            <html><body>
+              <img src="{image_url}" width="36" height="6" alt="">
+              <p style="margin:0">Readable body evidence</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://decoded-image-context",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 36,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[cached_image],
+        },
+    )
+    .expect("render with decoded image fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                width,
+                height,
+                decoded_width,
+                decoded_height,
+                ..
+            } => Some((*width, *height, *decoded_width, *decoded_height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    assert!(image_bounds.0 > 0);
+    assert!(image_bounds.1 > 0);
+    assert_eq!(image_bounds.2, Some(2));
+    assert_eq!(image_bounds.3, Some(2));
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 36,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let viewport_text = viewport.lines.join("\n");
+    assert!(viewport_text.contains('@'));
+    assert!(viewport_text.contains("Readable body evidence"));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(36),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster =
+        rasterize_render(&render, raster_options).expect("rasterize decoded image context");
+    let context_pixel_x = raster_options.padding_x.saturating_add(1);
+    let context_pixel_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2);
+    let context_pixel = context_pixel_y
+        .saturating_mul(raster.width)
+        .saturating_add(context_pixel_x);
+    assert_eq!(raster.pixels[context_pixel], 0);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
