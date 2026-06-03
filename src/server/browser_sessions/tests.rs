@@ -8337,6 +8337,7 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(html.contains(">Tab</a>"));
     assert!(html.contains(">Shift Tab</a>"));
     assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(r#"data-browser-primary-input"#));
     assert!(!html.contains(r#"name="action" value="choose""#));
     assert!(!html.contains(">Backspace</a>"));
     assert!(!html.contains(">Clear Input</a>"));
@@ -8360,6 +8361,7 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(html.contains(r#"name="action" value="choose""#));
     assert!(html.contains(">Enter</a>"));
     assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(r#"data-browser-primary-input"#));
     assert!(!html.contains(">Backspace</a>"));
     assert!(!html.contains(">Clear Input</a>"));
     assert!(!html.contains(">Space</a>"));
@@ -8395,6 +8397,7 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(html.contains(">Enter</a>"));
     assert!(!html.contains(r#"name="action" value="choose""#));
     assert!(!html.contains(r#"name="action" value="type-text""#));
+    assert!(!html.contains(r#"data-browser-primary-input"#));
     assert!(!html.contains(">Backspace</a>"));
     assert!(!html.contains(">Clear Input</a>"));
 
@@ -8420,6 +8423,16 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert_eq!(payload.focused.as_ref().unwrap().name, "q");
     let html = render_browser_session_page(&payload, "");
     assert!(html.contains(r#"name="action" value="type-text""#));
+    assert!(html.contains(r#"data-browser-primary-input"#));
+    assert!(html.contains(r#"id="browser-primary-type-text""#));
+    assert!(html.contains(r#"aria-label="Type into focused control""#));
+    assert!(html.contains(">Clear</a>"));
+    assert!(html.contains("Focused text name=q value=old"));
+    let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    let input_index = html.find(r#"data-browser-primary-input"#).unwrap();
+    let jump_index = html.find(r#"class="viewport-jump""#).unwrap();
+    assert!(raster_index < input_index);
+    assert!(input_index < jump_index);
     assert!(html.contains(">Backspace</a>"));
     assert!(html.contains(">Clear Input</a>"));
     assert!(html.contains(">Enter</a>"));
