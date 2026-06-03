@@ -715,6 +715,107 @@ async fn browser_session_registry_opens_address_bar_url_in_new_session() {
 }
 
 #[tokio::test]
+async fn browser_session_registry_normalizes_bare_address_bar_hosts() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (title, body) = if request_line.contains(" /second ") {
+                ("Second", "bare address second")
+            } else {
+                ("First", "bare address first")
+            };
+            let body = format!(r#"<!doctype html><title>{title}</title><p>{body}</p>"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), format!("127.0.0.1:{}/first", addr.port()))],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "First");
+    assert_eq!(
+        payload.source,
+        format!("http://127.0.0.1:{}/first", addr.port())
+    );
+    assert!(payload.viewport.contains("bare address first"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-address type="text" inputmode="url""#));
+    assert!(html.contains(r#"spellcheck="false" name="url""#));
+
+    let open_second = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "open".to_owned()),
+            (
+                "url".to_owned(),
+                format!("127.0.0.1:{}/second", addr.port()),
+            ),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&open_second).await.unwrap();
+    assert_eq!(payload.title, "Second");
+    assert_eq!(
+        payload.source,
+        format!("http://127.0.0.1:{}/second", addr.port())
+    );
+    assert!(payload.viewport.contains("bare address second"));
+    server.await.unwrap();
+}
+
+#[test]
+fn browser_session_address_normalization_preserves_paths_and_schemes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("page.html");
+    std::fs::write(&file, "<title>Local</title>").unwrap();
+    let file_path = file.display().to_string();
+
+    assert_eq!(
+        normalize_browser_address_url("example.com/path"),
+        "https://example.com/path"
+    );
+    assert_eq!(
+        normalize_browser_address_url("localhost:8765/browser"),
+        "http://localhost:8765/browser"
+    );
+    assert_eq!(
+        normalize_browser_address_url("127.0.0.1:8765/browser"),
+        "http://127.0.0.1:8765/browser"
+    );
+    assert_eq!(
+        normalize_browser_address_url("https://example.com"),
+        "https://example.com"
+    );
+    assert_eq!(normalize_browser_address_url(&file_path), file_path);
+    assert_eq!(
+        normalize_browser_address_url("/tmp/page.html"),
+        "/tmp/page.html"
+    );
+    assert_eq!(
+        normalize_browser_address_url("search terms"),
+        "search terms"
+    );
+}
+
+#[tokio::test]
 async fn browser_session_registry_opens_link_text_and_selector_in_new_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("first.html");
@@ -1509,7 +1610,7 @@ async fn browser_session_registry_finds_and_cycles_page_text() {
     );
     assert!(payload.viewport.contains("needle first"));
     let html = render_browser_session_page(&payload, "/search?q=find");
-    assert!(html.contains(r#"data-browser-address type="url" name="url""#));
+    assert!(html.contains(r#"data-browser-address type="text" inputmode="url""#));
     assert!(html.contains(r#"data-browser-find type="search" name="q" value="needle""#));
     assert!(html.contains(r#"<script data-browser-keyboard-controls>"#));
     assert!(html.contains(r#"event.metaKey || event.ctrlKey"#));
