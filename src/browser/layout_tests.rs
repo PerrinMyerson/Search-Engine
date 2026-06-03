@@ -2610,6 +2610,45 @@ fn css_absolute_top_uses_positioned_containing_block_start() {
 }
 
 #[test]
+fn css_positioned_horizontal_offsets_and_translate_project_overlay_paint() {
+    let render = render_html(
+        "mem://positioned-horizontal-projection",
+        br#"
+            <html><body>
+              <section style="position:relative; height:60px">
+                <div style="position:absolute; top:0; left:50%; width:80px; transform:translateX(-50%)">Centered</div>
+                <div style="position:absolute; top:12px; right:16px; width:80px">Right</div>
+                <div style="position:absolute; top:24px; left:8px; width:80px; translate:8px 12px">Shifted</div>
+              </section>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { x, y, text } => Some((*x, *y, text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (15, 0, "Centered"),
+            (28, 1, "Right"),
+            (2, 3, "Shifted"),
+            (0, 5, "After"),
+        ]
+    );
+}
+
+#[test]
 fn css_positive_z_index_positions_foreground_above_later_media() {
     let render = render_html(
         "mem://z-index-stacking",
