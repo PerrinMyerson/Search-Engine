@@ -894,7 +894,12 @@ fn picture_source_lazy_srcset(
     picture_source_attr(
         dom,
         img_node_id,
-        &["data-srcset", "data-lazy-srcset"],
+        &[
+            "data-srcset",
+            "data-lazy-srcset",
+            "data-image-srcset",
+            "data-img-srcset",
+        ],
         viewport_width_css_px,
     )
 }
@@ -947,12 +952,31 @@ fn lazy_image_render_source(
             choose_srcset_candidate(source.srcset, source_target_width)
         })
         .or_else(|| {
-            first_non_empty_attr(element, &["data-srcset", "data-lazy-srcset"])
-                .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
+            first_non_empty_attr(
+                element,
+                &[
+                    "data-srcset",
+                    "data-lazy-srcset",
+                    "data-image-srcset",
+                    "data-img-srcset",
+                ],
+            )
+            .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         })
         .or_else(|| {
-            first_non_empty_attr(element, &["data-src", "data-lazy-src", "data-original"])
-                .map(str::to_owned)
+            first_non_empty_attr(
+                element,
+                &[
+                    "data-src",
+                    "data-lazy-src",
+                    "data-original",
+                    "data-original-src",
+                    "data-image",
+                    "data-image-src",
+                    "data-img-src",
+                ],
+            )
+            .map(str::to_owned)
         })
 }
 

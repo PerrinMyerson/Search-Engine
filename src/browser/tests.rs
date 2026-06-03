@@ -1994,6 +1994,104 @@ fn lazy_png_placeholder_img_uses_real_jpeg_data_source_for_rendering() {
 }
 
 #[test]
+fn lazy_gif_placeholder_img_uses_data_image_source_for_rendering() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero_jpeg = dir.path().join("hero.jpg");
+    fs::write(&hero_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let placeholder = "data:image/gif;base64,R0lGODlhAQABAHAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "hero.jpg").unwrap().info();
+    let html = format!(
+        r#"<html><body><img src="{placeholder}" data-image="hero.jpg" alt="Data image JPEG" width="80" height="48"><p>After</p></body></html>"#
+    );
+    let render = render_html(
+        &source,
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("Data image JPEG".to_owned()),
+                url: Some("hero.jpg".to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(decoded_info.pixel_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn lazy_gif_placeholder_img_uses_data_image_srcset_for_rendering() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let large_jpeg = dir.path().join("large.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&large_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let placeholder = "data:image/gif;base64,R0lGODlhAQABAHAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let html = format!(
+        r#"<html><body><img src="{placeholder}" sizes="160px" data-image-srcset="small.jpg 160w, large.jpg 320w" alt="Data image srcset JPEG" height="48"><p>After</p></body></html>"#
+    );
+    let render = render_html(
+        &source,
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                shade: 220,
+                alt: Some("Data image srcset JPEG".to_owned()),
+                url: Some("small.jpg".to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: Some(decoded_info.pixel_hash),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn decodes_data_url_png_image_into_raster_pixels() {
     let data_url = concat!(
         "data:image/png;base64,",
