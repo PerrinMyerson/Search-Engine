@@ -153,8 +153,12 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
 fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
     if is_jpeg_bytes(bytes) {
         decode_jpeg(bytes)
+    } else if is_png_bytes(bytes) {
+        decode_simple_png(bytes)
     } else if is_webp_bytes(bytes) {
         decode_webp(bytes)
+    } else if is_svg_bytes(bytes) {
+        decode_simple_svg(bytes)
     } else {
         None
     }
@@ -164,8 +168,20 @@ fn is_jpeg_bytes(bytes: &[u8]) -> bool {
     matches!(bytes, [0xff, 0xd8, 0xff, ..])
 }
 
+fn is_png_bytes(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
 fn is_webp_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+}
+
+fn is_svg_bytes(bytes: &[u8]) -> bool {
+    let Some(prefix) = std::str::from_utf8(&bytes[..bytes.len().min(512)]).ok() else {
+        return false;
+    };
+    let prefix = prefix.trim_start_matches('\u{feff}').trim_start();
+    prefix.starts_with("<svg") || (prefix.starts_with("<?xml") && prefix.contains("<svg"))
 }
 
 fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
@@ -1340,6 +1356,26 @@ mod tests {
     }
 
     #[test]
+    fn image_real_page_resources_sniffs_png_and_svg_by_signature() {
+        let png = test_png_bytes();
+        let decoded = decode_cached_resource_image(
+            "https://cdn.example.test/image",
+            Some("application/octet-stream"),
+            &png,
+        )
+        .unwrap();
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+
+        let svg = br#"<?xml version="1.0"?><svg width="3" height="2" xmlns="http://www.w3.org/2000/svg"><rect width="3" height="2" fill="black"/></svg>"#;
+        let decoded =
+            decode_cached_resource_image("https://cdn.example.test/vector", None, svg).unwrap();
+        assert_eq!(decoded.width, 3);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels, vec![0; 6]);
+    }
+
+    #[test]
     fn decodes_jpeg_metadata_app_segments_without_changing_pixels() {
         let bytes = tiny_test_jpeg_bytes();
         let baseline = decode_image_bytes("image/jpeg", &bytes).unwrap();
@@ -1425,6 +1461,33 @@ mod tests {
         tiff.extend_from_slice(&1u16.to_le_bytes());
 
         assert_eq!(exif_orientation_from_tiff(&tiff), Some(8));
+    }
+
+    fn test_png_bytes() -> Vec<u8> {
+        use std::io::Write as _;
+
+        let filtered_scanlines = [0, 0, 0, 0, 255, 255, 255, 1, 255, 0, 0, 1, 0, 255];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&filtered_scanlines).unwrap();
+        let idat = encoder.finish().unwrap();
+
+        let mut ihdr = Vec::with_capacity(13);
+        ihdr.extend_from_slice(&2u32.to_be_bytes());
+        ihdr.extend_from_slice(&2u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        push_test_png_chunk(&mut png, b"IHDR", &ihdr);
+        push_test_png_chunk(&mut png, b"IDAT", &idat);
+        push_test_png_chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    fn push_test_png_chunk(png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(kind);
+        png.extend_from_slice(data);
+        png.extend_from_slice(&0u32.to_be_bytes());
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -610,7 +610,15 @@ pub(super) fn collect_selected_image_resources(
 ) -> Vec<BrowserResource> {
     let mut resources = Vec::new();
     collect_selected_image_resources_at(dom, 0, source, viewport_width_css_px, &mut resources);
+    dedupe_resources_by_resolved(resources)
+}
+
+fn dedupe_resources_by_resolved(resources: Vec<BrowserResource>) -> Vec<BrowserResource> {
+    let mut seen = HashSet::new();
     resources
+        .into_iter()
+        .filter(|resource| seen.insert(resource.resolved.clone()))
+        .collect()
 }
 
 fn collect_selected_image_resources_at(

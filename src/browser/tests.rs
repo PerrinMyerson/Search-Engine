@@ -2400,6 +2400,65 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
 }
 
 #[tokio::test]
+async fn image_real_page_resources_dedupes_selected_image_fetches() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let tile = dir.path().join("tile.png");
+    fs::write(&tile, png_bytes).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <link rel="preload" as="image" href="tile.png">
+        </head><body>
+            <p>Before duplicate</p>
+            <img src="tile.png" alt="First" width="16" height="24">
+            <img src="tile.png" alt="Second" width="16" height="24">
+            <p>After duplicate</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 1);
+    assert_eq!(
+        report.fetches[0].resource.resolved,
+        tile.display().to_string()
+    );
+    assert_eq!(report.fetches[0].status, "fetched");
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    let decoded_image_commands = render
+        .display_list
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &tile.display().to_string() && *hash == expected_hash
+            )
+        })
+        .count();
+    assert_eq!(decoded_image_commands, 2);
+}
+
+#[tokio::test]
 async fn session_render_images_decodes_http_resource_cache_pixels() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
