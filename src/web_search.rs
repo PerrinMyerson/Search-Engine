@@ -52,6 +52,22 @@ pub struct WebSearchLookup {
     pub results: Vec<WebSearchResult>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchStorageCompactionReport {
+    pub cache_path: PathBuf,
+    pub result_log_path: PathBuf,
+    pub cache_before: WebSearchStorageArtifactState,
+    pub cache_after: WebSearchStorageArtifactState,
+    pub result_log_before: WebSearchStorageArtifactState,
+    pub result_log_after: WebSearchStorageArtifactState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSearchStorageArtifactState {
+    pub bytes: u64,
+    pub entries: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchResult {
     pub title: String,
@@ -263,6 +279,98 @@ impl WebSearchService {
             results,
         })
     }
+}
+
+pub fn compact_web_search_storage_from_env(
+    index_dir: &Path,
+) -> Result<WebSearchStorageCompactionReport> {
+    let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| index_dir.join("web-cache.jsonl"));
+    let result_log_path = env::var_os("BRUTAL_WEB_RESULT_LOG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
+    let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
+    let cache_max_entries =
+        env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
+    let result_log_max_entries =
+        env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
+
+    compact_web_search_storage(
+        cache_path,
+        result_log_path,
+        cache_ttl_secs,
+        cache_max_entries,
+        result_log_max_entries,
+    )
+}
+
+fn compact_web_search_storage(
+    cache_path: PathBuf,
+    result_log_path: PathBuf,
+    cache_ttl_secs: u64,
+    cache_max_entries: usize,
+    result_log_max_entries: usize,
+) -> Result<WebSearchStorageCompactionReport> {
+    let cache_before = web_storage_artifact_state(&cache_path)?;
+    let result_log_before = web_storage_artifact_state(&result_log_path)?;
+
+    if cache_path.exists() {
+        let _ = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
+    }
+    enforce_result_log_retention(&result_log_path, result_log_max_entries)?;
+
+    let cache_after = web_storage_artifact_state(&cache_path)?;
+    let result_log_after = web_storage_artifact_state(&result_log_path)?;
+    Ok(WebSearchStorageCompactionReport {
+        cache_path,
+        result_log_path,
+        cache_before,
+        cache_after,
+        result_log_before,
+        result_log_after,
+    })
+}
+
+fn web_storage_artifact_state(path: &Path) -> Result<WebSearchStorageArtifactState> {
+    let bytes = match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        Ok(_) => 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read web storage artifact {}", path.display()));
+        }
+    };
+    Ok(WebSearchStorageArtifactState {
+        bytes,
+        entries: count_nonempty_lines(path)?,
+    })
+}
+
+fn count_nonempty_lines(path: &Path) -> Result<usize> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("open web storage artifact {}", path.display()));
+        }
+    };
+    let mut entries = 0usize;
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web storage artifact {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if !line.trim().is_empty() {
+            entries += 1;
+        }
+    }
+    Ok(entries)
 }
 
 impl WebResultCache {
@@ -976,6 +1084,74 @@ mod tests {
         assert_eq!(lines.lines().count(), 1);
         assert!(lines.contains("https://example.com/new"));
         assert!(!lines.contains("https://example.com/old"));
+    }
+
+    #[test]
+    fn compact_web_search_storage_reports_before_after_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/new", now)],
+            },
+        )
+        .unwrap();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now.saturating_sub(1),
+                results: vec![web_result("https://example.com/old", now.saturating_sub(1))],
+            },
+        )
+        .unwrap();
+        let duplicate_log_entry = WebSearchResultLogEntry {
+            query: "Query".to_owned(),
+            normalized_query: "query".to_owned(),
+            provider: "brave".to_owned(),
+            fetched_at_unix: now,
+            rank: 1,
+            title: "Title".to_owned(),
+            url: "https://example.com/new".to_owned(),
+            snippet: "Snippet".to_owned(),
+            score: 1.0,
+        };
+        {
+            let mut file = fs::File::create(&result_log_path).unwrap();
+            serde_json::to_writer(&mut file, &duplicate_log_entry).unwrap();
+            file.write_all(b"\n").unwrap();
+            serde_json::to_writer(&mut file, &duplicate_log_entry).unwrap();
+            file.write_all(b"\n").unwrap();
+            file.flush().unwrap();
+        }
+
+        let report = compact_web_search_storage(
+            cache_path.clone(),
+            result_log_path.clone(),
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+        )
+        .unwrap();
+
+        assert_eq!(report.cache_before.entries, 2);
+        assert_eq!(report.cache_after.entries, 1);
+        assert!(report.cache_after.bytes < report.cache_before.bytes);
+        assert_eq!(report.result_log_before.entries, 2);
+        assert_eq!(report.result_log_after.entries, 1);
+        assert!(report.result_log_after.bytes < report.result_log_before.bytes);
+        let cache = fs::read_to_string(cache_path).unwrap();
+        assert!(cache.contains("https://example.com/new"));
+        assert!(!cache.contains("https://example.com/old"));
     }
 
     #[test]
