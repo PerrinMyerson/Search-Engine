@@ -2247,6 +2247,41 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
+    assert!(html.contains(r#"data-browser-viewport-command-strip"#));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">session {}</span>"#,
+        payload.id
+    )));
+    assert!(html.contains(r#"<span class="viewport-state-chip">viewport 40x16</span>"#));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">x 8/{}</span>"#,
+        payload.max_scroll_x
+    )));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">y 4/{}</span>"#,
+        payload.max_scroll_y
+    )));
+    assert!(html.contains(r#">Current view</a>"#));
+    assert!(html.contains(r#">Reload tab</a>"#));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
+    assert!(html.contains(&format!(
+        r#"href="{}">Current view</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"href="{}">Reload tab</a>"#,
+        html_escape::encode_double_quoted_attribute(&reload_href)
+    )));
+    assert!(html.contains(r#"class="viewport-command-jump""#));
+    assert!(html.contains(&format!(
+        r#"id="browser-command-viewport-x" type="number" min="0" max="{}" name="x" value="8" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range""#,
+        payload.max_scroll_x
+    )));
+    assert!(html.contains(&format!(
+        r#"id="browser-command-viewport-y" type="number" min="0" max="{}" name="y" value="4" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range""#,
+        payload.max_scroll_y
+    )));
     assert!(html.contains(r#"data-browser-viewport-status"#));
     assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
     assert!(html.contains(&format!("<span>y 4/{}</span>", payload.max_scroll_y)));
@@ -9149,6 +9184,29 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("Making visual..."));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
+    assert!(html.contains(r#"data-browser-viewport-command-strip"#));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-state-chip">session {}</span>"#,
+        payload.id
+    )));
+    assert!(html.contains(r#"<span class="viewport-state-chip">viewport 40x16</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip">y 2/"#));
+    assert!(html.contains(r#">Current view</a>"#));
+    assert!(html.contains(r#">Reload tab</a>"#));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
+    assert!(html.contains(&format!(
+        r#"href="{}">Current view</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"href="{}">Reload tab</a>"#,
+        html_escape::encode_double_quoted_attribute(&reload_href)
+    )));
+    assert!(html.contains(r#"class="viewport-command-jump""#));
+    assert!(html.contains(r#"id="browser-command-viewport-x""#));
+    assert!(html.contains(r#"id="browser-command-viewport-y""#));
+    assert!(html.contains(r#"id="browser-command-viewport-range""#));
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
