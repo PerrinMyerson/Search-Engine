@@ -2240,6 +2240,52 @@ fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
 }
 
 #[test]
+fn css_fixed_position_paints_relative_to_scrolled_viewport() {
+    let render = render_html(
+        "mem://fixed-position-scrolled-viewport",
+        br#"
+            <html><body>
+              <div style="position:fixed; top:0">Pinned nav</div>
+              <div style="height:96px"></div>
+              <p>After</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 3,
+            width: 30,
+            height: 3,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert_eq!(
+        viewport.lines,
+        vec!["Pinned nav".to_owned(), String::new(), String::new()]
+    );
+    assert_eq!(viewport.visible_command_count, 1);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(3),
+        viewport_width: Some(30),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).unwrap();
+    let report = raster_report(&render, &raster, raster_options);
+    assert_eq!(report.visible_command_count, 1);
+    assert!(raster.non_background_pixels() > 0);
+}
+
+#[test]
 fn css_absolute_top_uses_positioned_containing_block_start() {
     let render = render_html(
         "mem://absolute-top-containing-block",
