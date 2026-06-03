@@ -1611,12 +1611,17 @@ fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {
             }
             let mut width = None;
             let mut density_milli = None;
+            let mut has_descriptor = false;
             for descriptor in parts {
+                has_descriptor = true;
                 if let Some(parsed_width) = parse_srcset_width_descriptor(descriptor) {
                     width = Some(parsed_width);
                 } else if let Some(parsed_density) = parse_srcset_density_descriptor(descriptor) {
                     density_milli = Some(parsed_density);
                 }
+            }
+            if !has_descriptor {
+                density_milli = Some(1_000);
             }
             Some(SrcsetCandidate {
                 url: url.to_owned(),

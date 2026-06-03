@@ -1109,6 +1109,44 @@ fn selects_data_url_jpeg_srcset_candidate_for_static_render() {
 }
 
 #[test]
+fn selects_descriptorless_jpeg_srcset_candidate_as_default_density() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_jpeg = dir.path().join("small.jpg");
+    let retina_jpeg = dir.path().join("retina.jpg");
+    fs::write(&small_jpeg, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&retina_jpeg, tiny_test_jpeg_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
+    let render = render_html(
+        &source,
+        br#"<html><body><img src="fallback.jpg" srcset="small.jpg, retina.jpg 2x" alt="Default Density JPEG" width="80" height="24"></body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Image {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 2,
+            shade: 220,
+            alt: Some("Default Density JPEG".to_owned()),
+            url: Some("small.jpg".to_owned()),
+            decoded_width: Some(2),
+            decoded_height: Some(2),
+            decoded_hash: Some(decoded_info.pixel_hash),
+        }]
+    );
+}
+
+#[test]
 fn selects_viewport_width_jpeg_srcset_candidate_without_width_attr() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
