@@ -834,6 +834,9 @@ fn picture_source_attr<'a>(
             && picture_source_type_supported(element)
             && let Some(srcset) = first_non_empty_attr(element, attr_names)
         {
+            if is_empty_picture_placeholder_source(element, srcset) {
+                continue;
+            }
             return Some(PictureSourceSet {
                 srcset,
                 sizes: first_non_empty_attr(element, &["sizes"]),
@@ -882,6 +885,17 @@ fn is_lazy_data_image_placeholder_src(src: &str) -> bool {
     src.starts_with("data:image/svg+xml")
         || src.starts_with("data:image/png")
         || src.starts_with("data:image/gif")
+}
+
+fn is_empty_picture_placeholder_source(element: &ElementData, srcset: &str) -> bool {
+    if !element.attrs.contains_key("data-empty") {
+        return false;
+    }
+    let urls = srcset_candidate_urls(srcset);
+    !urls.is_empty()
+        && urls
+            .iter()
+            .all(|url| is_lazy_data_image_placeholder_src(url))
 }
 
 #[cfg(test)]
