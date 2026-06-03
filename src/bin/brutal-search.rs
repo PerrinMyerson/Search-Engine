@@ -42,6 +42,8 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
     "brave-results.jsonl",
     "bench-status.json",
 ];
+const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
+const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -890,8 +892,30 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
                 artifact.name, newest
             );
         }
+        if let Some(suggestion) = web_storage_compaction_suggestion(&artifact) {
+            println!(
+                "web_storage_compaction_suggestion: {} {}",
+                artifact.name, suggestion
+            );
+        }
     }
     Ok(())
+}
+
+fn web_storage_compaction_suggestion(artifact: &WebStorageArtifactStats) -> Option<String> {
+    if artifact.duplicate_entries >= WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES {
+        return Some(format!(
+            "brutal-search compact-web-cache --dry-run --min-entries {}",
+            artifact.entries.max(artifact.duplicate_entries)
+        ));
+    }
+    if artifact.entries >= WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES {
+        return Some(format!(
+            "brutal-search compact-web-cache --dry-run --min-entries {}",
+            WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
+        ));
+    }
+    None
 }
 
 fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
@@ -1183,5 +1207,43 @@ mod tests {
         assert_eq!(log_stats.entries, 2);
         assert_eq!(log_stats.unique_entries, 1);
         assert_eq!(log_stats.duplicate_entries, 1);
+    }
+
+    #[test]
+    fn web_storage_compaction_suggestion_points_to_dry_run() {
+        let duplicate_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            entries: 3,
+            unique_entries: 2,
+            duplicate_entries: 1,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let large_artifact = WebStorageArtifactStats {
+            name: "brave-results.jsonl",
+            entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            duplicate_entries: 0,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let small_clean_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+
+        assert_eq!(
+            web_storage_compaction_suggestion(&duplicate_artifact).as_deref(),
+            Some("brutal-search compact-web-cache --dry-run --min-entries 3")
+        );
+        assert_eq!(
+            web_storage_compaction_suggestion(&large_artifact).as_deref(),
+            Some("brutal-search compact-web-cache --dry-run --min-entries 1024")
+        );
+        assert!(web_storage_compaction_suggestion(&small_clean_artifact).is_none());
     }
 }
