@@ -4643,6 +4643,12 @@ pub fn rasterize_render(
     let background = 255u8;
     let mut pixels = vec![background; pixel_count];
     for (command_index, command) in render.display_list.iter().enumerate() {
+        if matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) {
+            continue;
+        }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         let command_bounds = display_command_bounds_for_viewport(
@@ -4656,62 +4662,7 @@ pub fn rasterize_render(
             continue;
         };
         match command {
-            DisplayCommand::Text { x, y, text } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
-                    viewport,
-                    viewport_fixed,
-                    viewport_sticky_top,
-                );
-                if y < viewport.y || y >= viewport.end_y() {
-                    continue;
-                }
-                for (column_offset, ch) in text.chars().enumerate() {
-                    let document_column = x.saturating_add(column_offset);
-                    if document_column < viewport.x || document_column >= viewport.end_x() {
-                        continue;
-                    }
-                    let cell_x = options.padding_x.saturating_add(
-                        document_column
-                            .saturating_sub(viewport.x)
-                            .saturating_mul(options.cell_width),
-                    );
-                    let cell_y = options.padding_y.saturating_add(
-                        y.saturating_sub(viewport.y)
-                            .saturating_mul(options.cell_height),
-                    );
-                    draw_glyph(&mut pixels, width, cell_x, cell_y, ch, 0);
-                }
-            }
-            DisplayCommand::StyledText { x, y, text, shade } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
-                    viewport,
-                    viewport_fixed,
-                    viewport_sticky_top,
-                );
-                if y < viewport.y || y >= viewport.end_y() {
-                    continue;
-                }
-                for (column_offset, ch) in text.chars().enumerate() {
-                    let document_column = x.saturating_add(column_offset);
-                    if document_column < viewport.x || document_column >= viewport.end_x() {
-                        continue;
-                    }
-                    let cell_x = options.padding_x.saturating_add(
-                        document_column
-                            .saturating_sub(viewport.x)
-                            .saturating_mul(options.cell_width),
-                    );
-                    let cell_y = options.padding_y.saturating_add(
-                        y.saturating_sub(viewport.y)
-                            .saturating_mul(options.cell_height),
-                    );
-                    draw_glyph(&mut pixels, width, cell_x, cell_y, ch, *shade);
-                }
-            }
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
             DisplayCommand::Rect {
                 x: _,
                 y: _,
@@ -5018,6 +4969,17 @@ pub fn rasterize_render(
             }
         }
     }
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        draw_raster_text_command(
+            &mut pixels,
+            width,
+            command,
+            render,
+            command_index,
+            viewport,
+            options,
+        );
+    }
 
     Ok(BrowserRaster {
         width,
@@ -5026,6 +4988,47 @@ pub fn rasterize_render(
         foreground: 0,
         pixels,
     })
+}
+
+fn draw_raster_text_command(
+    pixels: &mut [u8],
+    raster_width: usize,
+    command: &DisplayCommand,
+    render: &BrowserRender,
+    command_index: usize,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+) {
+    let (x, y, text, ink) = match command {
+        DisplayCommand::Text { x, y, text } => (*x, *y, text.as_str(), 0),
+        DisplayCommand::StyledText { x, y, text, shade } => (*x, *y, text.as_str(), *shade),
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => return,
+    };
+    let viewport_fixed = display_command_viewport_fixed(render, command_index);
+    let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+    let (x, y) =
+        display_command_origin_for_viewport(x, y, viewport, viewport_fixed, viewport_sticky_top);
+    if y < viewport.y || y >= viewport.end_y() {
+        return;
+    }
+    for (column_offset, ch) in text.chars().enumerate() {
+        let document_column = x.saturating_add(column_offset);
+        if document_column < viewport.x || document_column >= viewport.end_x() {
+            continue;
+        }
+        let cell_x = options.padding_x.saturating_add(
+            document_column
+                .saturating_sub(viewport.x)
+                .saturating_mul(options.cell_width),
+        );
+        let cell_y = options.padding_y.saturating_add(
+            y.saturating_sub(viewport.y)
+                .saturating_mul(options.cell_height),
+        );
+        draw_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
+    }
 }
 
 pub fn rasterize_render_rgba(
@@ -5123,34 +5126,12 @@ pub fn browser_text_viewport(
             continue;
         };
         match command {
-            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
-                    viewport,
-                    viewport_fixed,
-                    viewport_sticky_top,
-                );
-                if y < viewport.y || y >= viewport.end_y() {
-                    continue;
-                }
-                let row = y.saturating_sub(viewport.y);
-                for (column_offset, ch) in text.chars().enumerate() {
-                    let document_column = x.saturating_add(column_offset);
-                    if document_column < viewport.x || document_column >= viewport.end_x() {
-                        continue;
-                    }
-                    let column = document_column.saturating_sub(viewport.x);
-                    if let Some(cell) = cells.get_mut(row).and_then(|line| line.get_mut(column)) {
-                        *cell = ch;
-                    }
-                }
-            }
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
             DisplayCommand::Rect { .. } => {
-                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '#')
+                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '#')
             }
             DisplayCommand::Image { alt, .. } => {
-                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '@');
                 overlay_text_viewport_image_alt(
                     &mut cells,
                     viewport,
@@ -5159,9 +5140,12 @@ pub fn browser_text_viewport(
                 );
             }
             DisplayCommand::BackgroundImage { .. } => {
-                fill_text_viewport_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, '@');
             }
         }
+    }
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
     }
 
     BrowserTextViewportReport {
@@ -5189,7 +5173,42 @@ pub fn browser_text_viewport(
     }
 }
 
-fn fill_text_viewport_cells(
+fn draw_text_viewport_command(
+    cells: &mut [Vec<char>],
+    command: &DisplayCommand,
+    render: &BrowserRender,
+    command_index: usize,
+    viewport: RasterViewport,
+) {
+    let (x, y, text) = match command {
+        DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
+            (*x, *y, text.as_str())
+        }
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => return,
+    };
+    let viewport_fixed = display_command_viewport_fixed(render, command_index);
+    let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+    let (x, y) =
+        display_command_origin_for_viewport(x, y, viewport, viewport_fixed, viewport_sticky_top);
+    if y < viewport.y || y >= viewport.end_y() {
+        return;
+    }
+    let row = y.saturating_sub(viewport.y);
+    for (column_offset, ch) in text.chars().enumerate() {
+        let document_column = x.saturating_add(column_offset);
+        if document_column < viewport.x || document_column >= viewport.end_x() {
+            continue;
+        }
+        let column = document_column.saturating_sub(viewport.x);
+        if let Some(cell) = cells.get_mut(row).and_then(|line| line.get_mut(column)) {
+            *cell = ch;
+        }
+    }
+}
+
+fn fill_text_viewport_empty_cells(
     cells: &mut [Vec<char>],
     viewport: RasterViewport,
     bounds: DisplayCommandBounds,
@@ -5203,7 +5222,9 @@ fn fill_text_viewport_cells(
         if let Some(line) = cells.get_mut(row) {
             for column in start_x..end_x {
                 if let Some(cell) = line.get_mut(column) {
-                    *cell = ch;
+                    if *cell == ' ' {
+                        *cell = ch;
+                    }
                 }
             }
         }
@@ -5247,7 +5268,9 @@ fn overlay_text_viewport_image_alt(
         .saturating_add(horizontal_padding);
     for (offset, ch) in alt.chars().take(available_width).enumerate() {
         if let Some(cell) = line.get_mut(start_x.saturating_add(offset)) {
-            *cell = ch;
+            if *cell == ' ' || *cell == '@' {
+                *cell = ch;
+            }
         }
     }
 }
