@@ -8841,6 +8841,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   if (!shell) {
     return;
   }
+  const pendingAutoVisual = document.querySelector("[data-auto-visual-" + "status]");
+  if (pendingAutoVisual) {
+    shell.dataset.pendingAutoVisual = "true";
+    shell.setAttribute("aria-busy", "true");
+    return;
+  }
   const raster = shell.querySelector(".browser-raster");
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);

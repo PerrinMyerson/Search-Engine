@@ -8865,6 +8865,16 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains("Preparing visual render"));
     assert!(html.contains("Loading images..."));
     assert!(html.contains("sessionStorage"));
+    assert!(html.contains(r#"document.querySelector("[data-auto-visual-" + "status]")"#));
+    assert!(html.contains(r#"shell.dataset.pendingAutoVisual = "true""#));
+    assert!(html.contains(r#"shell.setAttribute("aria-busy", "true")"#));
+    let auto_guard_index = html
+        .find("const pendingAutoVisual")
+        .expect("viewport script should guard auto-visual pages");
+    let wheel_listener_index = html
+        .find(r#"shell.addEventListener("wheel""#)
+        .expect("viewport script should still include wheel handling");
+    assert!(auto_guard_index < wheel_listener_index);
 
     let load_images = RequestTarget {
         path: "/browser".to_owned(),
