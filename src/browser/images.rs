@@ -1508,10 +1508,11 @@ fn media_width_feature_matches(feature: &str, viewport_width_css_px: usize) -> O
     let feature = feature.strip_prefix('(')?.strip_suffix(')')?.trim();
     let (name, value) = feature.split_once(':')?;
     let width = parse_css_pixel_dimension(value)?;
+    let viewport_width = viewport_width_css_px as f64;
     match name.trim() {
-        "min-width" => Some(viewport_width_css_px >= width),
-        "max-width" => Some(viewport_width_css_px <= width),
-        "width" => Some(viewport_width_css_px == width),
+        "min-width" => Some(viewport_width >= width),
+        "max-width" => Some(viewport_width <= width),
+        "width" => Some((viewport_width - width).abs() < f64::EPSILON),
         _ => None,
     }
 }
@@ -1740,12 +1741,19 @@ fn parse_srcset_density_descriptor(descriptor: &str) -> Option<usize> {
     Some((density * 1_000.0).round() as usize)
 }
 
-fn parse_css_pixel_dimension(value: &str) -> Option<usize> {
-    let trimmed = value.trim().trim_end_matches("px").trim();
-    if trimmed.contains('%') || trimmed.is_empty() {
+fn parse_css_pixel_dimension(value: &str) -> Option<f64> {
+    let value = value.trim();
+    if value.is_empty() {
         return None;
     }
-    let whole = trimmed.split_once('.').map_or(trimmed, |(whole, _)| whole);
-    let pixels = whole.parse::<usize>().ok()?;
-    (pixels > 0).then_some(pixels)
+    let pixels = if let Some(px) = strip_ascii_case_suffix(value, "px") {
+        px.trim().parse::<f64>().ok()?
+    } else {
+        let zero = value.parse::<f64>().ok()?;
+        if zero != 0.0 {
+            return None;
+        }
+        zero
+    };
+    (pixels.is_finite() && pixels >= 0.0).then_some(pixels)
 }
