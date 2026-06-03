@@ -209,6 +209,13 @@ fn browser_window_find_text(mode: &BrowserWindowMode) -> Option<&str> {
 }
 
 #[cfg(any(test, feature = "native-window"))]
+fn dismiss_browser_window_prompt(mode: &mut BrowserWindowMode) {
+    if !matches!(mode, BrowserWindowMode::Page) {
+        *mode = BrowserWindowMode::Page;
+    }
+}
+
+#[cfg(any(test, feature = "native-window"))]
 fn begin_browser_window_find_input(mode: &mut BrowserWindowMode, current_query: Option<&str>) {
     let text = current_query.unwrap_or_default().to_owned();
     let replace_on_input = !text.is_empty();
@@ -554,6 +561,7 @@ mod native {
                 if index == app.active_tab() {
                     return Ok(BrowserWindowKeyResult::default());
                 }
+                dismiss_browser_window_prompt(mode);
                 app.apply_action(BrowserAppAction::SwitchTab(index)).await?;
                 return Ok(BrowserWindowKeyResult {
                     dirty: true,
@@ -626,6 +634,7 @@ mod native {
                     });
                 }
                 Key::LeftBracket if modifiers.shift && app.tab_count() > 0 => {
+                    dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -634,6 +643,7 @@ mod native {
                     });
                 }
                 Key::RightBracket if modifiers.shift && app.tab_count() > 0 => {
+                    dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -667,6 +677,7 @@ mod native {
                 }
                 Key::T if modifiers.shift => {
                     if app.closed_tab_count() > 0 {
+                        dismiss_browser_window_prompt(mode);
                         app.apply_action(BrowserAppAction::RestoreClosedTab).await?;
                         return Ok(BrowserWindowKeyResult {
                             dirty: true,
@@ -685,6 +696,7 @@ mod native {
                 }
                 Key::W => {
                     if app.tab_count() > 1 {
+                        dismiss_browser_window_prompt(mode);
                         app.apply_action(BrowserAppAction::CloseTab(None)).await?;
                         return Ok(BrowserWindowKeyResult {
                             dirty: true,
@@ -697,6 +709,7 @@ mod native {
                     });
                 }
                 Key::Tab if app.tab_count() > 0 => {
+                    dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, modifiers.shift)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -705,6 +718,7 @@ mod native {
                     });
                 }
                 Key::PageUp if app.tab_count() > 0 => {
+                    dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, true)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -713,6 +727,7 @@ mod native {
                     });
                 }
                 Key::PageDown if app.tab_count() > 0 => {
+                    dismiss_browser_window_prompt(mode);
                     app.apply_action(browser_window_tab_cycle_action(app, false)?)
                         .await?;
                     return Ok(BrowserWindowKeyResult {
@@ -2500,6 +2515,92 @@ mod native {
                 .unwrap();
             assert!(next.dirty);
             assert_eq!(app.active_tab(), 2);
+        }
+
+        #[tokio::test]
+        async fn browser_window_keyboard_tab_changes_dismiss_transient_prompts() {
+            let mut app = BrowserApp::open(
+                "bench/browser-fixtures/static-text.html",
+                BrowserAppOptions {
+                    render: BrowserRenderOptions {
+                        width: 40,
+                        ..BrowserRenderOptions::default()
+                    },
+                    viewport_width: 40,
+                    viewport_height: 4,
+                    raster: BrowserRasterOptions::default(),
+                },
+            )
+            .await
+            .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            app.apply_action(BrowserAppAction::DuplicateTab)
+                .await
+                .unwrap();
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.active_tab(), 2);
+
+            let modifiers = BrowserWindowModifiers {
+                command: true,
+                shift: false,
+                alt: false,
+            };
+
+            let mut mode = BrowserWindowMode::Location {
+                text: "stale location".to_owned(),
+                replace_on_input: false,
+            };
+            let cycle = handle_browser_window_key(&mut app, &mut mode, Key::Tab, modifiers)
+                .await
+                .unwrap();
+            assert!(cycle.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_tab(), 0);
+
+            mode = BrowserWindowMode::Find {
+                text: "stale find".to_owned(),
+                replace_on_input: false,
+            };
+            let numeric = handle_browser_window_key(&mut app, &mut mode, Key::Key2, modifiers)
+                .await
+                .unwrap();
+            assert!(numeric.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.active_tab(), 1);
+
+            mode = BrowserWindowMode::Location {
+                text: "closing stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let close_tab = handle_browser_window_key(&mut app, &mut mode, Key::W, modifiers)
+                .await
+                .unwrap();
+            assert!(close_tab.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 2);
+
+            mode = BrowserWindowMode::Find {
+                text: "restore stale prompt".to_owned(),
+                replace_on_input: false,
+            };
+            let restore = handle_browser_window_key(
+                &mut app,
+                &mut mode,
+                Key::T,
+                BrowserWindowModifiers {
+                    command: true,
+                    shift: true,
+                    alt: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(restore.dirty);
+            assert_eq!(mode, BrowserWindowMode::Page);
+            assert_eq!(app.tab_count(), 3);
+            assert_eq!(app.closed_tab_count(), 0);
         }
 
         #[tokio::test]
