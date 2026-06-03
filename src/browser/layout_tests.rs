@@ -3124,6 +3124,58 @@ fn css_background_image_respects_contain_position_and_no_repeat() {
 }
 
 #[test]
+fn css_background_image_set_selects_supported_layer_fallback() {
+    let render = render_html(
+        "mem://background-image-set",
+        br#"
+            <html><body>
+              <div style="width:80px; height:24px; background-image:image-set(url(https://example.test/hero.avif) type('image/avif') 1x, url('https://example.test/hero.webp') type('image/webp') 1x), linear-gradient(red, blue); background-size:contain, cover; background-position:right top, center; background-repeat:no-repeat, repeat">Hero Copy</div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::BackgroundImage {
+                url,
+                size,
+                position,
+                repeat,
+                ..
+            } => Some((url.as_deref(), *size, *position, *repeat)),
+            _ => None,
+        });
+    assert_eq!(
+        background,
+        Some((
+            Some("https://example.test/hero.webp"),
+            BackgroundImageSize::Contain,
+            BackgroundImagePosition {
+                x_percent: 100,
+                y_percent: 0,
+            },
+            BackgroundImageRepeat::NoRepeat,
+        ))
+    );
+    assert!(
+        render
+            .display_list
+            .iter()
+            .position(|command| matches!(command, DisplayCommand::BackgroundImage { .. }))
+            < render.display_list.iter().position(|command| matches!(
+                command,
+                DisplayCommand::Text { text, .. } if text == "Hero Copy"
+            ))
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",
