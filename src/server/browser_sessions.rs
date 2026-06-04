@@ -5174,6 +5174,18 @@ fn browser_session_summaries(
                 .current()
                 .map(|render| (browser_session_title(render), render.source.clone()))
                 .unwrap_or_else(|| ("Untitled".to_owned(), String::new()));
+            let (page_title, source) = if let Some(pending_source) = session.pending_source.as_ref()
+            {
+                (
+                    format!(
+                        "Loading {}",
+                        browser_session_feedback_excerpt(pending_source)
+                    ),
+                    pending_source.clone(),
+                )
+            } else {
+                (page_title, source)
+            };
             let title = session
                 .tab_label
                 .clone()
@@ -9034,13 +9046,12 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_image = render_browser_session_viewport_image(payload);
     let primary_input_controls = render_browser_session_primary_input_controls(payload);
     let viewport_status = render_browser_session_viewport_status(payload);
+    let primary_page_state = render_browser_session_primary_page_state(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
     let viewport_text = render_browser_session_viewport_text(payload, &viewport);
     let navigation_state = render_browser_session_navigation_state(payload, back_href);
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
-    let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
-    let viewport_jump = render_browser_session_viewport_jump(payload);
     let viewport_interaction_controls =
         render_browser_session_viewport_interaction_controls(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
@@ -9275,6 +9286,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
 .viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
 .viewport-scroll-meter span {{ display: block; height: 100%; background: #2457d6; }}
+.browser-surface-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.browser-surface-state .primary-action {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; white-space: nowrap; }}
 .viewport-scroll-controls {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
 .viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
@@ -9293,13 +9306,15 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
-.viewport-interaction-row {{ display: grid; grid-template-columns: minmax(260px, auto) minmax(0, 1fr); gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-interaction-row {{ display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 8px; align-items: center; margin: 8px 0 10px; }}
 .viewport-click-form {{ display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }}
 .viewport-click-form label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-click-form input[type="number"] {{ width: 76px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-click-form button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
-.viewport-link-strip {{ min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
-.viewport-link-strip a {{ min-height: 28px; display: inline-flex; align-items: center; max-width: 220px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.viewport-link-strip {{ min-width: 0; max-width: min(100%, 340px); border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
+.viewport-link-strip > summary {{ min-height: 28px; display: inline-flex; align-items: center; cursor: pointer; padding: 0 9px; color: #20242a; font-size: 12px; font-weight: 800; }}
+.viewport-link-list {{ display: flex; flex-wrap: wrap; gap: 6px; padding: 0 9px 9px; }}
+.viewport-link-list a {{ min-height: 28px; display: inline-flex; align-items: center; max-width: 220px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .viewport-command-strip[data-resource-pending="true"] a[href^="/browser"], .viewport-command-strip[data-visual-pending="true"] .primary-action, .viewport-command-strip[data-scroll-pending="true"] a[href^="/browser"], .viewport-command-strip[data-scroll-pending="true"] button {{ cursor: wait; opacity: 0.72; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
@@ -9440,14 +9455,15 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </section>
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary" data-browser-primary-surface>
+{primary_page_state}
 {viewport_image}
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>Advanced browser controls</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
 <details class="debug-stack browser-tools-menu" data-browser-tools-tray>
-<summary>More browser tools</summary>
+<summary>Diagnostics</summary>
 <div class="debug-stack-content">
 <details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
 <details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
@@ -9507,15 +9523,14 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         forms = payload.form_count,
         history_index = payload.current_history_index.map_or(0, |index| index + 1),
         history_len = payload.history_len,
-        viewport_jump = viewport_jump,
         viewport_status = viewport_status,
+        primary_page_state = primary_page_state,
         auto_visual_bootstrap = auto_visual_bootstrap,
         browser_chrome_status = render_browser_session_chrome_status(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
         navigation_state = navigation_state,
         resource_quick_actions = resource_quick_actions,
-        viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
         viewport_interaction_controls = viewport_interaction_controls,
         primary_input_controls = primary_input_controls,
@@ -12407,6 +12422,44 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     )
 }
 
+fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) -> String {
+    let action_feedback = render_browser_session_action_feedback(payload);
+    if let Some(pending_source) = payload.pending_source.as_ref() {
+        let continue_href = browser_session_action_href(
+            &payload.id,
+            "open",
+            &[("url", pending_source.clone())],
+            payload,
+        );
+        return format!(
+            r#"<div class="browser-surface-state" data-browser-primary-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Opening {source}</span>{action_feedback}<a class="primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
+            action_feedback = action_feedback,
+            continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
+        );
+    }
+
+    let render_chip = if let Some(image) = payload.viewport_image.as_ref() {
+        format!(
+            r#"<span class="viewport-state-chip" data-browser-primary-raster>raster {}x{}</span>"#,
+            image.width, image.height,
+        )
+    } else if payload.viewport_image_error.is_some() {
+        r#"<span class="viewport-state-chip warning" data-browser-primary-raster>raster error</span>"#
+            .to_owned()
+    } else {
+        r#"<span class="viewport-state-chip warning" data-browser-primary-raster>raster unavailable</span>"#
+            .to_owned()
+    };
+    let visual_flow_status = render_browser_session_visual_flow_status(payload);
+    format!(
+        r#"<div class="browser-surface-state" data-browser-primary-state>{render_chip}{visual_flow_status}{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div>"#,
+        render_chip = render_chip,
+        visual_flow_status = visual_flow_status,
+        action_feedback = action_feedback,
+    )
+}
+
 fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
     let left_href =
@@ -12474,7 +12527,7 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_x = payload.width.saturating_sub(1) / 2;
     let default_click_y = payload.height.saturating_sub(1) / 2;
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">Hover rendered page to inspect click target.</span></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">Hover rendered page to inspect click target.</span></form><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
@@ -12808,17 +12861,6 @@ fn browser_scroll_percent(value: usize, max: usize) -> usize {
         return 100;
     }
     ((value.min(max) as u128 * 100) / max as u128) as usize
-}
-
-fn render_browser_session_viewport_jump(payload: &BrowserSessionPayload) -> String {
-    format!(
-        r#"<form class="viewport-jump" action="/browser" method="get">{common}<input type="hidden" name="action" value="current"><label for="browser-viewport-x">x</label><input id="browser-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x" aria-describedby="browser-viewport-range"><label for="browser-viewport-y">y</label><input id="browser-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y" aria-describedby="browser-viewport-range"><span id="browser-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump viewport</button></form>"#,
-        common = browser_session_common_hidden_inputs(payload),
-        x = payload.viewport_x,
-        max_x = payload.max_scroll_x,
-        y = payload.viewport_y,
-        max_y = payload.max_scroll_y,
-    )
 }
 
 fn render_browser_session_highlighted_text(text: &str, query: &str) -> String {

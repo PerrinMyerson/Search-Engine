@@ -2186,9 +2186,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Top</span>"#
     ));
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
-    ));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(r#"data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-chrome-status"#));
@@ -2200,12 +2197,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
-    assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
+    assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
-    ));
-    assert!(html.contains(r#">Right</a>"#));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Page left</span>"#
     ));
@@ -2214,14 +2207,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Page up</span>"#
     ));
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
-    ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
     assert!(html.contains(r#"<span data-browser-scroll-state="x">x: at left edge</span>"#));
     assert!(html.contains(r#"<span data-browser-scroll-state="y">y: at top</span>"#));
-    assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -2301,13 +2290,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
 
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains(">Left</a>"));
     assert!(html.contains(">Top</a>"));
-    assert!(html.contains(">Right</a>"));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
-    assert!(html.contains(">Line up</a>"));
-    assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
     assert!(html.contains(">Page left</a>"));
     assert!(html.contains(">Page right</a>"));
@@ -2457,22 +2442,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(html.contains(r#"name="viewport_x" value="8""#));
     assert!(html.contains(r#"name="viewport_y" value="4""#));
-    assert!(html.contains("viewport-jump"));
+    assert!(html.contains("viewport-command-jump"));
     assert!(html.contains(r#"name="action" value="current""#));
     assert!(html.contains(r#"name="x" value="8""#));
     assert!(html.contains(r#"name="y" value="4""#));
-    assert!(html.contains(&format!(
-        r#"id="browser-viewport-x" type="number" min="0" max="{}" name="x" value="8" aria-label="Viewport x" aria-describedby="browser-viewport-range""#,
-        payload.max_scroll_x
-    )));
-    assert!(html.contains(&format!(
-        r#"id="browser-viewport-y" type="number" min="0" max="{}" name="y" value="4" aria-label="Viewport y" aria-describedby="browser-viewport-range""#,
-        payload.max_scroll_y
-    )));
-    assert!(html.contains(&format!(
-        r#"<span id="browser-viewport-range" class="viewport-jump-range">range x 0-{}, y 0-{}</span>"#,
-        payload.max_scroll_x, payload.max_scroll_y
-    )));
+    assert!(!html.contains(r#"id="browser-viewport-x""#));
+    assert!(!html.contains(r#"id="browser-viewport-y""#));
     assert!(html.contains(r#"data-browser-viewport-scroll"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(r#"viewport-scroll-feedback"#));
@@ -2499,6 +2474,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let chrome_index = html.find(r#"data-browser-chrome"#).unwrap();
     let chrome_status_index = html.find(r#"data-browser-chrome-status"#).unwrap();
+    let primary_state_index = html.find(r#"data-browser-primary-state"#).unwrap();
     let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let command_strip_index = controls_tray_index
@@ -2507,10 +2483,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .unwrap();
     assert!(chrome_index < raster_index);
     assert!(chrome_status_index < raster_index);
+    assert!(primary_state_index < raster_index);
     assert!(raster_index < status_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < command_strip_index);
-    assert!(html.contains(r#"<summary>Advanced browser controls</summary>"#));
+    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(
         html.contains(
             r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
@@ -2879,9 +2857,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some(expected_bottom_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
-    ));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Page down</span>"#
     ));
@@ -9575,9 +9550,9 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(html.contains("Focused text name=q value=old"));
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let input_index = html.find(r#"data-browser-primary-input"#).unwrap();
-    let jump_index = html.find(r#"class="viewport-jump""#).unwrap();
+    let tools_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     assert!(raster_index < input_index);
-    assert!(input_index < jump_index);
+    assert!(input_index < tools_index);
     assert!(html.contains(">Backspace</a>"));
     assert!(html.contains(">Clear Input</a>"));
     assert!(html.contains(">Enter</a>"));
@@ -11587,9 +11562,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(controls_tray_index < debug_index);
     assert!(viewport_index < debug_index);
     assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains(r#"<summary>Visible links</summary>"#));
+    assert!(html.contains(r#"class="viewport-link-list""#));
     assert!(html.contains(r#"<summary>Page and session details</summary>"#));
-    assert!(html.contains(r#"<summary>Advanced browser controls</summary>"#));
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
     assert!(html.contains(r#"class="debug-stack-content""#));
     assert!(
@@ -11863,6 +11840,15 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert_eq!(payload.viewport_x, 4);
     assert_eq!(payload.viewport_y, 6);
     assert_eq!(payload.max_bytes, 1048576);
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert_eq!(current_tab.source, target_source);
+    assert!(current_tab.title.starts_with("Loading http://"));
+    assert!(!current_tab.title.contains("about:blank"));
+    assert!(!current_tab.source.contains("about:blank"));
     assert!(
         payload
             .action_feedback
@@ -11875,8 +11861,13 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-address type="text""#));
     assert!(html.contains(r#"data-browser-chrome-status"#));
     assert!(html.contains(r#"data-browser-pending-load="true""#));
+    assert!(html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
     assert!(html.contains("Loading page"));
+    assert!(html.contains("Opening http://"));
     assert!(html.contains("Continue loading"));
+    assert!(html.contains("Loading http://"));
+    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains("action=open"));
     assert!(html.contains("url=http%3A%2F%2F"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
@@ -11887,6 +11878,11 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("max_bytes=1048576"));
     assert!(html.contains("source=http%3A%2F%2F"));
     assert!(html.contains(r#"name="source" value="http://"#));
+    let primary_state_index = html.find(r#"data-browser-primary-state"#).unwrap();
+    let continue_index = html.find("Continue loading").unwrap();
+    let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    assert!(primary_state_index < raster_index);
+    assert!(continue_index < raster_index);
 
     server.abort();
 }
@@ -11922,6 +11918,15 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
         payload.pending_source.as_deref(),
         Some(target_source.as_str())
     );
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert_eq!(current_tab.source, target_source);
+    assert!(current_tab.title.starts_with("Loading http://"));
+    assert!(!current_tab.title.contains("about:blank"));
+    assert!(!current_tab.source.contains("about:blank"));
     assert!(
         payload
             .action_feedback
@@ -11931,13 +11936,19 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-pending-load="true""#));
+    assert!(html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
     assert!(html.contains("Continue loading"));
+    assert!(html.contains("Opening http://"));
+    assert!(html.contains("Loading http://"));
     assert!(html.contains("action=open"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dbroken"));
     assert!(html.contains("width=80"));
     assert!(html.contains("height=24"));
     assert!(html.contains("max_bytes=1048576"));
     assert!(html.contains("source=http%3A%2F%2F"));
+    let primary_state_index = html.find(r#"data-browser-primary-state"#).unwrap();
+    let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    assert!(primary_state_index < raster_index);
 
     server.await.unwrap();
 }
