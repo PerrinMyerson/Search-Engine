@@ -1148,8 +1148,10 @@ fn browser_route_error_response(
     let target_url = target
         .param("url")
         .or_else(|| target.param("target"))
+        .or_else(|| target.param("source"))
         .unwrap_or_default();
     let retry_href = browser_route_retry_href(target, &target_url);
+    let recovery_hidden_inputs = browser_route_recovery_hidden_inputs(target);
     let retry_control = retry_href.as_ref().map_or_else(
         || r#"<span class="browser-error-disabled">No original URL to retry</span>"#.to_owned(),
         |href| {
@@ -1219,11 +1221,11 @@ a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
-<main data-browser-route-error{missing_attr}>
+<main data-browser-route-error{missing_attr} data-browser-recovery-source="{address_value}">
 <header class="browser-topbar">
 <div class="browser-chrome-row" data-browser-chrome>
 <nav class="toolbar browser-primary-nav" aria-label="Browser navigation"><span>Back</span><span>Forward</span><span>Reload</span></nav>
-<form class="toolbar address-bar" method="get" action="/browser"><input data-browser-address type="text" name="url" value="{address_value}" aria-label="Address"><input type="hidden" name="from" value="{back_href}"><button type="submit">Go</button></form>
+<form class="toolbar address-bar" method="get" action="/browser"><input data-browser-address type="text" name="url" value="{address_value}" aria-label="Address"><input type="hidden" name="from" value="{back_href}">{recovery_hidden_inputs}<button type="submit">Go</button></form>
 </div>
 <div class="browser-chrome-status" data-browser-chrome-status><span class="viewport-state-chip">{status_label}</span><span class="viewport-state-chip">shell ready</span></div>
 </header>
@@ -1241,6 +1243,7 @@ a:hover {{ text-decoration: underline; }}
             status_label = html_escape::encode_text(status_label),
             address_value = html_escape::encode_double_quoted_attribute(&address_value),
             back_href = html_escape::encode_double_quoted_attribute(&back_href),
+            recovery_hidden_inputs = recovery_hidden_inputs,
             body_copy = html_escape::encode_text(body_copy),
             retry_control = retry_control,
             message = html_escape::encode_text(message),
@@ -1266,6 +1269,21 @@ fn browser_route_retry_href(target: &RequestTarget, target_url: &str) -> Option<
         }
     }
     Some(format!("/browser?{}", query.finish()))
+}
+
+fn browser_route_recovery_hidden_inputs(target: &RequestTarget) -> String {
+    let mut inputs = String::new();
+    for key in ["width", "height", "viewport_x", "viewport_y", "max_bytes"] {
+        if let Some(value) = target.param(key) {
+            let _ = write!(
+                inputs,
+                r#"<input type="hidden" name="{key}" value="{value}">"#,
+                key = key,
+                value = html_escape::encode_double_quoted_attribute(&value),
+            );
+        }
+    }
+    inputs
 }
 
 pub(super) async fn api_browser_session(
@@ -14403,7 +14421,7 @@ fn browser_session_select_option_links(control: &BrowserSessionFormControlPayloa
 
 fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> String {
     format!(
-        r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">"#,
+        r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}"><input type="hidden" name="source" value="{source}">"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
         width = payload.width,
@@ -14411,6 +14429,7 @@ fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> Stri
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         max_bytes = payload.max_bytes,
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
     )
 }
 
@@ -14484,6 +14503,7 @@ fn browser_session_action_href<T: BrowserSessionHrefSource>(
     query.append_pair("viewport_x", &source.viewport_x().to_string());
     query.append_pair("viewport_y", &source.viewport_y().to_string());
     query.append_pair("max_bytes", &source.max_bytes().to_string());
+    query.append_pair("source", source.source());
     for (key, value) in extra {
         query.append_pair(key, value);
     }
@@ -14521,6 +14541,7 @@ fn browser_session_api_href<T: BrowserSessionHrefSource>(
 
 trait BrowserSessionHrefSource {
     fn back_href(&self) -> &str;
+    fn source(&self) -> &str;
     fn width(&self) -> usize;
     fn height(&self) -> usize;
     fn viewport_x(&self) -> usize;
@@ -14531,6 +14552,13 @@ trait BrowserSessionHrefSource {
 impl BrowserSessionHrefSource for BrowserWebSession {
     fn back_href(&self) -> &str {
         &self.back_href
+    }
+
+    fn source(&self) -> &str {
+        self.session
+            .current()
+            .map(|render| render.source.as_str())
+            .unwrap_or_default()
     }
 
     fn width(&self) -> usize {
@@ -14557,6 +14585,10 @@ impl BrowserSessionHrefSource for BrowserWebSession {
 impl BrowserSessionHrefSource for BrowserSessionPayload {
     fn back_href(&self) -> &str {
         &self.back_href
+    }
+
+    fn source(&self) -> &str {
+        &self.source
     }
 
     fn width(&self) -> usize {
