@@ -7556,25 +7556,9 @@ fn browser_action_records_profile_tabs(action: &BrowserSessionAction) -> bool {
 }
 
 fn browser_session_payload_options_for_action(
-    action: &BrowserSessionAction,
+    _action: &BrowserSessionAction,
 ) -> BrowserSessionPayloadOptions {
-    if matches!(
-        action,
-        BrowserSessionAction::Scroll { .. }
-            | BrowserSessionAction::Top
-            | BrowserSessionAction::Bottom
-            | BrowserSessionAction::PageUp
-            | BrowserSessionAction::PageDown
-            | BrowserSessionAction::LineUp
-            | BrowserSessionAction::LineDown
-    ) {
-        BrowserSessionPayloadOptions {
-            render_viewport_image: false,
-            fast_scroll: true,
-        }
-    } else {
-        BrowserSessionPayloadOptions::default()
-    }
+    BrowserSessionPayloadOptions::default()
 }
 
 fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool {

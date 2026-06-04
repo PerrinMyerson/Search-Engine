@@ -2123,7 +2123,7 @@ async fn browser_session_registry_find_jumps_to_match_column() {
 }
 
 #[tokio::test]
-async fn browser_session_registry_scrolls_text_viewport_horizontally() {
+async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("wide.html");
     let stylesheet = dir.path().join("style.css");
@@ -2254,8 +2254,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     let (payload, back_href) = registry.apply_target(&scroll_down).await.unwrap();
     assert_eq!(payload.viewport_x, 8);
     assert_eq!(payload.viewport_y, 4);
-    assert!(payload.fast_scroll);
-    assert!(payload.viewport_image.is_none());
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
     assert!(payload.viewport_image_error.is_none());
 
     let html = render_browser_session_page(&payload, &back_href);
@@ -2388,13 +2388,12 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
         payload.max_scroll_y
     )));
     assert!(html.contains(r#"data-browser-viewport-status"#));
-    assert!(html.contains(r#"data-browser-fast-scroll"#));
-    assert!(html.contains(r#"<strong>Fast text scroll</strong>"#));
-    assert!(html.contains("Skipped visual raster generation for this scroll response."));
-    assert!(html.contains(
-        r#"<details class="viewport-text" open data-browser-fast-scroll-text><summary>Text viewport · fast scroll response</summary>"#
-    ));
-    assert!(html.contains(r#"<span class="viewport-state-chip">fast text scroll</span>"#));
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(!html.contains(r#"data-browser-fast-scroll"#));
+    assert!(!html.contains(r#"<strong>Fast text scroll</strong>"#));
+    assert!(!html.contains("Skipped visual raster generation for this scroll response."));
+    assert!(html.contains(r#"<details class="viewport-text"><summary>Text viewport</summary>"#));
+    assert!(!html.contains(r#"<span class="viewport-state-chip">fast text scroll</span>"#));
     assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
     assert!(html.contains(&format!("<span>y 4/{}</span>", payload.max_scroll_y)));
     assert!(
