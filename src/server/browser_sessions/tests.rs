@@ -2165,7 +2165,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
     ));
-    assert!(html.contains(">Down</a>"));
+    assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
@@ -2239,6 +2239,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     };
     let (payload, _) = registry.apply_target(&scroll_right).await.unwrap();
     assert_eq!(payload.viewport_x, 8);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Moved visual viewport to x 8, y 0.")
+    );
     assert!(payload.viewport.contains("IJKLMNOPQRSTUVWXYZ"));
     assert!(!payload.viewport.contains("ABCDEFGH"));
 
@@ -2257,13 +2263,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(!payload.fast_scroll);
     assert!(payload.viewport_image.is_some());
     assert!(payload.viewport_image_error.is_none());
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Moved visual viewport to x 8, y 4.")
+    );
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(">Left</a>"));
     assert!(html.contains(">Top</a>"));
-    assert!(html.contains(">Up</a>"));
-    assert!(html.contains(">Down</a>"));
     assert!(html.contains(">Right</a>"));
+    assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
     assert!(html.contains(">Line up</a>"));
     assert!(html.contains(">Line down</a>"));
@@ -2448,9 +2457,17 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"title="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
-    let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
-    assert!(status_index < raster_index);
+    let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
+    let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let command_strip_index = controls_tray_index
+        + html[controls_tray_index..]
+            .find(r#"data-browser-viewport-command-strip"#)
+            .unwrap();
+    assert!(raster_index < status_index);
+    assert!(raster_index < controls_tray_index);
+    assert!(controls_tray_index < command_strip_index);
+    assert!(html.contains(r#"<summary>Browser controls and status</summary>"#));
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
@@ -2472,7 +2489,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
     assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
-    assert!(html.contains("Scrolling browser viewport..."));
+    assert!(html.contains("const scrollMessage"));
+    assert!(html.contains("Moving visual viewport left..."));
+    assert!(html.contains("Moving visual viewport right..."));
+    assert!(html.contains("Moving visual viewport up..."));
+    assert!(html.contains("Moving visual viewport down..."));
+    assert!(html.contains("Refreshing visual viewport..."));
+    assert!(html.contains("Moving visual viewport..."));
     assert!(html.contains("Clicking DOM point in browser viewport..."));
     assert!(html.contains("Already at top."));
     assert!(html.contains("Already at bottom."));
@@ -2577,6 +2600,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&page_down).await.unwrap();
     assert_eq!(payload.viewport_x, 8);
     assert_eq!(payload.viewport_y, expected_page_down_y);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    let expected_page_down_feedback =
+        format!("Moved visual viewport to x 8, y {expected_page_down_y}.");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_page_down_feedback.as_str())
+    );
 
     let line_up = RequestTarget {
         path: "/browser".to_owned(),
@@ -2591,6 +2622,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&line_up).await.unwrap();
     assert_eq!(payload.viewport_x, 8);
     assert_eq!(payload.viewport_y, expected_line_up_y);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    let expected_line_up_feedback =
+        format!("Moved visual viewport to x 8, y {expected_line_up_y}.");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_line_up_feedback.as_str())
+    );
 
     let page_right_href = browser_session_action_href(
         &payload.id,
@@ -2612,6 +2651,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&page_right).await.unwrap();
     assert_eq!(payload.viewport_x, expected_page_right_x);
     assert_eq!(payload.viewport_y, expected_page_right_y);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    let expected_page_right_feedback =
+        format!("Moved visual viewport to x {expected_page_right_x}, y {expected_page_right_y}.");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_page_right_feedback.as_str())
+    );
 
     let page_left_href = browser_session_action_href(
         &payload.id,
@@ -2630,6 +2677,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&page_left).await.unwrap();
     assert_eq!(payload.viewport_x, expected_page_left_x);
     assert_eq!(payload.viewport_y, expected_page_left_y);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    let expected_page_left_feedback =
+        format!("Moved visual viewport to x {expected_page_left_x}, y {expected_page_left_y}.");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_page_left_feedback.as_str())
+    );
 
     let jump_viewport = RequestTarget {
         path: "/browser".to_owned(),
@@ -2655,6 +2710,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&bottom).await.unwrap();
     assert_eq!(payload.viewport_x, 12);
     assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport_image.is_some());
+    let expected_bottom_feedback =
+        format!("Moved visual viewport to x 12, y {}.", payload.max_scroll_y);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_bottom_feedback.as_str())
+    );
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
@@ -11160,10 +11223,24 @@ async fn browser_session_page_renders_form_controls() {
     let topbar_index = html.find(r#"class="browser-topbar""#).unwrap();
     let title_index = html.find("<h1>Form</h1>").unwrap();
     let viewport_index = html.find(r#"class="browser-viewport-primary""#).unwrap();
+    let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let debug_index = html.find(r#"<section class="debug-stack">"#).unwrap();
     assert!(topbar_index < title_index);
+    let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
+    assert!(topbar_html.contains(r#"data-browser-address type="text""#));
+    assert!(!topbar_html.contains(">Top</a>"));
+    assert!(!topbar_html.contains(">Down</a>"));
+    assert!(!topbar_html.contains(">Bottom</a>"));
     assert!(title_index < viewport_index);
+    assert!(viewport_index < raster_index);
+    assert!(raster_index < controls_tray_index);
+    assert!(controls_tray_index < debug_index);
     assert!(viewport_index < debug_index);
+    assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains(r#"<summary>Page and session details</summary>"#));
+    assert!(html.contains(r#"<summary>Browser controls and status</summary>"#));
     assert!(
         html.find(r#"<summary>Tabs and saved state</summary>"#)
             .unwrap()
