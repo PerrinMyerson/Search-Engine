@@ -1131,6 +1131,66 @@ fn decodes_local_png_image_into_cached_raster_pixels() {
     assert_eq!(cached_raster.pixel_hash(), raster_hash);
 }
 
+#[tokio::test]
+async fn image_color_pipeline_preserves_rgb_pixels_in_decoded_resource_report() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.pixels, vec![0, 255, 77, 29]);
+    assert_eq!(
+        decoded.rgb_pixels.as_deref(),
+        Some(&[0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 255][..])
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let png = dir.path().join("color.png");
+    fs::write(&png, png_bytes).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before color</p><img src="color.png" alt="Color PNG" width="16" height="24"><p>After color</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.resolved, png.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(12));
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert_eq!(
+        render.decoded_images[0].image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+}
+
 #[test]
 fn decodes_local_webp_image_into_rendered_image_command() {
     let dir = tempfile::tempdir().unwrap();

@@ -23,6 +23,7 @@ pub(super) struct DecodedImage {
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) pixels: Vec<u8>,
+    pub(super) rgb_pixels: Option<Vec<u8>>,
 }
 
 impl DecodedImage {
@@ -34,6 +35,16 @@ impl DecodedImage {
         hasher.update(&self.pixels);
         hasher.finalize().to_hex().to_string()
     }
+
+    pub(super) fn color_pixel_hash(&self) -> Option<String> {
+        let rgb_pixels = self.rgb_pixels.as_ref()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"brutal-browser-decoded-image-rgb-v1");
+        hasher.update(&(self.width as u64).to_le_bytes());
+        hasher.update(&(self.height as u64).to_le_bytes());
+        hasher.update(rgb_pixels);
+        Some(hasher.finalize().to_hex().to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +53,8 @@ pub(super) struct DecodedImageInfo {
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) pixel_hash: String,
+    pub(super) color_pixel_hash: Option<String>,
+    pub(super) color_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +64,8 @@ pub(super) struct ImageDecodeDiagnostic {
     pub(super) width: Option<usize>,
     pub(super) height: Option<usize>,
     pub(super) pixel_hash: Option<String>,
+    pub(super) color_pixel_hash: Option<String>,
+    pub(super) color_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +84,8 @@ impl DecodedImageEntry {
             width: self.width,
             height: self.height,
             pixel_hash: self.pixel_hash.clone(),
+            color_pixel_hash: self.image.color_pixel_hash(),
+            color_bytes: self.image.rgb_pixels.as_ref().map(Vec::len),
         }
     }
 }
@@ -144,6 +161,8 @@ pub(super) fn image_decode_diagnostic(
             width: Some(decoded.width),
             height: Some(decoded.height),
             pixel_hash: Some(decoded.pixel_hash()),
+            color_pixel_hash: decoded.color_pixel_hash(),
+            color_bytes: decoded.rgb_pixels.as_ref().map(Vec::len),
         };
     }
 
@@ -154,6 +173,8 @@ pub(super) fn image_decode_diagnostic(
             width: None,
             height: None,
             pixel_hash: None,
+            color_pixel_hash: None,
+            color_bytes: None,
         };
     }
 
@@ -163,6 +184,8 @@ pub(super) fn image_decode_diagnostic(
         width: None,
         height: None,
         pixel_hash: None,
+        color_pixel_hash: None,
+        color_bytes: None,
     }
 }
 
@@ -612,6 +635,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         width,
         height,
         pixels,
+        rgb_pixels: None,
     })
 }
 
@@ -708,7 +732,9 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
         return None;
     }
 
-    let mut pixels = Vec::with_capacity(width.checked_mul(height)?);
+    let pixel_count = width.checked_mul(height)?;
+    let mut pixels = Vec::with_capacity(pixel_count);
+    let mut rgb_pixels = Vec::with_capacity(pixel_count.checked_mul(3)?);
     let mut previous = vec![0u8; row_bytes];
     let mut current = vec![0u8; row_bytes];
     let mut offset = 0usize;
@@ -720,13 +746,25 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
         offset += row_bytes;
         reconstruct_png_scanline(filter, channels, &previous, &mut current)?;
         push_png_grayscale_pixels(&current, color_type, &palette, &transparency, &mut pixels)?;
+        push_png_rgb_pixels(
+            &current,
+            color_type,
+            &palette,
+            &transparency,
+            &mut rgb_pixels,
+        )?;
         previous.copy_from_slice(&current);
+    }
+
+    if pixels.len() != pixel_count || rgb_pixels.len() != pixel_count.checked_mul(3)? {
+        return None;
     }
 
     Some(DecodedImage {
         width,
         height,
         pixels,
+        rgb_pixels: Some(rgb_pixels),
     })
 }
 
@@ -822,6 +860,49 @@ fn push_png_grayscale_pixels(
     Some(())
 }
 
+fn push_png_rgb_pixels(
+    row: &[u8],
+    color_type: u8,
+    palette: &[u8],
+    transparency: &[u8],
+    pixels: &mut Vec<u8>,
+) -> Option<()> {
+    match color_type {
+        0 => {
+            for &gray in row {
+                pixels.extend_from_slice(&[gray, gray, gray]);
+            }
+        }
+        2 => pixels.extend_from_slice(row),
+        3 => {
+            for &index in row {
+                let index = usize::from(index);
+                let palette_offset = index.checked_mul(3)?;
+                let rgb = palette.get(palette_offset..palette_offset.checked_add(3)?)?;
+                let alpha = transparency.get(index).copied().unwrap_or(255);
+                pixels.push(blend_channel_over_white(rgb[0], alpha));
+                pixels.push(blend_channel_over_white(rgb[1], alpha));
+                pixels.push(blend_channel_over_white(rgb[2], alpha));
+            }
+        }
+        4 => {
+            for gray_alpha in row.chunks_exact(2) {
+                let value = blend_channel_over_white(gray_alpha[0], gray_alpha[1]);
+                pixels.extend_from_slice(&[value, value, value]);
+            }
+        }
+        6 => {
+            for rgba in row.chunks_exact(4) {
+                pixels.push(blend_channel_over_white(rgba[0], rgba[3]));
+                pixels.push(blend_channel_over_white(rgba[1], rgba[3]));
+                pixels.push(blend_channel_over_white(rgba[2], rgba[3]));
+            }
+        }
+        _ => {}
+    }
+    Some(())
+}
+
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     decode_jpeg_with_max_side(bytes, MAX_DECODED_IMAGE_SIDE)
 }
@@ -850,10 +931,12 @@ fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
     decoder.read_image(&mut decoded).ok()?;
     let pixel_count = width.checked_mul(height)?;
     let pixels = image_pixels_to_grayscale(&decoded, color_type, pixel_count)?;
+    let rgb_pixels = image_pixels_to_rgb(&decoded, color_type, pixel_count)?;
     Some(DecodedImage {
         width,
         height,
         pixels,
+        rgb_pixels: Some(rgb_pixels),
     })
 }
 
@@ -900,6 +983,51 @@ fn image_pixels_to_grayscale(
     (pixels.len() == pixel_count).then_some(pixels)
 }
 
+fn image_pixels_to_rgb(
+    decoded: &[u8],
+    color_type: ColorType,
+    pixel_count: usize,
+) -> Option<Vec<u8>> {
+    let mut pixels = Vec::with_capacity(pixel_count.checked_mul(3)?);
+    match color_type {
+        ColorType::L8 => {
+            if decoded.len() != pixel_count {
+                return None;
+            }
+            for &gray in decoded {
+                pixels.extend_from_slice(&[gray, gray, gray]);
+            }
+        }
+        ColorType::La8 => {
+            if decoded.len() != pixel_count.checked_mul(2)? {
+                return None;
+            }
+            for gray_alpha in decoded.chunks_exact(2) {
+                let value = blend_channel_over_white(gray_alpha[0], gray_alpha[1]);
+                pixels.extend_from_slice(&[value, value, value]);
+            }
+        }
+        ColorType::Rgb8 => {
+            if decoded.len() != pixel_count.checked_mul(3)? {
+                return None;
+            }
+            pixels.extend_from_slice(decoded);
+        }
+        ColorType::Rgba8 => {
+            if decoded.len() != pixel_count.checked_mul(4)? {
+                return None;
+            }
+            for rgba in decoded.chunks_exact(4) {
+                pixels.push(blend_channel_over_white(rgba[0], rgba[3]));
+                pixels.push(blend_channel_over_white(rgba[1], rgba[3]));
+                pixels.push(blend_channel_over_white(rgba[2], rgba[3]));
+            }
+        }
+        _ => return None,
+    }
+    (pixels.len() == pixel_count.checked_mul(3)?).then_some(pixels)
+}
+
 fn decode_jpeg_with_max_side(bytes: &[u8], max_side: usize) -> Option<DecodedImage> {
     let max_side = max_side.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut decoder = JpegDecoder::new(bytes);
@@ -932,10 +1060,12 @@ fn decode_jpeg_with_max_side(bytes: &[u8], max_side: usize) -> Option<DecodedIma
         return None;
     }
     let pixels = jpeg_pixels_to_grayscale(&decoded, info.pixel_format, pixel_count)?;
+    let rgb_pixels = jpeg_pixels_to_rgb(&decoded, info.pixel_format, pixel_count)?;
     let mut image = DecodedImage {
         width,
         height,
         pixels,
+        rgb_pixels: Some(rgb_pixels),
     };
     apply_exif_orientation(&mut image, orientation)?;
     Some(image)
@@ -971,6 +1101,37 @@ fn jpeg_pixels_to_grayscale(
         }
     }
     (pixels.len() == pixel_count).then_some(pixels)
+}
+
+fn jpeg_pixels_to_rgb(
+    decoded: &[u8],
+    pixel_format: JpegPixelFormat,
+    pixel_count: usize,
+) -> Option<Vec<u8>> {
+    let mut pixels = Vec::with_capacity(pixel_count.checked_mul(3)?);
+    match pixel_format {
+        JpegPixelFormat::L8 => {
+            for &gray in decoded {
+                pixels.extend_from_slice(&[gray, gray, gray]);
+            }
+        }
+        JpegPixelFormat::RGB24 => pixels.extend_from_slice(decoded),
+        JpegPixelFormat::CMYK32 => {
+            for cmyk in decoded.chunks_exact(4) {
+                let key = cmyk[3];
+                pixels.push(cmyk_channel_to_rgb(cmyk[0], key));
+                pixels.push(cmyk_channel_to_rgb(cmyk[1], key));
+                pixels.push(cmyk_channel_to_rgb(cmyk[2], key));
+            }
+        }
+        JpegPixelFormat::L16 => {
+            for gray in decoded.chunks_exact(2) {
+                let value = gray_u16_to_u8(u16::from_ne_bytes(gray.try_into().ok()?));
+                pixels.extend_from_slice(&[value, value, value]);
+            }
+        }
+    }
+    (pixels.len() == pixel_count.checked_mul(3)?).then_some(pixels)
 }
 
 fn exif_orientation_from_tiff(tiff: &[u8]) -> Option<u16> {
@@ -1046,10 +1207,20 @@ fn apply_exif_orientation(image: &mut DecodedImage, orientation: u16) -> Option<
     if image.pixels.len() != pixel_count {
         return None;
     }
+    if let Some(rgb_pixels) = image.rgb_pixels.as_ref()
+        && rgb_pixels.len() != pixel_count.checked_mul(3)?
+    {
+        return None;
+    }
     let swaps_axes = matches!(orientation, 5..=8);
     let output_width = if swaps_axes { height } else { width };
     let output_height = if swaps_axes { width } else { height };
     let mut oriented = vec![255u8; pixel_count];
+    let mut oriented_rgb = if image.rgb_pixels.is_some() {
+        Some(vec![255u8; pixel_count.checked_mul(3)?])
+    } else {
+        None
+    };
     for y in 0..height {
         for x in 0..width {
             let (output_x, output_y) = match orientation {
@@ -1065,11 +1236,20 @@ fn apply_exif_orientation(image: &mut DecodedImage, orientation: u16) -> Option<
             let source_index = y.checked_mul(width)?.checked_add(x)?;
             let output_index = output_y.checked_mul(output_width)?.checked_add(output_x)?;
             oriented[output_index] = *image.pixels.get(source_index)?;
+            if let (Some(source_rgb), Some(output_rgb)) =
+                (image.rgb_pixels.as_ref(), oriented_rgb.as_mut())
+            {
+                let source_rgb_index = source_index.checked_mul(3)?;
+                let output_rgb_index = output_index.checked_mul(3)?;
+                output_rgb[output_rgb_index..output_rgb_index.checked_add(3)?]
+                    .copy_from_slice(source_rgb.get(source_rgb_index..source_rgb_index + 3)?);
+            }
         }
     }
     image.width = output_width;
     image.height = output_height;
     image.pixels = oriented;
+    image.rgb_pixels = oriented_rgb;
     Some(())
 }
 
@@ -1089,7 +1269,11 @@ fn gray_u16_to_u8(gray: u16) -> u8 {
 }
 
 fn blend_gray_over_white(gray: u8, alpha: u8) -> u8 {
-    (((gray as u16 * alpha as u16) + (255u16 * (255 - alpha as u16)) + 127) / 255) as u8
+    blend_channel_over_white(gray, alpha)
+}
+
+fn blend_channel_over_white(channel: u8, alpha: u8) -> u8 {
+    (((channel as u16 * alpha as u16) + (255u16 * (255 - alpha as u16)) + 127) / 255) as u8
 }
 
 fn parse_svg_pixel_dimension(value: &str) -> Option<usize> {
@@ -2183,6 +2367,9 @@ mod tests {
             width: 2,
             height: 3,
             pixels: vec![0, 1, 2, 3, 4, 5],
+            rgb_pixels: Some(vec![
+                0, 10, 20, 1, 11, 21, 2, 12, 22, 3, 13, 23, 4, 14, 24, 5, 15, 25,
+            ]),
         };
         let cases = [
             (1, 2, 3, vec![0, 1, 2, 3, 4, 5]),
@@ -2199,9 +2386,16 @@ mod tests {
             let mut image = source.clone();
             apply_exif_orientation(&mut image, orientation).unwrap();
             assert_eq!(
-                (image.width, image.height, image.pixels),
-                (width, height, pixels)
+                (image.width, image.height, image.pixels.as_slice()),
+                (width, height, pixels.as_slice())
             );
+            let rgb_pixels = image.rgb_pixels.as_ref().unwrap();
+            assert_eq!(rgb_pixels.len(), width * height * 3);
+            for (index, gray) in image.pixels.iter().enumerate() {
+                assert_eq!(rgb_pixels[index * 3], *gray);
+                assert_eq!(rgb_pixels[index * 3 + 1], (*gray).saturating_add(10));
+                assert_eq!(rgb_pixels[index * 3 + 2], (*gray).saturating_add(20));
+            }
         }
     }
 

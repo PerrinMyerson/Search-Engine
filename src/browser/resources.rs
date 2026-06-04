@@ -62,6 +62,10 @@ pub struct BrowserResourceFetch {
     pub decoded_height: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_color_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_color_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,18 +138,27 @@ impl BrowserResourceFetch {
             args.content_type.as_deref(),
             image_bytes,
         );
-        let (image_decode_status, image_decode_error, decoded_width, decoded_height, decoded_hash) =
-            image_report
-                .map(|report| {
-                    (
-                        Some(report.status.to_owned()),
-                        report.error,
-                        report.width,
-                        report.height,
-                        report.pixel_hash,
-                    )
-                })
-                .unwrap_or((None, None, None, None, None));
+        let (
+            image_decode_status,
+            image_decode_error,
+            decoded_width,
+            decoded_height,
+            decoded_hash,
+            decoded_color_hash,
+            decoded_color_bytes,
+        ) = image_report
+            .map(|report| {
+                (
+                    Some(report.status.to_owned()),
+                    report.error,
+                    report.width,
+                    report.height,
+                    report.pixel_hash,
+                    report.color_pixel_hash,
+                    report.color_bytes,
+                )
+            })
+            .unwrap_or((None, None, None, None, None, None, None));
 
         Self {
             resource: args.resource,
@@ -159,6 +172,8 @@ impl BrowserResourceFetch {
             decoded_width,
             decoded_height,
             decoded_hash,
+            decoded_color_hash,
+            decoded_color_bytes,
         }
     }
 }
@@ -181,6 +196,8 @@ fn image_resource_fetch_decode_report(
             width: None,
             height: None,
             pixel_hash: None,
+            color_pixel_hash: None,
+            color_bytes: None,
         });
     };
 
