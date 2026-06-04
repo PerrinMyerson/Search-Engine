@@ -6141,6 +6141,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at top.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::Bottom => {
@@ -6149,6 +6151,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at bottom.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::PageUp => {
@@ -6160,6 +6164,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at top.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::PageDown => {
@@ -6169,6 +6175,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at bottom.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::LineUp => {
@@ -6177,6 +6185,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at top.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::LineDown => {
@@ -6185,6 +6195,8 @@ async fn apply_browser_action(
             normalize_browser_session_viewport(web_session);
             if web_session.viewport_y == before_y {
                 web_session.action_feedback = Some("Already at bottom.".to_owned());
+            } else {
+                set_browser_visual_scroll_moved_feedback(web_session);
             }
         }
         BrowserSessionAction::Fill {
@@ -8870,45 +8882,6 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
         "Restore tab",
         restore_tab_href,
     );
-    let left_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", format!("-{}", payload.width.max(1) / 2))],
-        payload,
-    );
-    let right_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", (payload.width.max(1) / 2).to_string())],
-        payload,
-    );
-    let up_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dy", format!("-{}", payload.height.max(1) / 2))],
-        payload,
-    );
-    let down_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dy", (payload.height.max(1) / 2).to_string())],
-        payload,
-    );
-    let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
-    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
-    let top_control = nav_control(payload.viewport_y > 0, "Top", &top_href);
-    let up_control = nav_control(payload.viewport_y > 0, "Up", &up_href);
-    let down_control = nav_control(
-        payload.viewport_y < payload.max_scroll_y,
-        "Down",
-        &down_href,
-    );
-    let bottom_control = nav_control(
-        payload.viewport_y < payload.max_scroll_y,
-        "Bottom",
-        &bottom_href,
-    );
-
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -8936,6 +8909,11 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
 .browser-page-head {{ margin: 12px 0 10px; }}
 .browser-page-head h1 {{ margin-top: 0; }}
+.browser-page-title {{ display: grid; gap: 2px; margin: 8px 0; }}
+.browser-page-title h1 {{ margin: 0; font-size: 18px; }}
+.browser-page-summary {{ margin: 4px 0 8px; color: #3a3f45; }}
+.browser-page-summary > summary {{ cursor: pointer; color: #5d636b; font-size: 12px; font-weight: 800; }}
+.browser-page-summary-content {{ display: grid; gap: 6px; padding-top: 8px; }}
 .browser-navigation-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }}
 .browser-navigation-state a, .browser-navigation-state span {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; color: #3a3f45; font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }}
 .browser-navigation-state a {{ color: #123fae; border-color: #c6cbd2; }}
@@ -9031,6 +9009,9 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-raster-placeholder strong {{ color: #20242a; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
 .browser-viewport-primary {{ margin: 10px 0 18px; }}
+.browser-controls-tray {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; margin: 12px 0 16px; }}
+.browser-controls-tray > summary {{ cursor: pointer; padding: 10px 12px; color: #20242a; font-size: 13px; font-weight: 900; }}
+.browser-controls-content {{ display: grid; gap: 10px; padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
 .viewport-input {{ display: grid; gap: 8px; margin: 8px 0 12px; }}
 .viewport-input form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 8px; align-items: center; }}
 .viewport-input input[type="text"] {{ min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
@@ -9090,7 +9071,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <body>
 <main>
 <header class="browser-topbar">
-<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}{top_control}{left_control}{up_control}{down_control}{right_control}{bottom_control}</nav>
+<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
@@ -9102,26 +9083,19 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
-</header>
 {primary_tab_strip}
+</header>
 <section class="browser-page-head">
-<h1>{heading}</h1>
-<div class="meta">{source}</div>
-<div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>
-{navigation_state}
+<div class="browser-page-title"><h1>{heading}</h1><div class="meta">{source}</div></div>
+<details class="browser-page-summary"><summary>Page and session details</summary><div class="browser-page-summary-content"><div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>{navigation_state}</div></details>
 </section>
-{find_controls}
 {auto_visual_bootstrap}
-<section class="browser-viewport-primary">
-{viewport_command_strip}
-{resource_quick_actions}
-{viewport_scroll_controls}
-{viewport_status}
+<section class="browser-viewport-primary" data-browser-primary-surface>
 {viewport_image}
+{viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-{viewport_jump}
-{viewport_text}
+<details class="browser-controls-tray" data-browser-controls-tray><summary>Browser controls and status</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
 </section>
 <section class="debug-stack">
 <details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
@@ -9159,16 +9133,6 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         close_right_control = close_right_control,
         close_duplicates_control = close_duplicates_control,
         restore_tab_control = restore_tab_control,
-        left_control = nav_control(payload.viewport_x > 0, "Left", &left_href),
-        right_control = nav_control(
-            payload.viewport_x < payload.max_scroll_x,
-            "Right",
-            &right_href
-        ),
-        top_control = top_control,
-        up_control = up_control,
-        down_control = down_control,
-        bottom_control = bottom_control,
         width = payload.width,
         height = payload.height,
         max_bytes = payload.max_bytes,
@@ -9552,6 +9516,21 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return Number.isFinite(value) ? value : 0;
   };
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const scrollMessage = (dx, dy) => {
+    if (dx < 0) {
+      return "Moving visual viewport left...";
+    }
+    if (dx > 0) {
+      return "Moving visual viewport right...";
+    }
+    if (dy < 0) {
+      return "Moving visual viewport up...";
+    }
+    if (dy > 0) {
+      return "Moving visual viewport down...";
+    }
+    return "Refreshing visual viewport...";
+  };
   const navigate = (dx, dy) => {
     const x = numberData("viewportX");
     const y = numberData("viewportY");
@@ -9578,7 +9557,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.scrollUrl, window.location.href);
     url.searchParams.set("dx", String(appliedDx));
     url.searchParams.set("dy", String(appliedDy));
-    setViewportPending("Scrolling browser viewport...");
+    setViewportPending(scrollMessage(appliedDx, appliedDy));
     window.location.href = url.toString();
     return true;
   };
@@ -9633,7 +9612,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!target) {
       return;
     }
-    setViewportPending("Scrolling browser viewport...");
+    setViewportPending("Moving visual viewport...");
   });
   const keyboardDelta = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) {
@@ -14035,6 +14014,10 @@ fn set_browser_scroll_noop_feedback(
     dy: isize,
 ) {
     if web_session.viewport_x != before_x || web_session.viewport_y != before_y {
+        web_session.action_feedback = Some(format!(
+            "Moved visual viewport to x {}, y {}.",
+            web_session.viewport_x, web_session.viewport_y
+        ));
         return;
     }
     let message = if dx < 0 {
@@ -14049,6 +14032,13 @@ fn set_browser_scroll_noop_feedback(
         "Viewport is already at that position."
     };
     web_session.action_feedback = Some(message.to_owned());
+}
+
+fn set_browser_visual_scroll_moved_feedback(web_session: &mut BrowserWebSession) {
+    web_session.action_feedback = Some(format!(
+        "Moved visual viewport to x {}, y {}.",
+        web_session.viewport_x, web_session.viewport_y
+    ));
 }
 
 fn set_browser_viewport_jump_feedback(
