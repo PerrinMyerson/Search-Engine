@@ -1652,6 +1652,82 @@ async fn image_real_visibility_svg_data_hsl_colors_decode_and_attach() {
     }));
 }
 
+#[tokio::test]
+async fn image_resource_discovery_svg_inherits_group_paint_and_current_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let data_url = "data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%206%202%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20style%3D%22color%3Ahsl(30%20100%25%2050%25)%22%20fill%3D%22currentColor%22%3E%3Cg%20opacity%3D%220.5%22%3E%3Cpath%20d%3D%22M0%200%20H2%20V2%20H0%20Z%22%2F%3E%3C%2Fg%3E%3Cg%20style%3D%22fill%3Argb(0%20128%20255)%22%3E%3Crect%20x%3D%222%22%20width%3D%222%22%20height%3D%222%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22lime%22%3E%3Cpath%20d%3D%22M4%200%20H6%20V2%20H4%20Z%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E";
+    let decoded = decode_image_reference("mem://inherited-svg-paint", data_url).unwrap();
+    assert_eq!(decoded.width, 6);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] >= 250 && (185..=195).contains(&pixel[1]) && pixel[2] <= 130)
+    );
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel == [0, 128, 255])
+    );
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 255, 0]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let html = format!(
+        r#"<html><body><p>Before inherited svg</p><img src="{data_url}" alt="Inherited SVG paint" width="18" height="6"><p>After inherited svg</p></body></html>"#
+    );
+    fs::write(&page, html).unwrap();
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, data_url);
+    assert_eq!(fetch.status, "cached");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(6));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(6),
+                decoded_height: Some(2),
+                decoded_hash: Some(hash),
+                ..
+            } if url == data_url && *hash == expected_hash
+        )
+    }));
+}
+
 #[test]
 fn image_load_buttons_attach_product_gallery_lazy_sources() {
     let dir = tempfile::tempdir().unwrap();
