@@ -430,6 +430,9 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut rects = Vec::new();
     let mut circles = Vec::new();
     let mut ellipses = Vec::new();
+    let mut polygons = Vec::new();
+    let mut polylines = Vec::new();
+    let mut paths = Vec::new();
 
     while cursor < bytes.len() {
         let Some(offset) = memchr(b'<', &bytes[cursor..]) else {
@@ -472,6 +475,15 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 }
                 "ellipse" => {
                     ellipses.push(attrs);
+                }
+                "polygon" => {
+                    polygons.push(attrs);
+                }
+                "polyline" => {
+                    polylines.push(attrs);
+                }
+                "path" => {
+                    paths.push(attrs);
                 }
                 _ => {}
             }
@@ -557,6 +569,43 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             SvgEllipse { cx, cy, rx, ry },
             fill,
         );
+    }
+    for polygon in polygons {
+        let Some(fill) = svg_shape_fill_shade(&polygon) else {
+            continue;
+        };
+        let Some(points) = polygon
+            .get("points")
+            .and_then(|value| parse_svg_points(value))
+        else {
+            continue;
+        };
+        fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+    }
+    for polyline in polylines {
+        let Some(points) = polyline
+            .get("points")
+            .and_then(|value| parse_svg_points(value))
+        else {
+            continue;
+        };
+        if let Some(fill) = svg_shape_fill_shade(&polyline) {
+            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        }
+        if let Some(stroke) = svg_shape_stroke_shade(&polyline) {
+            draw_decoded_polyline(&mut pixels, width, height, &points, stroke);
+        }
+    }
+    for path in paths {
+        let Some(points) = path.get("d").and_then(|value| parse_simple_svg_path(value)) else {
+            continue;
+        };
+        if let Some(fill) = svg_shape_fill_shade(&path) {
+            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        }
+        if let Some(stroke) = svg_shape_stroke_shade(&path) {
+            draw_decoded_polyline(&mut pixels, width, height, &points, stroke);
+        }
     }
 
     Some(DecodedImage {
@@ -1081,23 +1130,33 @@ fn parse_svg_viewbox_dimensions(value: &str) -> Option<(usize, usize)> {
 }
 
 fn svg_shape_fill_shade(attrs: &std::collections::HashMap<String, String>) -> Option<u8> {
+    svg_shape_paint_shade(attrs, "fill")
+}
+
+fn svg_shape_stroke_shade(attrs: &std::collections::HashMap<String, String>) -> Option<u8> {
+    svg_shape_paint_shade(attrs, "stroke")
+}
+
+fn svg_shape_paint_shade(
+    attrs: &std::collections::HashMap<String, String>,
+    property: &str,
+) -> Option<u8> {
     attrs
-        .get("fill")
+        .get(property)
         .and_then(|value| {
             let value = value.trim();
             (!value.eq_ignore_ascii_case("none"))
                 .then(|| parse_css_color_shade(value))
                 .flatten()
         })
-        .or_else(|| svg_style_fill_shade(attrs.get("style")?))
+        .or_else(|| svg_style_paint_shade(attrs.get("style")?, property))
 }
 
-fn svg_style_fill_shade(style: &str) -> Option<u8> {
+fn svg_style_paint_shade(style: &str, property: &str) -> Option<u8> {
     style.split(';').find_map(|declaration| {
-        let (property, value) = declaration.split_once(':')?;
-        property
-            .trim()
-            .eq_ignore_ascii_case("fill")
+        let (name, value) = declaration.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(property)
             .then(|| {
                 let value = value.trim();
                 (!value.eq_ignore_ascii_case("none"))
@@ -1106,6 +1165,237 @@ fn svg_style_fill_shade(style: &str) -> Option<u8> {
             })
             .flatten()
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SvgPoint {
+    x: f32,
+    y: f32,
+}
+
+fn parse_svg_points(value: &str) -> Option<Vec<SvgPoint>> {
+    let numbers = parse_svg_number_list(value)?;
+    if numbers.len() < 4 || numbers.len() % 2 != 0 {
+        return None;
+    }
+    Some(
+        numbers
+            .chunks_exact(2)
+            .map(|point| SvgPoint {
+                x: point[0],
+                y: point[1],
+            })
+            .collect(),
+    )
+}
+
+fn parse_svg_number_list(value: &str) -> Option<Vec<f32>> {
+    let mut numbers = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < value.len() {
+        cursor = skip_svg_number_delimiters(value, cursor);
+        if cursor >= value.len() {
+            break;
+        }
+        let (number, next_cursor) = read_svg_number(value, cursor)?;
+        numbers.push(number);
+        cursor = next_cursor;
+    }
+    (!numbers.is_empty()).then_some(numbers)
+}
+
+fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
+    let mut cursor = 0usize;
+    let mut command = None;
+    let mut current = SvgPoint { x: 0.0, y: 0.0 };
+    let mut subpath_start = None;
+    let mut points = Vec::new();
+
+    while cursor < value.len() {
+        cursor = skip_svg_number_delimiters(value, cursor);
+        if cursor >= value.len() {
+            break;
+        }
+        if let Some(next_command) = value[cursor..]
+            .chars()
+            .next()
+            .filter(|ch| ch.is_ascii_alphabetic())
+        {
+            if !matches!(
+                next_command,
+                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+            ) {
+                return None;
+            }
+            cursor += next_command.len_utf8();
+            command = Some(next_command);
+            if matches!(next_command, 'Z' | 'z') {
+                if let Some(start) = subpath_start {
+                    current = start;
+                    points.push(start);
+                }
+                continue;
+            }
+        }
+
+        let command = command?;
+        match command {
+            'M' | 'm' => {
+                let (x, y, next_cursor) = read_svg_point_pair(value, cursor)?;
+                let point = if command == 'm' {
+                    SvgPoint {
+                        x: current.x + x,
+                        y: current.y + y,
+                    }
+                } else {
+                    SvgPoint { x, y }
+                };
+                current = point;
+                subpath_start = Some(point);
+                points.push(point);
+                cursor = next_cursor;
+
+                while let Some((x, y, next_cursor)) = try_read_svg_point_pair(value, cursor) {
+                    current = if command == 'm' {
+                        SvgPoint {
+                            x: current.x + x,
+                            y: current.y + y,
+                        }
+                    } else {
+                        SvgPoint { x, y }
+                    };
+                    points.push(current);
+                    cursor = next_cursor;
+                }
+            }
+            'L' | 'l' => {
+                let mut read_any = false;
+                while let Some((x, y, next_cursor)) = try_read_svg_point_pair(value, cursor) {
+                    current = if command == 'l' {
+                        SvgPoint {
+                            x: current.x + x,
+                            y: current.y + y,
+                        }
+                    } else {
+                        SvgPoint { x, y }
+                    };
+                    points.push(current);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'H' | 'h' => {
+                let mut read_any = false;
+                while let Some((x, next_cursor)) = try_read_svg_number(value, cursor) {
+                    current.x = if command == 'h' { current.x + x } else { x };
+                    points.push(current);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'V' | 'v' => {
+                let mut read_any = false;
+                while let Some((y, next_cursor)) = try_read_svg_number(value, cursor) {
+                    current.y = if command == 'v' { current.y + y } else { y };
+                    points.push(current);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'Z' | 'z' => {}
+            _ => return None,
+        }
+    }
+
+    (points.len() >= 2).then_some(points)
+}
+
+fn read_svg_point_pair(value: &str, cursor: usize) -> Option<(f32, f32, usize)> {
+    try_read_svg_point_pair(value, cursor)
+}
+
+fn try_read_svg_point_pair(value: &str, cursor: usize) -> Option<(f32, f32, usize)> {
+    let (x, cursor) = try_read_svg_number(value, cursor)?;
+    let (y, cursor) = try_read_svg_number(value, cursor)?;
+    Some((x, y, cursor))
+}
+
+fn try_read_svg_number(value: &str, cursor: usize) -> Option<(f32, usize)> {
+    let cursor = skip_svg_number_delimiters(value, cursor);
+    if cursor >= value.len() {
+        return None;
+    }
+    if value[cursor..]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    read_svg_number(value, cursor)
+}
+
+fn read_svg_number(value: &str, cursor: usize) -> Option<(f32, usize)> {
+    let bytes = value.as_bytes();
+    let start = cursor;
+    let mut cursor = cursor;
+    if matches!(bytes.get(cursor), Some(b'+' | b'-')) {
+        cursor += 1;
+    }
+    let mut has_digits = false;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+        cursor += 1;
+        has_digits = true;
+    }
+    if bytes.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+            has_digits = true;
+        }
+    }
+    if !has_digits {
+        return None;
+    }
+    if matches!(bytes.get(cursor), Some(b'e' | b'E')) {
+        let exponent_start = cursor;
+        cursor += 1;
+        if matches!(bytes.get(cursor), Some(b'+' | b'-')) {
+            cursor += 1;
+        }
+        let exponent_digits_start = cursor;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+            cursor += 1;
+        }
+        if cursor == exponent_digits_start {
+            cursor = exponent_start;
+        }
+    }
+    let number = value[start..cursor].parse::<f32>().ok()?;
+    number.is_finite().then_some((number, cursor))
+}
+
+fn skip_svg_number_delimiters(value: &str, mut cursor: usize) -> usize {
+    while cursor < value.len() {
+        let Some(character) = value[cursor..].chars().next() else {
+            break;
+        };
+        if character.is_ascii_whitespace() || character == ',' {
+            cursor += character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    cursor
 }
 
 fn fill_decoded_rect(
@@ -1121,6 +1411,105 @@ fn fill_decoded_rect(
         for column in x..x.saturating_add(width) {
             let Some(pixel) =
                 pixels.get_mut(row.saturating_mul(image_width).saturating_add(column))
+            else {
+                continue;
+            };
+            *pixel = value;
+        }
+    }
+}
+
+fn fill_decoded_polygon(
+    pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    points: &[SvgPoint],
+    value: u8,
+) {
+    if points.len() < 3 {
+        return;
+    }
+    let min_x = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let start_x = min_x.floor().max(0.0) as usize;
+    let end_x = max_x.ceil().max(0.0).min(image_width as f32) as usize;
+    let start_y = min_y.floor().max(0.0) as usize;
+    let end_y = max_y.ceil().max(0.0).min(image_height as f32) as usize;
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            if !svg_point_inside_polygon(x as f32 + 0.5, y as f32 + 0.5, points) {
+                continue;
+            }
+            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
+            else {
+                continue;
+            };
+            *pixel = value;
+        }
+    }
+}
+
+fn svg_point_inside_polygon(x: f32, y: f32, points: &[SvgPoint]) -> bool {
+    let mut inside = false;
+    let mut previous = points.len() - 1;
+    for current in 0..points.len() {
+        let current_point = points[current];
+        let previous_point = points[previous];
+        if (current_point.y > y) != (previous_point.y > y) {
+            let intersection_x = (previous_point.x - current_point.x) * (y - current_point.y)
+                / (previous_point.y - current_point.y)
+                + current_point.x;
+            if x < intersection_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn draw_decoded_polyline(
+    pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    points: &[SvgPoint],
+    value: u8,
+) {
+    for segment in points.windows(2) {
+        let start = segment[0];
+        let end = segment[1];
+        let steps = (end.x - start.x)
+            .abs()
+            .max((end.y - start.y).abs())
+            .ceil()
+            .max(1.0) as usize;
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let x = (start.x + (end.x - start.x) * t).round() as isize;
+            let y = (start.y + (end.y - start.y) * t).round() as isize;
+            if x < 0 || y < 0 {
+                continue;
+            }
+            let x = x as usize;
+            let y = y as usize;
+            if x >= image_width || y >= image_height {
+                continue;
+            }
+            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
             else {
                 continue;
             };
