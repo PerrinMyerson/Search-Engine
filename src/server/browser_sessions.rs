@@ -9658,6 +9658,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const clearViewportPending = () => {
     shell.removeAttribute("data-viewport-pending");
+    shell.removeAttribute("data-viewport-request");
     shell.removeAttribute("aria-busy");
     for (const control of viewportControls()) {
       control.removeAttribute("data-scroll-pending");
@@ -9752,6 +9753,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return false;
     }
     const keepFocus = document.activeElement === shell;
+    const shellTopBefore = shell.getBoundingClientRect().top;
     for (const attribute of Array.from(shell.attributes)) {
       shell.removeAttribute(attribute.name);
     }
@@ -9767,6 +9769,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     replaceElementFromPartial(doc, "[data-browser-viewport-command-strip]");
     shell.dataset.viewportPartial = "true";
     clearViewportPending();
+    const shellTopAfter = shell.getBoundingClientRect().top;
+    const shellShift = shellTopAfter - shellTopBefore;
+    if (Number.isFinite(shellShift) && shellShift) {
+      window.scrollBy(0, shellShift);
+    }
     if (keepFocus) {
       shell.focus({ preventScroll: true });
     }
@@ -9806,6 +9813,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     const partialUrl = new URL(url.toString());
     partialUrl.searchParams.set("partial", "viewport");
+    const requestSeq = ++viewportRequestSeq;
+    partialRequestInFlight = true;
     shell.dataset.viewportRequest = "partial";
     fetch(partialUrl.toString(), {
       headers: { "X-Requested-With": "browser-viewport-partial" }
@@ -9815,15 +9824,35 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       }
       return response.text();
     }).then((html) => {
+      if (requestSeq !== viewportRequestSeq) {
+        return;
+      }
       if (!applyViewportPartial(html)) {
         throw new Error("viewport partial response missing required fragments");
       }
       window.history.pushState(null, "", url.toString());
       setViewportFeedback("Visual viewport updated.");
     }).catch(() => {
+      if (requestSeq !== viewportRequestSeq) {
+        return;
+      }
       replaceViewportPage(url, message);
+    }).then(() => {
+      if (requestSeq !== viewportRequestSeq) {
+        return;
+      }
+      partialRequestInFlight = false;
+      if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
+        pendingScrollAfterRequest = false;
+        pendingScrollTimer = setTimeout(flushPendingScroll, 0);
+      } else {
+        pendingScrollAfterRequest = false;
+      }
     });
   };
+  let viewportRequestSeq = 0;
+  let partialRequestInFlight = false;
+  let pendingScrollAfterRequest = false;
   let pendingScrollDx = 0;
   let pendingScrollDy = 0;
   let pendingScrollTimer = null;
@@ -9857,6 +9886,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const flushPendingScroll = () => {
     pendingScrollTimer = null;
+    if (partialRequestInFlight) {
+      pendingScrollAfterRequest = true;
+      setViewportPending("Scroll queued; updating visual viewport...");
+      return true;
+    }
     const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
     pendingScrollDx = 0;
     pendingScrollDy = 0;
@@ -9869,6 +9903,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const queueViewportScroll = (dx, dy) => {
     pendingScrollDx += dx;
     pendingScrollDy += dy;
+    if (partialRequestInFlight) {
+      pendingScrollAfterRequest = true;
+      setViewportPending("Scroll queued; updating visual viewport...");
+      return true;
+    }
     const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
     if (!pending) {
       pendingScrollDx = 0;
@@ -9957,6 +9996,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     event.preventDefault();
+    if (partialRequestInFlight || shell.dataset.viewportPending === "true") {
+      setViewportFeedback("Viewport is updating; scroll after it settles.");
+      return;
+    }
     replaceViewportPartial(new URL(target.href, window.location.href), "Moving visual viewport...");
   });
   const keyboardDelta = (event) => {
