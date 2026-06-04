@@ -1379,6 +1379,8 @@ struct ComputedStyle {
     animation_reveals_opacity: bool,
     overflow: Overflow,
     flex_direction: FlexDirection,
+    flex_wrap: bool,
+    flex_basis: Option<CssDimension>,
     grid_columns: Option<usize>,
     position: Position,
     position_top: Option<CssPositionOffset>,
@@ -1515,6 +1517,7 @@ impl ComputedStyle {
     fn child_layout(&self) -> ChildLayout {
         let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
             && self.flex_direction == FlexDirection::Column;
+        let flex_row = matches!(self.display, Display::Flex | Display::InlineFlex) && !flex_column;
         let grid_columns = matches!(self.display, Display::Grid | Display::InlineGrid)
             .then_some(self.grid_columns)
             .flatten();
@@ -1523,10 +1526,12 @@ impl ComputedStyle {
             row_gap: if flex_column {
                 Some(self.row_gap.unwrap_or(0))
             } else {
-                grid_columns.and_then(|_| self.row_gap)
+                (grid_columns.is_some() || (flex_row && self.flex_wrap))
+                    .then(|| self.row_gap.unwrap_or(0))
             },
             column_gap: self.column_gap,
             wrap_after: grid_columns,
+            wrap_items: flex_row && self.flex_wrap,
         }
     }
 }
@@ -1537,6 +1542,7 @@ struct ChildLayout {
     row_gap: Option<usize>,
     column_gap: Option<usize>,
     wrap_after: Option<usize>,
+    wrap_items: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1550,6 +1556,8 @@ struct CssDeclarations {
     display: Option<Display>,
     float: Option<Option<FloatSide>>,
     flex_direction: Option<FlexDirection>,
+    flex_wrap: Option<bool>,
+    flex_basis: Option<CssDimension>,
     grid_columns: Option<usize>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
@@ -12485,9 +12493,21 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.flex_direction =
                     parse_css_flex_direction(value).or(declarations.flex_direction);
             }
+            "flex-wrap" => {
+                declarations.flex_wrap = parse_css_flex_wrap(value).or(declarations.flex_wrap);
+            }
+            "flex-basis" => {
+                declarations.flex_basis =
+                    parse_css_dimension(value, CssAxis::Horizontal).or(declarations.flex_basis);
+            }
             "flex-flow" => {
                 declarations.flex_direction =
                     parse_css_flex_direction(value).or(declarations.flex_direction);
+                declarations.flex_wrap = parse_css_flex_wrap(value).or(declarations.flex_wrap);
+            }
+            "flex" => {
+                declarations.flex_basis =
+                    parse_css_flex_basis_shorthand(value).or(declarations.flex_basis);
             }
             "grid-template-columns" => {
                 declarations.grid_columns =
@@ -12925,6 +12945,35 @@ fn parse_css_flex_direction(value: &str) -> Option<FlexDirection> {
             _ => None,
         }
     })
+}
+
+fn parse_css_flex_wrap(value: &str) -> Option<bool> {
+    value.split_ascii_whitespace().find_map(|token| {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "wrap" | "wrap-reverse" => Some(true),
+            "nowrap" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn parse_css_flex_basis_shorthand(value: &str) -> Option<CssDimension> {
+    let mut parsed = None;
+    for token in value.split_ascii_whitespace() {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("auto")
+            || token.eq_ignore_ascii_case("none")
+            || token.eq_ignore_ascii_case("initial")
+            || token.eq_ignore_ascii_case("inherit")
+            || parse_css_flex_wrap(token).is_some()
+            || parse_css_flex_direction(token).is_some()
+            || token.parse::<f32>().is_ok()
+        {
+            continue;
+        }
+        parsed = parse_css_dimension(token, CssAxis::Horizontal).or(parsed);
+    }
+    parsed
 }
 
 fn parse_css_grid_template_columns(value: &str) -> Option<usize> {
@@ -14542,12 +14591,28 @@ fn render_children(
         if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
             continue;
         }
+        let child_width_hint = child_layout
+            .wrap_items
+            .then(|| {
+                row_layout_child_width_hint(dom, child, css_cascade, renderer.available_width())
+            })
+            .flatten();
         if child_seen {
             if child_layout.row_items {
-                if child_layout
+                let column_gap = child_layout.column_gap.unwrap_or(1);
+                let wraps_by_count = child_layout
                     .wrap_after
-                    .is_some_and(|wrap_after| row_item_count >= wrap_after)
-                {
+                    .is_some_and(|wrap_after| row_item_count >= wrap_after);
+                let wraps_by_width = child_layout.wrap_items
+                    && child_width_hint.is_some_and(|width| {
+                        renderer.current_inline_width() > 0
+                            && renderer
+                                .effective_current_width()
+                                .saturating_add(column_gap)
+                                .saturating_add(width)
+                                > renderer.available_width()
+                    });
+                if wraps_by_count || wraps_by_width {
                     renderer.break_line();
                     if let Some(row_gap) = child_layout.row_gap {
                         renderer.push_vertical_space(row_gap);
@@ -14563,6 +14628,7 @@ fn render_children(
                 renderer.push_vertical_space(row_gap);
             }
         }
+        let item_start_width = renderer.current_inline_width();
         render_node(
             dom,
             child,
@@ -14572,11 +14638,36 @@ fn render_children(
             layout_box_count,
             child_layout.row_items,
         );
+        if let Some(width_hint) = child_width_hint {
+            let item_width = renderer
+                .current_inline_width()
+                .saturating_sub(item_start_width);
+            if item_width < width_hint {
+                renderer.push_fixed_space_width(width_hint.saturating_sub(item_width), None);
+            }
+        }
         child_seen = true;
         if child_layout.row_items {
             row_item_count = row_item_count.saturating_add(1);
         }
     }
+}
+
+fn row_layout_child_width_hint(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    basis: usize,
+) -> Option<usize> {
+    let node = dom.nodes.get(node_id)?;
+    let NodeKind::Element(element) = &node.kind else {
+        return None;
+    };
+    let style = computed_style(dom, node_id, element, css_cascade);
+    style
+        .flex_basis
+        .or(style.width)
+        .map(|width| width.resolve(basis).clamp(1, basis.max(1)))
 }
 
 fn row_layout_child_participates(dom: &Dom, node_id: usize, css_cascade: &CssCascade) -> bool {
@@ -15600,6 +15691,8 @@ fn computed_style(
             animation_reveals_opacity: false,
             overflow: Overflow::Visible,
             flex_direction: FlexDirection::Row,
+            flex_wrap: false,
+            flex_basis: None,
             grid_columns: None,
             position: Position::Static,
             position_top: None,
@@ -15648,6 +15741,8 @@ fn computed_style(
     let mut animation_reveals_opacity = false;
     let mut overflow = Overflow::Visible;
     let mut flex_direction = FlexDirection::Row;
+    let mut flex_wrap = false;
+    let mut flex_basis = None;
     let mut grid_columns = None;
     let mut position = Position::Static;
     let mut position_top = None;
@@ -15694,6 +15789,8 @@ fn computed_style(
     let mut animation_reveals_opacity_specificity = 0u32;
     let mut overflow_specificity = 0u32;
     let mut flex_direction_specificity = 0u32;
+    let mut flex_wrap_specificity = 0u32;
+    let mut flex_basis_specificity = 0u32;
     let mut grid_columns_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
@@ -15816,6 +15913,18 @@ fn computed_style(
             {
                 flex_direction = rule_flex_direction;
                 flex_direction_specificity = rule_specificity;
+            }
+            if let Some(rule_flex_wrap) = rule.declarations.flex_wrap
+                && rule_specificity >= flex_wrap_specificity
+            {
+                flex_wrap = rule_flex_wrap;
+                flex_wrap_specificity = rule_specificity;
+            }
+            if let Some(rule_flex_basis) = rule.declarations.flex_basis
+                && rule_specificity >= flex_basis_specificity
+            {
+                flex_basis = Some(rule_flex_basis);
+                flex_basis_specificity = rule_specificity;
             }
             if let Some(rule_grid_columns) = rule.declarations.grid_columns
                 && rule_specificity >= grid_columns_specificity
@@ -16052,6 +16161,12 @@ fn computed_style(
         if let Some(inline_flex_direction) = inline.flex_direction {
             flex_direction = inline_flex_direction;
         }
+        if let Some(inline_flex_wrap) = inline.flex_wrap {
+            flex_wrap = inline_flex_wrap;
+        }
+        if let Some(inline_flex_basis) = inline.flex_basis {
+            flex_basis = Some(inline_flex_basis);
+        }
         if let Some(inline_grid_columns) = inline.grid_columns {
             grid_columns = Some(inline_grid_columns);
         }
@@ -16167,6 +16282,8 @@ fn computed_style(
         animation_reveals_opacity,
         overflow,
         flex_direction,
+        flex_wrap,
+        flex_basis,
         grid_columns,
         position,
         position_top,
@@ -18351,6 +18468,10 @@ impl FlowRenderer {
 
     fn current_row(&self) -> usize {
         self.next_y
+    }
+
+    fn current_inline_width(&self) -> usize {
+        self.current_width
     }
 
     fn box_x(&self) -> usize {

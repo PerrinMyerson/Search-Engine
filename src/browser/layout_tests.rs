@@ -878,6 +878,139 @@ fn css_grid_template_columns_wraps_mixed_content_in_scrolled_viewport() {
 }
 
 #[test]
+fn css_flex_wrap_basis_keeps_mixed_cards_stable_in_scrolled_viewport() {
+    let image_url = "mem://flex-wrap-card-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![180, 80, 32]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <section style="display:flex; flex-wrap:wrap; gap:12px 8px; background-color:rgb(250, 250, 250)">
+                <div style="flex:0 0 80px">First card</div>
+                <img src="{image_url}" alt="" width="16" height="12" style="flex-basis:80px">
+                <div style="flex:0 0 80px">Second body</div>
+                <img src="{image_url}" alt="" width="16" height="12" style="flex-basis:80px">
+              </section>
+              <p>After flex</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://flex-wrap-card-flow",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render flex-wrap card flow with decoded image");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(image_bounds.len(), 2);
+    assert_eq!(image_bounds[0].1, 0);
+    assert!(
+        image_bounds[1].1 > image_bounds[0].1,
+        "expected flex-wrap to place the third and fourth items on a later row, images={image_bounds:?}"
+    );
+
+    let (second_text_x, second_text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Second body") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("second flex row text command");
+    assert_eq!(second_text_y, image_bounds[1].1);
+    assert!(
+        image_bounds[1].0 >= second_text_x.saturating_add(10),
+        "expected flex-basis reservation before the second-row image, text=({second_text_x},{second_text_y}) image={:?}",
+        image_bounds[1]
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(image_bounds[1].1),
+        viewport_width: Some(24),
+        viewport_height: Some(1),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled flex-wrap image/text row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let image_pixel_x = raster_options
+        .padding_x
+        .saturating_add(image_bounds[1].0.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(image_pixel_x, raster_options.padding_y),
+        &[180, 80, 32, 255]
+    );
+
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(second_text_x.saturating_mul(raster_options.cell_width));
+    let text_col_end = text_col_start.saturating_add(
+        "Second body"
+            .len()
+            .saturating_mul(raster_options.cell_width),
+    );
+    let mut glyph_pixels = 0usize;
+    for y in raster_options.padding_y..raster_options.padding_y.saturating_add(7).min(rgba.height) {
+        for x in text_col_start..text_col_end.min(rgba.width) {
+            if pixel(x, y) == &[0, 0, 0, 255] {
+                glyph_pixels = glyph_pixels.saturating_add(1);
+            }
+        }
+    }
+    assert!(
+        glyph_pixels >= 8,
+        "expected readable text ink beside decoded image content in the scrolled wrapped flex row"
+    );
+}
+
+#[test]
 fn css_inline_block_menu_items_keep_block_links_on_row() {
     let render = render_html(
         "mem://css-inline-block-menu-links",
