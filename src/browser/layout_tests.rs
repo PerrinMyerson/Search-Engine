@@ -4679,6 +4679,137 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
 }
 
 #[test]
+fn flex_column_keeps_image_and_text_stable_in_scrolled_viewport() {
+    let image_url = "mem://flex-column-photo".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![36, 144, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height: 12px"></div>
+              <section style="display: flex; flex-flow: column nowrap; row-gap: 12px; background: rgb(12, 18, 24); color: rgb(245, 245, 245)">
+                <img src="{image_url}" width="24" height="24" alt="">
+                <div>Column body text</div>
+              </section>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://flex-column-scroll",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render flex column mixed content fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "Column body text" =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("column body text command");
+
+    assert_eq!(image_bounds.0, text_position.0);
+    assert!(
+        text_position.1
+            >= image_bounds
+                .1
+                .saturating_add(image_bounds.3)
+                .saturating_add(1),
+        "expected flex-column text below image plus row gap, image={image_bounds:?} text={text_position:?}"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(image_bounds.1),
+        viewport_width: Some(32),
+        viewport_height: Some(
+            text_position
+                .1
+                .saturating_sub(image_bounds.1)
+                .saturating_add(1),
+        ),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled flex column");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[36, 144, 220, 255]
+    );
+
+    let text_raster_row = text_position.1.saturating_sub(image_bounds.1);
+    let text_y_start = raster_options
+        .padding_y
+        .saturating_add(text_raster_row.saturating_mul(raster_options.cell_height));
+    let text_y_end = text_y_start
+        .saturating_add(raster_options.cell_height)
+        .min(rgba.height);
+    let text_x_end = raster_options
+        .padding_x
+        .saturating_add(
+            "Column body text"
+                .len()
+                .saturating_mul(raster_options.cell_width),
+        )
+        .min(rgba.width);
+    let bright_text_pixels = (text_y_start..text_y_end)
+        .flat_map(|y| (raster_options.padding_x..text_x_end).map(move |x| (x, y)))
+        .filter(|(x, y)| pixel(*x, *y) == &[245, 245, 245, 255])
+        .count();
+    assert!(bright_text_pixels >= 8);
+}
+
+#[test]
 fn render_fidelity_scrolled_viewport_keeps_rgb_css_text_and_decoded_image() {
     let image_url = "mem://render-fidelity-photo".to_owned();
     let decoded = DecodedImage {
