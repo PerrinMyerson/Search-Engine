@@ -9731,7 +9731,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9749,7 +9749,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9820,9 +9820,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.textContent = message;
     }
   };
-  const setViewportPending = (message) => {
+  const setViewportPending = (message, target) => {
     shell.dataset.viewportPending = "true";
+    shell.dataset.viewportState = "pending";
     shell.setAttribute("aria-busy", "true");
+    if (target) {
+      shell.dataset.pendingViewportX = String(target.x);
+      shell.dataset.pendingViewportY = String(target.y);
+    }
     for (const control of viewportControls()) {
       control.dataset.scrollPending = "true";
       control.setAttribute("aria-busy", "true");
@@ -9840,6 +9845,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-viewport-request");
     shell.removeAttribute("data-pending-viewport-x");
     shell.removeAttribute("data-pending-viewport-y");
+    shell.removeAttribute("data-queued-scroll-dx");
+    shell.removeAttribute("data-queued-scroll-dy");
+    shell.removeAttribute("data-stale-viewport-response");
+    shell.dataset.viewportState = "settled";
+    shell.dataset.settledViewportX = String(numberData("viewportX"));
+    shell.dataset.settledViewportY = String(numberData("viewportY"));
     shell.removeAttribute("aria-busy");
     for (const control of viewportControls()) {
       control.removeAttribute("data-scroll-pending");
@@ -9851,6 +9862,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
+  };
+  const markStaleViewportResponse = (message) => {
+    shell.dataset.viewportState = "stale-response";
+    shell.dataset.staleViewportResponse = "true";
+    setViewportFeedback(message);
   };
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);
@@ -10043,6 +10059,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return response.text();
     }).then((html) => {
       if (requestSeq !== viewportRequestSeq) {
+        markStaleViewportResponse("Ignored stale visual viewport update; newer scroll is pending.");
         return;
       }
       if (!applyViewportPartial(html)) {
@@ -10052,6 +10069,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       setViewportFeedback("Visual viewport updated.");
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
+        markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
         return;
       }
       replaceViewportPage(url, message);
@@ -10117,6 +10135,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     shell.dataset.pendingViewportX = String(scroll.x);
     shell.dataset.pendingViewportY = String(scroll.y);
+    shell.dataset.queuedScrollDx = String(scroll.dx);
+    shell.dataset.queuedScrollDy = String(scroll.dy);
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
@@ -10125,6 +10145,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollDy += dy;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
+      shell.dataset.queuedScrollDx = String(pendingScrollDx);
+      shell.dataset.queuedScrollDy = String(pendingScrollDy);
       setViewportPending("Scroll queued; updating visual viewport after current frame...");
       return true;
     }
@@ -10140,7 +10162,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     shell.dataset.pendingViewportX = String(pending.x);
     shell.dataset.pendingViewportY = String(pending.y);
-    setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`);
+    shell.dataset.queuedScrollDx = String(pending.dx);
+    shell.dataset.queuedScrollDy = String(pending.dy);
+    setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`, pending);
     if (pendingScrollTimer) {
       clearTimeout(pendingScrollTimer);
     }
@@ -10195,19 +10219,27 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     event.preventDefault();
-    if (pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest) {
-      setClickStatus("Viewport is updating; click after it settles.");
-      setViewportFeedback("Viewport is updating; click after it settles.");
-      return;
-    }
     const point = viewportPointFromEvent(event);
     if (!point) {
       return;
     }
     moveClickMarker(point);
+    if (pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest) {
+      shell.dataset.deferredClickX = String(point.x);
+      shell.dataset.deferredClickY = String(point.y);
+      shell.dataset.deferredClickPageX = String(point.pageX);
+      shell.dataset.deferredClickPageY = String(point.pageY);
+      setClickStatus(`Viewport is updating; saved ${pointMessage(point)}. Click again after it settles.`);
+      setViewportFeedback(`Viewport is updating; saved ${pointMessage(point)}.`);
+      return;
+    }
     const url = new URL(shell.dataset.clickUrl, window.location.href);
     url.searchParams.set("x", String(point.x));
     url.searchParams.set("y", String(point.y));
+    shell.dataset.lastClickX = String(point.x);
+    shell.dataset.lastClickY = String(point.y);
+    shell.dataset.lastClickPageX = String(point.pageX);
+    shell.dataset.lastClickPageY = String(point.pageY);
     setClickStatus(`Clicking ${pointMessage(point)}...`);
     replaceViewportPage(url, `Clicking ${pointMessage(point)}...`);
   });
