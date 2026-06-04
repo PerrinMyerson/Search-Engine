@@ -1343,7 +1343,12 @@ fn blend_gray_over_white(gray: u8, alpha: u8) -> u8 {
 }
 
 fn blend_channel_over_white(channel: u8, alpha: u8) -> u8 {
-    (((channel as u16 * alpha as u16) + (255u16 * (255 - alpha as u16)) + 127) / 255) as u8
+    blend_channel_over_background(channel, alpha, 255)
+}
+
+fn blend_channel_over_background(channel: u8, alpha: u8, background: u8) -> u8 {
+    (((channel as u16 * alpha as u16) + (background as u16 * (255 - alpha as u16)) + 127) / 255)
+        as u8
 }
 
 fn parse_svg_pixel_dimension(value: &str) -> Option<usize> {
@@ -1545,15 +1550,17 @@ fn svg_shape_stroke_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
 
 fn svg_shape_paint(attrs: &HashMap<String, String>, property: &str) -> Option<SvgPaint> {
     let value = svg_shape_paint_value(attrs, property)?;
+    let alpha = svg_shape_paint_alpha(attrs, property);
     if svg_paint_is_current_color(value) {
         return Some(SvgPaint {
             shade: 0,
             rgb: [0, 0, 0],
+            alpha,
         });
     }
     let shade = parse_css_color_shade(value)?;
     let rgb = parse_svg_css_color_rgb(value).unwrap_or([shade, shade, shade]);
-    Some(SvgPaint { shade, rgb })
+    Some(SvgPaint { shade, rgb, alpha })
 }
 
 fn svg_shape_paint_value<'a>(
@@ -1590,6 +1597,24 @@ fn svg_paint_is_current_color(value: &str) -> bool {
         .split_ascii_whitespace()
         .map(|token| token.trim_matches(|ch: char| ch == ',' || ch == ';'))
         .any(|token| token.eq_ignore_ascii_case("currentcolor"))
+}
+
+fn svg_shape_paint_alpha(attrs: &HashMap<String, String>, property: &str) -> u8 {
+    let specific_property = match property {
+        "fill" => "fill-opacity",
+        "stroke" => "stroke-opacity",
+        _ => property,
+    };
+    let opacity = svg_shape_number_attr(attrs, "opacity").unwrap_or(1.0);
+    let paint_opacity = svg_shape_number_attr(attrs, specific_property).unwrap_or(1.0);
+    ((opacity * paint_opacity).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn svg_shape_number_attr(attrs: &HashMap<String, String>, property: &str) -> Option<f32> {
+    attrs
+        .get(property)
+        .and_then(|value| parse_svg_number(value))
+        .or_else(|| svg_style_number(attrs.get("style")?, property))
 }
 
 fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
@@ -2431,20 +2456,23 @@ fn set_decoded_pixel(
     let Some(pixel) = pixels.get_mut(pixel_index) else {
         return;
     };
-    *pixel = paint.shade;
+    *pixel = blend_channel_over_background(paint.shade, paint.alpha, *pixel);
     let Some(rgb_offset) = pixel_index.checked_mul(3) else {
         return;
     };
     let Some(pixel_rgb) = rgb_pixels.get_mut(rgb_offset..rgb_offset.saturating_add(3)) else {
         return;
     };
-    pixel_rgb.copy_from_slice(&paint.rgb);
+    for (channel, paint_channel) in pixel_rgb.iter_mut().zip(paint.rgb) {
+        *channel = blend_channel_over_background(paint_channel, paint.alpha, *channel);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct SvgPaint {
     shade: u8,
     rgb: [u8; 3],
+    alpha: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
