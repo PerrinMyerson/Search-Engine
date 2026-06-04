@@ -2527,7 +2527,19 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const replaceViewportPartial"));
     assert!(html.contains("const applyViewportPartial"));
     assert!(html.contains("const clearViewportPending"));
+    assert!(html.contains("let viewportRequestSeq = 0"));
+    assert!(html.contains("let partialRequestInFlight = false"));
+    assert!(html.contains("let pendingScrollAfterRequest = false"));
+    assert!(html.contains("const requestSeq = ++viewportRequestSeq"));
+    assert!(html.contains("if (requestSeq !== viewportRequestSeq)"));
+    assert!(html.contains("partialRequestInFlight = true"));
+    assert!(html.contains("partialRequestInFlight = false"));
+    assert!(html.contains("Scroll queued; updating visual viewport..."));
+    assert!(html.contains("pendingScrollTimer = setTimeout(flushPendingScroll, 0)"));
     assert!(html.contains("const keepFocus = document.activeElement === shell"));
+    assert!(html.contains("const shellTopBefore = shell.getBoundingClientRect().top"));
+    assert!(html.contains("const shellTopAfter = shell.getBoundingClientRect().top"));
+    assert!(html.contains("window.scrollBy(0, shellShift)"));
     assert!(html.contains(r#"shell.focus({ preventScroll: true })"#));
     assert!(html.contains("new DOMParser().parseFromString"));
     assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
@@ -2544,6 +2556,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const queueViewportScroll"));
     assert!(html.contains("setTimeout(flushPendingScroll, 80)"));
     assert!(html.contains("Scrolling visual viewport..."));
+    assert!(html.contains("Viewport is updating; scroll after it settles."));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains("const viewportControls = () => Array.from"));
     assert!(html.contains("const viewportFeedbackTargets = () => Array.from"));
