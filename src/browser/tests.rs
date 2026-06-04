@@ -3920,10 +3920,9 @@ async fn image_visible_render_uses_lazy_sizes_for_selected_sources() {
     assert_eq!(bg_fetch.status, "fetched");
     assert_eq!(bg_fetch.content_type.as_deref(), Some("image/webp"));
     assert_eq!(bg_fetch.image_decode_status.as_deref(), Some("decoded"));
-    assert!(bg_fetch.decoded_hash.is_some());
+    let bg_hash = bg_fetch.decoded_hash.clone().unwrap();
 
     let render = session.current().unwrap();
-    assert_eq!(render.decoded_images.len(), 2);
     assert!(render.display_list.iter().any(|command| {
         matches!(
             command,
@@ -3932,6 +3931,16 @@ async fn image_visible_render_uses_lazy_sizes_for_selected_sources() {
                 decoded_hash: Some(hash),
                 ..
             } if url == &small_img_url && hash == &img_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &small_bg.display().to_string() && hash == &bg_hash
         )
     }));
 }

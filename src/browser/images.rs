@@ -2526,7 +2526,7 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
             "data-lazybackgroundsrcset",
         ],
     )
-    .and_then(|srcset| choose_srcset_candidate(srcset, None))
+    .and_then(|srcset| choose_srcset_candidate(srcset, background_srcset_target_width(element)))
     .or_else(|| {
         first_non_empty_attr(
             element,
@@ -2549,6 +2549,10 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
         )
         .and_then(background_image_attr_source)
     })
+}
+
+fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
+    image_sizes_attr(element).and_then(|sizes| parse_sizes_attribute(sizes, 0))
 }
 
 fn background_image_attr_source(value: &str) -> Option<String> {
