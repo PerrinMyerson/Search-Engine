@@ -4410,6 +4410,221 @@ fn rgba_raster_paints_decoded_image_color_and_preserves_grayscale_fallback() {
 }
 
 #[test]
+fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
+    let image_url = "mem://viewport-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![76],
+        rgb_pixels: Some(vec![210, 20, 20]),
+    };
+    let render = BrowserRender {
+        source: "mem://viewport-scroll-crop".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![DisplayHitTarget::default(); 3],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Header".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 3,
+                height: 2,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "AAAA".to_owned(),
+            },
+        ],
+        text: "Header\nAAAA".to_owned(),
+    };
+
+    let requested = BrowserViewportState {
+        x: 99,
+        y: 99,
+        width: 6,
+        height: 3,
+    };
+    let document_viewport = browser_document_viewport(&render, requested, None);
+    assert_eq!(document_viewport.viewport.x, 6);
+    assert_eq!(document_viewport.viewport.y, 1);
+    assert_eq!(document_viewport.max_scroll_x, 6);
+    assert_eq!(document_viewport.max_scroll_y, 1);
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 6,
+        height: 3,
+    };
+    let scrolled = browser_document_viewport(
+        &render,
+        BrowserViewportState { y: 1, ..previous },
+        Some(previous),
+    );
+    assert_eq!(scrolled.scroll_delta_y, 1);
+    assert!(!scrolled.full_repaint);
+    assert!(scrolled.reused_area > 0);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_x: Some(99),
+        viewport_y: Some(99),
+        viewport_width: Some(6),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render_rgba(&render, raster_options).expect("rasterize clamped slice");
+    let report = rgba_raster_report(&render, &raster, raster_options);
+    assert_eq!(report.raster_viewport_x, Some(6));
+    assert_eq!(report.raster_viewport_y, Some(1));
+    assert_eq!(report.visible_command_count, 0);
+
+    let scrolled_raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(6),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let scrolled_raster =
+        rasterize_render_rgba(&render, scrolled_raster_options).expect("rasterize scrolled slice");
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    assert_eq!(
+        pixel(
+            &scrolled_raster,
+            scrolled_raster_options.padding_x,
+            scrolled_raster_options.padding_y
+        ),
+        &[210, 20, 20, 255]
+    );
+    let text_y_start = scrolled_raster_options
+        .padding_y
+        .saturating_add(scrolled_raster_options.cell_height.saturating_mul(2));
+    let text_y_end = text_y_start
+        .saturating_add(scrolled_raster_options.cell_height)
+        .min(scrolled_raster.height);
+    let text_x_start = scrolled_raster_options.padding_x;
+    let text_x_end = text_x_start
+        .saturating_add(scrolled_raster_options.cell_width.saturating_mul(4))
+        .min(scrolled_raster.width);
+    let text_has_ink = (text_y_start..text_y_end).any(|y| {
+        (text_x_start..text_x_end).any(|x| {
+            let pixel = pixel(&scrolled_raster, x, y);
+            pixel[3] == 255 && pixel[0] == pixel[1] && pixel[1] == pixel[2] && pixel[0] != 255
+        })
+    });
+    assert!(
+        text_has_ink,
+        "expected text ink in raster row {text_y_start}..{text_y_end} columns {text_x_start}..{text_x_end}"
+    );
+}
+
+#[tokio::test]
+async fn viewport_scroll_normal_rerender_attaches_decoded_resource_cache_images() {
+    let image_url = tiny_test_jpeg_data_url();
+    let html = format!(
+        r#"
+            <html><body>
+              <img src="{image_url}" width="16" height="16" alt="cached">
+            </body></html>
+            "#
+    );
+    let options = BrowserRenderOptions {
+        width: 24,
+        ..BrowserRenderOptions::default()
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://session-cache-auto-image",
+        html.as_bytes(),
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+    .expect("prepare page without cached images");
+    assert!(page_state.cached_images.is_empty());
+
+    let mut session = BrowserSession::new(options);
+    session.push_entry(
+        "mem://session-cache-auto-image".to_owned(),
+        html.as_bytes().to_vec(),
+        page_state,
+        profiled.render,
+    );
+    let resource = BrowserResource {
+        kind: "image".to_owned(),
+        initiator: "img".to_owned(),
+        url: image_url.clone(),
+        resolved: image_url,
+        rel: None,
+        media: None,
+        alt: Some("cached".to_owned()),
+        type_hint: Some("image/jpeg".to_owned()),
+    };
+    let fetch = fetch_resource_with_cache(
+        resource,
+        1024,
+        &mut session.cookie_jar,
+        &mut session.resource_cache,
+    )
+    .await;
+    assert_eq!(fetch.status, "cached");
+    assert!(session.entries[0].page_state.cached_images.is_empty());
+
+    let rerender = session.render_entry_page_state(0);
+    let decoded_size = rerender
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                decoded_width,
+                decoded_height,
+                ..
+            } => Some((*decoded_width, *decoded_height)),
+            _ => None,
+        });
+    assert_eq!(decoded_size, Some((Some(2), Some(2))));
+    assert!(!rerender.decoded_images.is_empty());
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",
