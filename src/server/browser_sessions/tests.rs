@@ -2187,6 +2187,8 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
+    assert!(html.contains(r#"<span data-browser-scroll-state="x">x: at left edge</span>"#));
+    assert!(html.contains(r#"<span data-browser-scroll-state="y">y: at top</span>"#));
     assert!(html.contains(">Line down</a>"));
     assert!(html.contains(">Page down</a>"));
     let state_export = RequestTarget {
@@ -2305,6 +2307,58 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
         &[("dx", payload.width.max(1).to_string())],
         &payload,
     );
+    let top_href = browser_session_action_href(&payload.id, "top", &[], &payload);
+    let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], &payload);
+    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], &payload);
+    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], &payload);
+    let expected_width = payload.width.to_string();
+    let expected_height = payload.height.to_string();
+    let expected_viewport_x = payload.viewport_x.to_string();
+    let expected_viewport_y = payload.viewport_y.to_string();
+    let expected_max_bytes = payload.max_bytes.to_string();
+    for href in [
+        &current_href,
+        &reload_href,
+        &page_left_href,
+        &top_href,
+        &page_up_href,
+        &page_down_href,
+        &bottom_href,
+        &page_right_href,
+    ] {
+        let params: std::collections::HashMap<String, String> =
+            form_urlencoded::parse(href.trim_start_matches("/browser?").as_bytes())
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+        assert_eq!(
+            params.get("id").map(String::as_str),
+            Some(payload.id.as_str())
+        );
+        assert_eq!(
+            params.get("from").map(String::as_str),
+            Some(back_href.as_str())
+        );
+        assert_eq!(
+            params.get("width").map(String::as_str),
+            Some(expected_width.as_str())
+        );
+        assert_eq!(
+            params.get("height").map(String::as_str),
+            Some(expected_height.as_str())
+        );
+        assert_eq!(
+            params.get("viewport_x").map(String::as_str),
+            Some(expected_viewport_x.as_str())
+        );
+        assert_eq!(
+            params.get("viewport_y").map(String::as_str),
+            Some(expected_viewport_y.as_str())
+        );
+        assert_eq!(
+            params.get("max_bytes").map(String::as_str),
+            Some(expected_max_bytes.as_str())
+        );
+    }
     assert!(html.contains(&format!(
         r#"href="{}">Refresh viewport</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
@@ -2333,6 +2387,14 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-status"#));
     assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
     assert!(html.contains(&format!("<span>y 4/{}</span>", payload.max_scroll_y)));
+    assert!(
+        html.contains(
+            r#"<span data-browser-scroll-state="x">x: horizontal scroll available</span>"#
+        )
+    );
+    assert!(
+        html.contains(r#"<span data-browser-scroll-state="y">y: vertical scroll available</span>"#)
+    );
     assert!(html.contains(&format!(
         "<span>{}%</span>",
         browser_scroll_percent(payload.viewport_y, payload.max_scroll_y)
@@ -2595,6 +2657,7 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     assert!(html.contains(r#">Top</a>"#));
     assert!(html.contains(r#">Page up</a>"#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
+    assert!(html.contains(r#"<span data-browser-scroll-state="y">y: at bottom</span>"#));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert!(

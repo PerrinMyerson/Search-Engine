@@ -11460,6 +11460,25 @@ fn render_browser_session_viewport(payload: &BrowserSessionPayload) -> String {
     render_browser_session_highlighted_text(&payload.viewport, &payload.find_query)
 }
 
+fn browser_scroll_axis_state(
+    value: usize,
+    max: usize,
+    start_label: &'static str,
+    middle_label: &'static str,
+    end_label: &'static str,
+    none_label: &'static str,
+) -> &'static str {
+    if max == 0 {
+        none_label
+    } else if value == 0 {
+        start_label
+    } else if value >= max {
+        end_label
+    } else {
+        middle_label
+    }
+}
+
 fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> String {
     let vertical_percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
     let meter_percent = if payload.max_scroll_y == 0 {
@@ -11472,13 +11491,31 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     } else {
         format!(r#"<span>{vertical_percent}%</span>"#)
     };
+    let horizontal_state = browser_scroll_axis_state(
+        payload.viewport_x,
+        payload.max_scroll_x,
+        "at left edge",
+        "horizontal scroll available",
+        "at right edge",
+        "no horizontal scroll",
+    );
+    let vertical_state = browser_scroll_axis_state(
+        payload.viewport_y,
+        payload.max_scroll_y,
+        "at top",
+        "vertical scroll available",
+        "at bottom",
+        "no vertical scroll",
+    );
     format!(
-        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span>x {x}/{max_x}</span><span>y {y}/{max_y}</span>{vertical_percent_label}</div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span>x {x}/{max_x}</span><span>y {y}/{max_y}</span>{vertical_percent_label}<span data-browser-scroll-state="x">x: {horizontal_state}</span><span data-browser-scroll-state="y">y: {vertical_state}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
         x = payload.viewport_x,
         max_x = payload.max_scroll_x,
         y = payload.viewport_y,
         max_y = payload.max_scroll_y,
         vertical_percent_label = vertical_percent_label,
+        horizontal_state = horizontal_state,
+        vertical_state = vertical_state,
         meter_percent = meter_percent,
     )
 }
