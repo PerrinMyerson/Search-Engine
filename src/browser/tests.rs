@@ -5714,7 +5714,18 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
     assert_eq!(set_fetch.status, "fetched");
     assert_eq!(set_fetch.content_type.as_deref(), Some("image/webp"));
     assert_eq!(set_fetch.image_decode_status.as_deref(), Some("decoded"));
-    assert!(set_fetch.decoded_hash.is_some());
+    let set_hash = set_fetch.decoded_hash.clone().unwrap();
+    let render = session.current().unwrap();
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &set.display().to_string() && hash == &set_hash
+        )
+    }));
     assert!(
         !report
             .fetches
