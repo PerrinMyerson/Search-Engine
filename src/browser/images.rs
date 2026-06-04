@@ -2402,6 +2402,9 @@ fn background_image_attr_source(value: &str) -> Option<String> {
     if value.is_empty() || value.eq_ignore_ascii_case("none") {
         return None;
     }
+    if let Some(url) = background_image_set_attr_source(value) {
+        return Some(url);
+    }
     let url = value
         .strip_prefix("url(")
         .and_then(|url| url.strip_suffix(')'))
@@ -2412,6 +2415,91 @@ fn background_image_attr_source(value: &str) -> Option<String> {
         return None;
     }
     Some(url.to_owned())
+}
+
+fn background_image_set_attr_source(value: &str) -> Option<String> {
+    let args = css_function_args(value, &["image-set", "-webkit-image-set"])?;
+    split_css_top_level_commas_with_quotes(args)
+        .into_iter()
+        .filter_map(background_image_set_candidate_source)
+        .find(|url| !image_source_clearly_unsupported(url))
+}
+
+fn background_image_set_candidate_source(candidate: &str) -> Option<String> {
+    css_function_args(candidate, &["url"])
+        .and_then(css_url_token)
+        .or_else(|| css_quoted_url(candidate))
+        .map(str::to_owned)
+}
+
+fn css_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    let name = value[..open].trim();
+    if !names
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected))
+    {
+        return None;
+    }
+    let close = matching_closing_paren(value, open)?;
+    Some(&value[open + 1..close])
+}
+
+fn split_css_top_level_commas_with_quotes(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut start = 0usize;
+    for (index, byte) in input.as_bytes().iter().enumerate() {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+
+fn css_url_token(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let url = if bytes.len() >= 2
+        && matches!(bytes[0], b'\'' | b'"')
+        && bytes.last() == Some(&bytes[0])
+    {
+        &value[1..value.len().saturating_sub(1)]
+    } else {
+        value
+    };
+    (!url.is_empty()).then_some(url)
+}
+
+fn css_quoted_url(value: &str) -> Option<&str> {
+    let value = value.trim_start();
+    let quote = value.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let end = value[1..]
+        .find(quote as char)
+        .map(|offset| 1usize.saturating_add(offset))?;
+    css_url_token(&value[..=end])
 }
 
 #[derive(Debug, Clone, Copy)]
