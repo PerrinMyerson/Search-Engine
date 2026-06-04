@@ -4170,6 +4170,7 @@ fn decoded_image_and_background_downscale_with_area_samples() {
         width: 16,
         height: 12,
         pixels,
+        rgb_pixels: None,
     };
     let image_entry = DecodedImageEntry {
         url: image_url.clone(),
