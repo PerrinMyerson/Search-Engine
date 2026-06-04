@@ -3277,6 +3277,107 @@ fn visual_section_viewports_project_heading_caption_and_list_context() {
 }
 
 #[test]
+fn raster_dominant_image_viewports_keep_section_text_band() {
+    let render = BrowserRender {
+        source: "mem://dominant-image-section-context".to_owned(),
+        title: String::new(),
+        viewport_width: 40,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default(); 4],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 10,
+                shade: 220,
+                alt: None,
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Hero insight headline".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Visible summary row".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 10,
+                text: "Adjacent body detail".to_owned(),
+            },
+        ],
+        text: "Hero insight headline\nVisible summary row\nAdjacent body detail".to_owned(),
+    };
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(2),
+        viewport_width: Some(40),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let raster =
+        rasterize_render(&render, raster_options).expect("rasterize dominant image context");
+    for (row, text) in [
+        (3usize, "Hero insight headline"),
+        (4usize, "Visible summary row"),
+        (5usize, "Adjacent body detail"),
+    ] {
+        let row_y = raster_options
+            .padding_y
+            .saturating_add(row.saturating_mul(raster_options.cell_height));
+        let row_end = row_y.saturating_add(raster_options.cell_height);
+        let col_end = raster_options
+            .padding_x
+            .saturating_add(text.len().saturating_mul(raster_options.cell_width));
+        let mut glyph_pixels = 0usize;
+        for y in row_y..row_end {
+            for x in raster_options.padding_x..col_end {
+                let index = y.saturating_mul(raster.width).saturating_add(x);
+                if raster.pixels.get(index).is_some_and(|pixel| *pixel == 0) {
+                    glyph_pixels = glyph_pixels.saturating_add(1);
+                }
+            }
+        }
+        assert!(glyph_pixels >= 8, "expected raster glyphs for {text}");
+    }
+
+    assert_eq!(
+        display_command_bounds(&render.display_list[0]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        }
+    );
+    assert_eq!(
+        display_command_bounds(&render.display_list[3]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 10,
+            width: "Adjacent body detail".len(),
+            height: 1,
+        }
+    );
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
