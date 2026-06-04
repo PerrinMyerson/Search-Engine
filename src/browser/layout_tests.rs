@@ -4810,6 +4810,94 @@ fn flex_column_keeps_image_and_text_stable_in_scrolled_viewport() {
 }
 
 #[test]
+fn scrolled_viewport_clips_proportional_text_by_pixels_with_mixed_content() {
+    let image_url = "mem://viewport-stability-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![40, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://viewport-stability".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![DisplayHitTarget::default(); 3],
+        display_list: vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 1,
+                width: 8,
+                height: 2,
+                shade: 238,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 1,
+                shade: 96,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 2,
+                text: "iiiiiiii".to_owned(),
+                shade: 0,
+            },
+        ],
+        text: "iiiiiiii".to_owned(),
+    };
+    let raster_options = BrowserRasterOptions {
+        viewport_x: Some(0),
+        viewport_y: Some(1),
+        viewport_width: Some(3),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled proportional text and image slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[40, 120, 220, 255]
+    );
+    let fifth_narrow_glyph_x = raster_options.padding_x.saturating_add(22);
+    let text_glyph_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(4);
+    assert_eq!(pixel(fifth_narrow_glyph_x, text_glyph_y), &[0, 0, 0, 255]);
+}
+
+#[test]
 fn render_fidelity_scrolled_viewport_keeps_rgb_css_text_and_decoded_image() {
     let image_url = "mem://render-fidelity-photo".to_owned();
     let decoded = DecodedImage {

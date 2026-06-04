@@ -6407,15 +6407,10 @@ fn draw_raster_text_run(
             .saturating_sub(viewport.y)
             .saturating_mul(options.cell_height),
     );
-    for (column_offset, ch) in text.chars().enumerate() {
-        let document_column = document_x.saturating_add(column_offset);
+    for ch in text.chars() {
         let advance = raster_glyph_advance(ch, options.cell_width);
         let glyph_end = cursor_x.saturating_add(options.cell_width);
-        if document_column >= viewport.x
-            && document_column < viewport.end_x()
-            && cursor_x < viewport_end_pixel_x
-            && glyph_end > viewport_pixel_x
-        {
+        if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
             draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
         }
@@ -6445,15 +6440,10 @@ fn draw_rgba_text_run(
             .saturating_sub(viewport.y)
             .saturating_mul(options.cell_height),
     );
-    for (column_offset, ch) in text.chars().enumerate() {
-        let document_column = document_x.saturating_add(column_offset);
+    for ch in text.chars() {
         let advance = raster_glyph_advance(ch, options.cell_width);
         let glyph_end = cursor_x.saturating_add(options.cell_width);
-        if document_column >= viewport.x
-            && document_column < viewport.end_x()
-            && cursor_x < viewport_end_pixel_x
-            && glyph_end > viewport_pixel_x
-        {
+        if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
             draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
         }
