@@ -11850,6 +11850,11 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(!html.contains(r#"data-browser-pending-load="true""#));
     assert!(!html.contains("Continue loading"));
     assert!(!html.contains("about:blank"));
+    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#
+    ));
+    assert!(!html.contains("visual actions unavailable"));
     assert!(html.contains(r#"data-browser-address type="text""#));
     assert!(html.contains("data:text/html"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Ddata"));
@@ -11866,6 +11871,130 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert_eq!(
         params.get("source").map(String::as_str),
         Some(data_url.as_str())
+    );
+}
+
+#[tokio::test]
+async fn browser_page_displays_original_data_source_when_materialized_page_is_untitled() {
+    let registry = BrowserSessionRegistry::default();
+    let data_url = "data:text/html,<!doctype html><p>Untitled data page</p>".to_owned();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), data_url.clone()),
+            ("from".to_owned(), "/search?q=untitled-data".to_owned()),
+            ("width".to_owned(), "32".to_owned()),
+            ("height".to_owned(), "8".to_owned()),
+        ],
+    };
+
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    let expected_title = browser_session_feedback_excerpt(&data_url);
+    assert_eq!(payload.title, expected_title);
+    assert_eq!(payload.source, data_url);
+    assert_eq!(payload.pending_source, None);
+    assert!(!payload.title.contains("brutal-browser-data-url"));
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert_eq!(current_tab.title, expected_title);
+    assert_eq!(current_tab.page_title, expected_title);
+    assert_eq!(current_tab.source, data_url);
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(&format!(
+        "<h1>{}</h1>",
+        html_escape::encode_text(&expected_title)
+    )));
+    assert!(html.contains("data:text/html"));
+    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(html.contains(r#"data-browser-primary-raster"#));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#
+    ));
+}
+
+#[tokio::test]
+async fn browser_page_preserves_data_source_display_and_visual_actions_for_materialized_resources()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let css = dir.path().join("data-page.css");
+    let image = dir.path().join("tile.svg");
+    std::fs::write(&css, ".card { color: #123456; }").unwrap();
+    std::fs::write(
+        &image,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##,
+    )
+    .unwrap();
+
+    let data_url = format!(
+        r#"data:text/html,<!doctype html><title>Data Resources</title><link rel="stylesheet" href="{css}"><p class="card">resource-backed data page</p><img src="{image}" alt="Tile">"#,
+        css = css.display(),
+        image = image.display(),
+    );
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), data_url.clone()),
+            ("from".to_owned(), "/search?q=data-resources".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "12".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+        ],
+    };
+
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Data Resources");
+    assert_eq!(payload.source, data_url);
+    assert_eq!(payload.pending_source, None);
+    assert!(payload.viewport_image.is_some());
+    assert_eq!(payload.resource_stylesheet_count, 1);
+    assert_eq!(payload.resource_image_count, 1);
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert_eq!(current_tab.title, "Data Resources");
+    assert_eq!(current_tab.source, data_url);
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("action=make-visual"));
+    assert!(html.contains("action=apply-styles"));
+    assert!(html.contains("action=load-images"));
+    assert!(html.contains(">Load 1 image</a>"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: 1 stylesheet · 1 image</span>"#
+    ));
+    assert!(html.contains("data:text/html"));
+    assert!(!html.contains("brutal-browser-data-url"));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["source"], data_url);
+    assert_eq!(exported["title"], "Data Resources");
+    assert!(
+        exported["action_urls"]["make_visual"]
+            .as_str()
+            .unwrap()
+            .contains("source=data%3Atext%2Fhtml")
+    );
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
     );
 }
 
