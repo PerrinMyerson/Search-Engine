@@ -1095,8 +1095,8 @@ async fn image_svg_curves_decodes_arc_quadratic_and_cubic_path_pixels_for_render
     assert!(sample(7, 11) <= 40);
     assert!((88..=104).contains(&sample(22, 8)));
     assert!(sample(5, 5) <= 40);
-    assert_eq!(decoded.rgb_pixels, None);
     let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
 
     let mut session = BrowserSession::new(BrowserRenderOptions {
         width: 40,
@@ -1119,8 +1119,14 @@ async fn image_svg_curves_decodes_arc_quadratic_and_cubic_path_pixels_for_render
     assert_eq!(fetch.decoded_width, Some(30));
     assert_eq!(fetch.decoded_height, Some(20));
     assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
-    assert_eq!(fetch.decoded_color_hash, None);
-    assert_eq!(fetch.decoded_color_bytes, None);
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
 
     let render = session.current().unwrap();
     assert!(
@@ -1175,8 +1181,8 @@ async fn image_svg_transforms_decodes_transformed_shapes_for_rendered_resource()
     assert!((88..=104).contains(&sample(15, 3)));
     assert!((58..=72).contains(&sample(14, 14)));
     assert!(sample(1, 17) >= 230);
-    assert_eq!(decoded.rgb_pixels, None);
     let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
 
     let mut session = BrowserSession::new(BrowserRenderOptions {
         width: 40,
@@ -1199,8 +1205,14 @@ async fn image_svg_transforms_decodes_transformed_shapes_for_rendered_resource()
     assert_eq!(fetch.decoded_width, Some(24));
     assert_eq!(fetch.decoded_height, Some(20));
     assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
-    assert_eq!(fetch.decoded_color_hash, None);
-    assert_eq!(fetch.decoded_color_bytes, None);
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
 
     let render = session.current().unwrap();
     assert_eq!(render.decoded_images.len(), 1);
@@ -1212,6 +1224,88 @@ async fn image_svg_transforms_decodes_transformed_shapes_for_rendered_resource()
                 url: Some(url),
                 decoded_width: Some(24),
                 decoded_height: Some(20),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+}
+
+#[tokio::test]
+async fn image_real_color_svg_preserves_rgb_pixels_for_rendered_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("color-icon.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 4 2" xmlns="http://www.w3.org/2000/svg">
+                <rect width="2" height="2" fill="red"/>
+                <rect x="2" width="2" height="2" style="fill:rgb(0,0,255)"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before color svg</p><img src="color-icon.svg" alt="Color SVG" width="16" height="8"><p>After color svg</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "color-icon.svg").unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.resolved, icon.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(4));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
+
+    let render = session.current().unwrap();
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(4),
+                decoded_height: Some(2),
                 decoded_hash: Some(hash),
                 ..
             } if url == &icon.display().to_string() && *hash == expected_hash

@@ -543,9 +543,10 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let width = width?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let height = height?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut pixels = vec![255u8; width.checked_mul(height)?];
+    let mut rgb_pixels = vec![255u8; width.checked_mul(height)?.checked_mul(3)?];
     for rect_shape in rects {
         let rect = &rect_shape.attrs;
-        let Some(fill) = svg_shape_fill_shade(&rect) else {
+        let Some(fill) = svg_shape_fill_paint(&rect) else {
             continue;
         };
         if rect_shape.transform.is_identity() {
@@ -569,15 +570,24 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 .and_then(|value| parse_svg_pixel_dimension(value))
                 .unwrap_or(height.saturating_sub(y))
                 .min(height.saturating_sub(y));
-            fill_decoded_rect(&mut pixels, width, x, y, rect_width, rect_height, fill);
+            fill_decoded_rect(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                x,
+                y,
+                rect_width,
+                rect_height,
+                fill,
+            );
         } else if let Some(points) = svg_rect_points(rect, width, height) {
             let points = transform_svg_points(&points, rect_shape.transform);
-            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
     for circle_shape in circles {
         let circle = &circle_shape.attrs;
-        let Some(fill) = svg_shape_fill_shade(&circle) else {
+        let Some(fill) = svg_shape_fill_paint(&circle) else {
             continue;
         };
         let Some(cx) = circle.get("cx").and_then(|value| parse_svg_number(value)) else {
@@ -596,16 +606,16 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             ry: radius,
         };
         if circle_shape.transform.is_identity() {
-            fill_decoded_ellipse(&mut pixels, width, height, ellipse, fill);
+            fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
         } else {
             let points =
                 transform_svg_points(&svg_ellipse_points(ellipse, 24), circle_shape.transform);
-            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
     for ellipse_shape in ellipses {
         let ellipse = &ellipse_shape.attrs;
-        let Some(fill) = svg_shape_fill_shade(&ellipse) else {
+        let Some(fill) = svg_shape_fill_paint(&ellipse) else {
             continue;
         };
         let Some(cx) = ellipse.get("cx").and_then(|value| parse_svg_number(value)) else {
@@ -622,16 +632,16 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         };
         let ellipse = SvgEllipse { cx, cy, rx, ry };
         if ellipse_shape.transform.is_identity() {
-            fill_decoded_ellipse(&mut pixels, width, height, ellipse, fill);
+            fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
         } else {
             let points =
                 transform_svg_points(&svg_ellipse_points(ellipse, 24), ellipse_shape.transform);
-            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
     for polygon_shape in polygons {
         let polygon = &polygon_shape.attrs;
-        let Some(fill) = svg_shape_fill_shade(&polygon) else {
+        let Some(fill) = svg_shape_fill_paint(&polygon) else {
             continue;
         };
         let Some(points) = polygon
@@ -641,7 +651,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             continue;
         };
         let points = transform_svg_points(&points, polygon_shape.transform);
-        fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
     }
     for polyline_shape in polylines {
         let polyline = &polyline_shape.attrs;
@@ -652,12 +662,20 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             continue;
         };
         let points = transform_svg_points(&points, polyline_shape.transform);
-        if let Some(fill) = svg_shape_fill_shade(&polyline) {
-            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        if let Some(fill) = svg_shape_fill_paint(&polyline) {
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
-        if let Some(stroke) = svg_shape_stroke_shade(&polyline) {
+        if let Some(stroke) = svg_shape_stroke_paint(&polyline) {
             let stroke_width = svg_shape_stroke_width(polyline, polyline_shape.transform);
-            draw_decoded_polyline(&mut pixels, width, height, &points, stroke, stroke_width);
+            draw_decoded_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
         }
     }
     for path_shape in paths {
@@ -666,12 +684,20 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             continue;
         };
         let points = transform_svg_points(&points, path_shape.transform);
-        if let Some(fill) = svg_shape_fill_shade(&path) {
-            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        if let Some(fill) = svg_shape_fill_paint(&path) {
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
-        if let Some(stroke) = svg_shape_stroke_shade(&path) {
+        if let Some(stroke) = svg_shape_stroke_paint(&path) {
             let stroke_width = svg_shape_stroke_width(path, path_shape.transform);
-            draw_decoded_polyline(&mut pixels, width, height, &points, stroke, stroke_width);
+            draw_decoded_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
         }
     }
 
@@ -679,7 +705,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         width,
         height,
         pixels,
-        rgb_pixels: None,
+        rgb_pixels: Some(rgb_pixels),
     })
 }
 
@@ -1509,39 +1535,126 @@ fn parse_svg_transform(value: &str) -> Option<SvgTransform> {
     Some(transform)
 }
 
-fn svg_shape_fill_shade(attrs: &HashMap<String, String>) -> Option<u8> {
-    svg_shape_paint_shade(attrs, "fill")
+fn svg_shape_fill_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
+    svg_shape_paint(attrs, "fill")
 }
 
-fn svg_shape_stroke_shade(attrs: &HashMap<String, String>) -> Option<u8> {
-    svg_shape_paint_shade(attrs, "stroke")
+fn svg_shape_stroke_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
+    svg_shape_paint(attrs, "stroke")
 }
 
-fn svg_shape_paint_shade(attrs: &HashMap<String, String>, property: &str) -> Option<u8> {
+fn svg_shape_paint(attrs: &HashMap<String, String>, property: &str) -> Option<SvgPaint> {
+    let value = svg_shape_paint_value(attrs, property)?;
+    let shade = parse_css_color_shade(value)?;
+    let rgb = parse_svg_css_color_rgb(value).unwrap_or([shade, shade, shade]);
+    Some(SvgPaint { shade, rgb })
+}
+
+fn svg_shape_paint_value<'a>(
+    attrs: &'a HashMap<String, String>,
+    property: &str,
+) -> Option<&'a str> {
     attrs
         .get(property)
-        .and_then(|value| {
-            let value = value.trim();
-            (!value.eq_ignore_ascii_case("none"))
-                .then(|| parse_css_color_shade(value))
-                .flatten()
-        })
-        .or_else(|| svg_style_paint_shade(attrs.get("style")?, property))
+        .map(String::as_str)
+        .and_then(svg_paint_value)
+        .or_else(|| svg_style_paint_value(attrs.get("style")?, property))
 }
 
-fn svg_style_paint_shade(style: &str, property: &str) -> Option<u8> {
+fn svg_style_paint_value<'a>(style: &'a str, property: &str) -> Option<&'a str> {
     style.split(';').find_map(|declaration| {
         let (name, value) = declaration.split_once(':')?;
         name.trim()
             .eq_ignore_ascii_case(property)
-            .then(|| {
-                let value = value.trim();
-                (!value.eq_ignore_ascii_case("none"))
-                    .then(|| parse_css_color_shade(value))
-                    .flatten()
-            })
+            .then(|| svg_paint_value(value))
             .flatten()
     })
+}
+
+fn svg_paint_value(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.eq_ignore_ascii_case("none")
+        && !value.eq_ignore_ascii_case("transparent")
+        && !value.is_empty())
+    .then_some(value)
+}
+
+fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
+    if let Some(rgb) = parse_svg_rgb_function(value) {
+        return Some(rgb);
+    }
+    for token in value.split_ascii_whitespace() {
+        let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
+        if let Some(rgb) = parse_svg_rgb_function(token) {
+            return Some(rgb);
+        }
+        if let Some(rgb) = parse_svg_hex_color_rgb(token) {
+            return Some(rgb);
+        }
+        match token.to_ascii_lowercase().as_str() {
+            "black" => return Some([0, 0, 0]),
+            "white" => return Some([255, 255, 255]),
+            "gray" | "grey" => return Some([128, 128, 128]),
+            "silver" => return Some([192, 192, 192]),
+            "red" => return Some([255, 0, 0]),
+            "green" => return Some([0, 128, 0]),
+            "blue" => return Some([0, 0, 255]),
+            "yellow" => return Some([255, 255, 0]),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_svg_hex_color_rgb(value: &str) -> Option<[u8; 3]> {
+    let value = value.strip_prefix('#')?;
+    match value.len() {
+        3 => {
+            let red = u8::from_str_radix(&value[0..1], 16).ok()?;
+            let green = u8::from_str_radix(&value[1..2], 16).ok()?;
+            let blue = u8::from_str_radix(&value[2..3], 16).ok()?;
+            Some([red * 17, green * 17, blue * 17])
+        }
+        6 => Some([
+            u8::from_str_radix(&value[0..2], 16).ok()?,
+            u8::from_str_radix(&value[2..4], 16).ok()?,
+            u8::from_str_radix(&value[4..6], 16).ok()?,
+        ]),
+        _ => None,
+    }
+}
+
+fn parse_svg_rgb_function(value: &str) -> Option<[u8; 3]> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    let name = value[..open].trim();
+    if !name.eq_ignore_ascii_case("rgb") && !name.eq_ignore_ascii_case("rgba") {
+        return None;
+    }
+    let close = value[open + 1..].find(')')?.saturating_add(open + 1);
+    let args = value[open + 1..close].split('/').next().unwrap_or("");
+    let normalized = args.replace(',', " ");
+    let mut components = normalized.split_ascii_whitespace();
+    Some([
+        parse_svg_rgb_component(components.next()?)?,
+        parse_svg_rgb_component(components.next()?)?,
+        parse_svg_rgb_component(components.next()?)?,
+    ])
+}
+
+fn parse_svg_rgb_component(value: &str) -> Option<u8> {
+    let value = value.trim();
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.parse::<f32>().ok()?.clamp(0.0, 100.0);
+        return Some(((percent * 255.0 / 100.0).round() as u16).min(u8::MAX as u16) as u8);
+    }
+    Some(
+        value
+            .parse::<f32>()
+            .ok()?
+            .round()
+            .clamp(0.0, u8::MAX as f32) as u8,
+    )
 }
 
 fn svg_shape_stroke_width(attrs: &HashMap<String, String>, transform: SvgTransform) -> usize {
@@ -2081,21 +2194,22 @@ fn skip_svg_number_delimiters(value: &str, mut cursor: usize) -> usize {
 
 fn fill_decoded_rect(
     pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
     image_width: usize,
     x: usize,
     y: usize,
     width: usize,
     height: usize,
-    value: u8,
+    paint: SvgPaint,
 ) {
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
-            let Some(pixel) =
-                pixels.get_mut(row.saturating_mul(image_width).saturating_add(column))
-            else {
-                continue;
-            };
-            *pixel = value;
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                row.saturating_mul(image_width).saturating_add(column),
+                paint,
+            );
         }
     }
 }
@@ -2161,10 +2275,11 @@ fn transform_svg_points(points: &[SvgPoint], transform: SvgTransform) -> Vec<Svg
 
 fn fill_decoded_polygon(
     pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
     image_width: usize,
     image_height: usize,
     points: &[SvgPoint],
-    value: u8,
+    paint: SvgPaint,
 ) {
     if points.len() < 3 {
         return;
@@ -2194,11 +2309,12 @@ fn fill_decoded_polygon(
             if !svg_point_inside_polygon(x as f32 + 0.5, y as f32 + 0.5, points) {
                 continue;
             }
-            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
-            else {
-                continue;
-            };
-            *pixel = value;
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                y.saturating_mul(image_width).saturating_add(x),
+                paint,
+            );
         }
     }
 }
@@ -2224,10 +2340,11 @@ fn svg_point_inside_polygon(x: f32, y: f32, points: &[SvgPoint]) -> bool {
 
 fn draw_decoded_polyline(
     pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
     image_width: usize,
     image_height: usize,
     points: &[SvgPoint],
-    value: u8,
+    paint: SvgPaint,
     stroke_width: usize,
 ) {
     let stroke_width = stroke_width.max(1);
@@ -2251,19 +2368,29 @@ fn draw_decoded_polyline(
             if x >= image_width || y >= image_height {
                 continue;
             }
-            set_decoded_stroke_pixel(pixels, image_width, image_height, x, y, stroke_width, value);
+            set_decoded_stroke_pixel(
+                pixels,
+                rgb_pixels,
+                image_width,
+                image_height,
+                x,
+                y,
+                stroke_width,
+                paint,
+            );
         }
     }
 }
 
 fn set_decoded_stroke_pixel(
     pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
     image_width: usize,
     image_height: usize,
     x: usize,
     y: usize,
     stroke_width: usize,
-    value: u8,
+    paint: SvgPaint,
 ) {
     let radius = stroke_width.saturating_sub(1) / 2;
     let start_x = x.saturating_sub(radius);
@@ -2272,14 +2399,39 @@ fn set_decoded_stroke_pixel(
     let end_y = y.saturating_add(radius).min(image_height.saturating_sub(1));
     for row in start_y..=end_y {
         for column in start_x..=end_x {
-            let Some(pixel) =
-                pixels.get_mut(row.saturating_mul(image_width).saturating_add(column))
-            else {
-                continue;
-            };
-            *pixel = value;
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                row.saturating_mul(image_width).saturating_add(column),
+                paint,
+            );
         }
     }
+}
+
+fn set_decoded_pixel(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    pixel_index: usize,
+    paint: SvgPaint,
+) {
+    let Some(pixel) = pixels.get_mut(pixel_index) else {
+        return;
+    };
+    *pixel = paint.shade;
+    let Some(rgb_offset) = pixel_index.checked_mul(3) else {
+        return;
+    };
+    let Some(pixel_rgb) = rgb_pixels.get_mut(rgb_offset..rgb_offset.saturating_add(3)) else {
+        return;
+    };
+    pixel_rgb.copy_from_slice(&paint.rgb);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SvgPaint {
+    shade: u8,
+    rgb: [u8; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2292,10 +2444,11 @@ struct SvgEllipse {
 
 fn fill_decoded_ellipse(
     pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
     image_width: usize,
     image_height: usize,
     ellipse: SvgEllipse,
-    value: u8,
+    paint: SvgPaint,
 ) {
     if ellipse.rx <= 0.0 || ellipse.ry <= 0.0 {
         return;
@@ -2315,11 +2468,12 @@ fn fill_decoded_ellipse(
             if dx.mul_add(dx, dy * dy) > 1.0 {
                 continue;
             }
-            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
-            else {
-                continue;
-            };
-            *pixel = value;
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                y.saturating_mul(image_width).saturating_add(x),
+                paint,
+            );
         }
     }
 }
