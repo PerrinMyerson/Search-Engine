@@ -15749,7 +15749,9 @@ fn svg_paint_shade(dom: &Dom, node_id: usize, element: &ElementData) -> Option<u
 }
 
 fn svg_paint_rgb(dom: &Dom, node_id: usize, element: &ElementData) -> Option<(u8, u8, u8)> {
-    svg_element_paint_rgb(element).or_else(|| svg_child_paint_rgb(dom, node_id, None))
+    let current_color = svg_element_current_color_rgb(element);
+    svg_element_paint_rgb_with_current(element, current_color)
+        .or_else(|| svg_child_paint_rgb(dom, node_id, None, current_color))
 }
 
 fn svg_child_paint_shade(dom: &Dom, node_id: usize) -> Option<u8> {
@@ -15777,6 +15779,7 @@ fn svg_child_paint_rgb(
     dom: &Dom,
     node_id: usize,
     inherited: Option<(u8, u8, u8)>,
+    current_color: Option<(u8, u8, u8)>,
 ) -> Option<(u8, u8, u8)> {
     let node = dom.nodes.get(node_id)?;
     for &child_id in &node.children {
@@ -15784,11 +15787,12 @@ fn svg_child_paint_rgb(
             continue;
         };
         if let NodeKind::Element(element) = &child.kind {
-            let fill = svg_element_paint_rgb(element).or(inherited);
+            let current_color = svg_element_current_color_rgb(element).or(current_color);
+            let fill = svg_element_paint_rgb_with_current(element, current_color).or(inherited);
             if fill.is_some() {
                 return fill;
             }
-            if let Some(fill) = svg_child_paint_rgb(dom, child_id, inherited) {
+            if let Some(fill) = svg_child_paint_rgb(dom, child_id, inherited, current_color) {
                 return Some(fill);
             }
         }
@@ -15812,15 +15816,64 @@ fn svg_style_paint_shade(style: &str) -> Option<u8> {
     None
 }
 
-fn svg_style_paint_rgb(style: &str) -> Option<(u8, u8, u8)> {
+fn svg_style_paint_rgb_with_current(
+    style: &str,
+    current_color: Option<(u8, u8, u8)>,
+) -> Option<(u8, u8, u8)> {
     for declaration in strip_css_comments(style).split(';') {
         let Some((name, value)) = declaration.split_once(':') else {
             continue;
         };
-        if matches!(
-            name.trim().to_ascii_lowercase().as_str(),
-            "fill" | "color" | "background" | "background-color"
-        ) && let Some(rgb) = parse_css_color_rgb_value(css_declaration_value(value))
+        if matches!(name.trim().to_ascii_lowercase().as_str(), "fill") {
+            let value = css_declaration_value(value);
+            if value.eq_ignore_ascii_case("currentColor") {
+                return current_color.or(Some((0, 0, 0)));
+            }
+            if let Some(rgb) = parse_css_color_rgb_value(value) {
+                return Some(rgb);
+            }
+        }
+    }
+    None
+}
+
+fn svg_element_paint_rgb_with_current(
+    element: &ElementData,
+    current_color: Option<(u8, u8, u8)>,
+) -> Option<(u8, u8, u8)> {
+    element
+        .attrs
+        .get("fill")
+        .and_then(|fill| {
+            if fill.trim().eq_ignore_ascii_case("currentColor") {
+                current_color.or(Some((0, 0, 0)))
+            } else {
+                parse_css_color_rgb_value(fill)
+            }
+        })
+        .or_else(|| {
+            element
+                .style
+                .as_deref()
+                .and_then(|style| svg_style_paint_rgb_with_current(style, current_color))
+        })
+}
+
+fn svg_element_current_color_rgb(element: &ElementData) -> Option<(u8, u8, u8)> {
+    element
+        .attrs
+        .get("color")
+        .and_then(|color| parse_css_color_rgb_value(color))
+        .or_else(|| element.style.as_deref().and_then(svg_style_color_rgb))
+}
+
+fn svg_style_color_rgb(style: &str) -> Option<(u8, u8, u8)> {
+    for declaration in strip_css_comments(style).split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if matches!(name.trim().to_ascii_lowercase().as_str(), "color")
+            && let Some(rgb) = parse_css_color_rgb_value(css_declaration_value(value))
         {
             return Some(rgb);
         }
@@ -15828,12 +15881,37 @@ fn svg_style_paint_rgb(style: &str) -> Option<(u8, u8, u8)> {
     None
 }
 
-fn svg_element_paint_rgb(element: &ElementData) -> Option<(u8, u8, u8)> {
-    element
+fn svg_element_fill_suppressed(element: &ElementData) -> bool {
+    if element
         .attrs
         .get("fill")
-        .and_then(|fill| parse_css_color_rgb_value(fill))
-        .or_else(|| element.style.as_deref().and_then(svg_style_paint_rgb))
+        .is_some_and(|fill| svg_paint_value_suppressed(fill))
+    {
+        return true;
+    }
+    element
+        .style
+        .as_deref()
+        .is_some_and(svg_style_fill_suppressed)
+}
+
+fn svg_style_fill_suppressed(style: &str) -> bool {
+    for declaration in strip_css_comments(style).split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if matches!(name.trim().to_ascii_lowercase().as_str(), "fill") {
+            return svg_paint_value_suppressed(css_declaration_value(value));
+        }
+    }
+    false
+}
+
+fn svg_paint_value_suppressed(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "none" | "transparent"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15855,8 +15933,17 @@ fn svg_paint_shapes(
     svg_height: usize,
 ) -> Vec<SvgPaintShape> {
     let mut shapes = Vec::new();
-    let inherited = svg_element_paint_rgb(element);
-    collect_svg_paint_shapes(dom, node_id, inherited, svg_width, svg_height, &mut shapes);
+    let current_color = svg_element_current_color_rgb(element);
+    let inherited = svg_element_paint_rgb_with_current(element, current_color);
+    collect_svg_paint_shapes(
+        dom,
+        node_id,
+        inherited,
+        current_color,
+        svg_width,
+        svg_height,
+        &mut shapes,
+    );
     shapes
 }
 
@@ -15864,6 +15951,7 @@ fn collect_svg_paint_shapes(
     dom: &Dom,
     node_id: usize,
     inherited: Option<(u8, u8, u8)>,
+    current_color: Option<(u8, u8, u8)>,
     svg_width: usize,
     svg_height: usize,
     shapes: &mut Vec<SvgPaintShape>,
@@ -15878,21 +15966,33 @@ fn collect_svg_paint_shapes(
         let NodeKind::Element(element) = &child.kind else {
             continue;
         };
-        let fill = svg_element_paint_rgb(element).or(inherited);
-        if let Some((red, green, blue)) = fill {
-            if let Some((x, y, width, height)) = svg_shape_bounds(element, svg_width, svg_height) {
-                shapes.push(SvgPaintShape {
-                    x,
-                    y,
-                    width,
-                    height,
-                    red,
-                    green,
-                    blue,
-                });
-            }
+        let current_color = svg_element_current_color_rgb(element).or(current_color);
+        let fill = if svg_element_fill_suppressed(element) {
+            None
+        } else {
+            svg_element_paint_rgb_with_current(element, current_color).or(inherited)
+        };
+        if let Some((x, y, width, height)) = svg_shape_bounds(element, svg_width, svg_height) {
+            let (red, green, blue) = fill.unwrap_or((0, 0, 0));
+            shapes.push(SvgPaintShape {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+            });
         }
-        collect_svg_paint_shapes(dom, child_id, fill, svg_width, svg_height, shapes);
+        collect_svg_paint_shapes(
+            dom,
+            child_id,
+            fill,
+            current_color,
+            svg_width,
+            svg_height,
+            shapes,
+        );
     }
 }
 
