@@ -2054,6 +2054,15 @@ pub(super) fn selected_srcset_candidate(
     )
 }
 
+pub(super) fn selected_supported_srcset_candidate(
+    srcset: &str,
+    sizes: Option<&str>,
+    viewport_width_css_px: usize,
+) -> Option<String> {
+    let candidate = selected_srcset_candidate(srcset, sizes, viewport_width_css_px)?;
+    (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
+}
+
 fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCandidate> {
     let supported = candidates
         .iter()
