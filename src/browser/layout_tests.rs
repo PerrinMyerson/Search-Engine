@@ -3946,6 +3946,121 @@ fn css_background_image_set_selects_supported_layer_fallback() {
 }
 
 #[test]
+fn decoded_image_and_background_downscale_with_area_samples() {
+    let image_url = "mem://stripe-image".to_owned();
+    let background_url = "mem://stripe-background".to_owned();
+    let mut pixels = Vec::new();
+    for _ in 0..12 {
+        for x in 0..16 {
+            pixels.push(if x % 2 == 0 { 0 } else { 255 });
+        }
+    }
+    let decoded = DecodedImage {
+        width: 16,
+        height: 12,
+        pixels,
+    };
+    let image_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded.clone(),
+    };
+    let background_entry = DecodedImageEntry {
+        url: background_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let render = BrowserRender {
+        source: "mem://decoded-stripes".to_owned(),
+        title: String::new(),
+        viewport_width: 4,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 2,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![image_entry, background_entry],
+        hit_targets: vec![DisplayHitTarget::default(); 2],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                shade: 220,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(16),
+                decoded_height: Some(12),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 1,
+                y: 0,
+                width: 1,
+                height: 1,
+                shade: 220,
+                url: Some(background_url),
+                decoded_width: Some(16),
+                decoded_height: Some(12),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+        ],
+        text: String::new(),
+    };
+
+    let raster_options = BrowserRasterOptions::default();
+    let raster = rasterize_render(&render, raster_options).expect("rasterize decoded stripes");
+    let image_sample = raster_options
+        .padding_y
+        .saturating_mul(raster.width)
+        .saturating_add(raster_options.padding_x);
+    let background_sample = raster_options
+        .padding_y
+        .saturating_mul(raster.width)
+        .saturating_add(
+            raster_options
+                .padding_x
+                .saturating_add(raster_options.cell_width),
+        );
+    assert_eq!(raster.pixels[image_sample], 127);
+    assert_eq!(raster.pixels[background_sample], 127);
+
+    assert_eq!(
+        display_command_bounds(&render.display_list[0]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+    );
+    assert_eq!(
+        display_command_bounds(&render.display_list[1]),
+        DisplayCommandBounds {
+            x: 1,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+    );
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",

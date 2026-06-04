@@ -6161,28 +6161,32 @@ fn draw_decoded_image_region(
         return;
     }
     for row in 0..height {
-        let source_y = source_offset_y
-            .saturating_add(row)
-            .saturating_mul(decoded.height)
-            / full_height;
+        let (source_y_start, source_y_end) = scaled_sample_range(
+            source_offset_y.saturating_add(row),
+            source_offset_y.saturating_add(row).saturating_add(1),
+            decoded.height,
+            full_height,
+        );
         for column in 0..width {
-            let source_x = source_offset_x
-                .saturating_add(column)
-                .saturating_mul(decoded.width)
-                / full_width;
-            let Some(value) = decoded.pixels.get(
-                source_y
-                    .saturating_mul(decoded.width)
-                    .saturating_add(source_x),
-            ) else {
-                continue;
-            };
+            let (source_x_start, source_x_end) = scaled_sample_range(
+                source_offset_x.saturating_add(column),
+                source_offset_x.saturating_add(column).saturating_add(1),
+                decoded.width,
+                full_width,
+            );
+            let value = averaged_decoded_image_sample(
+                decoded,
+                source_x_start,
+                source_x_end,
+                source_y_start,
+                source_y_end,
+            );
             set_raster_pixel(
                 pixels,
                 raster_width,
                 x.saturating_add(column),
                 y.saturating_add(row),
-                *value,
+                value,
             );
         }
     }
@@ -6228,7 +6232,12 @@ fn draw_background_image_region(
         else {
             continue;
         };
-        let source_y = tile_local_y.saturating_mul(decoded.height) / tile_height;
+        let (source_y_start, source_y_end) = scaled_sample_range(
+            tile_local_y,
+            tile_local_y.saturating_add(1),
+            decoded.height,
+            tile_height,
+        );
         for column in 0..width {
             let local_x = visible_offset_x.saturating_add(column) as i64;
             let Some(tile_local_x) =
@@ -6236,22 +6245,75 @@ fn draw_background_image_region(
             else {
                 continue;
             };
-            let source_x = tile_local_x.saturating_mul(decoded.width) / tile_width;
-            let Some(value) = decoded.pixels.get(
-                source_y
-                    .saturating_mul(decoded.width)
-                    .saturating_add(source_x),
-            ) else {
-                continue;
-            };
+            let (source_x_start, source_x_end) = scaled_sample_range(
+                tile_local_x,
+                tile_local_x.saturating_add(1),
+                decoded.width,
+                tile_width,
+            );
+            let value = averaged_decoded_image_sample(
+                decoded,
+                source_x_start,
+                source_x_end,
+                source_y_start,
+                source_y_end,
+            );
             set_raster_pixel(
                 pixels,
                 raster_width,
                 x.saturating_add(column),
                 y.saturating_add(row),
-                *value,
+                value,
             );
         }
+    }
+}
+
+fn scaled_sample_range(
+    start: usize,
+    end: usize,
+    source_extent: usize,
+    target_extent: usize,
+) -> (usize, usize) {
+    if source_extent == 0 || target_extent == 0 {
+        return (0, 0);
+    }
+    let start = start.saturating_mul(source_extent) / target_extent;
+    let end = scale_ceil(end, source_extent, target_extent)
+        .max(start.saturating_add(1))
+        .min(source_extent);
+    (start.min(source_extent.saturating_sub(1)), end)
+}
+
+fn averaged_decoded_image_sample(
+    decoded: &DecodedImage,
+    start_x: usize,
+    end_x: usize,
+    start_y: usize,
+    end_y: usize,
+) -> u8 {
+    let start_x = start_x.min(decoded.width.saturating_sub(1));
+    let end_x = end_x.min(decoded.width).max(start_x.saturating_add(1));
+    let start_y = start_y.min(decoded.height.saturating_sub(1));
+    let end_y = end_y.min(decoded.height).max(start_y.saturating_add(1));
+    let mut total = 0usize;
+    let mut count = 0usize;
+    for source_y in start_y..end_y {
+        for source_x in start_x..end_x {
+            if let Some(value) = decoded.pixels.get(
+                source_y
+                    .saturating_mul(decoded.width)
+                    .saturating_add(source_x),
+            ) {
+                total = total.saturating_add(*value as usize);
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    if count == 0 {
+        255
+    } else {
+        (total / count).min(u8::MAX as usize) as u8
     }
 }
 
