@@ -9102,10 +9102,12 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
 .resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
 .resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
-.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
+.browser-raster-shell {{ position: relative; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster-shell[data-viewport-pending="true"] {{ cursor: wait; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
+.browser-click-marker {{ position: absolute; z-index: 2; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid #2457d6; border-radius: 999px; background: rgba(36, 87, 214, 0.12); box-shadow: 0 0 0 2px rgba(255,255,255,0.88); pointer-events: none; }}
+.browser-click-marker::after {{ content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #2457d6; }}
 .browser-raster-placeholder {{ min-height: 96px; display: grid; align-content: center; gap: 6px; padding: 14px; background: #f6f8fb; color: #3a3f45; font-size: 13px; cursor: default; }}
 .browser-raster-placeholder strong {{ color: #20242a; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
@@ -9551,7 +9553,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9625,11 +9627,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
   } catch (_) {}
   let raster = shell.querySelector(".browser-raster");
+  let clickMarker = shell.querySelector("[data-browser-click-marker]");
   const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
   const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
+  const clickStatusTargets = () => Array.from(document.querySelectorAll("[data-browser-click-status]"));
   const setViewportFeedback = (message) => {
     for (const feedback of viewportFeedbackTargets()) {
       feedback.textContent = message;
+    }
+  };
+  const setClickStatus = (message) => {
+    for (const status of clickStatusTargets()) {
+      status.textContent = message;
     }
   };
   const setViewportPending = (message) => {
@@ -9666,6 +9675,48 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return Number.isFinite(value) ? value : 0;
   };
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const viewportPointFromEvent = (event) => {
+    if (!raster) {
+      return null;
+    }
+    const rect = raster.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return null;
+    }
+    const relativeX = event.clientX - rect.left;
+    const relativeY = event.clientY - rect.top;
+    if (relativeX < 0 || relativeY < 0 || relativeX > rect.width || relativeY > rect.height) {
+      return null;
+    }
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const x = clamp(Math.floor(relativeX / rect.width * viewportWidth), 0, viewportWidth - 1);
+    const y = clamp(Math.floor(relativeY / rect.height * viewportHeight), 0, viewportHeight - 1);
+    return {
+      x,
+      y,
+      pageX: numberData("viewportX") + x,
+      pageY: numberData("viewportY") + y
+    };
+  };
+  const pointMessage = (point) => `DOM point x ${point.x}, y ${point.y} (page ${point.pageX}, ${point.pageY})`;
+  const hideClickMarker = () => {
+    if (clickMarker) {
+      clickMarker.hidden = true;
+    }
+  };
+  const moveClickMarker = (point) => {
+    if (!clickMarker || !raster) {
+      return;
+    }
+    const rasterRect = raster.getBoundingClientRect();
+    const shellRect = shell.getBoundingClientRect();
+    const left = rasterRect.left - shellRect.left + (point.x / Math.max(1, numberData("viewportWidth") - 1)) * rasterRect.width;
+    const top = rasterRect.top - shellRect.top + (point.y / Math.max(1, numberData("viewportHeight") - 1)) * rasterRect.height;
+    clickMarker.style.left = `${left}px`;
+    clickMarker.style.top = `${top}px`;
+    clickMarker.hidden = false;
+  };
   const scrollMessage = (dx, dy) => {
     if (dx < 0) {
       return "Moving visual viewport left...";
@@ -9709,6 +9760,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     shell.innerHTML = nextShell.innerHTML;
     raster = shell.querySelector(".browser-raster");
+    clickMarker = shell.querySelector("[data-browser-click-marker]");
     replaceElementFromPartial(doc, "[data-browser-viewport-status]");
     replaceElementFromPartial(doc, "[data-browser-viewport-interactions]");
     replaceElementFromPartial(doc, "[data-browser-viewport-controls]");
@@ -9856,27 +9908,47 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       queueViewportScroll(dx, dy);
     }
   }, { passive: false });
+  let hoverPointTimer = null;
+  shell.addEventListener("mousemove", (event) => {
+    const point = viewportPointFromEvent(event);
+    if (!point) {
+      return;
+    }
+    moveClickMarker(point);
+    if (hoverPointTimer) {
+      return;
+    }
+    hoverPointTimer = setTimeout(() => {
+      hoverPointTimer = null;
+    }, 120);
+    setClickStatus(`${pointMessage(point)}. Click to activate.`);
+    setViewportFeedback(`${pointMessage(point)}. Click to activate.`);
+  });
+  shell.addEventListener("mouseleave", () => {
+    hideClickMarker();
+    setClickStatus("Hover rendered page to inspect click target.");
+    setViewportFeedback("Wheel or use arrow keys to scroll the rendered page.");
+  });
   shell.addEventListener("click", (event) => {
     if (event.button !== 0 || event.defaultPrevented || !raster) {
       return;
     }
-    const rect = raster.getBoundingClientRect();
-    if (!rect.width || !rect.height) {
+    event.preventDefault();
+    if (pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest) {
+      setClickStatus("Viewport is updating; click after it settles.");
+      setViewportFeedback("Viewport is updating; click after it settles.");
       return;
     }
-    const relativeX = event.clientX - rect.left;
-    const relativeY = event.clientY - rect.top;
-    if (relativeX < 0 || relativeY < 0 || relativeX > rect.width || relativeY > rect.height) {
+    const point = viewportPointFromEvent(event);
+    if (!point) {
       return;
     }
-    const viewportWidth = Math.max(1, numberData("viewportWidth"));
-    const viewportHeight = Math.max(1, numberData("viewportHeight"));
-    const x = clamp(Math.floor(relativeX / rect.width * viewportWidth), 0, viewportWidth - 1);
-    const y = clamp(Math.floor(relativeY / rect.height * viewportHeight), 0, viewportHeight - 1);
+    moveClickMarker(point);
     const url = new URL(shell.dataset.clickUrl, window.location.href);
-    url.searchParams.set("x", String(x));
-    url.searchParams.set("y", String(y));
-    replaceViewportPage(url, "Clicking DOM point in browser viewport...");
+    url.searchParams.set("x", String(point.x));
+    url.searchParams.set("y", String(point.y));
+    setClickStatus(`Clicking ${pointMessage(point)}...`);
+    replaceViewportPage(url, `Clicking ${pointMessage(point)}...`);
   });
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
@@ -11991,7 +12063,7 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_x = payload.width.saturating_sub(1) / 2;
     let default_click_y = payload.height.saturating_sub(1) / 2;
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">DOM click</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Click DOM point</button><span class="meta">or click the rendered page</span></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">Hover rendered page to inspect click target.</span></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
