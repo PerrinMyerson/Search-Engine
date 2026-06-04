@@ -3249,6 +3249,82 @@ async fn image_lazy_source_uses_current_srcset_for_placeholder_rendering() {
 }
 
 #[tokio::test]
+async fn image_visible_render_uses_lazy_sizes_for_selected_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small_img = dir.path().join("small-img.webp");
+    let small_bg = dir.path().join("small-bg.webp");
+    fs::write(&small_img, tiny_test_webp_bytes()).unwrap();
+    fs::write(&small_bg, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <img src="/assets/placeholder.gif" data-currentSrcset="small-img.webp 160w, missing-img.webp 640w" data-sizes="160px" alt="Sized lazy WebP" width="80" height="24">
+            <section data-bgset="small-bg.webp 160w, missing-bg.webp 640w" data-lazy-sizes="160px">Background</section>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 2);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.starts_with("missing-"))
+    );
+
+    let small_img_url = small_img.display().to_string();
+    let img_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == small_img_url)
+        .unwrap();
+    assert_eq!(img_fetch.resource.kind, "image");
+    assert_eq!(img_fetch.resource.initiator, "img");
+    assert_eq!(img_fetch.resource.url, "small-img.webp");
+    assert_eq!(img_fetch.status, "fetched");
+    assert_eq!(img_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(img_fetch.image_decode_status.as_deref(), Some("decoded"));
+    let img_hash = img_fetch.decoded_hash.clone().unwrap();
+
+    let bg_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == small_bg.display().to_string())
+        .unwrap();
+    assert_eq!(bg_fetch.resource.kind, "background_image");
+    assert_eq!(bg_fetch.resource.initiator, "section");
+    assert_eq!(bg_fetch.resource.url, "small-bg.webp");
+    assert_eq!(bg_fetch.status, "fetched");
+    assert_eq!(bg_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(bg_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(bg_fetch.decoded_hash.is_some());
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 2);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &small_img_url && hash == &img_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn image_picture_current_source_uses_source_current_src_for_placeholder_rendering() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

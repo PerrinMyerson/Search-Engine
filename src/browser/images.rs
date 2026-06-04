@@ -985,10 +985,8 @@ pub(super) fn image_render_source(
     element: &ElementData,
     viewport_width_css_px: usize,
 ) -> Option<String> {
-    let srcset_target_width = srcset_target_width_from_sizes(
-        element.attrs.get("sizes").map(String::as_str),
-        viewport_width_css_px,
-    );
+    let srcset_target_width =
+        srcset_target_width_from_sizes(image_sizes_attr(element), viewport_width_css_px);
     let selected_source = picture_source_srcset(dom, node_id, viewport_width_css_px)
         .and_then(|source| {
             let source_target_width =
@@ -1096,7 +1094,7 @@ fn picture_source_attr<'a>(
             }
             return Some(PictureSourceSet {
                 srcset,
-                sizes: first_non_empty_attr(element, &["sizes"]),
+                sizes: image_sizes_attr(element),
             });
         }
     }
@@ -1165,6 +1163,24 @@ fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Op
         }
         .filter(|value| !value.trim().is_empty())
     })
+}
+
+pub(super) fn image_sizes_attr(element: &ElementData) -> Option<&str> {
+    first_non_empty_attr(
+        element,
+        &[
+            "sizes",
+            "data-sizes",
+            "data-lazy-sizes",
+            "data-original-sizes",
+            "data-image-sizes",
+            "data-img-sizes",
+            "data-current-sizes",
+            "data-currentsizes",
+            "current-sizes",
+            "currentsizes",
+        ],
+    )
 }
 
 fn is_lazy_image_placeholder_src(src: &str) -> bool {

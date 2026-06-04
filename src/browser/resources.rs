@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::images::{
-    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source,
+    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, image_sizes_attr,
     selected_supported_srcset_candidate, srcset_candidate_urls, supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
@@ -967,8 +967,11 @@ fn push_selected_background_alias_resource(
 ) {
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
         if let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) =
-                selected_supported_srcset_candidate(srcset, None, viewport_width_css_px)
+            && let Some(url) = selected_supported_srcset_candidate(
+                srcset,
+                image_sizes_attr(element),
+                viewport_width_css_px,
+            )
         {
             push_resource(
                 resources,
@@ -1225,7 +1228,11 @@ fn push_link_image_resources(
         && let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str)
         && let Some(url) = selected_supported_srcset_candidate(
             srcset,
-            element.attrs.get("imagesizes").map(String::as_str),
+            element
+                .attrs
+                .get("imagesizes")
+                .map(String::as_str)
+                .or_else(|| image_sizes_attr(element)),
             viewport_width_css_px,
         )
     {
