@@ -211,6 +211,7 @@ struct BrowserSessionPayload {
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
+    fast_scroll: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +219,21 @@ struct BrowserSessionViewportImagePayload {
     data_url: String,
     width: usize,
     height: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BrowserSessionPayloadOptions {
+    render_viewport_image: bool,
+    fast_scroll: bool,
+}
+
+impl Default for BrowserSessionPayloadOptions {
+    fn default() -> Self {
+        Self {
+            render_viewport_image: true,
+            fast_scroll: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1430,6 +1446,7 @@ impl BrowserSessionRegistry {
         if let Some(return_href) = target.param("from") {
             web_session.back_href = sanitized_search_return_href(Some(&return_href));
         }
+        let payload_options = browser_session_payload_options_for_action(&action);
 
         if let BrowserSessionAction::CloseSession(close_id) = action {
             self.sessions.lock().await.insert(id.clone(), web_session);
@@ -1945,7 +1962,9 @@ impl BrowserSessionRegistry {
             }
             action => apply_browser_action(action, &mut web_session)
                 .await
-                .and_then(|_| browser_session_payload(&id, &mut web_session)),
+                .and_then(|_| {
+                    browser_session_payload_with_options(&id, &mut web_session, payload_options)
+                }),
         };
         let mut payload = match result {
             Ok(payload) => payload,
@@ -7528,6 +7547,28 @@ fn browser_action_records_profile_tabs(action: &BrowserSessionAction) -> bool {
     )
 }
 
+fn browser_session_payload_options_for_action(
+    action: &BrowserSessionAction,
+) -> BrowserSessionPayloadOptions {
+    if matches!(
+        action,
+        BrowserSessionAction::Scroll { .. }
+            | BrowserSessionAction::Top
+            | BrowserSessionAction::Bottom
+            | BrowserSessionAction::PageUp
+            | BrowserSessionAction::PageDown
+            | BrowserSessionAction::LineUp
+            | BrowserSessionAction::LineDown
+    ) {
+        BrowserSessionPayloadOptions {
+            render_viewport_image: false,
+            fast_scroll: true,
+        }
+    } else {
+        BrowserSessionPayloadOptions::default()
+    }
+}
+
 fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool {
     matches!(
         action,
@@ -8068,6 +8109,14 @@ fn browser_session_payload(
     id: &str,
     web_session: &mut BrowserWebSession,
 ) -> Result<BrowserSessionPayload, BrowserRouteError> {
+    browser_session_payload_with_options(id, web_session, BrowserSessionPayloadOptions::default())
+}
+
+fn browser_session_payload_with_options(
+    id: &str,
+    web_session: &mut BrowserWebSession,
+    options: BrowserSessionPayloadOptions,
+) -> Result<BrowserSessionPayload, BrowserRouteError> {
     if web_session.session.current().is_none() {
         return Err(BrowserRouteError::BadRequest(
             "browser session has no current page".to_owned(),
@@ -8088,15 +8137,19 @@ fn browser_session_payload(
                 height: web_session.height,
             },
         );
-        let (viewport_image, viewport_image_error) = match browser_session_viewport_image(
-            render,
-            viewport.x,
-            viewport.y,
-            viewport.width,
-            viewport.height,
-        ) {
-            Ok(image) => (Some(image), None),
-            Err(error) => (None, Some(error)),
+        let (viewport_image, viewport_image_error) = if options.render_viewport_image {
+            match browser_session_viewport_image(
+                render,
+                viewport.x,
+                viewport.y,
+                viewport.width,
+                viewport.height,
+            ) {
+                Ok(image) => (Some(image), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else {
+            (None, None)
         };
         let history = web_session.session.snapshot();
         let find_matches = browser_find_matches(&render.text, &web_session.find_query);
@@ -8501,6 +8554,7 @@ fn browser_session_payload(
             resources,
             resource_report: web_session.resource_report.clone(),
             action_feedback: web_session.action_feedback.clone(),
+            fast_scroll: options.fast_scroll,
         }
     };
     web_session.viewport_x = payload.viewport_x;
@@ -8641,6 +8695,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_status = render_browser_session_viewport_status(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
+    let viewport_text = render_browser_session_viewport_text(payload, &viewport);
     let navigation_state = render_browser_session_navigation_state(payload, back_href);
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
@@ -8965,6 +9020,8 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
+.browser-raster-placeholder {{ min-height: 96px; display: grid; align-content: center; gap: 6px; padding: 14px; background: #f6f8fb; color: #3a3f45; font-size: 13px; cursor: default; }}
+.browser-raster-placeholder strong {{ color: #20242a; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
 .browser-viewport-primary {{ margin: 10px 0 18px; }}
 .viewport-input {{ display: grid; gap: 8px; margin: 8px 0 12px; }}
@@ -9056,7 +9113,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_image}
 {primary_input_controls}
 {viewport_jump}
-<details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>
+{viewport_text}
 </section>
 <section class="debug-stack">
 <details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
@@ -9135,7 +9192,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
         primary_input_controls = primary_input_controls,
-        viewport = viewport,
+        viewport_text = viewport_text,
         click_controls = click_controls,
         keyboard_controls = keyboard_controls,
         find_controls = find_controls,
@@ -9384,10 +9441,10 @@ fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String 
 }
 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
+    let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
+    let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
+    let viewport_accessibility_label = "Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view";
     if let Some(image) = &payload.viewport_image {
-        let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
-        let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
-        let viewport_accessibility_label = "Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view";
         return format!(
             r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
@@ -9403,6 +9460,22 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
             src = html_escape::encode_double_quoted_attribute(&image.data_url),
             width = image.width,
             height = image.height,
+            script = render_browser_session_viewport_scroll_script(),
+        );
+    }
+    if payload.fast_scroll {
+        return format!(
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>{script}"#,
+            scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
+            click_url = html_escape::encode_double_quoted_attribute(&click_url),
+            viewport_accessibility_label =
+                html_escape::encode_double_quoted_attribute(viewport_accessibility_label),
+            viewport_x = payload.viewport_x,
+            viewport_y = payload.viewport_y,
+            viewport_width = payload.width,
+            viewport_height = payload.height,
+            max_scroll_x = payload.max_scroll_x,
+            max_scroll_y = payload.max_scroll_y,
             script = render_browser_session_viewport_scroll_script(),
         );
     }
@@ -11516,6 +11589,20 @@ fn render_browser_session_viewport(payload: &BrowserSessionPayload) -> String {
     render_browser_session_highlighted_text(&payload.viewport, &payload.find_query)
 }
 
+fn render_browser_session_viewport_text(payload: &BrowserSessionPayload, viewport: &str) -> String {
+    if payload.fast_scroll {
+        format!(
+            r#"<details class="viewport-text" open data-browser-fast-scroll-text><summary>Text viewport · fast scroll response</summary><pre>{viewport}</pre></details>"#,
+            viewport = viewport,
+        )
+    } else {
+        format!(
+            r#"<details class="viewport-text"><summary>Text viewport</summary><pre>{viewport}</pre></details>"#,
+            viewport = viewport,
+        )
+    }
+}
+
 fn browser_scroll_axis_state(
     value: usize,
     max: usize,
@@ -11885,6 +11972,8 @@ fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> Stri
             r#"<span class="viewport-state-chip">raster ready {}x{}</span>"#,
             image.width, image.height,
         )
+    } else if payload.fast_scroll {
+        r#"<span class="viewport-state-chip">fast text scroll</span>"#.to_owned()
     } else if let Some(error) = payload.viewport_image_error.as_ref() {
         format!(
             r#"<span class="viewport-state-chip warning">raster error: {}</span>"#,
