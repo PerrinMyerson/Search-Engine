@@ -14860,6 +14860,29 @@ fn render_node(
                 );
                 return;
             }
+            if element.tag == "svg" {
+                let (svg_width, svg_height) =
+                    replaced_media_placeholder_extent(element, &style, renderer);
+                let shade = svg_paint_shade(dom, node_id, element)
+                    .or(style.background_shade)
+                    .unwrap_or(220);
+                if is_row_item {
+                    renderer.push_inline_rect_placeholder(
+                        svg_width,
+                        svg_height,
+                        shade,
+                        Some(node_id),
+                    );
+                } else {
+                    renderer.push_rect_placeholder(svg_width, svg_height, shade, Some(node_id));
+                }
+                exit_outer_contexts(
+                    renderer,
+                    &mut out_of_flow_entered,
+                    &mut horizontal_projection_entered,
+                );
+                return;
+            }
             if element.tag == "img" {
                 let image_source =
                     image_render_source(dom, node_id, element, renderer.viewport_width_css_px());
@@ -15633,6 +15656,52 @@ fn replaced_media_alt(element: &ElementData) -> Option<String> {
         .or_else(|| Some(element.tag.clone()))
 }
 
+fn svg_paint_shade(dom: &Dom, node_id: usize, element: &ElementData) -> Option<u8> {
+    element
+        .attrs
+        .get("fill")
+        .and_then(|fill| parse_css_color_shade(fill))
+        .or_else(|| element.style.as_deref().and_then(svg_style_paint_shade))
+        .or_else(|| svg_child_paint_shade(dom, node_id))
+}
+
+fn svg_child_paint_shade(dom: &Dom, node_id: usize) -> Option<u8> {
+    let node = dom.nodes.get(node_id)?;
+    for &child_id in &node.children {
+        let Some(child) = dom.nodes.get(child_id) else {
+            continue;
+        };
+        if let NodeKind::Element(element) = &child.kind {
+            if let Some(shade) = element
+                .attrs
+                .get("fill")
+                .and_then(|fill| parse_css_color_shade(fill))
+                .or_else(|| element.style.as_deref().and_then(svg_style_paint_shade))
+                .or_else(|| svg_child_paint_shade(dom, child_id))
+            {
+                return Some(shade);
+            }
+        }
+    }
+    None
+}
+
+fn svg_style_paint_shade(style: &str) -> Option<u8> {
+    for declaration in strip_css_comments(style).split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "fill" | "color" | "background" | "background-color"
+        ) && let Some(shade) = parse_css_color_shade(css_declaration_value(value))
+        {
+            return Some(shade);
+        }
+    }
+    None
+}
+
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
     match element.tag.as_str() {
         "input" => input_render_text(element),
@@ -16374,7 +16443,7 @@ fn default_display(tag: &str) -> Display {
     match tag {
         "area" | "base" | "basefont" | "datalist" | "head" | "link" | "meta" | "noembed"
         | "noframes" | "param" | "rp" | "script" | "source" | "style" | "template" | "title"
-        | "track" | "svg" | "canvas" | "noscript" => Display::None,
+        | "track" | "canvas" | "noscript" => Display::None,
         "address" | "article" | "aside" | "blockquote" | "body" | "dd" | "details" | "div"
         | "dl" | "dt" | "figcaption" | "figure" | "footer" | "form" | "h1" | "h2" | "h3" | "h4"
         | "h5" | "h6" | "header" | "hgroup" | "hr" | "html" | "main" | "nav" | "ol" | "p"
@@ -16382,6 +16451,7 @@ fn default_display(tag: &str) -> Display {
             Display::Block
         }
         "li" | "summary" => Display::ListItem,
+        "svg" => Display::InlineBlock,
         _ => Display::Inline,
     }
 }
@@ -18341,6 +18411,83 @@ impl FlowRenderer {
             }
         }
         self.next_y += 1;
+    }
+
+    fn push_inline_rect_placeholder(
+        &mut self,
+        width: usize,
+        height: usize,
+        shade: u8,
+        target_node: Option<usize>,
+    ) {
+        self.soft_break_opportunity = false;
+        let rect_width = width.min(self.available_width()).max(1);
+        let rect_height = height.max(1);
+        let pending_space = if self.current_width > 0 {
+            self.pending_inter_word_space.take().unwrap_or(0)
+        } else {
+            self.pending_inter_word_space = None;
+            0
+        };
+        if self.current_width > 0
+            && self
+                .effective_current_width()
+                .saturating_add(pending_space)
+                .saturating_add(rect_width)
+                > self.available_width()
+        {
+            self.break_line();
+        } else if pending_space > 0 {
+            self.current_width = self.current_width.saturating_add(pending_space);
+        }
+        if self.current_width == 0 {
+            self.push_pending_text_indent();
+        }
+        if self.current_width > 0
+            && self.current_width.saturating_add(rect_width) > self.available_width()
+        {
+            self.break_line();
+        }
+        let remaining_width = self.available_width().saturating_sub(self.current_width);
+        let rect_width = rect_width.min(remaining_width.max(1));
+        if self.paint_visible()
+            && let Some(command) = self.clipped_rect_command(
+                self.box_x().saturating_add(self.current_width),
+                self.next_y,
+                rect_width,
+                rect_height,
+                shade,
+            )
+        {
+            let target = self.node_hit_target(target_node);
+            self.push_display_command(command, target);
+        }
+        self.current_width = self.current_width.saturating_add(rect_width);
+        self.inline_replaced_height = self.inline_replaced_height.max(rect_height);
+    }
+
+    fn push_rect_placeholder(
+        &mut self,
+        width: usize,
+        height: usize,
+        shade: u8,
+        target_node: Option<usize>,
+    ) {
+        self.break_line();
+        let rect_height = height.max(1);
+        if self.paint_visible()
+            && let Some(command) = self.clipped_rect_command(
+                self.left_inset,
+                self.next_y,
+                width.min(self.available_width()).max(1),
+                rect_height,
+                shade,
+            )
+        {
+            let target = self.node_hit_target(target_node);
+            self.push_display_command(command, target);
+        }
+        self.next_y = self.next_y.saturating_add(rect_height);
     }
 
     fn push_inline_image_placeholder(
