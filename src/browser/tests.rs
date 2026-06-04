@@ -1549,6 +1549,157 @@ async fn image_inline_color_svg_data_named_colors_decode_and_attach() {
     }));
 }
 
+#[tokio::test]
+async fn image_real_visibility_svg_data_hsl_colors_decode_and_attach() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let data_url = "data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%206%202%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20width%3D%222%22%20height%3D%222%22%20fill%3D%22hsl(120%20100%25%2050%25)%22%2F%3E%3Crect%20x%3D%222%22%20width%3D%222%22%20height%3D%222%22%20fill%3D%22hsla(240%2C100%25%2C50%25%2C0.5)%22%2F%3E%3Crect%20x%3D%224%22%20width%3D%222%22%20height%3D%222%22%20fill%3D%22hsl(0.833333turn%20100%25%2050%25)%22%2F%3E%3C%2Fsvg%3E";
+    let decoded = decode_image_reference("mem://hsl-color", data_url).unwrap();
+    assert_eq!(decoded.width, 6);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 255, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] >= 250 && pixel[1] <= 5 && pixel[2] >= 250)
+    );
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let html = format!(
+        r#"<html><body><p>Before hsl svg</p><img src="{data_url}" alt="HSL data SVG" width="18" height="6"><p>After hsl svg</p></body></html>"#
+    );
+    fs::write(&page, html).unwrap();
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, data_url);
+    assert_eq!(fetch.status, "cached");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(6));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(6),
+                decoded_height: Some(2),
+                decoded_hash: Some(hash),
+                ..
+            } if url == data_url && *hash == expected_hash
+        )
+    }));
+}
+
+#[test]
+fn image_load_buttons_attach_product_gallery_lazy_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let zoom = dir.path().join("zoom.webp");
+    let product = dir.path().join("product.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&zoom, tiny_test_webp_bytes()).unwrap();
+    fs::write(&product, tiny_test_webp_bytes()).unwrap();
+
+    let source = page.display().to_string();
+    let hero_hash = decoded_image_entry(&source, "hero.webp")
+        .unwrap()
+        .pixel_hash;
+    let zoom_hash = decoded_image_entry(&source, "zoom.webp")
+        .unwrap()
+        .pixel_hash;
+    let product_hash = decoded_image_entry(&source, "product.webp")
+        .unwrap()
+        .pixel_hash;
+    let render = render_html(
+        &source,
+        br#"<html><body>
+            <img src="/assets/loading.svg" data-large-image="hero.webp" alt="Large hero" width="80" height="24">
+            <img src="/assets/loader.png" data-zoom-src="zoom.webp" alt="Zoom hero" width="80" height="24">
+            <picture>
+                <source type="image/webp" data-product-srcset="product.avif 320w, product.webp 640w">
+                <img src="/assets/blank.gif" alt="Product picture" width="80" height="24">
+            </picture>
+        </body></html>"#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.decoded_images.len(), 3);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == "hero.webp" && *hash == hero_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == "zoom.webp" && *hash == zoom_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == "product.webp" && *hash == product_hash
+        )
+    }));
+    assert!(!render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                ..
+            } if url.ends_with(".avif") || url.contains("/assets/")
+        )
+    }));
+}
+
 #[test]
 fn decodes_local_png_image_into_cached_raster_pixels() {
     let dir = tempfile::tempdir().unwrap();
