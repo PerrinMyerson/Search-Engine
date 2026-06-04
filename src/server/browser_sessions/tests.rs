@@ -2443,10 +2443,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-height="16""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
     assert!(html.contains(
-        r#"aria-label="Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view""#
+        r#"aria-label="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
     assert!(html.contains(
-        r#"title="Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view""#
+        r#"title="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
     let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
@@ -2473,7 +2473,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
     assert!(html.contains("Scrolling browser viewport..."));
-    assert!(html.contains("Activating browser viewport..."));
+    assert!(html.contains("Clicking DOM point in browser viewport..."));
     assert!(html.contains("Already at top."));
     assert!(html.contains("Already at bottom."));
     assert!(html.contains("Already at left edge."));
@@ -8194,12 +8194,16 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     let (payload, _) = registry.create_target(&create).await.unwrap();
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains(r#"data-click-url="/browser?"#));
+    assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
     assert!(html.contains(r#"class="viewport-click-form""#));
     assert!(html.contains(r#"name="action" value="click-at""#));
     assert!(html.contains(r#"id="browser-viewport-click-x""#));
     assert!(html.contains(r#"id="browser-viewport-click-y""#));
-    assert!(html.contains(r#"<button type="submit">Click point</button>"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">DOM click</span>"#));
+    assert!(html.contains(r#"<button type="submit">Click DOM point</button>"#));
+    assert!(html.contains("or click the rendered page"));
+    assert!(html.contains("click links and buttons in this image"));
     assert!(html.contains(r#"aria-label="Quick visible links""#));
     assert!(html.contains(r#">1. Second</a>"#));
     assert!(html.contains("action=link"));
@@ -8223,6 +8227,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert_eq!(payload.title, "Second");
     assert_eq!(payload.history_len, 2);
     assert!(payload.can_back);
+    assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("arrived"));
     assert_eq!(
         payload.action_feedback.as_deref(),
@@ -8266,14 +8271,17 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(payload.title, "Button");
     assert_eq!(payload.history_len, 1);
+    assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("Clicked"));
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked point x 0, y 0 (page 0, 0); no navigation")
+        Some("Clicked DOM point x 0, y 0 (page 0, 0); page updated")
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Clicked point x 0, y 0 (page 0, 0); no navigation"));
+    assert!(html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated"));
+    assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(!html.contains("data-browser-fast-scroll"));
 }
 
 #[tokio::test]
@@ -8307,8 +8315,9 @@ async fn browser_session_registry_click_selector_reports_no_navigation() {
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked selector #press; no navigation")
+        Some("Clicked selector #press; page updated")
     );
+    assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("Clicked"));
 }
 
@@ -8382,8 +8391,10 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     };
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(payload.viewport_y, button_y);
+    assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("Clicked"));
-    let expected_feedback = format!("Clicked point x 0, y 0 (page 0, {button_y}); no navigation");
+    let expected_feedback =
+        format!("Clicked DOM point x 0, y 0 (page 0, {button_y}); page updated");
     assert_eq!(
         payload.action_feedback.as_deref(),
         Some(expected_feedback.as_str())
@@ -8391,6 +8402,8 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
     assert!(html.contains(&expected_feedback));
+    assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(!html.contains("data-browser-fast-scroll"));
 }
 
 #[test]

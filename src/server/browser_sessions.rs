@@ -614,6 +614,15 @@ struct BrowserSessionResourceActionUrls {
     clear_resource_report: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserInteractionSnapshot {
+    source: String,
+    title: String,
+    text: String,
+    forms: Vec<BrowserForm>,
+    link_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct BrowserSessionFormsExportPayload<'a> {
     format: &'static str,
@@ -5822,30 +5831,27 @@ async fn apply_browser_action(
             web_session.tab_search_query.clear();
         }
         BrowserSessionAction::ClickSelector(selector) => {
-            let before = current_session_source(web_session);
+            let before = current_session_interaction_snapshot(web_session);
             web_session
                 .session
                 .click_selector_with_default_action(&selector)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            let navigated = current_session_source(web_session) != before;
-            if navigated {
+            if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
-            let suffix = if navigated {
-                "; navigated"
-            } else {
-                "; no navigation"
-            };
-            web_session.action_feedback = Some(format!(
-                "Clicked selector {}{}",
-                browser_session_feedback_excerpt(&selector),
-                suffix
-            ));
+            set_browser_click_feedback(
+                web_session,
+                format!(
+                    "Clicked selector {}",
+                    browser_session_feedback_excerpt(&selector)
+                ),
+                before,
+            );
         }
         BrowserSessionAction::ClickAt { x, y } => {
-            let before = current_session_source(web_session);
+            let before = current_session_interaction_snapshot(web_session);
             let page_x = web_session.viewport_x.saturating_add(x);
             let page_y = web_session.viewport_y.saturating_add(y);
             web_session
@@ -5853,25 +5859,25 @@ async fn apply_browser_action(
                 .click_at_with_default_action(page_x, page_y)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            let navigated = current_session_source(web_session) != before;
-            if navigated {
+            if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
-            let suffix = if navigated {
-                "; navigated"
-            } else {
-                "; no navigation"
-            };
-            web_session.action_feedback = Some(format!(
-                "Clicked point x {x}, y {y} (page {page_x}, {page_y}){suffix}"
-            ));
+            set_browser_click_feedback(
+                web_session,
+                format!("Clicked DOM point x {x}, y {y} (page {page_x}, {page_y})"),
+                before,
+            );
         }
         BrowserSessionAction::FocusSelector(selector) => {
             web_session
                 .session
                 .focus_selector(&selector)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Focused selector {}.",
+                browser_session_feedback_excerpt(&selector)
+            ));
         }
         BrowserSessionAction::FocusControl {
             form_index,
@@ -9446,10 +9452,10 @@ fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
     let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
     let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
-    let viewport_accessibility_label = "Rendered browser viewport; wheel, arrows, Page Up, Page Down, Home, and End scroll this view";
+    let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport"></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"></div>{script}"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9468,7 +9474,7 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>{script}"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9618,7 +9624,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.clickUrl, window.location.href);
     url.searchParams.set("x", String(x));
     url.searchParams.set("y", String(y));
-    setViewportPending("Activating browser viewport...");
+    setViewportPending("Clicking DOM point in browser viewport...");
     window.location.href = url.toString();
   });
   document.addEventListener("click", (event) => {
@@ -11730,11 +11736,15 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
         quick_links.push_str(r#"<span class="viewport-state-chip">No visible links</span>"#);
     }
 
+    let default_click_x = payload.width.saturating_sub(1) / 2;
+    let default_click_y = payload.height.saturating_sub(1) / 2;
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="0" aria-label="Click x inside viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="0" aria-label="Click y inside viewport"><button type="submit">Click point</button></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">DOM click</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Click DOM point</button><span class="meta">or click the rendered page</span></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
+        default_click_x = default_click_x,
+        default_click_y = default_click_y,
         quick_links = quick_links,
     )
 }
@@ -13939,6 +13949,49 @@ fn current_session_source(web_session: &BrowserWebSession) -> Option<String> {
         .session
         .current()
         .map(|render| render.source.clone())
+}
+
+fn current_session_interaction_snapshot(
+    web_session: &BrowserWebSession,
+) -> Option<BrowserInteractionSnapshot> {
+    web_session
+        .session
+        .current()
+        .map(|render| BrowserInteractionSnapshot {
+            source: render.source.clone(),
+            title: render.title.clone(),
+            text: render.text.clone(),
+            forms: render.forms.clone(),
+            link_count: render.links.len(),
+        })
+}
+
+fn browser_interaction_snapshot_navigated(
+    before: &Option<BrowserInteractionSnapshot>,
+    web_session: &BrowserWebSession,
+) -> bool {
+    let before_source = before.as_ref().map(|snapshot| snapshot.source.as_str());
+    let after_source = web_session
+        .session
+        .current()
+        .map(|render| render.source.as_str());
+    before_source != after_source
+}
+
+fn set_browser_click_feedback(
+    web_session: &mut BrowserWebSession,
+    label: String,
+    before: Option<BrowserInteractionSnapshot>,
+) {
+    let after = current_session_interaction_snapshot(web_session);
+    let suffix = if browser_interaction_snapshot_navigated(&before, web_session) {
+        "; navigated"
+    } else if before != after {
+        "; page updated"
+    } else {
+        "; no visible change"
+    };
+    web_session.action_feedback = Some(format!("{label}{suffix}"));
 }
 
 fn browser_session_feedback_excerpt(value: &str) -> String {
