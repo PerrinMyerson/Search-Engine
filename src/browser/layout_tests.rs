@@ -2948,7 +2948,9 @@ fn css_animation_fill_and_negative_z_media_keep_hero_text_visible() {
             DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
                 Some(text.clone())
             }
-            DisplayCommand::Rect { .. } | DisplayCommand::BackgroundImage { .. } => None,
+            DisplayCommand::Rect { .. }
+            | DisplayCommand::ColorRect { .. }
+            | DisplayCommand::BackgroundImage { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -3021,7 +3023,9 @@ fn text_viewport_and_raster_keep_text_foreground_over_later_media() {
                 Some(text.as_str())
             }
             DisplayCommand::Image { .. } => Some("image"),
-            DisplayCommand::Rect { .. } | DisplayCommand::BackgroundImage { .. } => None,
+            DisplayCommand::Rect { .. }
+            | DisplayCommand::ColorRect { .. }
+            | DisplayCommand::BackgroundImage { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(paint_order, vec!["A Hero", "image"]);
@@ -5440,13 +5444,16 @@ fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
         .display_list
         .iter()
         .find_map(|command| match command {
-            DisplayCommand::Rect {
+            DisplayCommand::ColorRect {
                 x,
                 y,
                 width,
                 height,
-                shade,
-            } if *shade == rgb_to_luma(0, 180, 0) => Some((*x, *y, *width, *height)),
+                red,
+                green,
+                blue,
+                ..
+            } if (*red, *green, *blue) == (0, 180, 0) => Some((*x, *y, *width, *height)),
             _ => None,
         })
         .expect("inline svg fill command");
@@ -5491,12 +5498,7 @@ fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
         .saturating_add(svg_bounds.0.saturating_mul(raster_options.cell_width));
     assert_eq!(
         pixel(svg_sample_x, raster_options.padding_y),
-        &[
-            rgb_to_luma(0, 180, 0),
-            rgb_to_luma(0, 180, 0),
-            rgb_to_luma(0, 180, 0),
-            255,
-        ]
+        &[0, 180, 0, 255]
     );
     let text_x_start = raster_options
         .padding_x
@@ -5510,6 +5512,152 @@ fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
             .min(rgba.height))
         .any(|y| {
             (text_x_start..text_x_end.min(rgba.width)).any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        });
+    assert!(text_has_ink);
+}
+
+#[test]
+fn inline_svg_vector_color_shapes_share_scrolled_viewport_with_image_and_text() {
+    let image_url = "mem://inline-svg-vector-context-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![80],
+        rgb_pixels: Some(vec![220, 80, 20]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r##"
+            <html><body>
+              <div style="height:12px"></div>
+              <section style="display:flex; gap:0 8px; background-color:rgb(250,250,250)">
+                <img src="{image_url}" width="16" height="12" alt="">
+                <svg width="48" height="36" viewBox="0 0 48 36">
+                  <path d="M0 0H48V36H0Z" fill="#0033cc"></path>
+                  <rect x="8" y="0" width="16" height="12" fill="rgb(240,0,0)"></rect>
+                  <circle cx="36" cy="18" r="8" fill="rgb(0,180,0)"></circle>
+                </svg>
+                <div>Vector note</div>
+              </section>
+              <p>After vector graphic</p>
+            </body></html>
+            "##
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://inline-svg-vector-context",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 64,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render inline svg vector fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    let color_rects = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+                ..
+            } => Some(((*red, *green, *blue), (*x, *y, *width, *height))),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(color_rects.contains(&((0, 51, 204), (3, 1, 6, 3))));
+    assert!(color_rects.contains(&((240, 0, 0), (4, 1, 2, 1))));
+    assert!(color_rects.contains(&((0, 180, 0), (6, 1, 3, 3))));
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Vector note") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("vector note text command");
+    assert_eq!(image_bounds, (0, 1, 2, 1));
+    assert_eq!(text_position.1, 1);
+    assert!(text_position.0 >= 9);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(64),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize inline svg vector row");
+    let pixel = |cell_x: usize, cell_y: usize| {
+        let x = raster_options
+            .padding_x
+            .saturating_add(cell_x.saturating_mul(raster_options.cell_width));
+        let y = raster_options
+            .padding_y
+            .saturating_add(cell_y.saturating_mul(raster_options.cell_height));
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(pixel(0, 0), &[220, 80, 20, 255]);
+    assert_eq!(pixel(3, 0), &[0, 51, 204, 255]);
+    assert_eq!(pixel(4, 0), &[240, 0, 0, 255]);
+    assert_eq!(pixel(6, 0), &[0, 180, 0, 255]);
+    let text_x_start = raster_options
+        .padding_x
+        .saturating_add(text_position.0.saturating_mul(raster_options.cell_width));
+    let text_x_end = text_x_start.saturating_add(
+        "Vector note"
+            .len()
+            .saturating_mul(raster_options.cell_width),
+    );
+    let text_has_ink = (raster_options.padding_y
+        ..raster_options.padding_y.saturating_add(12).min(rgba.height))
+        .any(|y| {
+            (text_x_start..text_x_end.min(rgba.width)).any(|x| {
+                &rgba.pixels[(y * rgba.width + x) * 4..(y * rgba.width + x) * 4 + 4]
+                    == &[0, 0, 0, 255]
+            })
         });
     assert!(text_has_ink);
 }
