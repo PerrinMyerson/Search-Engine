@@ -1095,10 +1095,20 @@ impl BrowserRouteError {
 pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) -> HttpResponse {
     match browser_session_for_target(target, state).await {
         Ok((payload, back_href)) => {
-            html_response(render_browser_session_page(&payload, &back_href))
+            html_response(if browser_session_target_wants_viewport_partial(target) {
+                render_browser_session_viewport_partial(&payload)
+            } else {
+                render_browser_session_page(&payload, &back_href)
+            })
         }
         Err(error) => error.response(),
     }
+}
+
+fn browser_session_target_wants_viewport_partial(target: &RequestTarget) -> bool {
+    target
+        .param("partial")
+        .is_some_and(|value| value.eq_ignore_ascii_case("viewport"))
 }
 
 pub(super) async fn api_browser_session(
@@ -9080,7 +9090,12 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .viewport-text {{ margin-top: 10px; }}
 .viewport-text summary {{ cursor: pointer; color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-text pre {{ margin-top: 8px; }}
-.debug-stack {{ display: grid; gap: 10px; margin-top: 18px; }}
+.debug-stack {{ margin-top: 18px; }}
+.browser-tools-menu {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
+.browser-tools-menu > summary {{ cursor: pointer; padding: 11px 12px; color: #20242a; font-size: 14px; font-weight: 900; }}
+.browser-tools-menu > summary::marker {{ color: #5d636b; }}
+.debug-stack-content {{ display: grid; gap: 10px; padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
+.debug-stack-content > :first-child {{ margin-top: 12px; }}
 .debug-section {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
 .debug-section > summary {{ cursor: pointer; padding: 11px 12px; color: #20242a; font-size: 14px; font-weight: 800; }}
 .debug-section > summary::marker {{ color: #5d636b; }}
@@ -9157,12 +9172,15 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {primary_input_controls}
 <details class="browser-controls-tray" data-browser-controls-tray><summary>Browser controls and status</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
 </section>
-<section class="debug-stack">
+<details class="debug-stack browser-tools-menu" data-browser-tools-tray>
+<summary>More browser tools</summary>
+<div class="debug-stack-content">
 <details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
 <details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
 <details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
 <details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
-</section>
+</div>
+</details>
 {keyboard_controls_script}
 </main>
 </body>
@@ -9238,6 +9256,21 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         inspector = inspector,
         link_controls = link_controls,
         link_rows = link_rows,
+    )
+}
+
+fn render_browser_session_viewport_partial(payload: &BrowserSessionPayload) -> String {
+    format!(
+        r#"<div data-browser-partial-viewport data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}"><div data-browser-partial-raster>{raster}</div><div data-browser-partial-status>{status}</div><div data-browser-partial-interactions>{interactions}</div><div data-browser-partial-scroll-controls>{scroll_controls}</div><div data-browser-partial-command-strip>{command_strip}</div></div>"#,
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        max_scroll_x = payload.max_scroll_x,
+        max_scroll_y = payload.max_scroll_y,
+        raster = render_browser_session_viewport_image_shell(payload),
+        status = render_browser_session_viewport_status(payload),
+        interactions = render_browser_session_viewport_interaction_controls(payload),
+        scroll_controls = render_browser_session_viewport_scroll_controls(payload),
+        command_strip = render_browser_session_viewport_command_strip(payload),
     )
 }
 
@@ -9474,12 +9507,20 @@ fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String 
 }
 
 fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> String {
+    format!(
+        r#"<div data-browser-partial-raster>{shell}</div>{script}"#,
+        shell = render_browser_session_viewport_image_shell(payload),
+        script = render_browser_session_viewport_scroll_script(),
+    )
+}
+
+fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) -> String {
     let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
     let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
     let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9493,12 +9534,11 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
             src = html_escape::encode_double_quoted_attribute(&image.data_url),
             width = image.width,
             height = image.height,
-            script = render_browser_session_viewport_scroll_script(),
         );
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>{script}"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -9509,7 +9549,6 @@ fn render_browser_session_viewport_image(payload: &BrowserSessionPayload) -> Str
             viewport_height = payload.height,
             max_scroll_x = payload.max_scroll_x,
             max_scroll_y = payload.max_scroll_y,
-            script = render_browser_session_viewport_scroll_script(),
         );
     }
     if let Some(error) = &payload.viewport_image_error {
@@ -9554,22 +9593,22 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       requestAnimationFrame(() => shell.scrollIntoView({ block: "start", inline: "nearest" }));
     }
   } catch (_) {}
-  const raster = shell.querySelector(".browser-raster");
-  const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
-  const status = document.querySelector("[data-browser-viewport-status]");
-  const feedbackTargets = Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
+  let raster = shell.querySelector(".browser-raster");
+  const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
+  const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
   const setViewportFeedback = (message) => {
-    for (const feedback of feedbackTargets) {
+    for (const feedback of viewportFeedbackTargets()) {
       feedback.textContent = message;
     }
   };
   const setViewportPending = (message) => {
     shell.dataset.viewportPending = "true";
     shell.setAttribute("aria-busy", "true");
-    for (const control of controls) {
+    for (const control of viewportControls()) {
       control.dataset.scrollPending = "true";
       control.setAttribute("aria-busy", "true");
     }
+    const status = document.querySelector("[data-browser-viewport-status]");
     if (status) {
       status.dataset.viewportPending = "true";
       status.setAttribute("aria-busy", "true");
@@ -9597,6 +9636,42 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return "Refreshing visual viewport...";
   };
+  const replaceElementFromPartial = (doc, selector) => {
+    const current = document.querySelector(selector);
+    const next = doc.querySelector(selector);
+    if (!current || !next) {
+      return false;
+    }
+    current.replaceWith(next.cloneNode(true));
+    return true;
+  };
+  const applyViewportPartial = (html) => {
+    if (typeof DOMParser !== "function") {
+      return false;
+    }
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const partial = doc.querySelector("[data-browser-partial-viewport]");
+    const nextShell = doc.querySelector("[data-browser-viewport-scroll]");
+    if (!partial || !nextShell) {
+      return false;
+    }
+    for (const attribute of Array.from(shell.attributes)) {
+      shell.removeAttribute(attribute.name);
+    }
+    for (const attribute of Array.from(nextShell.attributes)) {
+      shell.setAttribute(attribute.name, attribute.value);
+    }
+    shell.innerHTML = nextShell.innerHTML;
+    raster = shell.querySelector(".browser-raster");
+    replaceElementFromPartial(doc, "[data-browser-viewport-status]");
+    replaceElementFromPartial(doc, "[data-browser-viewport-interactions]");
+    replaceElementFromPartial(doc, "[data-browser-viewport-controls]");
+    replaceElementFromPartial(doc, "[data-browser-viewport-command-strip]");
+    shell.dataset.viewportPartial = "true";
+    shell.removeAttribute("aria-busy");
+    shell.removeAttribute("data-viewport-pending");
+    return true;
+  };
   const replaceViewportPage = (url, message) => {
     setViewportPending(message);
     if (typeof fetch !== "function" || !window.history || typeof window.history.pushState !== "function") {
@@ -9621,6 +9696,32 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       document.close();
     }).catch(() => {
       window.location.href = url.toString();
+    });
+  };
+  const replaceViewportPartial = (url, message) => {
+    setViewportPending(message);
+    if (typeof fetch !== "function" || !window.history || typeof window.history.pushState !== "function") {
+      window.location.href = url.toString();
+      return;
+    }
+    const partialUrl = new URL(url.toString());
+    partialUrl.searchParams.set("partial", "viewport");
+    shell.dataset.viewportRequest = "partial";
+    fetch(partialUrl.toString(), {
+      headers: { "X-Requested-With": "browser-viewport-partial" }
+    }).then((response) => {
+      if (!response.ok) {
+        throw new Error("viewport partial request failed");
+      }
+      return response.text();
+    }).then((html) => {
+      if (!applyViewportPartial(html)) {
+        throw new Error("viewport partial response missing required fragments");
+      }
+      window.history.pushState(null, "", url.toString());
+      setViewportFeedback("Visual viewport updated.");
+    }).catch(() => {
+      replaceViewportPage(url, message);
     });
   };
   let pendingScrollDx = 0;
@@ -9662,7 +9763,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!scroll) {
       return false;
     }
-    replaceViewportPage(scroll.url, scrollMessage(scroll.dx, scroll.dy));
+    replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
   const queueViewportScroll = (dx, dy) => {
@@ -9736,7 +9837,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     event.preventDefault();
-    replaceViewportPage(new URL(target.href, window.location.href), "Moving visual viewport...");
+    replaceViewportPartial(new URL(target.href, window.location.href), "Moving visual viewport...");
   });
   const keyboardDelta = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) {
