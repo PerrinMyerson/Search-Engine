@@ -5525,7 +5525,14 @@ fn nearby_visual_region_text_context(
         .iter()
         .enumerate()
         .filter_map(|(command_index, command)| {
-            visual_text_context_candidate(render, viewport, &visual_bounds, command_index, command)
+            visual_text_context_candidate(
+                render,
+                viewport,
+                &visual_bounds,
+                command_index,
+                command,
+                false,
+            )
         })
         .min_by_key(|candidate| {
             (
@@ -5548,6 +5555,7 @@ fn visual_text_context_candidate(
     visual_bounds: &[DisplayCommandBounds],
     command_index: usize,
     command: &DisplayCommand,
+    include_visible_visual_text: bool,
 ) -> Option<VisualTextCandidate> {
     let text = display_command_text(command)?;
     let text = readable_display_text(text);
@@ -5559,9 +5567,6 @@ fn visual_text_context_candidate(
     let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
     let bounds =
         display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
-    if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
-        return None;
-    }
     let inside_visual = visual_bounds
         .iter()
         .any(|visual| bounds_inside_visual_region(bounds, *visual));
@@ -5571,6 +5576,11 @@ fn visual_text_context_candidate(
         .min();
     let near_visual = visual_distance
         .is_some_and(|distance| distance <= bounds_visual_region_search_rows(viewport));
+    if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
+        if !include_visible_visual_text || (!inside_visual && !near_visual) {
+            return None;
+        }
+    }
     let near_viewport = bounds_near_visual_viewport(bounds, viewport);
     if !inside_visual && !near_visual && !near_viewport {
         return None;
@@ -5604,6 +5614,7 @@ fn nearby_visual_region_text_context_lines(
                     visual_bounds,
                     command_index,
                     command,
+                    true,
                 )?;
                 bounds_near_selected_context(candidate.bounds, selected.bounds, viewport)
                     .then_some((candidate.bounds.y, candidate.bounds.x, candidate.text))
@@ -5614,7 +5625,7 @@ fn nearby_visual_region_text_context_lines(
     if lines.is_empty() {
         return vec![selected.text.clone()];
     }
-    lines.into_iter().take(2).map(|(_, _, text)| text).collect()
+    lines.into_iter().take(3).map(|(_, _, text)| text).collect()
 }
 
 fn display_command_text(command: &DisplayCommand) -> Option<&str> {

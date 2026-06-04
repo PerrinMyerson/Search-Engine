@@ -3164,6 +3164,119 @@ fn image_viewports_project_adjacent_caption_and_body_lines() {
 }
 
 #[test]
+fn visual_section_viewports_project_heading_caption_and_list_context() {
+    let render = BrowserRender {
+        source: "mem://visual-section-context".to_owned(),
+        title: String::new(),
+        viewport_width: 40,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default(); 4],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 16,
+                shade: 220,
+                alt: None,
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 9,
+                text: "Patient story headline".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 16,
+                text: "Outcome caption detail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 17,
+                text: "- Trial enrollment summary".to_owned(),
+            },
+        ],
+        text: "Patient story headline\nOutcome caption detail\n- Trial enrollment summary"
+            .to_owned(),
+    };
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 8,
+            width: 40,
+            height: 6,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains('@'));
+    assert!(
+        scrolled
+            .lines
+            .get(3)
+            .is_some_and(|line| line.contains("Patient story headline"))
+    );
+    assert!(
+        scrolled
+            .lines
+            .get(4)
+            .is_some_and(|line| line.contains("Outcome caption detail"))
+    );
+    assert!(
+        scrolled
+            .lines
+            .get(5)
+            .is_some_and(|line| line.contains("- Trial enrollment summary"))
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(8),
+        viewport_width: Some(40),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let raster =
+        rasterize_render(&render, raster_options).expect("rasterize visual section context");
+    for (row, text) in [
+        (3usize, "Patient story headline"),
+        (4usize, "Outcome caption detail"),
+        (5usize, "- Trial enrollment summary"),
+    ] {
+        let row_y = raster_options
+            .padding_y
+            .saturating_add(row.saturating_mul(raster_options.cell_height));
+        let row_end = row_y.saturating_add(raster_options.cell_height);
+        let col_end = raster_options
+            .padding_x
+            .saturating_add(text.len().saturating_mul(raster_options.cell_width));
+        let mut glyph_pixels = 0usize;
+        for y in row_y..row_end {
+            for x in raster_options.padding_x..col_end {
+                let index = y.saturating_mul(raster.width).saturating_add(x);
+                if raster.pixels.get(index).is_some_and(|pixel| *pixel == 0) {
+                    glyph_pixels = glyph_pixels.saturating_add(1);
+                }
+            }
+        }
+        assert!(glyph_pixels >= 8, "expected raster glyphs for {text}");
+    }
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
