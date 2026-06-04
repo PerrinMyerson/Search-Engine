@@ -3,10 +3,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::time::timeout;
 use url::{Url, form_urlencoded};
 
 use crate::browser::{
@@ -32,6 +33,10 @@ const DEFAULT_BULK_BACKGROUND_LINKS: usize = 16;
 const MAX_BULK_BACKGROUND_LINKS: usize = 80;
 const MAX_BROWSER_SESSION_RESOURCES: usize = 120;
 const BROWSER_PROFILE_ENV: &str = "BRUTAL_BROWSER_PROFILE";
+#[cfg(not(test))]
+const BROWSER_CREATE_TARGET_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(test)]
+const BROWSER_CREATE_TARGET_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub(super) struct BrowserSessionRegistry {
     next_id: AtomicU64,
@@ -1090,6 +1095,27 @@ impl BrowserRouteError {
             Self::Upstream(message) => text_response(502, "Bad Gateway", message),
         }
     }
+
+    fn browser_response(&self, target: &RequestTarget) -> HttpResponse {
+        match self {
+            Self::BadRequest(_) => self.response(),
+            Self::NotFound(message) => browser_route_error_response(
+                404,
+                "Not Found",
+                "Browser session unavailable",
+                message,
+                target,
+            ),
+            Self::Upstream(message) => {
+                let title = if message.contains("timed out") {
+                    "Browser page is still loading"
+                } else {
+                    "Browser page could not load"
+                };
+                browser_route_error_response(502, "Bad Gateway", title, message, target)
+            }
+        }
+    }
 }
 
 pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) -> HttpResponse {
@@ -1101,7 +1127,7 @@ pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) ->
                 render_browser_session_page(&payload, &back_href)
             })
         }
-        Err(error) => error.response(),
+        Err(error) => error.browser_response(target),
     }
 }
 
@@ -1109,6 +1135,137 @@ fn browser_session_target_wants_viewport_partial(target: &RequestTarget) -> bool
     target
         .param("partial")
         .is_some_and(|value| value.eq_ignore_ascii_case("viewport"))
+}
+
+fn browser_route_error_response(
+    status: u16,
+    reason: &'static str,
+    heading: &str,
+    message: &str,
+    target: &RequestTarget,
+) -> HttpResponse {
+    let back_href = sanitized_search_return_href(target.param("from").as_deref());
+    let target_url = target
+        .param("url")
+        .or_else(|| target.param("target"))
+        .unwrap_or_default();
+    let retry_href = browser_route_retry_href(target, &target_url);
+    let retry_control = retry_href.as_ref().map_or_else(
+        || r#"<span class="browser-error-disabled">No original URL to retry</span>"#.to_owned(),
+        |href| {
+            format!(
+                r#"<a class="primary-action" href="{href}">Retry page</a>"#,
+                href = html_escape::encode_double_quoted_attribute(href),
+            )
+        },
+    );
+    let address_value = if target_url.trim().is_empty() {
+        String::new()
+    } else {
+        normalize_browser_address_url(&target_url)
+    };
+    let missing_session = matches!(reason, "Not Found");
+    let status_label = if missing_session {
+        "session missing"
+    } else {
+        "page loading"
+    };
+    let body_copy = if missing_session {
+        "The browser server restarted or the tab expired. Start a new page or return to search."
+    } else {
+        "The first browser render did not finish quickly enough. The search page is still available, and you can retry this page when the site responds."
+    };
+    let missing_attr = if missing_session {
+        r#" data-browser-missing-session="true""#
+    } else {
+        ""
+    };
+    HttpResponse {
+        status,
+        reason,
+        content_type: "text/html; charset=utf-8",
+        body: format!(
+            r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{heading}</title>
+<style>
+:root {{ color-scheme: light; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+body {{ margin: 0; background: #f7f7f5; color: #191a1c; }}
+main {{ max-width: 960px; margin: 0 auto; padding: 18px; }}
+a {{ color: #123fae; text-decoration: none; font-weight: 800; }}
+a:hover {{ text-decoration: underline; }}
+.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 6px; margin: -18px -18px 18px; padding: 8px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; }}
+.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(220px, 1fr); gap: 8px; align-items: center; }}
+.toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; }}
+.toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 800; }}
+.toolbar span {{ color: #8a929d; background: #eef0f3; }}
+.toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
+.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.toolbar button, .primary-action {{ background: #2457d6 !important; border-color: #2457d6 !important; color: #fff !important; }}
+.browser-chrome-status {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; color: #5d636b; font-size: 12px; font-weight: 800; }}
+.viewport-state-chip {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; color: #3a3f45; font-size: 12px; font-weight: 800; }}
+.browser-error-card {{ border: 1px solid #d3d8df; border-radius: 8px; padding: 18px; background: #fff; box-shadow: 0 1px 2px rgba(25,26,28,0.06); }}
+.browser-error-card h1 {{ margin: 0 0 8px; font-size: 22px; letter-spacing: 0; }}
+.browser-error-card p {{ margin: 8px 0; color: #3a3f45; line-height: 1.45; }}
+.browser-error-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
+.browser-error-actions a, .browser-error-disabled {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 800; }}
+.browser-error-disabled {{ color: #8a929d; background: #eef0f3; }}
+.browser-error-detail {{ margin-top: 14px; }}
+.browser-error-detail summary {{ cursor: pointer; color: #5d636b; font-size: 12px; font-weight: 900; }}
+.browser-error-detail pre {{ white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #dfe2e6; border-radius: 6px; padding: 10px; background: #f7f7f5; color: #3a3f45; }}
+</style>
+</head>
+<body>
+<main data-browser-route-error{missing_attr}>
+<header class="browser-topbar">
+<div class="browser-chrome-row" data-browser-chrome>
+<nav class="toolbar browser-primary-nav" aria-label="Browser navigation"><span>Back</span><span>Forward</span><span>Reload</span></nav>
+<form class="toolbar address-bar" method="get" action="/browser"><input data-browser-address type="text" name="url" value="{address_value}" aria-label="Address"><input type="hidden" name="from" value="{back_href}"><button type="submit">Go</button></form>
+</div>
+<div class="browser-chrome-status" data-browser-chrome-status><span class="viewport-state-chip">{status_label}</span><span class="viewport-state-chip">shell ready</span></div>
+</header>
+<section class="browser-error-card" aria-live="polite">
+<h1>{heading}</h1>
+<p>{body_copy}</p>
+<div class="browser-error-actions">{retry_control}<a href="{back_href}">Back to search</a><a href="/search">Search home</a></div>
+<details class="browser-error-detail"><summary>Details</summary><pre>{message}</pre></details>
+</section>
+</main>
+</body>
+</html>"#,
+            heading = html_escape::encode_text(heading),
+            missing_attr = missing_attr,
+            status_label = html_escape::encode_text(status_label),
+            address_value = html_escape::encode_double_quoted_attribute(&address_value),
+            back_href = html_escape::encode_double_quoted_attribute(&back_href),
+            body_copy = html_escape::encode_text(body_copy),
+            retry_control = retry_control,
+            message = html_escape::encode_text(message),
+        ),
+    }
+}
+
+fn browser_route_retry_href(target: &RequestTarget, target_url: &str) -> Option<String> {
+    let clean_target = target_url.trim();
+    if clean_target.is_empty() {
+        return None;
+    }
+    let normalized = normalize_browser_address_url(clean_target);
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("url", &normalized);
+    query.append_pair(
+        "from",
+        &sanitized_search_return_href(target.param("from").as_deref()),
+    );
+    for key in ["width", "height", "viewport_x", "viewport_y", "max_bytes"] {
+        if let Some(value) = target.param(key) {
+            query.append_pair(key, &value);
+        }
+    }
+    Some(format!("/browser?{}", query.finish()))
 }
 
 pub(super) async fn api_browser_session(
@@ -1218,11 +1375,20 @@ impl BrowserSessionRegistry {
         let has_explicit_viewport_y =
             target.param("y").is_some() || target.param("viewport_y").is_some();
         let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
-        session.navigate(&target_url).await.map_err(|error| {
-            BrowserRouteError::Upstream(format!(
-                "browser render failed for {target_url}: {error:#}"
-            ))
-        })?;
+        match timeout(BROWSER_CREATE_TARGET_TIMEOUT, session.navigate(&target_url)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                return Err(BrowserRouteError::Upstream(format!(
+                    "browser render failed for {target_url}: {error:#}"
+                )));
+            }
+            Err(_) => {
+                return Err(BrowserRouteError::Upstream(format!(
+                    "browser render timed out after {}ms while opening {target_url}",
+                    BROWSER_CREATE_TARGET_TIMEOUT.as_millis()
+                )));
+            }
+        }
 
         let id = self.next_session_id();
         let mut web_session = BrowserWebSession {
