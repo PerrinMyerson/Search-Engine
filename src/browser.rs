@@ -12884,10 +12884,16 @@ fn parse_css_border_width(value: &str) -> Option<usize> {
 }
 
 fn parse_css_color_shade(value: &str) -> Option<u8> {
+    if let Some((red, green, blue)) = parse_css_rgb_function(value) {
+        return Some(rgb_to_luma(red, green, blue));
+    }
     for token in value.split_ascii_whitespace() {
         let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
         if token.eq_ignore_ascii_case("transparent") {
             return None;
+        }
+        if let Some((red, green, blue)) = parse_css_rgb_function(token) {
+            return Some(rgb_to_luma(red, green, blue));
         }
         if let Some(shade) = parse_hex_color_shade(token) {
             return Some(shade);
@@ -12905,6 +12911,32 @@ fn parse_css_color_shade(value: &str) -> Option<u8> {
         }
     }
     None
+}
+
+fn parse_css_rgb_function(value: &str) -> Option<(u8, u8, u8)> {
+    let args = css_first_function_arguments(value, &["rgb", "rgba"])?;
+    let args = args.split('/').next().unwrap_or(args);
+    let normalized = args.replace(',', " ");
+    let mut components = normalized.split_ascii_whitespace();
+    let red = parse_css_rgb_component(components.next()?)?;
+    let green = parse_css_rgb_component(components.next()?)?;
+    let blue = parse_css_rgb_component(components.next()?)?;
+    Some((red, green, blue))
+}
+
+fn parse_css_rgb_component(value: &str) -> Option<u8> {
+    let value = value.trim();
+    if let Some(percent) = value.strip_suffix('%') {
+        let percent = percent.parse::<f32>().ok()?.clamp(0.0, 100.0);
+        return Some(((percent * 255.0 / 100.0).round() as u16).min(u8::MAX as u16) as u8);
+    }
+    Some(
+        value
+            .parse::<f32>()
+            .ok()?
+            .round()
+            .clamp(0.0, u8::MAX as f32) as u8,
+    )
 }
 
 fn parse_css_image_url(value: &str) -> Option<String> {
