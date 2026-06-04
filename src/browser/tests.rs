@@ -2517,6 +2517,63 @@ async fn session_render_images_decodes_css_background_image_resource() {
 }
 
 #[tokio::test]
+async fn image_raster_fidelity_decodes_indexed_png_resource_pixels() {
+    let png_bytes = tiny_test_indexed_png_with_transparency();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.pixels, vec![255, 255, 77, 29]);
+    let expected_hash = decoded.pixel_hash();
+
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("icon.png");
+    fs::write(&icon, png_bytes).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><img src="icon.png" alt="Indexed PNG" width="16" height="16"><p>After</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.resolved, icon.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
@@ -3430,6 +3487,13 @@ fn tiny_test_png_rgb_with_sub_filter() -> Vec<u8> {
     encode_test_png(2, 2, 2, &filtered_scanlines)
 }
 
+fn tiny_test_indexed_png_with_transparency() -> Vec<u8> {
+    let filtered_scanlines = [0, 0, 1, 0, 2, 3];
+    let palette = [0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 255];
+    let transparency = [0];
+    encode_test_indexed_png(2, 2, &filtered_scanlines, &palette, &transparency)
+}
+
 fn encode_test_png(width: u32, height: u32, color_type: u8, filtered_scanlines: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
 
@@ -3448,6 +3512,37 @@ fn encode_test_png(width: u32, height: u32, color_type: u8, filtered_scanlines: 
 
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     push_test_png_chunk(&mut png, b"IHDR", &ihdr);
+    push_test_png_chunk(&mut png, b"IDAT", &idat);
+    push_test_png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn encode_test_indexed_png(
+    width: u32,
+    height: u32,
+    filtered_scanlines: &[u8],
+    palette: &[u8],
+    transparency: &[u8],
+) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(filtered_scanlines).unwrap();
+    let idat = encoder.finish().unwrap();
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.push(8);
+    ihdr.push(3);
+    ihdr.push(0);
+    ihdr.push(0);
+    ihdr.push(0);
+
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    push_test_png_chunk(&mut png, b"IHDR", &ihdr);
+    push_test_png_chunk(&mut png, b"PLTE", palette);
+    push_test_png_chunk(&mut png, b"tRNS", transparency);
     push_test_png_chunk(&mut png, b"IDAT", &idat);
     push_test_png_chunk(&mut png, b"IEND", &[]);
     png
