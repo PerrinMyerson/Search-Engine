@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -456,6 +457,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut polygons = Vec::new();
     let mut polylines = Vec::new();
     let mut paths = Vec::new();
+    let mut transform_stack = vec![Some(SvgTransform::identity())];
 
     while cursor < bytes.len() {
         let Some(offset) = memchr(b'<', &bytes[cursor..]) else {
@@ -467,48 +469,72 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         };
         let tag_end = tag_start + 1 + tag_end_offset;
         let raw_tag = &bytes[tag_start + 1..tag_end];
-        if let Some(tag) = parse_tag(raw_tag)
-            && tag.kind == TagKind::Opening
-        {
-            let attrs = parse_attributes(raw_tag);
-            match tag.name.as_str() {
-                "svg" => {
-                    width = attrs
-                        .get("width")
-                        .and_then(|value| parse_svg_pixel_dimension(value))
-                        .or(width);
-                    height = attrs
-                        .get("height")
-                        .and_then(|value| parse_svg_pixel_dimension(value))
-                        .or(height);
-                    if (width.is_none() || height.is_none())
-                        && let Some((view_box_width, view_box_height)) = attrs
-                            .get("viewbox")
-                            .and_then(|value| parse_svg_viewbox_dimensions(value))
-                    {
-                        width = width.or(Some(view_box_width));
-                        height = height.or(Some(view_box_height));
+        if let Some(tag) = parse_tag(raw_tag) {
+            match tag.kind {
+                TagKind::Opening => {
+                    let attrs = parse_attributes(raw_tag);
+                    match tag.name.as_str() {
+                        "svg" => {
+                            width = attrs
+                                .get("width")
+                                .and_then(|value| parse_svg_pixel_dimension(value))
+                                .or(width);
+                            height = attrs
+                                .get("height")
+                                .and_then(|value| parse_svg_pixel_dimension(value))
+                                .or(height);
+                            if (width.is_none() || height.is_none())
+                                && let Some((view_box_width, view_box_height)) = attrs
+                                    .get("viewbox")
+                                    .and_then(|value| parse_svg_viewbox_dimensions(value))
+                            {
+                                width = width.or(Some(view_box_width));
+                                height = height.or(Some(view_box_height));
+                            }
+                        }
+                        "g" => {
+                            if !tag.self_closing {
+                                transform_stack.push(svg_child_transform(&transform_stack, &attrs));
+                            }
+                        }
+                        "rect" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                rects.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        "circle" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                circles.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        "ellipse" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                ellipses.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        "polygon" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                polygons.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        "polyline" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                polylines.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        "path" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                paths.push(SvgShapeAttrs { attrs, transform });
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                "rect" => {
-                    rects.push(attrs);
+                TagKind::Closing => {
+                    if tag.name == "g" && transform_stack.len() > 1 {
+                        transform_stack.pop();
+                    }
                 }
-                "circle" => {
-                    circles.push(attrs);
-                }
-                "ellipse" => {
-                    ellipses.push(attrs);
-                }
-                "polygon" => {
-                    polygons.push(attrs);
-                }
-                "polyline" => {
-                    polylines.push(attrs);
-                }
-                "path" => {
-                    paths.push(attrs);
-                }
-                _ => {}
             }
         }
         cursor = tag_end + 1;
@@ -517,33 +543,40 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let width = width?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let height = height?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut pixels = vec![255u8; width.checked_mul(height)?];
-    for rect in rects {
+    for rect_shape in rects {
+        let rect = &rect_shape.attrs;
         let Some(fill) = svg_shape_fill_shade(&rect) else {
             continue;
         };
-        let x = rect
-            .get("x")
-            .and_then(|value| parse_svg_pixel_dimension(value))
-            .unwrap_or(0)
-            .min(width);
-        let y = rect
-            .get("y")
-            .and_then(|value| parse_svg_pixel_dimension(value))
-            .unwrap_or(0)
-            .min(height);
-        let rect_width = rect
-            .get("width")
-            .and_then(|value| parse_svg_pixel_dimension(value))
-            .unwrap_or(width.saturating_sub(x))
-            .min(width.saturating_sub(x));
-        let rect_height = rect
-            .get("height")
-            .and_then(|value| parse_svg_pixel_dimension(value))
-            .unwrap_or(height.saturating_sub(y))
-            .min(height.saturating_sub(y));
-        fill_decoded_rect(&mut pixels, width, x, y, rect_width, rect_height, fill);
+        if rect_shape.transform.is_identity() {
+            let x = rect
+                .get("x")
+                .and_then(|value| parse_svg_pixel_dimension(value))
+                .unwrap_or(0)
+                .min(width);
+            let y = rect
+                .get("y")
+                .and_then(|value| parse_svg_pixel_dimension(value))
+                .unwrap_or(0)
+                .min(height);
+            let rect_width = rect
+                .get("width")
+                .and_then(|value| parse_svg_pixel_dimension(value))
+                .unwrap_or(width.saturating_sub(x))
+                .min(width.saturating_sub(x));
+            let rect_height = rect
+                .get("height")
+                .and_then(|value| parse_svg_pixel_dimension(value))
+                .unwrap_or(height.saturating_sub(y))
+                .min(height.saturating_sub(y));
+            fill_decoded_rect(&mut pixels, width, x, y, rect_width, rect_height, fill);
+        } else if let Some(points) = svg_rect_points(rect, width, height) {
+            let points = transform_svg_points(&points, rect_shape.transform);
+            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        }
     }
-    for circle in circles {
+    for circle_shape in circles {
+        let circle = &circle_shape.attrs;
         let Some(fill) = svg_shape_fill_shade(&circle) else {
             continue;
         };
@@ -556,20 +589,22 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         let Some(radius) = circle.get("r").and_then(|value| parse_svg_number(value)) else {
             continue;
         };
-        fill_decoded_ellipse(
-            &mut pixels,
-            width,
-            height,
-            SvgEllipse {
-                cx,
-                cy,
-                rx: radius,
-                ry: radius,
-            },
-            fill,
-        );
+        let ellipse = SvgEllipse {
+            cx,
+            cy,
+            rx: radius,
+            ry: radius,
+        };
+        if circle_shape.transform.is_identity() {
+            fill_decoded_ellipse(&mut pixels, width, height, ellipse, fill);
+        } else {
+            let points =
+                transform_svg_points(&svg_ellipse_points(ellipse, 24), circle_shape.transform);
+            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        }
     }
-    for ellipse in ellipses {
+    for ellipse_shape in ellipses {
+        let ellipse = &ellipse_shape.attrs;
         let Some(fill) = svg_shape_fill_shade(&ellipse) else {
             continue;
         };
@@ -585,15 +620,17 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         let Some(ry) = ellipse.get("ry").and_then(|value| parse_svg_number(value)) else {
             continue;
         };
-        fill_decoded_ellipse(
-            &mut pixels,
-            width,
-            height,
-            SvgEllipse { cx, cy, rx, ry },
-            fill,
-        );
+        let ellipse = SvgEllipse { cx, cy, rx, ry };
+        if ellipse_shape.transform.is_identity() {
+            fill_decoded_ellipse(&mut pixels, width, height, ellipse, fill);
+        } else {
+            let points =
+                transform_svg_points(&svg_ellipse_points(ellipse, 24), ellipse_shape.transform);
+            fill_decoded_polygon(&mut pixels, width, height, &points, fill);
+        }
     }
-    for polygon in polygons {
+    for polygon_shape in polygons {
+        let polygon = &polygon_shape.attrs;
         let Some(fill) = svg_shape_fill_shade(&polygon) else {
             continue;
         };
@@ -603,31 +640,38 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         else {
             continue;
         };
+        let points = transform_svg_points(&points, polygon_shape.transform);
         fill_decoded_polygon(&mut pixels, width, height, &points, fill);
     }
-    for polyline in polylines {
+    for polyline_shape in polylines {
+        let polyline = &polyline_shape.attrs;
         let Some(points) = polyline
             .get("points")
             .and_then(|value| parse_svg_points(value))
         else {
             continue;
         };
+        let points = transform_svg_points(&points, polyline_shape.transform);
         if let Some(fill) = svg_shape_fill_shade(&polyline) {
             fill_decoded_polygon(&mut pixels, width, height, &points, fill);
         }
         if let Some(stroke) = svg_shape_stroke_shade(&polyline) {
-            draw_decoded_polyline(&mut pixels, width, height, &points, stroke);
+            let stroke_width = svg_shape_stroke_width(polyline, polyline_shape.transform);
+            draw_decoded_polyline(&mut pixels, width, height, &points, stroke, stroke_width);
         }
     }
-    for path in paths {
+    for path_shape in paths {
+        let path = &path_shape.attrs;
         let Some(points) = path.get("d").and_then(|value| parse_simple_svg_path(value)) else {
             continue;
         };
+        let points = transform_svg_points(&points, path_shape.transform);
         if let Some(fill) = svg_shape_fill_shade(&path) {
             fill_decoded_polygon(&mut pixels, width, height, &points, fill);
         }
         if let Some(stroke) = svg_shape_stroke_shade(&path) {
-            draw_decoded_polyline(&mut pixels, width, height, &points, stroke);
+            let stroke_width = svg_shape_stroke_width(path, path_shape.transform);
+            draw_decoded_polyline(&mut pixels, width, height, &points, stroke, stroke_width);
         }
     }
 
@@ -1313,18 +1357,167 @@ fn parse_svg_viewbox_dimensions(value: &str) -> Option<(usize, usize)> {
     ))
 }
 
-fn svg_shape_fill_shade(attrs: &std::collections::HashMap<String, String>) -> Option<u8> {
+#[derive(Debug, Clone)]
+struct SvgShapeAttrs {
+    attrs: HashMap<String, String>,
+    transform: SvgTransform,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SvgTransform {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    e: f32,
+    f: f32,
+}
+
+impl SvgTransform {
+    fn identity() -> Self {
+        Self {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    fn translate(tx: f32, ty: f32) -> Self {
+        Self {
+            e: tx,
+            f: ty,
+            ..Self::identity()
+        }
+    }
+
+    fn scale(sx: f32, sy: f32) -> Self {
+        Self {
+            a: sx,
+            d: sy,
+            ..Self::identity()
+        }
+    }
+
+    fn matrix(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
+        Self { a, b, c, d, e, f }
+    }
+
+    fn multiply(self, other: Self) -> Self {
+        Self {
+            a: self.a.mul_add(other.a, self.c * other.b),
+            b: self.b.mul_add(other.a, self.d * other.b),
+            c: self.a.mul_add(other.c, self.c * other.d),
+            d: self.b.mul_add(other.c, self.d * other.d),
+            e: self.a.mul_add(other.e, self.c.mul_add(other.f, self.e)),
+            f: self.b.mul_add(other.e, self.d.mul_add(other.f, self.f)),
+        }
+    }
+
+    fn apply(self, point: SvgPoint) -> SvgPoint {
+        SvgPoint {
+            x: self.a.mul_add(point.x, self.c.mul_add(point.y, self.e)),
+            y: self.b.mul_add(point.x, self.d.mul_add(point.y, self.f)),
+        }
+    }
+
+    fn is_identity(self) -> bool {
+        const EPSILON: f32 = 0.0001;
+        (self.a - 1.0).abs() <= EPSILON
+            && self.b.abs() <= EPSILON
+            && self.c.abs() <= EPSILON
+            && (self.d - 1.0).abs() <= EPSILON
+            && self.e.abs() <= EPSILON
+            && self.f.abs() <= EPSILON
+    }
+
+    fn stroke_scale(self) -> f32 {
+        let x_scale = self.a.hypot(self.b);
+        let y_scale = self.c.hypot(self.d);
+        x_scale.max(y_scale).max(1.0)
+    }
+}
+
+fn svg_child_transform(
+    stack: &[Option<SvgTransform>],
+    attrs: &HashMap<String, String>,
+) -> Option<SvgTransform> {
+    let parent = stack.last().copied().flatten()?;
+    let local = attrs
+        .get("transform")
+        .map(|value| parse_svg_transform(value))
+        .unwrap_or(Some(SvgTransform::identity()))?;
+    Some(parent.multiply(local))
+}
+
+fn parse_svg_transform(value: &str) -> Option<SvgTransform> {
+    let mut cursor = 0usize;
+    let mut transform = SvgTransform::identity();
+    while cursor < value.len() {
+        cursor = skip_svg_number_delimiters(value, cursor);
+        if cursor >= value.len() {
+            break;
+        }
+        let name_start = cursor;
+        while value
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'-')
+        {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            return None;
+        }
+        let name = &value[name_start..cursor];
+        while value
+            .as_bytes()
+            .get(cursor)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            cursor += 1;
+        }
+        if value.as_bytes().get(cursor) != Some(&b'(') {
+            return None;
+        }
+        cursor += 1;
+        let args_start = cursor;
+        let args_end = value[cursor..].find(')')?.saturating_add(cursor);
+        let args = parse_svg_number_list(&value[args_start..args_end]).unwrap_or_default();
+        let local = match name.to_ascii_lowercase().as_str() {
+            "translate" => match args.as_slice() {
+                [tx] => SvgTransform::translate(*tx, 0.0),
+                [tx, ty] => SvgTransform::translate(*tx, *ty),
+                _ => return None,
+            },
+            "scale" => match args.as_slice() {
+                [scale] => SvgTransform::scale(*scale, *scale),
+                [sx, sy] => SvgTransform::scale(*sx, *sy),
+                _ => return None,
+            },
+            "matrix" => match args.as_slice() {
+                [a, b, c, d, e, f] => SvgTransform::matrix(*a, *b, *c, *d, *e, *f),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        transform = transform.multiply(local);
+        cursor = args_end + 1;
+    }
+    Some(transform)
+}
+
+fn svg_shape_fill_shade(attrs: &HashMap<String, String>) -> Option<u8> {
     svg_shape_paint_shade(attrs, "fill")
 }
 
-fn svg_shape_stroke_shade(attrs: &std::collections::HashMap<String, String>) -> Option<u8> {
+fn svg_shape_stroke_shade(attrs: &HashMap<String, String>) -> Option<u8> {
     svg_shape_paint_shade(attrs, "stroke")
 }
 
-fn svg_shape_paint_shade(
-    attrs: &std::collections::HashMap<String, String>,
-    property: &str,
-) -> Option<u8> {
+fn svg_shape_paint_shade(attrs: &HashMap<String, String>, property: &str) -> Option<u8> {
     attrs
         .get(property)
         .and_then(|value| {
@@ -1347,6 +1540,25 @@ fn svg_style_paint_shade(style: &str, property: &str) -> Option<u8> {
                     .then(|| parse_css_color_shade(value))
                     .flatten()
             })
+            .flatten()
+    })
+}
+
+fn svg_shape_stroke_width(attrs: &HashMap<String, String>, transform: SvgTransform) -> usize {
+    let width = attrs
+        .get("stroke-width")
+        .and_then(|value| parse_svg_number(value))
+        .or_else(|| svg_style_number(attrs.get("style")?, "stroke-width"))
+        .unwrap_or(1.0);
+    (width * transform.stroke_scale()).ceil().max(1.0).min(64.0) as usize
+}
+
+fn svg_style_number(style: &str, property: &str) -> Option<f32> {
+    style.split(';').find_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(property)
+            .then(|| parse_svg_number(value))
             .flatten()
     })
 }
@@ -1603,6 +1815,65 @@ fn fill_decoded_rect(
     }
 }
 
+fn svg_rect_points(
+    rect: &HashMap<String, String>,
+    image_width: usize,
+    image_height: usize,
+) -> Option<Vec<SvgPoint>> {
+    let x = rect
+        .get("x")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let y = rect
+        .get("y")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let width = rect
+        .get("width")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or((image_width as f32 - x).max(0.0));
+    let height = rect
+        .get("height")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or((image_height as f32 - y).max(0.0));
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(vec![
+        SvgPoint { x, y },
+        SvgPoint { x: x + width, y },
+        SvgPoint {
+            x: x + width,
+            y: y + height,
+        },
+        SvgPoint { x, y: y + height },
+    ])
+}
+
+fn svg_ellipse_points(ellipse: SvgEllipse, segments: usize) -> Vec<SvgPoint> {
+    let segments = segments.max(8);
+    (0..segments)
+        .map(|index| {
+            let angle = std::f32::consts::TAU * index as f32 / segments as f32;
+            SvgPoint {
+                x: ellipse.cx + ellipse.rx * angle.cos(),
+                y: ellipse.cy + ellipse.ry * angle.sin(),
+            }
+        })
+        .collect()
+}
+
+fn transform_svg_points(points: &[SvgPoint], transform: SvgTransform) -> Vec<SvgPoint> {
+    if transform.is_identity() {
+        return points.to_vec();
+    }
+    points
+        .iter()
+        .copied()
+        .map(|point| transform.apply(point))
+        .collect()
+}
+
 fn fill_decoded_polygon(
     pixels: &mut [u8],
     image_width: usize,
@@ -1672,7 +1943,9 @@ fn draw_decoded_polyline(
     image_height: usize,
     points: &[SvgPoint],
     value: u8,
+    stroke_width: usize,
 ) {
+    let stroke_width = stroke_width.max(1);
     for segment in points.windows(2) {
         let start = segment[0];
         let end = segment[1];
@@ -1693,7 +1966,29 @@ fn draw_decoded_polyline(
             if x >= image_width || y >= image_height {
                 continue;
             }
-            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
+            set_decoded_stroke_pixel(pixels, image_width, image_height, x, y, stroke_width, value);
+        }
+    }
+}
+
+fn set_decoded_stroke_pixel(
+    pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    x: usize,
+    y: usize,
+    stroke_width: usize,
+    value: u8,
+) {
+    let radius = stroke_width.saturating_sub(1) / 2;
+    let start_x = x.saturating_sub(radius);
+    let end_x = x.saturating_add(radius).min(image_width.saturating_sub(1));
+    let start_y = y.saturating_sub(radius);
+    let end_y = y.saturating_add(radius).min(image_height.saturating_sub(1));
+    for row in start_y..=end_y {
+        for column in start_x..=end_x {
+            let Some(pixel) =
+                pixels.get_mut(row.saturating_mul(image_width).saturating_add(column))
             else {
                 continue;
             };
