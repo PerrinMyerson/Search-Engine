@@ -1385,6 +1385,7 @@ struct ComputedStyle {
     position_right: Option<CssPositionOffset>,
     transform_translate: CssTranslate,
     z_index: i32,
+    z_index_specified: bool,
     white_space: Option<WhiteSpace>,
     text_transform: Option<TextTransform>,
     letter_spacing: Option<usize>,
@@ -5447,9 +5448,32 @@ pub fn rasterize_render_rgba(
                     );
                 }
             }
-            DisplayCommand::Text { .. }
-            | DisplayCommand::StyledText { .. }
-            | DisplayCommand::Rect { .. } => {}
+            DisplayCommand::Rect { shade, .. } => {
+                let rect_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let rect_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
+                fill_rgba_rect(
+                    &mut rgba.pixels,
+                    rgba.width,
+                    rect_x,
+                    rect_y,
+                    rect_width,
+                    rect_height,
+                    [*shade, *shade, *shade, 255],
+                );
+            }
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
         }
     }
     for (command_index, command) in render.display_list.iter().enumerate() {
@@ -6715,6 +6739,22 @@ fn fill_raster_rect(
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
             set_raster_pixel(pixels, raster_width, column, row, value);
+        }
+    }
+}
+
+fn fill_rgba_rect(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    value: [u8; 4],
+) {
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            set_rgba_pixel(pixels, raster_width, column, row, value);
         }
     }
 }
@@ -14546,7 +14586,8 @@ fn render_node(
             if let Some(sticky_top) = viewport_sticky_top_entered {
                 renderer.enter_viewport_sticky(sticky_top);
             }
-            let positive_z_layer_entered = style.position != Position::Static && style.z_index != 0;
+            let positive_z_layer_entered =
+                style.position != Position::Static && style.z_index_specified;
             if positive_z_layer_entered {
                 renderer.enter_positive_z_layer(style.z_index);
             }
@@ -15473,6 +15514,7 @@ fn computed_style(
             position_right: None,
             transform_translate: CssTranslate::default(),
             z_index: 0,
+            z_index_specified: false,
             white_space: None,
             text_transform: None,
             letter_spacing: None,
@@ -15519,6 +15561,7 @@ fn computed_style(
     let mut position_right = None;
     let mut transform_translate = CssTranslate::default();
     let mut z_index = 0i32;
+    let mut z_index_specified = false;
     let mut white_space = (element.tag == "pre").then_some(WhiteSpace::Pre);
     let mut text_transform = None;
     let mut letter_spacing = None;
@@ -15713,6 +15756,7 @@ fn computed_style(
                 && rule_specificity >= z_index_specificity
             {
                 z_index = rule_z_index;
+                z_index_specified = true;
                 z_index_specificity = rule_specificity;
             }
             if let Some(rule_white_space) = rule.declarations.white_space
@@ -15924,6 +15968,7 @@ fn computed_style(
         }
         if let Some(inline_z_index) = inline.z_index {
             z_index = inline_z_index;
+            z_index_specified = true;
         }
         if let Some(inline_white_space) = inline.white_space {
             white_space = Some(inline_white_space);
@@ -16024,6 +16069,7 @@ fn computed_style(
         position_right,
         transform_translate,
         z_index,
+        z_index_specified,
         white_space,
         text_transform,
         letter_spacing,
@@ -18448,7 +18494,7 @@ impl FlowRenderer {
         display_list.append(&mut self.display_list);
         hit_targets.append(&mut self.display_targets);
         for layer in &mut self.positive_z_layers {
-            if layer.z_index > 0 {
+            if layer.z_index >= 0 {
                 append_paint_layer_commands(&mut display_list, &mut hit_targets, layer);
             }
         }
