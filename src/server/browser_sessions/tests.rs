@@ -2700,6 +2700,93 @@ async fn browser_session_registry_scrolls_text_viewport_horizontally() {
     };
     let (payload, _) = registry.apply_target(&scroll_left).await.unwrap();
     assert_eq!(payload.viewport_x, 0);
+
+    let overshoot_jump = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "current".to_owned()),
+            ("x".to_owned(), "9999".to_owned()),
+            ("y".to_owned(), "9999".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&overshoot_jump).await.unwrap();
+    assert_eq!(payload.viewport_x, payload.max_scroll_x);
+    assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    let expected_moved_feedback = format!(
+        "Viewport moved to x {}, y {}.",
+        payload.max_scroll_x, payload.max_scroll_y
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_moved_feedback.as_str())
+    );
+    let current_summary = payload
+        .sessions
+        .iter()
+        .find(|session| session.id == payload.id)
+        .unwrap();
+    assert!(current_summary.current);
+    assert!(
+        current_summary
+            .action_url
+            .contains(&format!("viewport_x={}", payload.max_scroll_x))
+    );
+    assert!(
+        current_summary
+            .action_url
+            .contains(&format!("viewport_y={}", payload.max_scroll_y))
+    );
+    assert!(
+        current_summary
+            .reload_url
+            .contains(&format!("viewport_x={}", payload.max_scroll_x))
+    );
+    assert!(
+        current_summary
+            .reload_url
+            .contains(&format!("viewport_y={}", payload.max_scroll_y))
+    );
+    assert!(!current_summary.action_url.contains("9999"));
+    assert!(!current_summary.reload_url.contains("9999"));
+
+    let same_jump = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "current".to_owned()),
+            ("x".to_owned(), payload.viewport_x.to_string()),
+            ("y".to_owned(), payload.viewport_y.to_string()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&same_jump).await.unwrap();
+    assert_eq!(payload.viewport_x, payload.max_scroll_x);
+    assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Viewport is already at that position.")
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains("Viewport is already at that position."));
+
+    let line_down_noop = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "line-down".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&line_down_noop).await.unwrap();
+    assert_eq!(payload.viewport_x, payload.max_scroll_x);
+    assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Already at bottom.")
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains("Already at bottom."));
 }
 
 #[tokio::test]

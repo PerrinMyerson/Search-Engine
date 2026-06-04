@@ -1396,6 +1396,8 @@ impl BrowserSessionRegistry {
         let should_record_profile_visit = browser_action_records_profile_visit(&action);
         let should_record_profile_tabs = browser_action_records_profile_tabs(&action);
         let notifies_in_flight_waiters = browser_action_marks_session_in_flight(&action);
+        let current_viewport_jump_requested = matches!(action, BrowserSessionAction::Current)
+            && browser_session_target_has_viewport_position(target);
 
         let mut web_session = self
             .take_session_for_action(&id, notifies_in_flight_waiters)
@@ -1408,10 +1410,23 @@ impl BrowserSessionRegistry {
         web_session.max_bytes =
             parse_optional_usize_param(target, "max_bytes", 64 * 1024, 16 * 1024 * 1024)
                 .unwrap_or(web_session.max_bytes);
+        if current_viewport_jump_requested {
+            normalize_browser_session_viewport(&mut web_session);
+        }
+        let previous_viewport_x = web_session.viewport_x;
+        let previous_viewport_y = web_session.viewport_y;
         web_session.viewport_x =
             browser_session_target_viewport_x(target, &action).unwrap_or(web_session.viewport_x);
         web_session.viewport_y =
             browser_session_target_viewport_y(target, &action).unwrap_or(web_session.viewport_y);
+        if current_viewport_jump_requested {
+            normalize_browser_session_viewport(&mut web_session);
+            set_browser_viewport_jump_feedback(
+                &mut web_session,
+                previous_viewport_x,
+                previous_viewport_y,
+            );
+        }
         if let Some(return_href) = target.param("from") {
             web_session.back_href = sanitized_search_return_href(Some(&return_href));
         }
@@ -5657,6 +5672,13 @@ fn browser_session_target_viewport_y(
     })
 }
 
+fn browser_session_target_has_viewport_position(target: &RequestTarget) -> bool {
+    target.param("x").is_some()
+        || target.param("y").is_some()
+        || target.param("viewport_x").is_some()
+        || target.param("viewport_y").is_some()
+}
+
 fn browser_session_action_allows_xy_viewport_alias(action: &BrowserSessionAction) -> bool {
     !matches!(action, BrowserSessionAction::ClickAt { .. })
 }
@@ -6073,37 +6095,64 @@ async fn apply_browser_action(
             ));
         }
         BrowserSessionAction::Scroll { dx, dy } => {
+            let before_x = web_session.viewport_x;
+            let before_y = web_session.viewport_y;
             web_session.viewport_x = apply_scroll_delta(web_session.viewport_x, dx);
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, dy);
             normalize_browser_session_viewport(web_session);
+            set_browser_scroll_noop_feedback(web_session, before_x, before_y, dx, dy);
         }
         BrowserSessionAction::Top => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y = 0;
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at top.".to_owned());
+            }
         }
         BrowserSessionAction::Bottom => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y = usize::MAX;
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at bottom.".to_owned());
+            }
         }
         BrowserSessionAction::PageUp => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y = apply_scroll_delta(
                 web_session.viewport_y,
                 -(web_session.height.max(1) as isize),
             );
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at top.".to_owned());
+            }
         }
         BrowserSessionAction::PageDown => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y =
                 apply_scroll_delta(web_session.viewport_y, web_session.height.max(1) as isize);
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at bottom.".to_owned());
+            }
         }
         BrowserSessionAction::LineUp => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, -1);
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at top.".to_owned());
+            }
         }
         BrowserSessionAction::LineDown => {
+            let before_y = web_session.viewport_y;
             web_session.viewport_y = apply_scroll_delta(web_session.viewport_y, 1);
             normalize_browser_session_viewport(web_session);
+            if web_session.viewport_y == before_y {
+                web_session.action_feedback = Some("Already at bottom.".to_owned());
+            }
         }
         BrowserSessionAction::Fill {
             form_index,
@@ -8019,6 +8068,13 @@ fn browser_session_payload(
     id: &str,
     web_session: &mut BrowserWebSession,
 ) -> Result<BrowserSessionPayload, BrowserRouteError> {
+    if web_session.session.current().is_none() {
+        return Err(BrowserRouteError::BadRequest(
+            "browser session has no current page".to_owned(),
+        ));
+    }
+    normalize_browser_session_viewport(web_session);
+
     let payload = {
         let render = web_session.session.current().ok_or_else(|| {
             BrowserRouteError::BadRequest("browser session has no current page".to_owned())
@@ -13793,6 +13849,45 @@ fn apply_scroll_delta(current: usize, delta: isize) -> usize {
         current.saturating_sub(delta.unsigned_abs())
     } else {
         current.saturating_add(delta as usize)
+    }
+}
+
+fn set_browser_scroll_noop_feedback(
+    web_session: &mut BrowserWebSession,
+    before_x: usize,
+    before_y: usize,
+    dx: isize,
+    dy: isize,
+) {
+    if web_session.viewport_x != before_x || web_session.viewport_y != before_y {
+        return;
+    }
+    let message = if dx < 0 {
+        "Already at left edge."
+    } else if dx > 0 {
+        "Already at right edge."
+    } else if dy < 0 {
+        "Already at top."
+    } else if dy > 0 {
+        "Already at bottom."
+    } else {
+        "Viewport is already at that position."
+    };
+    web_session.action_feedback = Some(message.to_owned());
+}
+
+fn set_browser_viewport_jump_feedback(
+    web_session: &mut BrowserWebSession,
+    before_x: usize,
+    before_y: usize,
+) {
+    if web_session.viewport_x == before_x && web_session.viewport_y == before_y {
+        web_session.action_feedback = Some("Viewport is already at that position.".to_owned());
+    } else {
+        web_session.action_feedback = Some(format!(
+            "Viewport moved to x {}, y {}.",
+            web_session.viewport_x, web_session.viewport_y
+        ));
     }
 }
 
