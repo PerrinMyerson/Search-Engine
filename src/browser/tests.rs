@@ -1,4 +1,6 @@
-use super::images::{tiny_test_webp_bytes, tiny_test_webp_data_url};
+use super::images::{
+    test_webp_data_url_with_mime_type, tiny_test_webp_bytes, tiny_test_webp_data_url,
+};
 use super::*;
 
 #[test]
@@ -2108,6 +2110,49 @@ fn lazy_gif_placeholder_img_uses_data_image_source_for_rendering() {
                 x: 0,
                 y: 4,
                 text: "After".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn image_render_coverage_decodes_x_webp_after_x_png_placeholder() {
+    let data_url = test_webp_data_url_with_mime_type("image/x-webp");
+    let decoded = decode_image_reference("mem://x-webp", &data_url).unwrap();
+    let placeholder = "data:image/x-png;base64,not-a-real-placeholder";
+    let render = render_html(
+        "mem://x-webp",
+        format!(
+            r#"<html><body><img src="{placeholder}" data-src="{data_url}" alt="X WebP" width="80" height="48"><p>After</p></body></html>"#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 4,
+                shade: 220,
+                alt: Some("X WebP".to_owned()),
+                url: Some(data_url),
+                decoded_width: Some(decoded.width),
+                decoded_height: Some(decoded.height),
+                decoded_hash: Some(decoded.pixel_hash()),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "After".to_owned()
             },
         ]
     );
