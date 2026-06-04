@@ -5039,8 +5039,8 @@ pub fn rasterize_render(
     if raster_viewport_needs_readable_context(render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
-        let row = raster_text_context_overlay_row(render, viewport);
-        draw_raster_text_context(&mut pixels, width, &context, viewport, options, row);
+        let row = raster_text_context_overlay_row(render, viewport, context.bounds);
+        draw_raster_text_context(&mut pixels, width, &context.text, viewport, options, row);
     }
 
     Ok(BrowserRaster {
@@ -5216,7 +5216,7 @@ pub fn browser_text_viewport(
     if text_viewport_needs_readable_context(&cells, render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
-        overlay_text_viewport_context(&mut cells, &context);
+        overlay_text_viewport_context(&mut cells, viewport, context.bounds, &context.text);
     }
 
     BrowserTextViewportReport {
@@ -5417,7 +5417,11 @@ fn raster_viewport_visual_fill_row_count(
         .count()
 }
 
-fn raster_text_context_overlay_row(render: &BrowserRender, viewport: RasterViewport) -> usize {
+fn raster_text_context_overlay_row(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    context_bounds: DisplayCommandBounds,
+) -> usize {
     let mut row_has_text = vec![false; viewport.height];
     let mut row_has_visual = vec![false; viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
@@ -5454,17 +5458,26 @@ fn raster_text_context_overlay_row(render: &BrowserRender, viewport: RasterViewp
             }
         }
     }
-    row_has_visual
-        .iter()
-        .zip(row_has_text.iter())
-        .position(|(has_visual, has_text)| *has_visual && !*has_text)
-        .unwrap_or(0)
+    nearest_visual_context_overlay_row(
+        row_has_visual
+            .iter()
+            .zip(row_has_text.iter())
+            .map(|(has_visual, has_text)| *has_visual && !*has_text),
+        preferred_context_overlay_row(viewport, context_bounds),
+    )
+    .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisualTextContext {
+    text: String,
+    bounds: DisplayCommandBounds,
 }
 
 fn nearby_visual_region_text_context(
     render: &BrowserRender,
     viewport: RasterViewport,
-) -> Option<String> {
+) -> Option<VisualTextContext> {
     let visual_bounds = render
         .display_list
         .iter()
@@ -5530,13 +5543,13 @@ fn nearby_visual_region_text_context(
                 rank,
                 viewport_distance,
                 visual_distance.unwrap_or(usize::MAX),
-                text,
+                VisualTextContext { text, bounds },
             ))
         })
         .min_by_key(|(rank, viewport_distance, visual_distance, _)| {
             (*rank, *viewport_distance, *visual_distance)
         })
-        .map(|(_, _, _, text)| text)
+        .map(|(_, _, _, context)| context)
 }
 
 fn display_command_text(command: &DisplayCommand) -> Option<&str> {
@@ -5712,8 +5725,21 @@ fn bounds_visual_region_distance(
     }
 }
 
-fn overlay_text_viewport_context(cells: &mut [Vec<char>], text: &str) {
-    let row = text_viewport_context_overlay_row(cells);
+fn overlay_text_viewport_context(
+    cells: &mut [Vec<char>],
+    viewport: RasterViewport,
+    context_bounds: DisplayCommandBounds,
+    text: &str,
+) {
+    let row = nearest_visual_context_overlay_row(
+        cells.iter().map(|line| {
+            let has_text = line.iter().any(|ch| ch.is_ascii_alphanumeric());
+            let has_visual = line.iter().any(|ch| matches!(*ch, '#' | '@'));
+            has_visual && !has_text
+        }),
+        preferred_context_overlay_row(viewport, context_bounds),
+    )
+    .unwrap_or(0);
     let Some(line) = cells.get_mut(row) else {
         return;
     };
@@ -5743,15 +5769,37 @@ fn draw_raster_text_context(
     }
 }
 
-fn text_viewport_context_overlay_row(cells: &[Vec<char>]) -> usize {
-    cells
-        .iter()
-        .position(|line| {
-            let has_text = line.iter().any(|ch| ch.is_ascii_alphanumeric());
-            let has_visual = line.iter().any(|ch| matches!(*ch, '#' | '@'));
-            has_visual && !has_text
-        })
-        .unwrap_or(0)
+fn preferred_context_overlay_row(
+    viewport: RasterViewport,
+    context_bounds: DisplayCommandBounds,
+) -> usize {
+    if context_bounds.y < viewport.y {
+        0
+    } else if context_bounds.y >= viewport.end_y() {
+        viewport.height.saturating_sub(1)
+    } else {
+        context_bounds
+            .y
+            .saturating_sub(viewport.y)
+            .min(viewport.height.saturating_sub(1))
+    }
+}
+
+fn nearest_visual_context_overlay_row(
+    rows: impl IntoIterator<Item = bool>,
+    preferred_row: usize,
+) -> Option<usize> {
+    let mut best = None;
+    for (row, available) in rows.into_iter().enumerate() {
+        if !available {
+            continue;
+        }
+        let distance = row.abs_diff(preferred_row);
+        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best = Some((row, distance));
+        }
+    }
+    best.map(|(row, _)| row)
 }
 
 fn fill_text_viewport_empty_cells(
