@@ -1160,6 +1160,12 @@ enum FloatSide {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexDirection {
+    Row,
+    Column,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextAlign {
     Start,
     Center,
@@ -1356,6 +1362,7 @@ struct ComputedStyle {
     opacity: PaintOpacity,
     animation_reveals_opacity: bool,
     overflow: Overflow,
+    flex_direction: FlexDirection,
     position: Position,
     position_top: Option<CssPositionOffset>,
     position_left: Option<CssPositionOffset>,
@@ -1486,6 +1493,23 @@ impl ComputedStyle {
             .saturating_add(self.transform_translate.y.resolve(own_height));
         (has_top || !self.transform_translate.y.is_zero()).then_some(offset)
     }
+
+    fn child_layout(&self) -> ChildLayout {
+        let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
+            && self.flex_direction == FlexDirection::Column;
+        ChildLayout {
+            row_items: self.display.lays_out_children_in_row() && !flex_column,
+            row_gap: flex_column.then_some(self.row_gap.unwrap_or(0)),
+            column_gap: self.column_gap,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ChildLayout {
+    row_items: bool,
+    row_gap: Option<usize>,
+    column_gap: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1498,6 +1522,7 @@ struct CssRule {
 struct CssDeclarations {
     display: Option<Display>,
     float: Option<Option<FloatSide>>,
+    flex_direction: Option<FlexDirection>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
     background_image_size: Option<BackgroundImageSize>,
@@ -3628,8 +3653,7 @@ fn render_page_state_with_timings(
         &css_cascade,
         &mut renderer,
         &mut layout_box_count,
-        false,
-        None,
+        ChildLayout::default(),
     );
 
     let flow = renderer.finish();
@@ -12328,6 +12352,14 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     _ => declarations.display,
                 };
             }
+            "flex-direction" => {
+                declarations.flex_direction =
+                    parse_css_flex_direction(value).or(declarations.flex_direction);
+            }
+            "flex-flow" => {
+                declarations.flex_direction =
+                    parse_css_flex_direction(value).or(declarations.flex_direction);
+            }
             "float" => {
                 declarations.float = parse_css_float(value).or(declarations.float);
             }
@@ -12750,6 +12782,16 @@ fn parse_css_axis_gap(value: &str, axis: CssAxis) -> Option<usize> {
         return Some(0);
     }
     css_length_cells(value, axis, 64)
+}
+
+fn parse_css_flex_direction(value: &str) -> Option<FlexDirection> {
+    value.split_ascii_whitespace().find_map(|token| {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "row" | "row-reverse" => Some(FlexDirection::Row),
+            "column" | "column-reverse" => Some(FlexDirection::Column),
+            _ => None,
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -14216,10 +14258,10 @@ fn collect_css_background_image_resources_at(
             if style.display == Display::None {
                 return;
             }
-            let children_are_row_items = style.display.lays_out_children_in_row();
+            let child_layout = style.child_layout();
             if style.display == Display::Contents {
                 for &child in &node.children {
-                    if children_are_row_items
+                    if child_layout.row_items
                         && !row_layout_child_participates(dom, child, css_cascade)
                     {
                         continue;
@@ -14229,7 +14271,7 @@ fn collect_css_background_image_resources_at(
                         child,
                         source,
                         css_cascade,
-                        children_are_row_items,
+                        child_layout.row_items,
                         resources,
                         seen,
                     );
@@ -14243,7 +14285,7 @@ fn collect_css_background_image_resources_at(
                 push_css_background_image_resource(resources, seen, source, url);
             }
             for &child in &node.children {
-                if children_are_row_items && !row_layout_child_participates(dom, child, css_cascade)
+                if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade)
                 {
                     continue;
                 }
@@ -14252,7 +14294,7 @@ fn collect_css_background_image_resources_at(
                     child,
                     source,
                     css_cascade,
-                    children_are_row_items,
+                    child_layout.row_items,
                     resources,
                     seen,
                 );
@@ -14294,21 +14336,24 @@ fn render_children(
     css_cascade: &CssCascade,
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
-    children_are_row_items: bool,
-    row_item_gap: Option<usize>,
+    child_layout: ChildLayout,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
         return;
     };
-    let mut row_item_seen = false;
+    let mut child_seen = false;
     for &child in &node.children {
-        if children_are_row_items && !row_layout_child_participates(dom, child, css_cascade) {
+        if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
             continue;
         }
-        if children_are_row_items && row_item_seen {
-            match row_item_gap {
-                Some(gap) => renderer.push_fixed_space_width(gap, None),
-                None => renderer.push_text(" ", None),
+        if child_seen {
+            if child_layout.row_items {
+                match child_layout.column_gap {
+                    Some(gap) => renderer.push_fixed_space_width(gap, None),
+                    None => renderer.push_text(" ", None),
+                }
+            } else if let Some(row_gap) = child_layout.row_gap {
+                renderer.push_vertical_space(row_gap);
             }
         }
         render_node(
@@ -14318,11 +14363,9 @@ fn render_children(
             css_cascade,
             renderer,
             layout_box_count,
-            children_are_row_items,
+            child_layout.row_items,
         );
-        if children_are_row_items {
-            row_item_seen = true;
-        }
+        child_seen = true;
     }
 }
 
@@ -14359,8 +14402,7 @@ fn render_node(
             css_cascade,
             renderer,
             layout_box_count,
-            false,
-            None,
+            ChildLayout::default(),
         ),
         NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
         NodeKind::Element(element) => {
@@ -14771,8 +14813,7 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
-                    style.display.lays_out_children_in_row(),
-                    style.column_gap,
+                    style.child_layout(),
                 );
             } else {
                 render_children(
@@ -14782,8 +14823,7 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
-                    style.display.lays_out_children_in_row(),
-                    style.column_gap,
+                    style.child_layout(),
                 );
             }
 
@@ -14990,8 +15030,10 @@ fn render_contents_node(
         css_cascade,
         renderer,
         layout_box_count,
-        children_are_row_items,
-        None,
+        ChildLayout {
+            row_items: children_are_row_items,
+            ..ChildLayout::default()
+        },
     );
 
     if font_scale_entered.is_some() {
@@ -15043,8 +15085,7 @@ fn render_details_children(
     css_cascade: &CssCascade,
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
-    children_are_row_items: bool,
-    row_item_gap: Option<usize>,
+    child_layout: ChildLayout,
 ) {
     let is_open = element.attrs.contains_key("open");
     let summary_child = first_details_summary_child(dom, node_id, css_cascade);
@@ -15057,7 +15098,7 @@ fn render_details_children(
                 css_cascade,
                 renderer,
                 layout_box_count,
-                children_are_row_items,
+                child_layout.row_items,
             );
         } else {
             renderer.push_text("> Details", Some(node_id));
@@ -15076,8 +15117,7 @@ fn render_details_children(
         css_cascade,
         renderer,
         layout_box_count,
-        children_are_row_items,
-        row_item_gap,
+        child_layout,
     );
 }
 
@@ -15348,6 +15388,7 @@ fn computed_style(
             opacity: PaintOpacity::Opaque,
             animation_reveals_opacity: false,
             overflow: Overflow::Visible,
+            flex_direction: FlexDirection::Row,
             position: Position::Static,
             position_top: None,
             position_left: None,
@@ -15393,6 +15434,7 @@ fn computed_style(
     let mut opacity = PaintOpacity::Opaque;
     let mut animation_reveals_opacity = false;
     let mut overflow = Overflow::Visible;
+    let mut flex_direction = FlexDirection::Row;
     let mut position = Position::Static;
     let mut position_top = None;
     let mut position_left = None;
@@ -15436,6 +15478,7 @@ fn computed_style(
     let mut opacity_specificity = 0u32;
     let mut animation_reveals_opacity_specificity = 0u32;
     let mut overflow_specificity = 0u32;
+    let mut flex_direction_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
     let mut position_left_specificity = 0u32;
@@ -15551,6 +15594,12 @@ fn computed_style(
             {
                 overflow = rule_overflow;
                 overflow_specificity = rule_specificity;
+            }
+            if let Some(rule_flex_direction) = rule.declarations.flex_direction
+                && rule_specificity >= flex_direction_specificity
+            {
+                flex_direction = rule_flex_direction;
+                flex_direction_specificity = rule_specificity;
             }
             if let Some(rule_position) = rule.declarations.position
                 && rule_specificity >= position_specificity
@@ -15777,6 +15826,9 @@ fn computed_style(
         if let Some(inline_overflow) = inline.overflow {
             overflow = inline_overflow;
         }
+        if let Some(inline_flex_direction) = inline.flex_direction {
+            flex_direction = inline_flex_direction;
+        }
         if let Some(inline_position) = inline.position {
             position = inline_position;
         }
@@ -15887,6 +15939,7 @@ fn computed_style(
         opacity,
         animation_reveals_opacity,
         overflow,
+        flex_direction,
         position,
         position_top,
         position_left,
