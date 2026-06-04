@@ -8781,6 +8781,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         resources: Vec::new(),
         resource_report: None,
         action_feedback: None,
+        pending_source: None,
         fast_scroll: false,
     };
     let href =
@@ -11823,7 +11824,7 @@ async fn browser_session_page_renders_form_controls() {
 }
 
 #[tokio::test]
-async fn browser_page_returns_recovery_shell_when_initial_render_times_out() {
+async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
 
@@ -11849,51 +11850,96 @@ async fn browser_page_returns_recovery_shell_when_initial_render_times_out() {
             ("max_bytes".to_owned(), "1048576".to_owned()),
         ],
     };
-    let error = registry.create_target(&create).await.unwrap_err();
-    let response = error.browser_response(&create);
-    assert_eq!(response.status, 502);
-    assert_eq!(response.content_type, "text/html; charset=utf-8");
-    assert!(response.body.contains("Browser page is still loading"));
-    assert!(
-        response
-            .body
-            .contains(r#"class="browser-chrome-row" data-browser-chrome"#)
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    let target_source = format!("http://{addr}/slow");
+    assert_eq!(payload.source, target_source);
+    assert_eq!(
+        payload.pending_source.as_deref(),
+        Some(target_source.as_str())
     );
+    assert_eq!(payload.back_href, "/search?q=fixture");
+    assert_eq!(payload.width, 90);
+    assert_eq!(payload.height, 32);
+    assert_eq!(payload.viewport_x, 4);
+    assert_eq!(payload.viewport_y, 6);
+    assert_eq!(payload.max_bytes, 1048576);
     assert!(
-        response
-            .body
-            .contains(r#"data-browser-address type="text""#)
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("initial render exceeded"))
     );
-    assert!(response.body.contains(r#"data-browser-chrome-status"#));
-    assert!(
-        response
-            .body
-            .contains(r#"<span class="viewport-state-chip">page loading</span>"#)
-    );
-    assert!(
-        response
-            .body
-            .contains(r#"<span class="viewport-state-chip">shell ready</span>"#)
-    );
-    assert!(
-        response
-            .body
-            .contains(r#"<a class="primary-action" href="/browser?url=http%3A%2F%2F"#)
-    );
-    assert!(response.body.contains("from=%2Fsearch%3Fq%3Dfixture"));
-    assert!(response.body.contains("width=90"));
-    assert!(response.body.contains("height=32"));
-    assert!(response.body.contains("viewport_x=4"));
-    assert!(response.body.contains("viewport_y=6"));
-    assert!(response.body.contains("max_bytes=1048576"));
-    assert!(
-        response
-            .body
-            .contains(r#"<a href="/search?q=fixture">Back to search</a>"#)
-    );
-    assert!(response.body.contains("browser render timed out"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"data-browser-address type="text""#));
+    assert!(html.contains(r#"data-browser-chrome-status"#));
+    assert!(html.contains(r#"data-browser-pending-load="true""#));
+    assert!(html.contains("Loading page"));
+    assert!(html.contains("Continue loading"));
+    assert!(html.contains("action=open"));
+    assert!(html.contains("url=http%3A%2F%2F"));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
+    assert!(html.contains("width=90"));
+    assert!(html.contains("height=32"));
+    assert!(html.contains("viewport_x=4"));
+    assert!(html.contains("viewport_y=6"));
+    assert!(html.contains("max_bytes=1048576"));
+    assert!(html.contains("source=http%3A%2F%2F"));
+    assert!(html.contains(r#"name="source" value="http://"#));
 
     server.abort();
+}
+
+#[tokio::test]
+async fn browser_page_returns_pending_session_when_initial_render_fails() {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf).await.unwrap();
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), format!("http://{addr}/broken")),
+            ("from".to_owned(), "/search?q=broken".to_owned()),
+            ("width".to_owned(), "80".to_owned()),
+            ("height".to_owned(), "24".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    let target_source = format!("http://{addr}/broken");
+    assert_eq!(payload.source, target_source);
+    assert_eq!(
+        payload.pending_source.as_deref(),
+        Some(target_source.as_str())
+    );
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("renderer reported"))
+    );
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-pending-load="true""#));
+    assert!(html.contains("Continue loading"));
+    assert!(html.contains("action=open"));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Dbroken"));
+    assert!(html.contains("width=80"));
+    assert!(html.contains("height=24"));
+    assert!(html.contains("max_bytes=1048576"));
+    assert!(html.contains("source=http%3A%2F%2F"));
+
+    server.await.unwrap();
 }
 
 #[tokio::test]

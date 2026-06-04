@@ -11,11 +11,11 @@ use tokio::time::timeout;
 use url::{Url, form_urlencoded};
 
 use crate::browser::{
-    BrowserCookie, BrowserFocusedControl, BrowserForm, BrowserImageRenderReport,
-    BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender, BrowserRenderOptions,
-    BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport, BrowserScriptRenderReport,
-    BrowserSession, BrowserStylesheetRenderReport, BrowserTextViewportOptions,
-    browser_text_viewport, rasterize_render_rgba,
+    BROWSER_ABOUT_BLANK_TARGET, BrowserCookie, BrowserFocusedControl, BrowserForm,
+    BrowserImageRenderReport, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender,
+    BrowserRenderOptions, BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport,
+    BrowserScriptRenderReport, BrowserSession, BrowserStylesheetRenderReport,
+    BrowserTextViewportOptions, browser_text_viewport, rasterize_render_rgba,
 };
 
 use super::{
@@ -146,6 +146,7 @@ struct BrowserWebSession {
     tab_search_query: String,
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
+    pending_source: Option<String>,
     pinned: bool,
     tab_label: Option<String>,
 }
@@ -216,6 +217,7 @@ struct BrowserSessionPayload {
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
+    pending_source: Option<String>,
     fast_scroll: bool,
 }
 
@@ -1393,18 +1395,41 @@ impl BrowserSessionRegistry {
         let has_explicit_viewport_y =
             target.param("y").is_some() || target.param("viewport_y").is_some();
         let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+        let mut pending_source = None;
+        let mut action_feedback = None;
         match timeout(BROWSER_CREATE_TARGET_TIMEOUT, session.navigate(&target_url)).await {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
-                return Err(BrowserRouteError::Upstream(format!(
-                    "browser render failed for {target_url}: {error:#}"
-                )));
+                session
+                    .navigate(BROWSER_ABOUT_BLANK_TARGET)
+                    .await
+                    .map_err(|blank_error| {
+                        BrowserRouteError::Upstream(format!(
+                            "browser fallback shell failed after {target_url} failed: {blank_error:#}"
+                        ))
+                    })?;
+                pending_source = Some(target_url.clone());
+                action_feedback = Some(format!(
+                    "Still opening {}; renderer reported: {}",
+                    browser_session_feedback_excerpt(&target_url),
+                    browser_session_feedback_excerpt(&error.to_string())
+                ));
             }
             Err(_) => {
-                return Err(BrowserRouteError::Upstream(format!(
-                    "browser render timed out after {}ms while opening {target_url}",
+                session
+                    .navigate(BROWSER_ABOUT_BLANK_TARGET)
+                    .await
+                    .map_err(|blank_error| {
+                        BrowserRouteError::Upstream(format!(
+                            "browser fallback shell failed after {target_url} timed out: {blank_error:#}"
+                        ))
+                    })?;
+                pending_source = Some(target_url.clone());
+                action_feedback = Some(format!(
+                    "Still opening {}; initial render exceeded {}ms.",
+                    browser_session_feedback_excerpt(&target_url),
                     BROWSER_CREATE_TARGET_TIMEOUT.as_millis()
-                )));
+                ));
             }
         }
 
@@ -1426,7 +1451,8 @@ impl BrowserSessionRegistry {
             find_active_line: None,
             tab_search_query: String::new(),
             resource_report: None,
-            action_feedback: None,
+            action_feedback,
+            pending_source,
             pinned: false,
             tab_label: None,
         };
@@ -1552,6 +1578,7 @@ impl BrowserSessionRegistry {
                 tab_search_query: String::new(),
                 resource_report: None,
                 action_feedback: None,
+                pending_source: None,
                 pinned: tab.pinned,
                 tab_label: tab.label.clone(),
             };
@@ -5933,6 +5960,7 @@ async fn apply_browser_action(
                 })?;
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
         }
         BrowserSessionAction::Back => {
             web_session
@@ -8416,7 +8444,15 @@ fn browser_session_payload_with_options(
             "browser session has no current page".to_owned(),
         ));
     }
+    let pending_viewport = web_session
+        .pending_source
+        .as_ref()
+        .map(|_| (web_session.viewport_x, web_session.viewport_y));
     normalize_browser_session_viewport(web_session);
+    if let Some((viewport_x, viewport_y)) = pending_viewport {
+        web_session.viewport_x = viewport_x;
+        web_session.viewport_y = viewport_y;
+    }
 
     let payload = {
         let render = web_session.session.current().ok_or_else(|| {
@@ -8786,7 +8822,7 @@ fn browser_session_payload_with_options(
             })
             .collect::<Vec<_>>();
 
-        BrowserSessionPayload {
+        let mut payload = BrowserSessionPayload {
             id: id.to_owned(),
             back_href: web_session.back_href.clone(),
             title: browser_session_title(render),
@@ -8848,8 +8884,19 @@ fn browser_session_payload_with_options(
             resources,
             resource_report: web_session.resource_report.clone(),
             action_feedback: web_session.action_feedback.clone(),
+            pending_source: web_session.pending_source.clone(),
             fast_scroll: options.fast_scroll,
+        };
+        if let Some(pending_source) = web_session.pending_source.as_ref() {
+            payload.title = format!(
+                "Loading {}",
+                browser_session_feedback_excerpt(pending_source)
+            );
+            payload.source = pending_source.clone();
+            payload.viewport_x = web_session.viewport_x;
+            payload.viewport_y = web_session.viewport_y;
         }
+        payload
     };
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
@@ -12543,6 +12590,20 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
 fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
     let action_feedback = render_browser_session_action_feedback(payload);
     let visual_flow_status = render_browser_session_visual_flow_status(payload);
+    if let Some(pending_source) = payload.pending_source.as_ref() {
+        let continue_href = browser_session_action_href(
+            &payload.id,
+            "open",
+            &[("url", pending_source.clone())],
+            payload,
+        );
+        return format!(
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Waiting for {source}</span>{action_feedback}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
+            action_feedback = action_feedback,
+            continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
+        );
+    }
     if let Some(report) = payload.resource_report.as_ref() {
         let status = browser_session_resource_report_status(report);
         let report_json_href =
@@ -14555,10 +14616,12 @@ impl BrowserSessionHrefSource for BrowserWebSession {
     }
 
     fn source(&self) -> &str {
-        self.session
-            .current()
-            .map(|render| render.source.as_str())
-            .unwrap_or_default()
+        self.pending_source.as_deref().unwrap_or_else(|| {
+            self.session
+                .current()
+                .map(|render| render.source.as_str())
+                .unwrap_or_default()
+        })
     }
 
     fn width(&self) -> usize {
