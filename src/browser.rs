@@ -247,6 +247,7 @@ struct DisplayHitTarget {
     text_runs: Vec<TextHitTargetRun>,
     viewport_fixed: bool,
     viewport_sticky_top: Option<usize>,
+    source_bounds: Option<DisplaySourceBounds>,
 }
 
 impl DisplayHitTarget {
@@ -256,6 +257,7 @@ impl DisplayHitTarget {
             text_runs: Vec::new(),
             viewport_fixed: false,
             viewport_sticky_top: None,
+            source_bounds: None,
         }
     }
 
@@ -265,6 +267,7 @@ impl DisplayHitTarget {
             text_runs,
             viewport_fixed: false,
             viewport_sticky_top: None,
+            source_bounds: None,
         }
     }
 
@@ -288,6 +291,19 @@ impl DisplayHitTarget {
         self.viewport_sticky_top = viewport_sticky_top;
         self
     }
+
+    fn with_source_bounds(mut self, source_bounds: Option<DisplaySourceBounds>) -> Self {
+        self.source_bounds = source_bounds;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplaySourceBounds {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3941,6 +3957,39 @@ fn union_display_bounds(
     }
 }
 
+fn display_command_source_bounds_for_viewport(
+    render: &BrowserRender,
+    command_index: usize,
+    fallback: DisplayCommandBounds,
+    viewport: RasterViewport,
+    viewport_fixed: bool,
+    viewport_sticky_top: Option<usize>,
+) -> DisplayCommandBounds {
+    let source = render
+        .hit_targets
+        .get(command_index)
+        .and_then(|target| target.source_bounds)
+        .unwrap_or(DisplaySourceBounds {
+            x: fallback.x,
+            y: fallback.y,
+            width: fallback.width,
+            height: fallback.height,
+        });
+    let (x, y) = display_command_origin_for_viewport(
+        source.x,
+        source.y,
+        viewport,
+        viewport_fixed,
+        viewport_sticky_top,
+    );
+    DisplayCommandBounds {
+        x,
+        y,
+        width: source.width,
+        height: source.height,
+    }
+}
+
 fn intersect_display_bounds(
     left: DisplayCommandBounds,
     right: DisplayCommandBounds,
@@ -4816,15 +4865,21 @@ pub fn rasterize_render(
                 url,
                 ..
             } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
+                let source_bounds = display_command_source_bounds_for_viewport(
+                    render,
+                    command_index,
+                    DisplayCommandBounds {
+                        x: *x,
+                        y: *y,
+                        width: *image_width,
+                        height: *height,
+                    },
                     viewport,
                     viewport_fixed,
                     viewport_sticky_top,
                 );
-                let image_width_cells = *image_width;
-                let image_height_cells = *height;
+                let image_width_cells = source_bounds.width;
+                let image_height_cells = source_bounds.height;
                 let image_x = options.padding_x.saturating_add(
                     visible_bounds
                         .x
@@ -4844,11 +4899,11 @@ pub fn rasterize_render(
                 let image_height = image_height_cells.saturating_mul(options.cell_height);
                 let source_offset_x = visible_bounds
                     .x
-                    .saturating_sub(x)
+                    .saturating_sub(source_bounds.x)
                     .saturating_mul(options.cell_width);
                 let source_offset_y = visible_bounds
                     .y
-                    .saturating_sub(y)
+                    .saturating_sub(source_bounds.y)
                     .saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_decoded_image_region(
@@ -4891,9 +4946,9 @@ pub fn rasterize_render(
                         clipped_image_height,
                         *shade,
                     );
-                    let original_right = x.saturating_add(image_width_cells);
-                    let original_bottom = y.saturating_add(image_height_cells);
-                    if visible_bounds.y == y {
+                    let original_right = source_bounds.x.saturating_add(source_bounds.width);
+                    let original_bottom = source_bounds.y.saturating_add(source_bounds.height);
+                    if visible_bounds.y == source_bounds.y {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -4915,7 +4970,7 @@ pub fn rasterize_render(
                             96,
                         );
                     }
-                    if visible_bounds.x == x {
+                    if visible_bounds.x == source_bounds.x {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -4951,15 +5006,21 @@ pub fn rasterize_render(
                 repeat,
                 ..
             } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
+                let source_bounds = display_command_source_bounds_for_viewport(
+                    render,
+                    command_index,
+                    DisplayCommandBounds {
+                        x: *x,
+                        y: *y,
+                        width: *image_width,
+                        height: *height,
+                    },
                     viewport,
                     viewport_fixed,
                     viewport_sticky_top,
                 );
-                let image_width_cells = *image_width;
-                let image_height_cells = *height;
+                let image_width_cells = source_bounds.width;
+                let image_height_cells = source_bounds.height;
                 let image_x = options.padding_x.saturating_add(
                     visible_bounds
                         .x
@@ -4979,11 +5040,11 @@ pub fn rasterize_render(
                 let image_height = image_height_cells.saturating_mul(options.cell_height);
                 let source_offset_x = visible_bounds
                     .x
-                    .saturating_sub(x)
+                    .saturating_sub(source_bounds.x)
                     .saturating_mul(options.cell_width);
                 let source_offset_y = visible_bounds
                     .y
-                    .saturating_sub(y)
+                    .saturating_sub(source_bounds.y)
                     .saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_background_image_region(
@@ -5032,9 +5093,9 @@ pub fn rasterize_render(
                         clipped_image_height,
                         *shade,
                     );
-                    let original_right = x.saturating_add(image_width_cells);
-                    let original_bottom = y.saturating_add(image_height_cells);
-                    if visible_bounds.y == y {
+                    let original_right = source_bounds.x.saturating_add(source_bounds.width);
+                    let original_bottom = source_bounds.y.saturating_add(source_bounds.height);
+                    if visible_bounds.y == source_bounds.y {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -5056,7 +5117,7 @@ pub fn rasterize_render(
                             96,
                         );
                     }
-                    if visible_bounds.x == x {
+                    if visible_bounds.x == source_bounds.x {
                         fill_raster_rect(
                             &mut pixels,
                             width,
@@ -5212,9 +5273,15 @@ pub fn rasterize_render_rgba(
                 url,
                 ..
             } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
+                let source_bounds = display_command_source_bounds_for_viewport(
+                    render,
+                    command_index,
+                    DisplayCommandBounds {
+                        x: *x,
+                        y: *y,
+                        width: *image_width,
+                        height: *height,
+                    },
                     viewport,
                     viewport_fixed,
                     viewport_sticky_top,
@@ -5234,15 +5301,15 @@ pub fn rasterize_render_rgba(
                 let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
                 let clipped_image_height =
                     visible_bounds.height.saturating_mul(options.cell_height);
-                let full_width = image_width.saturating_mul(options.cell_width);
-                let full_height = height.saturating_mul(options.cell_height);
+                let full_width = source_bounds.width.saturating_mul(options.cell_width);
+                let full_height = source_bounds.height.saturating_mul(options.cell_height);
                 let source_offset_x = visible_bounds
                     .x
-                    .saturating_sub(x)
+                    .saturating_sub(source_bounds.x)
                     .saturating_mul(options.cell_width);
                 let source_offset_y = visible_bounds
                     .y
-                    .saturating_sub(y)
+                    .saturating_sub(source_bounds.y)
                     .saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_decoded_image_region_rgba(
@@ -5288,9 +5355,15 @@ pub fn rasterize_render_rgba(
                 repeat,
                 ..
             } => {
-                let (x, y) = display_command_origin_for_viewport(
-                    *x,
-                    *y,
+                let source_bounds = display_command_source_bounds_for_viewport(
+                    render,
+                    command_index,
+                    DisplayCommandBounds {
+                        x: *x,
+                        y: *y,
+                        width: *image_width,
+                        height: *height,
+                    },
                     viewport,
                     viewport_fixed,
                     viewport_sticky_top,
@@ -5310,15 +5383,15 @@ pub fn rasterize_render_rgba(
                 let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
                 let clipped_image_height =
                     visible_bounds.height.saturating_mul(options.cell_height);
-                let full_width = image_width.saturating_mul(options.cell_width);
-                let full_height = height.saturating_mul(options.cell_height);
+                let full_width = source_bounds.width.saturating_mul(options.cell_width);
+                let full_height = source_bounds.height.saturating_mul(options.cell_height);
                 let source_offset_x = visible_bounds
                     .x
-                    .saturating_sub(x)
+                    .saturating_sub(source_bounds.x)
                     .saturating_mul(options.cell_width);
                 let source_offset_y = visible_bounds
                     .y
-                    .saturating_sub(y)
+                    .saturating_sub(source_bounds.y)
                     .saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_background_image_region_rgba(
@@ -16933,7 +17006,10 @@ impl FlowRenderer {
         })
     }
 
-    fn clipped_image_command(&self, command: DisplayCommand) -> Option<DisplayCommand> {
+    fn clipped_image_command(
+        &self,
+        command: DisplayCommand,
+    ) -> Option<(DisplayCommand, Option<DisplaySourceBounds>)> {
         let DisplayCommand::Image {
             x,
             y,
@@ -16949,27 +17025,44 @@ impl FlowRenderer {
         else {
             return None;
         };
+        let source_bounds = DisplaySourceBounds {
+            x,
+            y,
+            width,
+            height,
+        };
         let clipped = self.clipped_bounds(DisplayCommandBounds {
             x,
             y,
             width,
             height,
         })?;
-        Some(DisplayCommand::Image {
-            x: clipped.x,
-            y: clipped.y,
-            width: clipped.width,
-            height: clipped.height,
-            shade,
-            alt,
-            url,
-            decoded_width,
-            decoded_height,
-            decoded_hash,
-        })
+        let clip_source_bounds = (clipped.x != x
+            || clipped.y != y
+            || clipped.width != width
+            || clipped.height != height)
+            .then_some(source_bounds);
+        Some((
+            DisplayCommand::Image {
+                x: clipped.x,
+                y: clipped.y,
+                width: clipped.width,
+                height: clipped.height,
+                shade,
+                alt,
+                url,
+                decoded_width,
+                decoded_height,
+                decoded_hash,
+            },
+            clip_source_bounds,
+        ))
     }
 
-    fn clipped_background_image_command(&self, command: DisplayCommand) -> Option<DisplayCommand> {
+    fn clipped_background_image_command(
+        &self,
+        command: DisplayCommand,
+    ) -> Option<(DisplayCommand, Option<DisplaySourceBounds>)> {
         let DisplayCommand::BackgroundImage {
             x,
             y,
@@ -16987,26 +17080,40 @@ impl FlowRenderer {
         else {
             return None;
         };
+        let source_bounds = DisplaySourceBounds {
+            x,
+            y,
+            width,
+            height,
+        };
         let clipped = self.clipped_bounds(DisplayCommandBounds {
             x,
             y,
             width,
             height,
         })?;
-        Some(DisplayCommand::BackgroundImage {
-            x: clipped.x,
-            y: clipped.y,
-            width: clipped.width,
-            height: clipped.height,
-            shade,
-            url,
-            decoded_width,
-            decoded_height,
-            decoded_hash,
-            size,
-            position,
-            repeat,
-        })
+        let clip_source_bounds = (clipped.x != x
+            || clipped.y != y
+            || clipped.width != width
+            || clipped.height != height)
+            .then_some(source_bounds);
+        Some((
+            DisplayCommand::BackgroundImage {
+                x: clipped.x,
+                y: clipped.y,
+                width: clipped.width,
+                height: clipped.height,
+                shade,
+                url,
+                decoded_width,
+                decoded_height,
+                decoded_hash,
+                size,
+                position,
+                repeat,
+            },
+            clip_source_bounds,
+        ))
     }
 
     fn push_text(&mut self, text: &str, target_node: Option<usize>) {
@@ -17947,8 +18054,10 @@ impl FlowRenderer {
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
             };
-            if let Some(command) = self.clipped_image_command(command) {
-                let target = self.node_hit_target(target_node);
+            if let Some((command, source_bounds)) = self.clipped_image_command(command) {
+                let target = self
+                    .node_hit_target(target_node)
+                    .with_source_bounds(source_bounds);
                 self.push_display_command(command, target);
             }
         }
@@ -17985,8 +18094,10 @@ impl FlowRenderer {
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
             };
-            if let Some(command) = self.clipped_image_command(command) {
-                let target = self.node_hit_target(target_node);
+            if let Some((command, source_bounds)) = self.clipped_image_command(command) {
+                let target = self
+                    .node_hit_target(target_node)
+                    .with_source_bounds(source_bounds);
                 self.push_display_command(command, target);
             }
         }
@@ -18036,8 +18147,10 @@ impl FlowRenderer {
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
             };
-            if let Some(command) = self.clipped_image_command(command) {
-                let target = self.node_hit_target(target_node);
+            if let Some((command, source_bounds)) = self.clipped_image_command(command) {
+                let target = self
+                    .node_hit_target(target_node)
+                    .with_source_bounds(source_bounds);
                 self.push_display_command(command, target);
             }
         }
@@ -18295,8 +18408,10 @@ impl FlowRenderer {
             position,
             repeat,
         };
-        if let Some(command) = self.clipped_background_image_command(command) {
-            let target = self.node_hit_target(target_node);
+        if let Some((command, source_bounds)) = self.clipped_background_image_command(command) {
+            let target = self
+                .node_hit_target(target_node)
+                .with_source_bounds(source_bounds);
             self.push_underlay_command(command, target);
         }
     }
