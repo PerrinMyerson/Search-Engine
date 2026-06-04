@@ -3022,6 +3022,18 @@ fn scrolled_image_viewports_choose_nearest_body_context() {
     assert!(scrolled_text.contains('@'));
     assert!(scrolled_text.contains("Readable body evidence"));
     assert!(!scrolled_text.contains("Navigation overview"));
+    assert!(
+        scrolled
+            .lines
+            .first()
+            .is_some_and(|line| !line.contains("Readable body evidence"))
+    );
+    assert!(
+        scrolled
+            .lines
+            .get(3)
+            .is_some_and(|line| line.contains("Readable body evidence"))
+    );
 
     let raster_options = BrowserRasterOptions {
         viewport_y: Some(12),
@@ -3031,7 +3043,9 @@ fn scrolled_image_viewports_choose_nearest_body_context() {
     };
     let raster =
         rasterize_render(&render, raster_options).expect("rasterize scrolled image context");
-    let overlay_row_y = raster_options.padding_y;
+    let overlay_row_y = raster_options
+        .padding_y
+        .saturating_add(3usize.saturating_mul(raster_options.cell_height));
     let overlay_row_end = overlay_row_y.saturating_add(raster_options.cell_height);
     let overlay_col_end = raster_options.padding_x.saturating_add(
         "Readable body evidence"
