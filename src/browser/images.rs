@@ -271,11 +271,11 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
         .trim()
         .to_ascii_lowercase();
     match image_type.as_str() {
-        "svg" | "image/svg+xml" => decode_simple_svg(bytes),
-        "png" | "image/png" => decode_simple_png(bytes),
+        "svg" | "image/svg+xml" | "image/svg" => decode_simple_svg(bytes),
+        "png" | "image/png" | "image/x-png" => decode_simple_png(bytes),
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
         | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
-        "webp" | "image/webp" => decode_webp(bytes),
+        "webp" | "image/webp" | "image/x-webp" => decode_webp(bytes),
         _ => None,
     }
 }
@@ -1170,7 +1170,9 @@ fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Op
 fn is_lazy_image_placeholder_src(src: &str) -> bool {
     let src = src.trim_start().to_ascii_lowercase();
     if src.starts_with("data:image/svg+xml")
+        || src.starts_with("data:image/svg")
         || src.starts_with("data:image/png")
+        || src.starts_with("data:image/x-png")
         || src.starts_with("data:image/gif")
     {
         return true;
@@ -1237,7 +1239,7 @@ fn test_jpeg_data_url_with_mime_type(mime_type: &str) -> String {
 }
 
 #[cfg(test)]
-fn test_webp_data_url_with_mime_type(mime_type: &str) -> String {
+pub(super) fn test_webp_data_url_with_mime_type(mime_type: &str) -> String {
     format!("data:{mime_type};base64,{TINY_TEST_WEBP_BASE64}")
 }
 
@@ -1966,13 +1968,16 @@ pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
     matches!(
         source_type.as_str(),
         "image/svg+xml"
+            | "image/svg"
             | "image/png"
+            | "image/x-png"
             | "image/jpeg"
             | "image/jpg"
             | "image/jpe"
             | "image/pjpeg"
             | "image/x-jpeg"
             | "image/webp"
+            | "image/x-webp"
     )
 }
 
