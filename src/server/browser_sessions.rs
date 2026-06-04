@@ -5833,7 +5833,11 @@ async fn apply_browser_action(
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
-            let suffix = if navigated { "; navigated" } else { "" };
+            let suffix = if navigated {
+                "; navigated"
+            } else {
+                "; no navigation"
+            };
             web_session.action_feedback = Some(format!(
                 "Clicked selector {}{}",
                 browser_session_feedback_excerpt(&selector),
@@ -5854,7 +5858,11 @@ async fn apply_browser_action(
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
-            let suffix = if navigated { "; navigated" } else { "" };
+            let suffix = if navigated {
+                "; navigated"
+            } else {
+                "; no navigation"
+            };
             web_session.action_feedback = Some(format!(
                 "Clicked point x {x}, y {y} (page {page_x}, {page_y}){suffix}"
             ));
@@ -8700,6 +8708,8 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let viewport_jump = render_browser_session_viewport_jump(payload);
+    let viewport_interaction_controls =
+        render_browser_session_viewport_interaction_controls(payload);
     let forms_json_href = browser_session_api_href(&payload.id, "forms-json", payload);
     let forms_csv_href = browser_session_api_href(&payload.id, "forms-csv", payload);
     let links_csv_href = browser_session_api_href(&payload.id, "links-csv", payload);
@@ -8977,6 +8987,13 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
+.viewport-interaction-row {{ display: grid; grid-template-columns: minmax(260px, auto) minmax(0, 1fr); gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-click-form {{ display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }}
+.viewport-click-form label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
+.viewport-click-form input[type="number"] {{ width: 76px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
+.viewport-click-form button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
+.viewport-link-strip {{ min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
+.viewport-link-strip a {{ min-height: 28px; display: inline-flex; align-items: center; max-width: 220px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .viewport-command-strip[data-resource-pending="true"] a[href^="/browser"], .viewport-command-strip[data-visual-pending="true"] .primary-action, .viewport-command-strip[data-scroll-pending="true"] a[href^="/browser"], .viewport-command-strip[data-scroll-pending="true"] button {{ cursor: wait; opacity: 0.72; }}
 .find-bar {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; margin: 12px 0; }}
 .find-bar form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-width: 0; }}
@@ -9077,7 +9094,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector th, .browser-inspector td {{ border-top: 1px solid #eef0f3; padding: 7px 6px; color: #3a3f45; font-size: 12px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }}
 .browser-inspector th {{ color: #5d636b; font-weight: 700; }}
 .browser-inspector .current-row td {{ background: #eef4ff; }}
-@media (max-width: 720px) {{ .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} }}
+@media (max-width: 720px) {{ .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} .viewport-interaction-row {{ grid-template-columns: 1fr; }} }}
 </style>
 </head>
 <body>
@@ -9111,6 +9128,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_scroll_controls}
 {viewport_status}
 {viewport_image}
+{viewport_interaction_controls}
 {primary_input_controls}
 {viewport_jump}
 {viewport_text}
@@ -9191,6 +9209,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         resource_quick_actions = resource_quick_actions,
         viewport_scroll_controls = viewport_scroll_controls,
         viewport_image = viewport_image,
+        viewport_interaction_controls = viewport_interaction_controls,
         primary_input_controls = primary_input_controls,
         viewport_text = viewport_text,
         click_controls = click_controls,
@@ -11703,6 +11722,36 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
             "Already at right edge"
         ),
         bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
+    )
+}
+
+fn render_browser_session_viewport_interaction_controls(payload: &BrowserSessionPayload) -> String {
+    let mut quick_links = String::new();
+    for link in payload.links.iter().take(4) {
+        let label = if link.label.trim().is_empty() {
+            format!("Link {}", link.index + 1)
+        } else {
+            link.label.clone()
+        };
+        let _ = write!(
+            quick_links,
+            r#"<a href="{href}" title="{title}">{index}. {label}</a>"#,
+            href = html_escape::encode_double_quoted_attribute(&link.action_url),
+            title = html_escape::encode_double_quoted_attribute(&link.url),
+            index = link.index + 1,
+            label = html_escape::encode_text(&browser_session_feedback_excerpt(&label)),
+        );
+    }
+    if quick_links.is_empty() {
+        quick_links.push_str(r#"<span class="viewport-state-chip">No visible links</span>"#);
+    }
+
+    format!(
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="0" aria-label="Click x inside viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="0" aria-label="Click y inside viewport"><button type="submit">Click point</button></form><nav class="viewport-link-strip" aria-label="Quick visible links"><span class="viewport-command-label">Links</span>{quick_links}</nav></div>"#,
+        common = browser_session_common_hidden_inputs(payload),
+        max_x = payload.width.saturating_sub(1),
+        max_y = payload.height.saturating_sub(1),
+        quick_links = quick_links,
     )
 }
 

@@ -8195,6 +8195,17 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     let (payload, _) = registry.create_target(&create).await.unwrap();
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains(r#"data-click-url="/browser?"#));
+    assert!(html.contains(r#"data-browser-viewport-interactions"#));
+    assert!(html.contains(r#"class="viewport-click-form""#));
+    assert!(html.contains(r#"name="action" value="click-at""#));
+    assert!(html.contains(r#"id="browser-viewport-click-x""#));
+    assert!(html.contains(r#"id="browser-viewport-click-y""#));
+    assert!(html.contains(r#"<button type="submit">Click point</button>"#));
+    assert!(html.contains(r#"aria-label="Quick visible links""#));
+    assert!(html.contains(r#">1. Second</a>"#));
+    assert!(html.contains("action=link"));
+    assert!(html.contains(r#"name="viewport_x" value="0""#));
+    assert!(html.contains(r#"name="viewport_y" value="0""#));
     assert!(html.contains("action=click-at"));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains("getBoundingClientRect"));
@@ -8259,11 +8270,47 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert!(payload.viewport.contains("Clicked"));
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked point x 0, y 0 (page 0, 0)")
+        Some("Clicked point x 0, y 0 (page 0, 0); no navigation")
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Clicked point x 0, y 0 (page 0, 0)"));
+    assert!(html.contains("Clicked point x 0, y 0 (page 0, 0); no navigation"));
+}
+
+#[tokio::test]
+async fn browser_session_registry_click_selector_reports_no_navigation() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("button.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html>
+<html><head><title>Button</title></head><body>
+<button id="press" onclick="document.querySelector('#out').innerText = 'Clicked'">Press</button>
+<p id="out">Waiting</p>
+</body></html>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), page.display().to_string())],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "click-selector".to_owned()),
+            ("selector".to_owned(), "#press".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Clicked selector #press; no navigation")
+    );
+    assert!(payload.viewport.contains("Clicked"));
 }
 
 #[tokio::test]
@@ -8337,7 +8384,7 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(payload.viewport_y, button_y);
     assert!(payload.viewport.contains("Clicked"));
-    let expected_feedback = format!("Clicked point x 0, y 0 (page 0, {button_y})");
+    let expected_feedback = format!("Clicked point x 0, y 0 (page 0, {button_y}); no navigation");
     assert_eq!(
         payload.action_feedback.as_deref(),
         Some(expected_feedback.as_str())
