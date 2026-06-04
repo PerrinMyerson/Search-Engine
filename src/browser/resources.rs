@@ -20,6 +20,8 @@ use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
 const DEFAULT_RESOURCE_CACHE_MAX_ENTRIES: usize = 256;
 const DEFAULT_RESOURCE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const DOCUMENT_HTTP_TIMEOUT: Duration = Duration::from_secs(6);
+const RESOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -61,6 +63,8 @@ pub struct BrowserResourceFetch {
     #[serde(default)]
     pub elapsed_ms: u128,
     #[serde(default)]
+    pub request_timeout_ms: u128,
+    #[serde(default)]
     pub cache_entries: usize,
     #[serde(default)]
     pub cache_bytes: usize,
@@ -74,6 +78,8 @@ pub struct BrowserResourceFetch {
     pub cache_max_bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_decode_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +148,8 @@ pub struct BrowserDocumentLoadReport {
     pub error: Option<String>,
     pub error_kind: Option<String>,
     pub elapsed_ms: u128,
+    pub request_timeout_ms: u128,
+    pub diagnostic: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +178,7 @@ struct BrowserResourceFetchArgs {
     error: Option<String>,
     error_kind: Option<String>,
     elapsed_ms: u128,
+    request_timeout_ms: u128,
     cache_pressure: BrowserResourceCachePressure,
     cache_outcome: Option<String>,
 }
@@ -232,6 +241,12 @@ impl BrowserResourceFetch {
                 )
             })
             .unwrap_or((None, None, None, None, None, None, None));
+        let diagnostic = resource_fetch_diagnostic(
+            &args.status,
+            args.error_kind.as_deref(),
+            args.cache_outcome.as_deref(),
+            image_decode_status.as_deref(),
+        );
 
         Self {
             resource: args.resource,
@@ -242,6 +257,7 @@ impl BrowserResourceFetch {
             error: args.error,
             error_kind: args.error_kind,
             elapsed_ms: args.elapsed_ms,
+            request_timeout_ms: args.request_timeout_ms,
             cache_entries: args.cache_pressure.entries,
             cache_bytes: args.cache_pressure.bytes,
             cache_evicted_entries: args.cache_pressure.evicted_entries,
@@ -249,6 +265,7 @@ impl BrowserResourceFetch {
             cache_max_entries: args.cache_pressure.max_entries,
             cache_max_bytes: args.cache_pressure.max_bytes,
             cache_outcome: args.cache_outcome,
+            diagnostic,
             image_decode_status,
             image_decode_error,
             decoded_width,
@@ -270,6 +287,12 @@ impl BrowserResourceFetch {
 
     fn set_cache_outcome(&mut self, outcome: BrowserResourceCacheStoreOutcome) {
         self.cache_outcome = Some(outcome.as_str().to_owned());
+        self.diagnostic = resource_fetch_diagnostic(
+            &self.status,
+            self.error_kind.as_deref(),
+            self.cache_outcome.as_deref(),
+            self.image_decode_status.as_deref(),
+        );
     }
 }
 
@@ -459,17 +482,24 @@ pub(super) async fn load_target_with_cookie_jar_report(
             error: None,
             error_kind: None,
             elapsed_ms: started.elapsed().as_millis(),
+            request_timeout_ms: request_timeout_ms_for_target(target, true),
+            diagnostic: Some("document_loaded".to_owned()),
         },
-        Err(error) => BrowserDocumentLoadReport {
-            target: target.to_owned(),
-            status: "failed".to_owned(),
-            source: None,
-            bytes: 0,
-            content_type: None,
-            error: Some(error.to_string()),
-            error_kind: Some(classify_load_error(&error)),
-            elapsed_ms: started.elapsed().as_millis(),
-        },
+        Err(error) => {
+            let error_kind = classify_load_error(&error);
+            BrowserDocumentLoadReport {
+                target: target.to_owned(),
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some(error.to_string()),
+                error_kind: Some(error_kind.clone()),
+                elapsed_ms: started.elapsed().as_millis(),
+                request_timeout_ms: request_timeout_ms_for_target(target, true),
+                diagnostic: Some(document_load_failure_diagnostic(&error_kind)),
+            }
+        }
     }
 }
 
@@ -480,6 +510,7 @@ pub(super) async fn fetch_resource_with_cache(
     cache: &mut BrowserResourceCache,
 ) -> BrowserResourceFetch {
     let started = Instant::now();
+    let request_timeout_ms = request_timeout_ms_for_target(&resource.resolved, false);
     if cache.entries.contains_key(&resource.resolved) {
         cache.touch(&resource.resolved);
         let cached = cache
@@ -496,6 +527,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: None,
                 error_kind: None,
                 elapsed_ms: started.elapsed().as_millis(),
+                request_timeout_ms: 0,
                 cache_pressure: cache.pressure(),
                 cache_outcome: Some("hit".to_owned()),
             },
@@ -517,6 +549,7 @@ pub(super) async fn fetch_resource_with_cache(
                         error: None,
                         error_kind: None,
                         elapsed_ms: started.elapsed().as_millis(),
+                        request_timeout_ms: 0,
                         cache_pressure: BrowserResourceCachePressure::default(),
                         cache_outcome: None,
                     },
@@ -544,6 +577,7 @@ pub(super) async fn fetch_resource_with_cache(
                     error: Some(error.to_string()),
                     error_kind: Some(classify_load_error(&error)),
                     elapsed_ms: started.elapsed().as_millis(),
+                    request_timeout_ms: 0,
                     cache_pressure: cache.pressure(),
                     cache_outcome: Some("miss_failed".to_owned()),
                 },
@@ -563,6 +597,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: Some("unsupported resource scheme".to_owned()),
                 error_kind: Some("unsupported_scheme".to_owned()),
                 elapsed_ms: started.elapsed().as_millis(),
+                request_timeout_ms: 0,
                 cache_pressure: cache.pressure(),
                 cache_outcome: Some("skipped".to_owned()),
             },
@@ -583,6 +618,7 @@ pub(super) async fn fetch_resource_with_cache(
                     error: None,
                     error_kind: None,
                     elapsed_ms: started.elapsed().as_millis(),
+                    request_timeout_ms,
                     cache_pressure: BrowserResourceCachePressure::default(),
                     cache_outcome: None,
                 },
@@ -610,6 +646,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: Some(error.to_string()),
                 error_kind: Some(classify_load_error(&error)),
                 elapsed_ms: started.elapsed().as_millis(),
+                request_timeout_ms,
                 cache_pressure: cache.pressure(),
                 cache_outcome: Some("miss_failed".to_owned()),
             },
@@ -725,6 +762,74 @@ fn data_url_hex_value(byte: u8) -> Result<u8> {
     }
 }
 
+fn http_load_timeout(require_html: bool) -> Duration {
+    if require_html {
+        DOCUMENT_HTTP_TIMEOUT
+    } else {
+        RESOURCE_HTTP_TIMEOUT
+    }
+}
+
+fn duration_millis(duration: Duration) -> u128 {
+    duration.as_millis()
+}
+
+fn request_timeout_ms_for_target(target: &str, require_html: bool) -> u128 {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        duration_millis(http_load_timeout(require_html))
+    } else {
+        0
+    }
+}
+
+fn resource_fetch_diagnostic(
+    status: &str,
+    error_kind: Option<&str>,
+    cache_outcome: Option<&str>,
+    image_decode_status: Option<&str>,
+) -> Option<String> {
+    if matches!(
+        image_decode_status,
+        Some("unsupported_format" | "undecoded")
+    ) {
+        return Some("image_decode_failed".to_owned());
+    }
+    if image_decode_status == Some("not_fetched") {
+        return Some("image_not_fetched".to_owned());
+    }
+
+    match (status, error_kind, cache_outcome) {
+        ("cached", _, Some("hit")) => Some("cache_hit".to_owned()),
+        ("cached" | "fetched", _, Some("stored")) => Some("resource_fetch_cached".to_owned()),
+        ("cached" | "fetched", _, Some("replaced")) => {
+            Some("resource_fetch_replaced_cache_entry".to_owned())
+        }
+        ("cached" | "fetched", _, Some("skipped_oversize")) => {
+            Some("resource_fetch_uncached_oversize".to_owned())
+        }
+        ("cached" | "fetched", _, Some("skipped_disabled")) => {
+            Some("resource_fetch_cache_disabled".to_owned())
+        }
+        ("failed", Some("timeout"), _) => Some("network_timeout".to_owned()),
+        ("failed", Some(kind), _) => Some(format!("network_{kind}")),
+        ("skipped", Some("unsupported_scheme"), _) => Some("unsupported_scheme".to_owned()),
+        ("skipped", _, _) => Some("skipped_resource".to_owned()),
+        _ => None,
+    }
+}
+
+fn document_load_failure_diagnostic(error_kind: &str) -> String {
+    match error_kind {
+        "timeout" => "document_timeout".to_owned(),
+        "unsupported_content_type" => "document_unsupported_content_type".to_owned(),
+        "byte_cap" => "document_byte_cap".to_owned(),
+        "redirect" => "document_redirect_failed".to_owned(),
+        "dns" => "document_dns_failed".to_owned(),
+        "connect" => "document_connect_failed".to_owned(),
+        _ => format!("document_{error_kind}"),
+    }
+}
+
 pub(super) async fn load_target_with_cookie_jar(
     target: &str,
     max_bytes: usize,
@@ -818,7 +923,7 @@ async fn load_http_bytes(
     );
     let client = reqwest::Client::builder()
         .default_headers(headers)
-        .timeout(Duration::from_secs(15))
+        .timeout(http_load_timeout(require_html))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut current_url = Url::parse(target).with_context(|| format!("parse URL {target}"))?;
@@ -1788,6 +1893,10 @@ mod tests {
         assert_eq!(first_fetch.cache_max_entries, 2);
         assert_eq!(first_fetch.cache_max_bytes, 1024);
         assert_eq!(first_fetch.cache_outcome.as_deref(), Some("stored"));
+        assert_eq!(
+            first_fetch.diagnostic.as_deref(),
+            Some("resource_fetch_cached")
+        );
         assert!(cache.cached_bytes(first).is_some());
 
         let second_fetch =
@@ -1802,6 +1911,7 @@ mod tests {
         assert_eq!(hit.cache_entries, 2);
         assert_eq!(hit.cache_bytes, 6);
         assert_eq!(hit.cache_outcome.as_deref(), Some("hit"));
+        assert_eq!(hit.diagnostic.as_deref(), Some("cache_hit"));
 
         let third_fetch =
             fetch_resource_with_cache(test_resource(third), 64, &mut jar, &mut cache).await;
@@ -1811,6 +1921,10 @@ mod tests {
         assert_eq!(third_fetch.cache_evicted_entries, 1);
         assert_eq!(third_fetch.cache_evicted_bytes, 3);
         assert_eq!(third_fetch.cache_outcome.as_deref(), Some("stored"));
+        assert_eq!(
+            third_fetch.diagnostic.as_deref(),
+            Some("resource_fetch_cached")
+        );
 
         assert_eq!(cache.len(), 2);
         assert!(cache.cached_bytes(first).is_some());
@@ -1837,6 +1951,10 @@ mod tests {
         assert_eq!(fetch.cache_max_entries, 8);
         assert_eq!(fetch.cache_max_bytes, 4);
         assert_eq!(fetch.cache_outcome.as_deref(), Some("skipped_oversize"));
+        assert_eq!(
+            fetch.diagnostic.as_deref(),
+            Some("resource_fetch_uncached_oversize")
+        );
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.total_bytes(), 0);
         assert_eq!(cache.evicted_entries(), 0);
@@ -1885,10 +2003,71 @@ mod tests {
 
         assert_eq!(fetch.status, "skipped");
         assert_eq!(fetch.error_kind.as_deref(), Some("unsupported_scheme"));
+        assert_eq!(fetch.request_timeout_ms, 0);
         assert_eq!(fetch.cache_entries, 0);
         assert_eq!(fetch.cache_bytes, 0);
         assert_eq!(fetch.cache_outcome.as_deref(), Some("skipped"));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("unsupported_scheme"));
         assert!(fetch.error.is_some());
+    }
+
+    #[test]
+    fn document_http_timeout_stays_inside_hosted_initial_render_window() {
+        assert_eq!(duration_millis(http_load_timeout(true)), 6_000);
+        assert_eq!(duration_millis(http_load_timeout(false)), 15_000);
+        assert!(http_load_timeout(true) < Duration::from_millis(8_000));
+        assert!(http_load_timeout(true) < http_load_timeout(false));
+    }
+
+    #[test]
+    fn resource_diagnostic_labels_timeout_and_decode_failures() {
+        assert_eq!(
+            resource_fetch_diagnostic("failed", Some("timeout"), None, None).as_deref(),
+            Some("network_timeout")
+        );
+        assert_eq!(
+            resource_fetch_diagnostic("cached", None, Some("hit"), Some("undecoded")).as_deref(),
+            Some("image_decode_failed")
+        );
+        assert_eq!(
+            document_load_failure_diagnostic("timeout"),
+            "document_timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_resource_fetch_reports_resource_timeout_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (request_head, _) = read_http_request(&mut stream).await;
+            assert!(request_head.starts_with("GET /style.css "));
+            let body = "body { color: #123456; }";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let mut cache = BrowserResourceCache::with_limits(8, 1024);
+        let mut jar = BrowserCookieJar::default();
+        let fetch = fetch_resource_with_cache(
+            test_resource(&format!("http://{addr}/style.css")),
+            1024,
+            &mut jar,
+            &mut cache,
+        )
+        .await;
+        server.await.unwrap();
+
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.request_timeout_ms, 15_000);
+        assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("resource_fetch_cached"));
+        assert_eq!(fetch.cache_entries, 1);
     }
 
     #[test]
@@ -1915,11 +2094,15 @@ mod tests {
         assert_eq!(loaded.bytes, 33);
         assert_eq!(loaded.content_type.as_deref(), Some("text/html"));
         assert_eq!(loaded.error_kind, None);
+        assert_eq!(loaded.request_timeout_ms, 0);
+        assert_eq!(loaded.diagnostic.as_deref(), Some("document_loaded"));
 
         let failed = load_target_with_cookie_jar_report(path.to_str().unwrap(), 4, None).await;
         assert_eq!(failed.status, "failed");
         assert_eq!(failed.bytes, 0);
         assert_eq!(failed.error_kind.as_deref(), Some("byte_cap"));
+        assert_eq!(failed.request_timeout_ms, 0);
+        assert_eq!(failed.diagnostic.as_deref(), Some("document_byte_cap"));
 
         let _ = fs::remove_file(path);
     }
