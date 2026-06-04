@@ -1057,6 +1057,9 @@ fn web_storage_stale_threshold_secs() -> u64 {
 fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
     println!("dry_run: {}", report.dry_run);
     println!("skipped: {}", report.skipped);
+    if report.dry_run && !report.skipped {
+        println!("dry_run_note: no files were rewritten; projected_after shows retained rows");
+    }
     print_web_storage_compaction_artifact(
         "web-cache",
         &report.cache_path,
@@ -1098,6 +1101,10 @@ fn web_storage_compaction_artifact_lines(
         format!("{label}_bytes_after: {}", after.bytes),
         format!("{label}_bytes_projected_after: {}", projected_after.bytes),
         format!(
+            "{label}_bytes_projected_retained: {}",
+            projected_after.bytes
+        ),
+        format!(
             "{label}_bytes_removed: {}",
             before.bytes.saturating_sub(after.bytes)
         ),
@@ -1109,6 +1116,10 @@ fn web_storage_compaction_artifact_lines(
         format!("{label}_entries_after: {}", after.entries),
         format!(
             "{label}_entries_projected_after: {}",
+            projected_after.entries
+        ),
+        format!(
+            "{label}_entries_projected_retained: {}",
             projected_after.entries
         ),
         format!(
@@ -1559,8 +1570,10 @@ mod tests {
         );
 
         assert!(lines.contains(&"web-cache_bytes_projected_after: 80".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_projected_retained: 80".to_owned()));
         assert!(lines.contains(&"web-cache_bytes_projected_removed: 40".to_owned()));
         assert!(lines.contains(&"web-cache_entries_projected_after: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_retained: 4".to_owned()));
         assert!(lines.contains(&"web-cache_entries_projected_removed: 2".to_owned()));
         assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
         assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
