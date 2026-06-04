@@ -8433,6 +8433,10 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("action=link"));
     assert!(html.contains(r#"name="viewport_x" value="0""#));
     assert!(html.contains(r#"name="viewport_y" value="0""#));
+    assert!(html.contains(&format!(
+        r#"name="source" value="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
     assert!(html.contains("action=click-at"));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains("getBoundingClientRect"));
@@ -8796,6 +8800,10 @@ fn browser_session_action_href_preserves_session_and_viewport() {
     assert_eq!(target.param("viewport_x").as_deref(), Some("12"));
     assert_eq!(target.param("viewport_y").as_deref(), Some("7"));
     assert_eq!(target.param("from").as_deref(), Some("/search?q=cat"));
+    assert_eq!(
+        target.param("source").as_deref(),
+        Some("https://example.com")
+    );
 }
 
 #[tokio::test]
@@ -11902,6 +11910,10 @@ async fn browser_page_renders_stale_session_recovery_shell() {
             ("viewport_x".to_owned(), "2".to_owned()),
             ("viewport_y".to_owned(), "12".to_owned()),
             ("max_bytes".to_owned(), "2097152".to_owned()),
+            (
+                "source".to_owned(),
+                "https://example.com/path?x=1".to_owned(),
+            ),
         ],
     };
     let error = registry.apply_target(&stale).await.unwrap_err();
@@ -11939,7 +11951,28 @@ async fn browser_page_renders_stale_session_recovery_shell() {
     assert!(
         response
             .body
-            .contains(r#"<span class="browser-error-disabled">No original URL to retry</span>"#)
+            .contains(r#"data-browser-recovery-source="https://example.com/path?x=1""#)
+    );
+    assert!(response.body.contains(
+        r#"<input data-browser-address type="text" name="url" value="https://example.com/path?x=1""#
+    ));
+    assert!(response.body.contains(
+        r#"<a class="primary-action" href="/browser?url=https%3A%2F%2Fexample.com%2Fpath%3Fx%3D1"#
+    ));
+    assert!(response.body.contains("from=%2Fsearch%3Fq%3Dstale"));
+    assert!(response.body.contains("width=88"));
+    assert!(response.body.contains("height=30"));
+    assert!(response.body.contains("viewport_x=2"));
+    assert!(response.body.contains("viewport_y=12"));
+    assert!(response.body.contains("max_bytes=2097152"));
+    assert!(response.body.contains(r#"name="width" value="88""#));
+    assert!(response.body.contains(r#"name="height" value="30""#));
+    assert!(response.body.contains(r#"name="viewport_x" value="2""#));
+    assert!(response.body.contains(r#"name="viewport_y" value="12""#));
+    assert!(
+        response
+            .body
+            .contains(r#"name="max_bytes" value="2097152""#)
     );
     assert!(
         response
