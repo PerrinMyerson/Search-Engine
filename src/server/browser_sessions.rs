@@ -9640,6 +9640,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   } catch (_) {}
   let raster = shell.querySelector(".browser-raster");
   let clickMarker = shell.querySelector("[data-browser-click-marker]");
+  let lastClickPagePoint = null;
   const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
   const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
   const clickStatusTargets = () => Array.from(document.querySelectorAll("[data-browser-click-status]"));
@@ -9671,6 +9672,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const clearViewportPending = () => {
     shell.removeAttribute("data-viewport-pending");
     shell.removeAttribute("data-viewport-request");
+    shell.removeAttribute("data-pending-viewport-x");
+    shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("aria-busy");
     for (const control of viewportControls()) {
       control.removeAttribute("data-scroll-pending");
@@ -9713,6 +9716,27 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     };
   };
   const pointMessage = (point) => `DOM point x ${point.x}, y ${point.y} (page ${point.pageX}, ${point.pageY})`;
+  const viewportPointFromPagePoint = (pagePoint) => {
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const x = pagePoint.pageX - numberData("viewportX");
+    const y = pagePoint.pageY - numberData("viewportY");
+    if (x < 0 || y < 0 || x >= viewportWidth || y >= viewportHeight) {
+      return null;
+    }
+    return { x, y, pageX: pagePoint.pageX, pageY: pagePoint.pageY };
+  };
+  const updateClickInputs = (point) => {
+    const idPrefix = String.fromCharCode(35);
+    const xInput = document.querySelector(idPrefix + "browser-viewport-click-x");
+    const yInput = document.querySelector(idPrefix + "browser-viewport-click-y");
+    if (xInput) {
+      xInput.value = String(point.x);
+    }
+    if (yInput) {
+      yInput.value = String(point.y);
+    }
+  };
   const hideClickMarker = () => {
     if (clickMarker) {
       clickMarker.hidden = true;
@@ -9729,6 +9753,21 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     clickMarker.style.left = `${left}px`;
     clickMarker.style.top = `${top}px`;
     clickMarker.hidden = false;
+    lastClickPagePoint = { pageX: point.pageX, pageY: point.pageY };
+    updateClickInputs(point);
+  };
+  const restoreClickMarkerAfterPartial = () => {
+    if (!lastClickPagePoint) {
+      return;
+    }
+    const point = viewportPointFromPagePoint(lastClickPagePoint);
+    if (!point) {
+      hideClickMarker();
+      setClickStatus("Hover rendered page to inspect click target.");
+      return;
+    }
+    moveClickMarker(point);
+    setClickStatus(`${pointMessage(point)}. Click to activate.`);
   };
   const scrollMessage = (dx, dy) => {
     if (dx < 0) {
@@ -9789,6 +9828,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (keepFocus) {
       shell.focus({ preventScroll: true });
     }
+    restoreClickMarkerAfterPartial();
     return true;
   };
   const replaceViewportPage = (url, message) => {
@@ -9894,13 +9934,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.scrollUrl, window.location.href);
     url.searchParams.set("dx", String(appliedDx));
     url.searchParams.set("dy", String(appliedDy));
-    return { url, dx: appliedDx, dy: appliedDy };
+    return { url, dx: appliedDx, dy: appliedDy, x: nextX, y: nextY };
   };
   const flushPendingScroll = () => {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
-      setViewportPending("Scroll queued; updating visual viewport...");
+      setViewportPending("Scroll queued; updating visual viewport after current frame...");
       return true;
     }
     const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
@@ -9909,6 +9949,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!scroll) {
       return false;
     }
+    shell.dataset.pendingViewportX = String(scroll.x);
+    shell.dataset.pendingViewportY = String(scroll.y);
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
@@ -9917,7 +9959,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollDy += dy;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
-      setViewportPending("Scroll queued; updating visual viewport...");
+      setViewportPending("Scroll queued; updating visual viewport after current frame...");
       return true;
     }
     const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
@@ -9930,7 +9972,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       }
       return false;
     }
-    setViewportPending("Scrolling visual viewport...");
+    shell.dataset.pendingViewportX = String(pending.x);
+    shell.dataset.pendingViewportY = String(pending.y);
+    setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`);
     if (pendingScrollTimer) {
       clearTimeout(pendingScrollTimer);
     }
