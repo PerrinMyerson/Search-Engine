@@ -2067,6 +2067,14 @@ pub(super) fn selected_supported_srcset_candidate(
     (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
 }
 
+pub(super) fn supported_srcset_candidate_urls(srcset: &str) -> Vec<String> {
+    let candidates = parse_srcset_candidates(srcset);
+    supported_srcset_candidates(&candidates)
+        .into_iter()
+        .map(|candidate| candidate.url.clone())
+        .collect()
+}
+
 fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCandidate> {
     let supported = candidates
         .iter()

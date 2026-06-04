@@ -4768,6 +4768,61 @@ fn skips_invalid_jpeg_srcset_candidate_resources() {
 }
 
 #[tokio::test]
+async fn image_source_coverage_reports_supported_responsive_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let wide = dir.path().join("wide.webp");
+    let preload = dir.path().join("preload.webp");
+    let background = dir.path().join("background.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&wide, tiny_test_webp_bytes()).unwrap();
+    fs::write(&preload, tiny_test_webp_bytes()).unwrap();
+    fs::write(&background, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <link rel="preload" as="image" imagesrcset="preload.avif 320w, preload.webp 640w" imagesizes="80px">
+        </head><body>
+            <img srcset="hero.avif 320w, hero.webp 640w" alt="Hero">
+            <picture>
+                <source type="image/webp" data-currentSrcset="wide.avif 320w, wide.webp 640w">
+                <img alt="Wide">
+            </picture>
+            <section data-bgset="background.avif 320w, background.webp 640w">Background</section>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    let report = session.fetch_current_resources(1024).await.unwrap();
+
+    assert_eq!(report.total, 4);
+    assert_eq!(report.fetched, 4);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.cached_resource_count, 4);
+    assert!(
+        !report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url.ends_with(".avif"))
+    );
+
+    for expected in [&hero, &wide, &preload, &background] {
+        let fetch = report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == expected.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+    }
+}
+
+#[tokio::test]
 async fn fetches_current_resources_and_uses_session_cache() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
