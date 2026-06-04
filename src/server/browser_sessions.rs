@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard, Notify};
-use url::form_urlencoded;
+use url::{Url, form_urlencoded};
 
 use crate::browser::{
     BrowserCookie, BrowserFocusedControl, BrowserForm, BrowserImageRenderReport,
@@ -5774,13 +5774,21 @@ async fn apply_browser_action(
             clear_browser_find_active_line(web_session);
         }
         BrowserSessionAction::Link(index) => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .activate_link(index)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
+            if current_session_source(web_session) != before {
+                reset_viewport_after_navigation(web_session);
+                clear_browser_find_active_line(web_session);
+            }
+            set_browser_navigation_feedback(
+                web_session,
+                format!("Opened link {}", index + 1),
+                before,
+            );
         }
         BrowserSessionAction::Anchor(index) => {
             apply_browser_anchor(web_session, index)?;
@@ -5791,22 +5799,44 @@ async fn apply_browser_action(
             clear_browser_find_active_line(web_session);
         }
         BrowserSessionAction::LinkText(text) => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .activate_link_text(&text)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
+            if current_session_source(web_session) != before {
+                reset_viewport_after_navigation(web_session);
+                clear_browser_find_active_line(web_session);
+            }
+            set_browser_navigation_feedback(
+                web_session,
+                format!(
+                    "Opened link text {}",
+                    browser_session_feedback_excerpt(&text)
+                ),
+                before,
+            );
         }
         BrowserSessionAction::LinkSelector(selector) => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .activate_link_selector(&selector)
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
+            if current_session_source(web_session) != before {
+                reset_viewport_after_navigation(web_session);
+                clear_browser_find_active_line(web_session);
+            }
+            set_browser_navigation_feedback(
+                web_session,
+                format!(
+                    "Opened link selector {}",
+                    browser_session_feedback_excerpt(&selector)
+                ),
+                before,
+            );
         }
         BrowserSessionAction::History(index) => {
             apply_browser_history_entry(web_session, index)?;
@@ -14189,13 +14219,61 @@ fn set_browser_click_feedback(
 ) {
     let after = current_session_interaction_snapshot(web_session);
     let suffix = if browser_interaction_snapshot_navigated(&before, web_session) {
-        "; navigated"
+        let target = after
+            .as_ref()
+            .map(|snapshot| snapshot.source.as_str())
+            .unwrap_or("current page");
+        let scope = browser_session_navigation_scope(
+            before.as_ref().map(|snapshot| snapshot.source.as_str()),
+            target,
+        );
+        web_session.action_feedback = Some(format!(
+            "{label}; opened {scope}: {}",
+            browser_session_feedback_excerpt(target)
+        ));
+        return;
     } else if before != after {
-        "; page updated"
+        "; page updated; viewport preserved"
     } else {
-        "; no visible change"
+        "; no visible change; viewport preserved"
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
+}
+
+fn set_browser_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    label: String,
+    before: Option<String>,
+) {
+    let after = current_session_source(web_session);
+    if after != before {
+        let target = after.as_deref().unwrap_or("current page");
+        let scope = browser_session_navigation_scope(before.as_deref(), target);
+        web_session.action_feedback = Some(format!(
+            "{label}; opened {scope}: {}",
+            browser_session_feedback_excerpt(target)
+        ));
+    } else {
+        web_session.action_feedback = Some(format!("{label}; no navigation; viewport preserved"));
+    }
+}
+
+fn browser_session_navigation_scope(before: Option<&str>, after: &str) -> &'static str {
+    let Some(after_url) = Url::parse(after).ok() else {
+        return "local page";
+    };
+    let Some(before_url) = before.and_then(|source| Url::parse(source).ok()) else {
+        return if after_url.has_host() {
+            "external page"
+        } else {
+            "local page"
+        };
+    };
+    if before_url.scheme() == after_url.scheme() && before_url.host_str() == after_url.host_str() {
+        "internal page"
+    } else {
+        "external page"
+    }
 }
 
 fn set_browser_form_navigation_feedback(
