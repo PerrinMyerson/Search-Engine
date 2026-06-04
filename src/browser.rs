@@ -4225,17 +4225,32 @@ fn nearest_retained_layout_parent(
 fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
     let mut max_column = render.viewport_width.max(1);
     let mut max_row = 1usize;
-    for command in &render.display_list {
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !display_command_affects_scroll_extent(render, command_index) {
+            continue;
+        }
         let bounds = display_command_bounds(command);
         max_column = max_column.max(bounds.x.saturating_add(bounds.width));
         max_row = max_row.max(bounds.y.saturating_add(bounds.height));
     }
     for layout_box in &render.layout_boxes {
+        if !layout_box.command_indices.is_empty()
+            && layout_box
+                .command_indices
+                .iter()
+                .all(|command_index| !display_command_affects_scroll_extent(render, *command_index))
+        {
+            continue;
+        }
         let bounds = layout_box_bounds(layout_box);
         max_column = max_column.max(bounds.x.saturating_add(bounds.width));
         max_row = max_row.max(bounds.y.saturating_add(bounds.height));
     }
     (max_column, max_row)
+}
+
+fn display_command_affects_scroll_extent(render: &BrowserRender, command_index: usize) -> bool {
+    !display_command_viewport_fixed(render, command_index)
 }
 
 fn layout_box_bounds(layout_box: &BrowserLayoutBox) -> DisplayCommandBounds {
