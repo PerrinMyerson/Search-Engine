@@ -5375,6 +5375,146 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
 }
 
 #[test]
+fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
+    let image_url = "mem://inline-svg-context-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![20, 140, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height:12px"></div>
+              <section style="display:flex; gap:0 8px; background-color:rgb(245,245,245)">
+                <img src="{image_url}" width="16" height="12" alt="">
+                <svg width="24" height="24" viewBox="0 0 24 24"><rect width="24" height="24" fill="rgb(0,180,0)"></rect></svg>
+                <div>Chart note</div>
+              </section>
+              <p>After graphic</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://inline-svg-context",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render inline svg mixed content fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    let svg_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == rgb_to_luma(0, 180, 0) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("inline svg fill command");
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Chart note") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("chart note text command");
+    assert_eq!(image_bounds, (0, 1, 2, 1));
+    assert_eq!(svg_bounds, (3, 1, 3, 2));
+    assert_eq!(text_position.1, 1);
+    assert!(text_position.0 >= svg_bounds.0.saturating_add(svg_bounds.2));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(32),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled inline svg row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[20, 140, 220, 255]
+    );
+    let svg_sample_x = raster_options
+        .padding_x
+        .saturating_add(svg_bounds.0.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(svg_sample_x, raster_options.padding_y),
+        &[
+            rgb_to_luma(0, 180, 0),
+            rgb_to_luma(0, 180, 0),
+            rgb_to_luma(0, 180, 0),
+            255,
+        ]
+    );
+    let text_x_start = raster_options
+        .padding_x
+        .saturating_add(text_position.0.saturating_mul(raster_options.cell_width));
+    let text_x_end =
+        text_x_start.saturating_add("Chart note".len().saturating_mul(raster_options.cell_width));
+    let text_has_ink = (raster_options.padding_y
+        ..raster_options
+            .padding_y
+            .saturating_add(raster_options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (text_x_start..text_x_end.min(rgba.width)).any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        });
+    assert!(text_has_ink);
+}
+
+#[test]
 fn flex_column_keeps_image_and_text_stable_in_scrolled_viewport() {
     let image_url = "mem://flex-column-photo".to_owned();
     let decoded = DecodedImage {
