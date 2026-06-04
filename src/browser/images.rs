@@ -428,6 +428,8 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut width = None;
     let mut height = None;
     let mut rects = Vec::new();
+    let mut circles = Vec::new();
+    let mut ellipses = Vec::new();
 
     while cursor < bytes.len() {
         let Some(offset) = memchr(b'<', &bytes[cursor..]) else {
@@ -453,9 +455,23 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         .get("height")
                         .and_then(|value| parse_svg_pixel_dimension(value))
                         .or(height);
+                    if (width.is_none() || height.is_none())
+                        && let Some((view_box_width, view_box_height)) = attrs
+                            .get("viewbox")
+                            .and_then(|value| parse_svg_viewbox_dimensions(value))
+                    {
+                        width = width.or(Some(view_box_width));
+                        height = height.or(Some(view_box_height));
+                    }
                 }
                 "rect" => {
                     rects.push(attrs);
+                }
+                "circle" => {
+                    circles.push(attrs);
+                }
+                "ellipse" => {
+                    ellipses.push(attrs);
                 }
                 _ => {}
             }
@@ -467,10 +483,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let height = height?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut pixels = vec![255u8; width.checked_mul(height)?];
     for rect in rects {
-        let Some(fill) = rect
-            .get("fill")
-            .and_then(|value| parse_css_color_shade(value))
-        else {
+        let Some(fill) = svg_shape_fill_shade(&rect) else {
             continue;
         };
         let x = rect
@@ -494,6 +507,56 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             .unwrap_or(height.saturating_sub(y))
             .min(height.saturating_sub(y));
         fill_decoded_rect(&mut pixels, width, x, y, rect_width, rect_height, fill);
+    }
+    for circle in circles {
+        let Some(fill) = svg_shape_fill_shade(&circle) else {
+            continue;
+        };
+        let Some(cx) = circle.get("cx").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        let Some(cy) = circle.get("cy").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        let Some(radius) = circle.get("r").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        fill_decoded_ellipse(
+            &mut pixels,
+            width,
+            height,
+            SvgEllipse {
+                cx,
+                cy,
+                rx: radius,
+                ry: radius,
+            },
+            fill,
+        );
+    }
+    for ellipse in ellipses {
+        let Some(fill) = svg_shape_fill_shade(&ellipse) else {
+            continue;
+        };
+        let Some(cx) = ellipse.get("cx").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        let Some(cy) = ellipse.get("cy").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        let Some(rx) = ellipse.get("rx").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        let Some(ry) = ellipse.get("ry").and_then(|value| parse_svg_number(value)) else {
+            continue;
+        };
+        fill_decoded_ellipse(
+            &mut pixels,
+            width,
+            height,
+            SvgEllipse { cx, cy, rx, ry },
+            fill,
+        );
     }
 
     Some(DecodedImage {
@@ -990,6 +1053,61 @@ fn parse_svg_pixel_dimension(value: &str) -> Option<usize> {
     (pixels > 0).then_some(pixels)
 }
 
+fn parse_svg_number(value: &str) -> Option<f32> {
+    let value = value.trim().trim_end_matches("px").trim();
+    if value.is_empty() || value.contains('%') {
+        return None;
+    }
+    let number = value.parse::<f32>().ok()?;
+    number.is_finite().then_some(number)
+}
+
+fn parse_svg_viewbox_dimensions(value: &str) -> Option<(usize, usize)> {
+    let mut numbers = value
+        .split(|character: char| character.is_ascii_whitespace() || character == ',')
+        .filter(|part| !part.is_empty())
+        .filter_map(parse_svg_number);
+    let _min_x = numbers.next()?;
+    let _min_y = numbers.next()?;
+    let width = numbers.next()?;
+    let height = numbers.next()?;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((
+        (width.ceil() as usize).clamp(1, MAX_DECODED_IMAGE_SIDE),
+        (height.ceil() as usize).clamp(1, MAX_DECODED_IMAGE_SIDE),
+    ))
+}
+
+fn svg_shape_fill_shade(attrs: &std::collections::HashMap<String, String>) -> Option<u8> {
+    attrs
+        .get("fill")
+        .and_then(|value| {
+            let value = value.trim();
+            (!value.eq_ignore_ascii_case("none"))
+                .then(|| parse_css_color_shade(value))
+                .flatten()
+        })
+        .or_else(|| svg_style_fill_shade(attrs.get("style")?))
+}
+
+fn svg_style_fill_shade(style: &str) -> Option<u8> {
+    style.split(';').find_map(|declaration| {
+        let (property, value) = declaration.split_once(':')?;
+        property
+            .trim()
+            .eq_ignore_ascii_case("fill")
+            .then(|| {
+                let value = value.trim();
+                (!value.eq_ignore_ascii_case("none"))
+                    .then(|| parse_css_color_shade(value))
+                    .flatten()
+            })
+            .flatten()
+    })
+}
+
 fn fill_decoded_rect(
     pixels: &mut [u8],
     image_width: usize,
@@ -1003,6 +1121,48 @@ fn fill_decoded_rect(
         for column in x..x.saturating_add(width) {
             let Some(pixel) =
                 pixels.get_mut(row.saturating_mul(image_width).saturating_add(column))
+            else {
+                continue;
+            };
+            *pixel = value;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SvgEllipse {
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+}
+
+fn fill_decoded_ellipse(
+    pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    ellipse: SvgEllipse,
+    value: u8,
+) {
+    if ellipse.rx <= 0.0 || ellipse.ry <= 0.0 {
+        return;
+    }
+    let min_x = ellipse.cx - ellipse.rx;
+    let max_x = ellipse.cx + ellipse.rx;
+    let min_y = ellipse.cy - ellipse.ry;
+    let max_y = ellipse.cy + ellipse.ry;
+    let start_x = min_x.floor().max(0.0) as usize;
+    let end_x = max_x.ceil().max(0.0).min(image_width as f32) as usize;
+    let start_y = min_y.floor().max(0.0) as usize;
+    let end_y = max_y.ceil().max(0.0).min(image_height as f32) as usize;
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let dx = (x as f32 + 0.5 - ellipse.cx) / ellipse.rx;
+            let dy = (y as f32 + 0.5 - ellipse.cy) / ellipse.ry;
+            if dx.mul_add(dx, dy * dy) > 1.0 {
+                continue;
+            }
+            let Some(pixel) = pixels.get_mut(y.saturating_mul(image_width).saturating_add(x))
             else {
                 continue;
             };
