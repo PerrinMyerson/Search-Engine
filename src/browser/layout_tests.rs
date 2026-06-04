@@ -4054,6 +4054,114 @@ fn css_overflow_hidden_clips_paint_and_flow_extent() {
 }
 
 #[test]
+fn overflow_clipped_image_samples_original_source_in_scrolled_viewport() {
+    let image_url = "mem://overflow-clipped-source-image";
+    let decoded = DecodedImage {
+        width: 1,
+        height: 2,
+        pixels: vec![80, 160],
+        rgb_pixels: Some(vec![220, 20, 20, 20, 60, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.to_owned(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height:12px"></div>
+              <section style="position:relative; overflow:hidden; height:12px; background:rgb(230,230,230)">
+                <img src="{image_url}" width="16" height="24" alt="" style="position:absolute; top:-12px">
+              </section>
+              <p>After clipped image</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://overflow-clipped-source",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render overflow clipped source fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("clipped image command");
+    assert_eq!(image_bounds, (0, 1, 2, 1));
+
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "After clipped image" =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("following body text command");
+    assert_eq!(text_position.1, 2);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(24),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize overflow clipped source slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[20, 60, 220, 255]
+    );
+    let text_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        .saturating_add(2);
+    let text_has_ink = (raster_options.padding_x
+        ..raster_options
+            .padding_x
+            .saturating_add(12usize.saturating_mul(raster_options.cell_width)))
+        .any(|x| pixel(x, text_y) == &[0, 0, 0, 255]);
+    assert!(text_has_ink);
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
