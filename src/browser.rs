@@ -85,8 +85,8 @@ use forms::{
 };
 use fragments::{collect_fragment_targets, source_fragment};
 use images::{
-    DecodedImage, DecodedImageEntry, DecodedImageInfo, decode_image_reference,
-    decoded_cached_images, decoded_image_entry, image_render_source,
+    DecodedImage, DecodedImageEntry, DecodedImageInfo, background_image_render_source,
+    decode_image_reference, decoded_cached_images, decoded_image_entry, image_render_source,
 };
 #[cfg(test)]
 use images::{decode_simple_png, tiny_test_jpeg_bytes, tiny_test_jpeg_data_url};
@@ -3221,6 +3221,8 @@ impl BrowserSession {
             &page_source,
             &css_cascade,
         ));
+        let mut seen_image_resources = HashSet::new();
+        image_resources.retain(|resource| seen_image_resources.insert(resource.resolved.clone()));
         let mut fetches = Vec::with_capacity(image_resources.len());
 
         for resource in image_resources {
@@ -15788,6 +15790,11 @@ fn computed_style(
         if let Some(inline_min_height) = inline.min_height {
             min_height = inline_min_height;
         }
+    }
+    if background_image_url.is_none()
+        && let Some(lazy_background_image_url) = background_image_render_source(element)
+    {
+        background_image_url = Some(lazy_background_image_url);
     }
     ComputedStyle {
         display,
