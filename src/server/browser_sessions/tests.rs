@@ -2477,6 +2477,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(html.contains("setViewportPending"));
     assert!(html.contains("const replaceViewportPage"));
+    assert!(html.contains("const replaceViewportPartial"));
+    assert!(html.contains("const applyViewportPartial"));
+    assert!(html.contains("new DOMParser().parseFromString"));
+    assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
+    assert!(html.contains(r#""X-Requested-With": "browser-viewport-partial""#));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-scroll""#));
     assert!(html.contains("window.history.pushState(null"));
     assert!(html.contains("document.write(html)"));
@@ -2490,14 +2495,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("setTimeout(flushPendingScroll, 80)"));
     assert!(html.contains("Scrolling visual viewport..."));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
-    assert!(html.contains(
-        r#"const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"))"#
-    ));
-    assert!(html.contains(
-        r#"const feedbackTargets = Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"))"#
-    ));
+    assert!(html.contains("const viewportControls = () => Array.from"));
+    assert!(html.contains("const viewportFeedbackTargets = () => Array.from"));
     assert!(html.contains("const setViewportFeedback"));
-    assert!(html.contains("for (const feedback of feedbackTargets)"));
+    assert!(html.contains("for (const feedback of viewportFeedbackTargets())"));
     assert!(html.contains("feedback.textContent = message"));
     assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
     assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
@@ -2516,6 +2517,29 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Already at right edge."));
     assert!(html.contains("Viewport is already at that position."));
     assert!(html.contains(r#"event.preventDefault();"#));
+
+    let partial_target = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("partial".to_owned(), "viewport".to_owned())],
+    };
+    assert!(browser_session_target_wants_viewport_partial(
+        &partial_target
+    ));
+    let partial = render_browser_session_viewport_partial(&payload);
+    assert!(partial.contains(r#"data-browser-partial-viewport"#));
+    assert!(partial.contains(r#"data-browser-partial-raster"#));
+    assert!(partial.contains(r#"data-browser-partial-status"#));
+    assert!(partial.contains(r#"data-browser-partial-interactions"#));
+    assert!(partial.contains(r#"data-browser-partial-scroll-controls"#));
+    assert!(partial.contains(r#"data-browser-partial-command-strip"#));
+    assert!(partial.contains(r#"data-viewport-x="8""#));
+    assert!(partial.contains(r#"data-viewport-y="4""#));
+    assert!(partial.contains(r#"class="browser-raster-shell""#));
+    assert!(partial.contains(r#"data-browser-viewport-status"#));
+    assert!(partial.contains(r#"data-browser-viewport-controls"#));
+    assert!(partial.contains(r#"data-browser-viewport-command-strip"#));
+    assert!(!partial.contains("<!doctype html>"));
+    assert!(!partial.contains("<script"));
     assert!(html.contains("isInteractiveTarget(event.target)"));
     assert!(html.contains("shell.contains(event.target)"));
     assert!(html.contains(r#"event.key === " " && event.shiftKey"#));
@@ -11329,7 +11353,7 @@ async fn browser_session_page_renders_form_controls() {
     let viewport_index = html.find(r#"class="browser-viewport-primary""#).unwrap();
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
-    let debug_index = html.find(r#"<section class="debug-stack">"#).unwrap();
+    let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     assert!(topbar_index < title_index);
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
@@ -11345,6 +11369,9 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"<summary>Page and session details</summary>"#));
     assert!(html.contains(r#"<summary>Browser controls and status</summary>"#));
+    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
+    assert!(html.contains(r#"class="debug-stack-content""#));
     assert!(
         html.find(r#"<summary>Tabs and saved state</summary>"#)
             .unwrap()
