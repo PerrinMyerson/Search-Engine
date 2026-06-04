@@ -5327,7 +5327,7 @@ fn raster_viewport_needs_readable_context(
 ) -> bool {
     let visual_rows = raster_viewport_visual_fill_row_count(render, viewport);
     visual_rows >= text_viewport_mixed_media_row_threshold(viewport.height)
-        && viewport_needs_more_body_context(render, viewport, visual_rows, visual_rows)
+        && raster_viewport_needs_more_body_context(render, viewport, visual_rows)
 }
 
 fn viewport_needs_more_body_context(
@@ -5344,6 +5344,23 @@ fn viewport_needs_more_body_context(
 
 fn viewport_minimum_readable_body_rows(height: usize) -> usize {
     height.min(2)
+}
+
+fn raster_viewport_needs_more_body_context(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    visual_rows: usize,
+) -> bool {
+    let meaningful_rows = viewport_meaningful_visible_text_row_count(render, viewport, false);
+    meaningful_rows < raster_viewport_minimum_readable_body_rows(viewport.height, visual_rows)
+}
+
+fn raster_viewport_minimum_readable_body_rows(height: usize, visual_rows: usize) -> usize {
+    if visual_rows >= height.saturating_sub(1).max(1) {
+        height.min(3)
+    } else {
+        viewport_minimum_readable_body_rows(height)
+    }
 }
 
 fn viewport_meaningful_visible_text_row_count(
