@@ -794,6 +794,9 @@ fn resource_fetch_diagnostic(
     ) {
         return Some("image_decode_failed".to_owned());
     }
+    if image_decode_status == Some("decoded") {
+        return Some("image_decoded".to_owned());
+    }
     if image_decode_status == Some("not_fetched") {
         return Some("image_not_fetched".to_owned());
     }
@@ -1958,6 +1961,38 @@ mod tests {
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.total_bytes(), 0);
         assert_eq!(cache.evicted_entries(), 0);
+    }
+
+    #[tokio::test]
+    async fn data_image_fetch_reports_decode_status_and_diagnostic() {
+        let mut cache = BrowserResourceCache::with_limits(8, 4096);
+        let mut jar = BrowserCookieJar::default();
+        let image = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='3'%20height='2'%3E%3Crect%20width='3'%20height='2'%20fill='red'/%3E%3C/svg%3E";
+
+        let fetch = fetch_resource_with_cache(
+            BrowserResource {
+                kind: "image".to_owned(),
+                initiator: "img".to_owned(),
+                url: image.to_owned(),
+                resolved: image.to_owned(),
+                rel: None,
+                media: None,
+                alt: None,
+                type_hint: None,
+            },
+            4096,
+            &mut jar,
+            &mut cache,
+        )
+        .await;
+
+        assert_eq!(fetch.status, "cached");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.decoded_width, Some(3));
+        assert_eq!(fetch.decoded_height, Some(2));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
+        assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
     }
 
     #[test]
