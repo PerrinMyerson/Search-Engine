@@ -1329,6 +1329,68 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
 }
 
 #[test]
+fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
+    let unknown = glyph_rows('\u{2603}');
+    assert_ne!(glyph_rows('a'), glyph_rows('A'));
+    assert_ne!(glyph_rows('q'), glyph_rows('Q'));
+    for ch in ['@', '#', '%', '*', '|', '<', '>'] {
+        assert_ne!(glyph_rows(ch), unknown, "{ch} should not use unknown glyph");
+    }
+
+    let render = BrowserRender {
+        source: "mem://raster-typography".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 1,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default()],
+        display_list: vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "aA@#%".to_owned(),
+        }],
+        text: "aA@#%".to_owned(),
+    };
+
+    let raster_options = BrowserRasterOptions::default();
+    let raster = rasterize_render(&render, raster_options).expect("rasterize typography glyphs");
+    let lowercase_top_pixel = raster_options
+        .padding_y
+        .saturating_add(2)
+        .saturating_mul(raster.width)
+        .saturating_add(raster_options.padding_x.saturating_add(2));
+    let uppercase_top_pixel = raster_options
+        .padding_y
+        .saturating_add(2)
+        .saturating_mul(raster.width)
+        .saturating_add(
+            raster_options
+                .padding_x
+                .saturating_add(raster_options.cell_width)
+                .saturating_add(2),
+        );
+    assert_eq!(raster.pixels[lowercase_top_pixel], 255);
+    assert_eq!(raster.pixels[uppercase_top_pixel], 0);
+    assert_eq!(
+        display_command_bounds(&render.display_list[0]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 0,
+            width: 5,
+            height: 1,
+        }
+    );
+}
+
+#[test]
 fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
     let render = render_html(
         "mem://text-indent",
