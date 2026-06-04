@@ -4275,6 +4275,106 @@ fn fixed_visuals_do_not_extend_scroll_extent_but_paint_in_scrolled_viewport() {
 }
 
 #[test]
+fn sticky_zero_z_index_background_paints_above_later_image_in_scrolled_rgba_viewport() {
+    let image_url = "mem://sticky-zero-layer-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![120],
+        rgb_pixels: Some(vec![30, 120, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height:24px"></div>
+              <header style="position:sticky; top:0; z-index:0; height:12px; background:rgb(245,245,245); color:rgb(0,0,0)">Sticky nav</header>
+              <img src="{image_url}" width="192" height="48" alt="">
+              <p>Body copy</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://sticky-zero-layer",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render sticky zero z-index overlap fixture");
+
+    let paint_order = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image { .. } => Some("image".to_owned()),
+            DisplayCommand::Rect { shade, .. } if *shade == 245 => Some("sticky-bg".to_owned()),
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                if text == "Sticky nav" =>
+            {
+                Some("sticky-text".to_owned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(paint_order, vec!["image", "sticky-bg", "sticky-text"]);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(3),
+        viewport_width: Some(32),
+        viewport_height: Some(5),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize sticky overlap slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    let sticky_background_x = raster_options
+        .padding_x
+        .saturating_add(18usize.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(sticky_background_x, raster_options.padding_y),
+        &[245, 245, 245, 255]
+    );
+    let image_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height);
+    assert_eq!(
+        pixel(raster_options.padding_x, image_y),
+        &[30, 120, 220, 255]
+    );
+
+    let text_y = raster_options.padding_y.saturating_add(2);
+    let sticky_text_has_ink = (raster_options.padding_x
+        ..raster_options
+            .padding_x
+            .saturating_add(10usize.saturating_mul(raster_options.cell_width)))
+        .any(|x| pixel(x, text_y) == &[0, 0, 0, 255]);
+    assert!(sticky_text_has_ink);
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
