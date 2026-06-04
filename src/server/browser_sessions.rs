@@ -8997,8 +8997,15 @@ a {{ color: #123fae; text-decoration: none; font-weight: 700; overflow-wrap: any
 a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
-.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 8px; margin: -18px -18px 14px; padding: 10px 18px 8px; background: rgba(247, 247, 245, 0.96); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
-.browser-primary-nav {{ margin-bottom: 0; }}
+.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 6px; margin: -18px -18px 14px; padding: 8px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
+.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 8px; align-items: center; }}
+.browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
+.browser-primary-nav a, .browser-primary-nav span {{ min-width: 36px; justify-content: center; padding: 0 9px; white-space: nowrap; }}
+.browser-chrome-status {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; color: #5d636b; font-size: 12px; font-weight: 800; }}
+.browser-chrome-status .viewport-state-chip {{ min-height: 24px; padding: 0 7px; font-size: 11px; }}
+.browser-chrome-status a {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 8px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
+.browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
+.browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
 .browser-tab-strip {{ display: flex; gap: 6px; overflow-x: auto; margin: 0 0 10px; padding: 2px 0 4px; scrollbar-gutter: stable; }}
 .browser-tab-pill {{ flex: 0 0 clamp(150px, 22vw, 230px); min-width: 0; display: grid; gap: 2px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 7px 9px; background: #fff; color: #20242a; text-decoration: none; }}
 .browser-tab-pill:hover {{ text-decoration: none; border-color: #8f98a3; }}
@@ -9024,7 +9031,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .toolbar button {{ cursor: pointer; background: #2457d6; color: #fff; border-color: #2457d6; }}
 [data-browser-auto-visual-control][aria-busy="true"] a[href^="/browser"], [data-browser-auto-visual-control][aria-busy="true"] button {{ cursor: wait; opacity: 0.62; }}
-.address-bar {{ margin-bottom: 0; }}
+.address-bar {{ margin-bottom: 0; flex-wrap: nowrap; }}
 .address-bar input[name="url"] {{ flex: 1 1 420px; }}
 .secondary-toolbar {{ margin: 0 0 12px; }}
 .viewport-jump {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }}
@@ -9173,12 +9180,13 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector th, .browser-inspector td {{ border-top: 1px solid #eef0f3; padding: 7px 6px; color: #3a3f45; font-size: 12px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }}
 .browser-inspector th {{ color: #5d636b; font-weight: 700; }}
 .browser-inspector .current-row td {{ background: #eef4ff; }}
-@media (max-width: 720px) {{ .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} .viewport-interaction-row {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 720px) {{ .browser-chrome-row {{ grid-template-columns: 1fr; }} .browser-primary-nav, .address-bar {{ overflow-x: auto; }} .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} .viewport-interaction-row {{ grid-template-columns: 1fr; }} }}
 </style>
 </head>
 <body>
 <main>
 <header class="browser-topbar">
+<div class="browser-chrome-row" data-browser-chrome>
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
@@ -9191,6 +9199,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
+</div>
+<div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 {primary_tab_strip}
 </header>
 <section class="browser-page-head">
@@ -9203,7 +9213,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details class="browser-controls-tray" data-browser-controls-tray><summary>Advanced browser controls</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>Advanced browser controls</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
 </section>
 <details class="debug-stack browser-tools-menu" data-browser-tools-tray>
 <summary>More browser tools</summary>
@@ -9269,6 +9279,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_jump = viewport_jump,
         viewport_status = viewport_status,
         auto_visual_bootstrap = auto_visual_bootstrap,
+        browser_chrome_status = render_browser_session_chrome_status(payload),
+        tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
         navigation_state = navigation_state,
         resource_quick_actions = resource_quick_actions,
@@ -11996,6 +12008,55 @@ fn browser_scroll_axis_state(
     } else {
         middle_label
     }
+}
+
+fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
+    let mut status = String::new();
+    let raster_label = if let Some(image) = &payload.viewport_image {
+        format!("raster {}x{}", image.width, image.height)
+    } else if payload.viewport_image_error.is_some() {
+        "raster error".to_owned()
+    } else {
+        "raster unavailable".to_owned()
+    };
+    let _ = write!(
+        status,
+        r#"<span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{raster}</span>"#,
+        id = html_escape::encode_text(&payload.id),
+        width = payload.width,
+        height = payload.height,
+        x = payload.viewport_x,
+        max_x = payload.max_scroll_x,
+        y = payload.viewport_y,
+        max_y = payload.max_scroll_y,
+        raster = html_escape::encode_text(&raster_label),
+    );
+
+    let action_urls = browser_session_resource_action_urls(payload);
+    status.push_str(
+        &browser_session_resource_action_link_with_class_and_attributes(
+            action_urls.make_visual.as_deref(),
+            "Make readable",
+            "browser-chrome-tool primary-action",
+            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
+        ),
+    );
+    let load_images_label = format!(
+        "Load {}",
+        browser_resource_count_label(payload.resource_image_count, "image", "images")
+    );
+    status.push_str(
+        &browser_session_resource_action_link_with_class_and_attributes(
+            action_urls.load_images.as_deref(),
+            &load_images_label,
+            "browser-chrome-tool",
+            r#" data-browser-resource-action data-browser-resource-status="Loading images...""#,
+        ),
+    );
+    status.push_str(
+        r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
+    );
+    status
 }
 
 fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> String {
