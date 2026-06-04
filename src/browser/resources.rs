@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::images::{
-    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, image_sizes_attr,
-    selected_supported_srcset_candidate, srcset_candidate_urls, supported_srcset_candidate_urls,
+    ImageDecodeDiagnostic, image_decode_diagnostic, image_mime_type_supported, image_render_source,
+    image_sizes_attr, selected_supported_srcset_candidate, srcset_candidate_urls,
+    supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -823,11 +824,15 @@ fn collect_resources_at(
                 push_image_srcset_resources(resources, source, element, "image_candidate");
                 push_image_alias_resources(resources, source, element);
             }
-            "source" if parent_element_tag_is(dom, node_id, "picture") => {
+            "source"
+                if parent_element_tag_is(dom, node_id, "picture")
+                    && picture_source_resource_type_supported(element) =>
+            {
                 push_src_resource(resources, source, element, "image");
                 push_image_srcset_resources(resources, source, element, "image_candidate");
                 push_image_alias_resources(resources, source, element);
             }
+            "source" if parent_element_tag_is(dom, node_id, "picture") => {}
             "source" => {
                 push_src_resource(resources, source, element, "media_source");
                 push_srcset_resources(resources, source, element, "media_candidate");
@@ -865,6 +870,13 @@ fn collect_resources_at(
     for &child in &node.children {
         collect_resources_at(dom, child, source, resources);
     }
+}
+
+fn picture_source_resource_type_supported(element: &ElementData) -> bool {
+    element
+        .attrs
+        .get("type")
+        .is_none_or(|source_type| image_mime_type_supported(source_type))
 }
 
 fn parent_element_tag_is(dom: &Dom, node_id: usize, tag: &str) -> bool {
