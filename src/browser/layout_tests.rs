@@ -5663,6 +5663,103 @@ fn inline_svg_vector_color_shapes_share_scrolled_viewport_with_image_and_text() 
 }
 
 #[test]
+fn inline_svg_current_color_survives_hosted_visible_png_raster() {
+    let html = br##"
+        <html><body>
+          <div style="height:12px"></div>
+          <section style="display:flex; gap:0 8px; color:rgb(128,0,200)">
+            <svg width="32" height="24" viewBox="0 0 32 24" style="color:rgb(128,0,200)">
+              <path d="M0 0H32V24H0Z" fill="currentColor"></path>
+              <rect x="8" y="0" width="8" height="12"></rect>
+            </svg>
+            <div>Color vector text</div>
+          </section>
+        </body></html>
+    "##;
+    let render = render_html_prepared_with_inputs(
+        "mem://inline-svg-current-color-png",
+        html,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+    .expect("render currentColor SVG fixture");
+
+    let color_rects = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+                ..
+            } => Some(((*red, *green, *blue), (*x, *y, *width, *height))),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(color_rects.contains(&((128, 0, 200), (0, 1, 4, 2))));
+    assert!(color_rects.contains(&((0, 0, 0), (1, 1, 1, 1))));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(48),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize hosted-visible currentColor SVG slice");
+    let png = rgba.encode_png().expect("encode hosted-visible PNG");
+    let decoded = decode_simple_png(&png).expect("decode hosted-visible PNG");
+    assert_eq!(decoded.width, rgba.width);
+    assert_eq!(decoded.height, rgba.height);
+    let rgb = decoded.rgb_pixels.expect("PNG keeps RGB pixels");
+    let sample = |cell_x: usize, cell_y: usize| {
+        let x = raster_options
+            .padding_x
+            .saturating_add(cell_x.saturating_mul(raster_options.cell_width));
+        let y = raster_options
+            .padding_y
+            .saturating_add(cell_y.saturating_mul(raster_options.cell_height));
+        let index = y
+            .saturating_mul(decoded.width)
+            .saturating_add(x)
+            .saturating_mul(3);
+        &rgb[index..index.saturating_add(3)]
+    };
+    assert_eq!(sample(0, 0), &[128, 0, 200]);
+    assert_eq!(sample(1, 0), &[0, 0, 0]);
+
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Color vector text") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("adjacent SVG text command");
+    assert_eq!(text_position.1, 1);
+    assert!(text_position.0 >= 4);
+}
+
+#[test]
 fn flex_column_keeps_image_and_text_stable_in_scrolled_viewport() {
     let image_url = "mem://flex-column-photo".to_owned();
     let decoded = DecodedImage {
