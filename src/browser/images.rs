@@ -1545,6 +1545,12 @@ fn svg_shape_stroke_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
 
 fn svg_shape_paint(attrs: &HashMap<String, String>, property: &str) -> Option<SvgPaint> {
     let value = svg_shape_paint_value(attrs, property)?;
+    if svg_paint_is_current_color(value) {
+        return Some(SvgPaint {
+            shade: 0,
+            rgb: [0, 0, 0],
+        });
+    }
     let shade = parse_css_color_shade(value)?;
     let rgb = parse_svg_css_color_rgb(value).unwrap_or([shade, shade, shade]);
     Some(SvgPaint { shade, rgb })
@@ -1577,6 +1583,13 @@ fn svg_paint_value(value: &str) -> Option<&str> {
         && !value.eq_ignore_ascii_case("transparent")
         && !value.is_empty())
     .then_some(value)
+}
+
+fn svg_paint_is_current_color(value: &str) -> bool {
+    value
+        .split_ascii_whitespace()
+        .map(|token| token.trim_matches(|ch: char| ch == ',' || ch == ';'))
+        .any(|token| token.eq_ignore_ascii_case("currentcolor"))
 }
 
 fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
