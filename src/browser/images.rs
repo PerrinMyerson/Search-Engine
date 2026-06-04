@@ -1628,9 +1628,15 @@ fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
     if let Some(rgb) = parse_svg_rgb_function(value) {
         return Some(rgb);
     }
+    if let Some(rgb) = parse_svg_hsl_function(value) {
+        return Some(rgb);
+    }
     for token in value.split_ascii_whitespace() {
         let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
         if let Some(rgb) = parse_svg_rgb_function(token) {
+            return Some(rgb);
+        }
+        if let Some(rgb) = parse_svg_hsl_function(token) {
             return Some(rgb);
         }
         if let Some(rgb) = parse_svg_hex_color_rgb(token) {
@@ -1702,6 +1708,66 @@ fn parse_svg_rgb_function(value: &str) -> Option<[u8; 3]> {
         parse_svg_rgb_component(components.next()?)?,
         parse_svg_rgb_component(components.next()?)?,
     ])
+}
+
+fn parse_svg_hsl_function(value: &str) -> Option<[u8; 3]> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    let name = value[..open].trim();
+    if !name.eq_ignore_ascii_case("hsl") && !name.eq_ignore_ascii_case("hsla") {
+        return None;
+    }
+    let close = value[open + 1..].find(')')?.saturating_add(open + 1);
+    let args = value[open + 1..close].split('/').next().unwrap_or("");
+    let normalized = args.replace(',', " ");
+    let mut components = normalized.split_ascii_whitespace();
+    let hue = parse_svg_hue_degrees(components.next()?)?;
+    let saturation = parse_svg_percent_component(components.next()?)?;
+    let lightness = parse_svg_percent_component(components.next()?)?;
+    Some(hsl_to_rgb(hue, saturation, lightness))
+}
+
+fn parse_svg_hue_degrees(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let degrees = if let Some(degrees) = value.strip_suffix("deg") {
+        degrees.parse::<f32>().ok()?
+    } else if let Some(turns) = value.strip_suffix("turn") {
+        turns.parse::<f32>().ok()? * 360.0
+    } else if let Some(radians) = value.strip_suffix("rad") {
+        radians.parse::<f32>().ok()?.to_degrees()
+    } else {
+        value.parse::<f32>().ok()?
+    };
+    Some(degrees.rem_euclid(360.0))
+}
+
+fn parse_svg_percent_component(value: &str) -> Option<f32> {
+    let value = value.trim().strip_suffix('%')?;
+    Some((value.parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0))
+}
+
+fn hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> [u8; 3] {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let hue = hue_degrees / 60.0;
+    let x = chroma * (1.0 - (hue.rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match hue {
+        hue if hue < 1.0 => (chroma, x, 0.0),
+        hue if hue < 2.0 => (x, chroma, 0.0),
+        hue if hue < 3.0 => (0.0, chroma, x),
+        hue if hue < 4.0 => (0.0, x, chroma),
+        hue if hue < 5.0 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let match_value = lightness - chroma / 2.0;
+    [
+        svg_unit_float_to_byte(red + match_value),
+        svg_unit_float_to_byte(green + match_value),
+        svg_unit_float_to_byte(blue + match_value),
+    ]
+}
+
+fn svg_unit_float_to_byte(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn parse_svg_rgb_component(value: &str) -> Option<u8> {
@@ -2789,6 +2855,18 @@ fn picture_source_lazy_srcset(
             "data-imgsrcset",
             "data-current-srcset",
             "data-currentsrcset",
+            "data-hires-srcset",
+            "data-hiressrcset",
+            "data-large-srcset",
+            "data-large-image-srcset",
+            "data-largeimagesrcset",
+            "data-large_image-srcset",
+            "data-zoom-srcset",
+            "data-zoomsrcset",
+            "data-gallery-srcset",
+            "data-gallerysrcset",
+            "data-product-srcset",
+            "data-productsrcset",
             "current-srcset",
             "currentsrcset",
             "data-src",
@@ -2809,6 +2887,30 @@ fn picture_source_lazy_srcset(
             "data-imgsrc",
             "data-current-src",
             "data-currentsrc",
+            "data-hires",
+            "data-hires-src",
+            "data-hiressrc",
+            "data-large",
+            "data-large-src",
+            "data-large-image",
+            "data-large-image-src",
+            "data-largeimage",
+            "data-largeimagesrc",
+            "data-large_image",
+            "data-large_image-src",
+            "data-zoom-image",
+            "data-zoom-image-src",
+            "data-zoom-src",
+            "data-zoomsrc",
+            "data-full",
+            "data-full-src",
+            "data-fullsrc",
+            "data-gallery-image",
+            "data-gallery-src",
+            "data-gallerysrc",
+            "data-product-image",
+            "data-product-src",
+            "data-productsrc",
             "current-src",
             "currentsrc",
         ],
@@ -2884,6 +2986,18 @@ fn lazy_image_render_source(
                     "data-imgsrcset",
                     "data-current-srcset",
                     "data-currentsrcset",
+                    "data-hires-srcset",
+                    "data-hiressrcset",
+                    "data-large-srcset",
+                    "data-large-image-srcset",
+                    "data-largeimagesrcset",
+                    "data-large_image-srcset",
+                    "data-zoom-srcset",
+                    "data-zoomsrcset",
+                    "data-gallery-srcset",
+                    "data-gallerysrcset",
+                    "data-product-srcset",
+                    "data-productsrcset",
                     "current-srcset",
                     "currentsrcset",
                 ],
@@ -2912,6 +3026,30 @@ fn lazy_image_render_source(
                     "data-imgsrc",
                     "data-current-src",
                     "data-currentsrc",
+                    "data-hires",
+                    "data-hires-src",
+                    "data-hiressrc",
+                    "data-large",
+                    "data-large-src",
+                    "data-large-image",
+                    "data-large-image-src",
+                    "data-largeimage",
+                    "data-largeimagesrc",
+                    "data-large_image",
+                    "data-large_image-src",
+                    "data-zoom-image",
+                    "data-zoom-image-src",
+                    "data-zoom-src",
+                    "data-zoomsrc",
+                    "data-full",
+                    "data-full-src",
+                    "data-fullsrc",
+                    "data-gallery-image",
+                    "data-gallery-src",
+                    "data-gallerysrc",
+                    "data-product-image",
+                    "data-product-src",
+                    "data-productsrc",
                     "current-src",
                     "currentsrc",
                 ],
