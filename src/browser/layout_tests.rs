@@ -4146,6 +4146,118 @@ fn css_positioned_horizontal_offsets_and_translate_project_overlay_paint() {
 }
 
 #[test]
+fn css_absolute_bottom_uses_positioned_context_in_scrolled_rgba_viewport() {
+    let image_url = "mem://absolute-bottom-context-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![40, 120, 210]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height:12px"></div>
+              <section style="position:relative; height:48px; background-color:rgb(230,230,230)">
+                <img src="{image_url}" width="192" height="48" alt="">
+                <div style="position:absolute; bottom:12px; left:16px; z-index:1; background-color:rgb(255,255,255); color:rgb(0,0,0)">Bottom CTA</div>
+              </section>
+              <p>After section</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://absolute-bottom-context",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render absolute bottom positioned fixture");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    assert_eq!(image_bounds, (0, 1, 24, 4));
+    let text_position = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "Bottom CTA" =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("bottom overlay text");
+    assert_eq!(text_position, (2, 3));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(2),
+        viewport_width: Some(32),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled absolute bottom overlay");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[40, 120, 210, 255]
+    );
+
+    let overlay_row = text_position
+        .1
+        .saturating_sub(raster_options.viewport_y.unwrap());
+    let overlay_y = raster_options
+        .padding_y
+        .saturating_add(overlay_row.saturating_mul(raster_options.cell_height));
+    let overlay_x = raster_options
+        .padding_x
+        .saturating_add(text_position.0.saturating_mul(raster_options.cell_width));
+    assert_eq!(pixel(overlay_x, overlay_y), &[255, 255, 255, 255]);
+    let text_ink_y = overlay_y.saturating_add(2);
+    let text_ink = (overlay_x..overlay_x.saturating_add(10 * raster_options.cell_width))
+        .any(|x| pixel(x, text_ink_y) == &[0, 0, 0, 255]);
+    assert!(text_ink);
+}
+
+#[test]
 fn css_positive_z_index_positions_foreground_above_later_media() {
     let render = render_html(
         "mem://z-index-stacking",

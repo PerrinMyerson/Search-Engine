@@ -1384,6 +1384,7 @@ struct ComputedStyle {
     grid_columns: Option<usize>,
     position: Position,
     position_top: Option<CssPositionOffset>,
+    position_bottom: Option<CssPositionOffset>,
     position_left: Option<CssPositionOffset>,
     position_right: Option<CssPositionOffset>,
     transform_translate: CssTranslate,
@@ -1503,15 +1504,24 @@ impl ComputedStyle {
         offset
     }
 
-    fn vertical_projection_offset(&self) -> Option<isize> {
+    fn vertical_projection_offset(&self, containing_height: Option<usize>) -> Option<isize> {
         let has_top = self.position_top.is_some();
+        let has_bottom = self.position_bottom.is_some();
         let own_height = self.positioned_outer_height();
-        let offset = self
-            .position_top
-            .map(|top| top.resolve(0))
-            .unwrap_or(0)
-            .saturating_add(self.transform_translate.y.resolve(own_height));
-        (has_top || !self.transform_translate.y.is_zero()).then_some(offset)
+        let mut offset = if let Some(top) = self.position_top {
+            top.resolve(containing_height.unwrap_or(0))
+        } else if let (Some(bottom), Some(containing_height)) =
+            (self.position_bottom, containing_height)
+        {
+            containing_height as isize - own_height as isize - bottom.resolve(containing_height)
+        } else {
+            0
+        };
+        offset = offset.saturating_add(self.transform_translate.y.resolve(own_height));
+        (has_top
+            || (has_bottom && containing_height.is_some())
+            || !self.transform_translate.y.is_zero())
+        .then_some(offset)
     }
 
     fn child_layout(&self) -> ChildLayout {
@@ -1572,6 +1582,7 @@ struct CssDeclarations {
     overflow: Option<Overflow>,
     position: Option<Position>,
     position_top: Option<CssPositionOffset>,
+    position_bottom: Option<CssPositionOffset>,
     position_left: Option<CssPositionOffset>,
     position_right: Option<CssPositionOffset>,
     transform_translate: Option<CssTranslate>,
@@ -12568,6 +12579,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.position_top = parse_css_position_offset(value, CssAxis::Vertical)
                     .or(declarations.position_top);
             }
+            "bottom" | "inset-block-end" => {
+                declarations.position_bottom = parse_css_position_offset(value, CssAxis::Vertical)
+                    .or(declarations.position_bottom);
+            }
             "left" | "inset-inline-start" => {
                 declarations.position_left = parse_css_position_offset(value, CssAxis::Horizontal)
                     .or(declarations.position_left);
@@ -12583,6 +12598,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "inset" => {
                 let inset = parse_css_inset_offsets(value);
                 declarations.position_top = inset.top.or(declarations.position_top);
+                declarations.position_bottom = inset.bottom.or(declarations.position_bottom);
                 declarations.position_right = inset.right.or(declarations.position_right);
                 declarations.position_left = inset.left.or(declarations.position_left);
             }
@@ -13621,6 +13637,7 @@ fn parse_css_position_offset(value: &str, axis: CssAxis) -> Option<CssPositionOf
 struct ParsedPositionOffsets {
     top: Option<CssPositionOffset>,
     right: Option<CssPositionOffset>,
+    bottom: Option<CssPositionOffset>,
     left: Option<CssPositionOffset>,
 }
 
@@ -13633,6 +13650,11 @@ fn parse_css_inset_offsets(value: &str) -> ParsedPositionOffsets {
         0 | 1 => parts.first(),
         _ => parts.get(1),
     };
+    let bottom_token = match parts.len() {
+        0 | 1 => parts.first(),
+        2 => parts.first(),
+        _ => parts.get(2),
+    };
     let left_token = match parts.len() {
         0 | 1 => parts.first(),
         2 | 3 => parts.get(1),
@@ -13641,6 +13663,8 @@ fn parse_css_inset_offsets(value: &str) -> ParsedPositionOffsets {
     ParsedPositionOffsets {
         top,
         right: right_token.and_then(|right| parse_css_position_offset(right, CssAxis::Horizontal)),
+        bottom: bottom_token
+            .and_then(|bottom| parse_css_position_offset(bottom, CssAxis::Vertical)),
         left: left_token.and_then(|left| parse_css_position_offset(left, CssAxis::Horizontal)),
     }
 }
@@ -14737,10 +14761,17 @@ fn render_node(
             if opacity_entered {
                 renderer.enter_transparent_opacity();
             }
+            let containing_height = if style.position == Position::Fixed {
+                Some(default_vertical_dimension_basis())
+            } else {
+                renderer.current_positioning_context_height()
+            };
             let out_of_flow_y = style.position.is_out_of_flow().then(|| {
-                style.vertical_projection_offset().map(|offset| {
-                    saturating_add_signed(renderer.current_positioning_context_y(), offset)
-                })
+                style
+                    .vertical_projection_offset(containing_height)
+                    .map(|offset| {
+                        saturating_add_signed(renderer.current_positioning_context_y(), offset)
+                    })
             });
             let mut out_of_flow_entered = style
                 .position
@@ -14761,7 +14792,7 @@ fn render_node(
             }
             let viewport_sticky_top_entered = if style.position == Position::Sticky {
                 style
-                    .vertical_projection_offset()
+                    .vertical_projection_offset(Some(default_vertical_dimension_basis()))
                     .map(|offset| saturating_add_signed(0, offset))
             } else {
                 None
@@ -14970,7 +15001,10 @@ fn render_node(
             let positioning_context_entered = block_box
                 .filter(|_| style.position != Position::Static)
                 .map(|(_, _, start_y)| {
-                    renderer.enter_positioning_context(start_y);
+                    let context_height = style.resolved_height().or_else(|| {
+                        (style.resolved_min_height() > 0).then(|| style.resolved_min_height())
+                    });
+                    renderer.enter_positioning_context(start_y, context_height);
                 })
                 .is_some();
             let border = block_box.and(style.border);
@@ -15696,6 +15730,7 @@ fn computed_style(
             grid_columns: None,
             position: Position::Static,
             position_top: None,
+            position_bottom: None,
             position_left: None,
             position_right: None,
             transform_translate: CssTranslate::default(),
@@ -15746,6 +15781,7 @@ fn computed_style(
     let mut grid_columns = None;
     let mut position = Position::Static;
     let mut position_top = None;
+    let mut position_bottom = None;
     let mut position_left = None;
     let mut position_right = None;
     let mut transform_translate = CssTranslate::default();
@@ -15794,6 +15830,7 @@ fn computed_style(
     let mut grid_columns_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
+    let mut position_bottom_specificity = 0u32;
     let mut position_left_specificity = 0u32;
     let mut position_right_specificity = 0u32;
     let mut transform_translate_specificity = 0u32;
@@ -15943,6 +15980,12 @@ fn computed_style(
             {
                 position_top = Some(rule_position_top);
                 position_top_specificity = rule_specificity;
+            }
+            if let Some(rule_position_bottom) = rule.declarations.position_bottom
+                && rule_specificity >= position_bottom_specificity
+            {
+                position_bottom = Some(rule_position_bottom);
+                position_bottom_specificity = rule_specificity;
             }
             if let Some(rule_position_left) = rule.declarations.position_left
                 && rule_specificity >= position_left_specificity
@@ -16176,6 +16219,9 @@ fn computed_style(
         if let Some(inline_position_top) = inline.position_top {
             position_top = Some(inline_position_top);
         }
+        if let Some(inline_position_bottom) = inline.position_bottom {
+            position_bottom = Some(inline_position_bottom);
+        }
         if let Some(inline_position_left) = inline.position_left {
             position_left = Some(inline_position_left);
         }
@@ -16287,6 +16333,7 @@ fn computed_style(
         grid_columns,
         position,
         position_top,
+        position_bottom,
         position_left,
         position_right,
         transform_translate,
@@ -16809,6 +16856,12 @@ struct FlowHorizontalProjectionSnapshot {
     right_inset: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FlowPositioningContext {
+    y: usize,
+    height: Option<usize>,
+}
+
 #[derive(Debug)]
 struct TableFlow {
     column_widths: Vec<usize>,
@@ -17022,7 +17075,7 @@ struct FlowRenderer {
     line_height_stack: Vec<usize>,
     font_scale: usize,
     font_scale_stack: Vec<usize>,
-    positioning_context_stack: Vec<usize>,
+    positioning_context_stack: Vec<FlowPositioningContext>,
     viewport_fixed_depth: usize,
     viewport_sticky_top_stack: Vec<usize>,
     positive_z_layer_stack: Vec<i32>,
@@ -17816,8 +17869,9 @@ impl FlowRenderer {
         });
     }
 
-    fn enter_positioning_context(&mut self, y: usize) {
-        self.positioning_context_stack.push(y);
+    fn enter_positioning_context(&mut self, y: usize, height: Option<usize>) {
+        self.positioning_context_stack
+            .push(FlowPositioningContext { y, height });
     }
 
     fn exit_positioning_context(&mut self) {
@@ -17825,7 +17879,16 @@ impl FlowRenderer {
     }
 
     fn current_positioning_context_y(&self) -> usize {
-        self.positioning_context_stack.last().copied().unwrap_or(0)
+        self.positioning_context_stack
+            .last()
+            .map(|context| context.y)
+            .unwrap_or(0)
+    }
+
+    fn current_positioning_context_height(&self) -> Option<usize> {
+        self.positioning_context_stack
+            .last()
+            .and_then(|context| context.height)
     }
 
     fn enter_viewport_fixed(&mut self) {
