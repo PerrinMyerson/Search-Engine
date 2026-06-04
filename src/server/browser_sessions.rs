@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -147,6 +148,7 @@ struct BrowserWebSession {
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
     pending_source: Option<String>,
+    display_source: Option<String>,
     pinned: bool,
     tab_label: Option<String>,
 }
@@ -1391,13 +1393,20 @@ impl BrowserSessionRegistry {
             64 * 1024,
             16 * 1024 * 1024,
         );
+        let navigation_target = browser_session_navigation_target(&target_url, max_bytes)?;
         let back_href = sanitized_search_return_href(target.param("from").as_deref());
         let has_explicit_viewport_y =
             target.param("y").is_some() || target.param("viewport_y").is_some();
         let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
         let mut pending_source = None;
+        let display_source = navigation_target.display_source;
         let mut action_feedback = None;
-        match timeout(BROWSER_CREATE_TARGET_TIMEOUT, session.navigate(&target_url)).await {
+        match timeout(
+            BROWSER_CREATE_TARGET_TIMEOUT,
+            session.navigate(&navigation_target.target),
+        )
+        .await
+        {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 session
@@ -1453,6 +1462,7 @@ impl BrowserSessionRegistry {
             resource_report: None,
             action_feedback,
             pending_source,
+            display_source,
             pinned: false,
             tab_label: None,
         };
@@ -1579,6 +1589,7 @@ impl BrowserSessionRegistry {
                 resource_report: None,
                 action_feedback: None,
                 pending_source: None,
+                display_source: None,
                 pinned: tab.pinned,
                 tab_label: tab.label.clone(),
             };
@@ -5184,7 +5195,7 @@ fn browser_session_summaries(
                     pending_source.clone(),
                 )
             } else {
-                (page_title, source)
+                (page_title, session.display_source.clone().unwrap_or(source))
             };
             let title = session
                 .tab_label
@@ -5961,9 +5972,11 @@ async fn apply_browser_action(
         BrowserSessionAction::Current => {}
         BrowserSessionAction::Open(url) => {
             let target_url = web_session.session.resolve_current_target(&url);
+            let navigation_target =
+                browser_session_navigation_target(&target_url, web_session.max_bytes)?;
             web_session
                 .session
-                .navigate(&target_url)
+                .navigate(&navigation_target.target)
                 .await
                 .map_err(|error| {
                     BrowserRouteError::Upstream(format!(
@@ -5973,6 +5986,7 @@ async fn apply_browser_action(
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
             web_session.pending_source = None;
+            web_session.display_source = navigation_target.display_source;
         }
         BrowserSessionAction::Back => {
             web_session
@@ -5981,6 +5995,8 @@ async fn apply_browser_action(
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
+            web_session.display_source = None;
         }
         BrowserSessionAction::Forward => {
             web_session
@@ -5989,6 +6005,8 @@ async fn apply_browser_action(
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
+            web_session.display_source = None;
         }
         BrowserSessionAction::Reload => {
             web_session.session.reload().await.map_err(|error| {
@@ -6007,6 +6025,8 @@ async fn apply_browser_action(
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_navigation_feedback(
                 web_session,
@@ -6021,6 +6041,8 @@ async fn apply_browser_action(
             apply_browser_resource(web_session, index).await?;
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
+            web_session.display_source = None;
         }
         BrowserSessionAction::LinkText(text) => {
             let before = current_session_source(web_session);
@@ -6032,6 +6054,8 @@ async fn apply_browser_action(
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_navigation_feedback(
                 web_session,
@@ -6052,6 +6076,8 @@ async fn apply_browser_action(
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_navigation_feedback(
                 web_session,
@@ -6066,6 +6092,8 @@ async fn apply_browser_action(
             apply_browser_history_entry(web_session, index)?;
             reset_viewport_after_navigation(web_session);
             clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
+            web_session.display_source = None;
         }
         BrowserSessionAction::Find(query) => {
             web_session.find_query = query.trim().to_owned();
@@ -6104,6 +6132,8 @@ async fn apply_browser_action(
             if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_click_feedback(
                 web_session,
@@ -6126,6 +6156,8 @@ async fn apply_browser_action(
             if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_click_feedback(
                 web_session,
@@ -6167,6 +6199,8 @@ async fn apply_browser_action(
             if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_form_navigation_feedback(
                 web_session,
@@ -6225,6 +6259,8 @@ async fn apply_browser_action(
             if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_form_navigation_feedback(
                 web_session,
@@ -7748,6 +7784,175 @@ fn browser_action_url(target: &RequestTarget) -> Result<String, BrowserRouteErro
     }
 }
 
+struct BrowserSessionNavigationTarget {
+    target: String,
+    display_source: Option<String>,
+}
+
+fn browser_session_navigation_target(
+    target: &str,
+    max_bytes: usize,
+) -> Result<BrowserSessionNavigationTarget, BrowserRouteError> {
+    if !target.trim_start().starts_with("data:") {
+        return Ok(BrowserSessionNavigationTarget {
+            target: target.to_owned(),
+            display_source: None,
+        });
+    }
+
+    let (content_type, bytes) = browser_session_decode_data_url(target, max_bytes)?;
+    let extension = if content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("image/svg+xml")
+    {
+        "svg"
+    } else {
+        "html"
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "brutal-browser-data-url-{}-{now}.{extension}",
+        std::process::id()
+    ));
+    fs::write(&path, bytes).map_err(|error| {
+        BrowserRouteError::Upstream(format!("browser data URL materialization failed: {error}"))
+    })?;
+
+    Ok(BrowserSessionNavigationTarget {
+        target: path.display().to_string(),
+        display_source: Some(target.to_owned()),
+    })
+}
+
+fn browser_session_decode_data_url(
+    target: &str,
+    max_bytes: usize,
+) -> Result<(String, Vec<u8>), BrowserRouteError> {
+    let payload = target
+        .strip_prefix("data:")
+        .ok_or_else(|| BrowserRouteError::BadRequest("invalid data URL".to_owned()))?;
+    let (metadata, data) = payload.split_once(',').ok_or_else(|| {
+        BrowserRouteError::BadRequest("invalid data URL: missing payload".to_owned())
+    })?;
+    let mut content_type = "text/plain".to_owned();
+    let mut base64 = false;
+    for (index, part) in metadata.split(';').enumerate() {
+        if index == 0 && !part.is_empty() {
+            content_type = part.to_owned();
+        } else if part.eq_ignore_ascii_case("base64") {
+            base64 = true;
+        }
+    }
+    let bytes = if base64 {
+        browser_session_decode_base64_data_url_payload(data)?
+    } else {
+        browser_session_percent_decode_data_url_payload(data)?
+    };
+    if bytes.len() > max_bytes {
+        return Err(BrowserRouteError::BadRequest(format!(
+            "data URL exceeds byte cap: {} > {}",
+            bytes.len(),
+            max_bytes
+        )));
+    }
+    Ok((content_type, bytes))
+}
+
+fn browser_session_decode_base64_data_url_payload(
+    input: &str,
+) -> Result<Vec<u8>, BrowserRouteError> {
+    let mut out = Vec::with_capacity(input.len().saturating_mul(3) / 4);
+    let mut block = [0u8; 4];
+    let mut block_len = 0usize;
+    let mut padding = 0usize;
+
+    for byte in input.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding += 1;
+                0
+            }
+            _ => {
+                return Err(BrowserRouteError::BadRequest(format!(
+                    "invalid base64 data URL byte: 0x{byte:02x}"
+                )));
+            }
+        };
+        if padding > 0 && byte != b'=' {
+            return Err(BrowserRouteError::BadRequest(
+                "invalid base64 data URL padding".to_owned(),
+            ));
+        }
+        block[block_len] = value;
+        block_len += 1;
+        if block_len == 4 {
+            out.push((block[0] << 2) | (block[1] >> 4));
+            if padding < 2 {
+                out.push((block[1] << 4) | (block[2] >> 2));
+            }
+            if padding == 0 {
+                out.push((block[2] << 6) | block[3]);
+            }
+            block_len = 0;
+            padding = 0;
+        }
+    }
+
+    if block_len != 0 {
+        return Err(BrowserRouteError::BadRequest(
+            "truncated base64 data URL payload".to_owned(),
+        ));
+    }
+    Ok(out)
+}
+
+fn browser_session_percent_decode_data_url_payload(
+    input: &str,
+) -> Result<Vec<u8>, BrowserRouteError> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high =
+                browser_session_data_url_hex_value(*bytes.get(index + 1).ok_or_else(|| {
+                    BrowserRouteError::BadRequest("truncated percent escape in data URL".to_owned())
+                })?)?;
+            let low =
+                browser_session_data_url_hex_value(*bytes.get(index + 2).ok_or_else(|| {
+                    BrowserRouteError::BadRequest("truncated percent escape in data URL".to_owned())
+                })?)?;
+            out.push((high << 4) | low);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(out)
+}
+
+fn browser_session_data_url_hex_value(byte: u8) -> Result<u8, BrowserRouteError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(BrowserRouteError::BadRequest(
+            "invalid percent escape in data URL".to_owned(),
+        )),
+    }
+}
+
 fn normalize_browser_address_url(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty()
@@ -8907,6 +9112,8 @@ fn browser_session_payload_with_options(
             payload.source = pending_source.clone();
             payload.viewport_x = web_session.viewport_x;
             payload.viewport_y = web_session.viewport_y;
+        } else if let Some(display_source) = web_session.display_source.as_ref() {
+            payload.source = display_source.clone();
         }
         payload
     };
@@ -14658,12 +14865,15 @@ impl BrowserSessionHrefSource for BrowserWebSession {
     }
 
     fn source(&self) -> &str {
-        self.pending_source.as_deref().unwrap_or_else(|| {
-            self.session
-                .current()
-                .map(|render| render.source.as_str())
-                .unwrap_or_default()
-        })
+        self.pending_source
+            .as_deref()
+            .or(self.display_source.as_deref())
+            .unwrap_or_else(|| {
+                self.session
+                    .current()
+                    .map(|render| render.source.as_str())
+                    .unwrap_or_default()
+            })
     }
 
     fn width(&self) -> usize {
