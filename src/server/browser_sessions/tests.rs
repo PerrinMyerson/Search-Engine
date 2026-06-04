@@ -45,6 +45,14 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "Second");
     assert_eq!(payload.history_len, 2);
     assert!(payload.can_back);
+    let expected_feedback = format!(
+        "Opened link 1; opened local page: {}",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_feedback.as_str())
+    );
 
     let back = RequestTarget {
         path: "/browser".to_owned(),
@@ -161,6 +169,14 @@ async fn browser_session_registry_opens_links_by_text_and_selector() {
     assert_eq!(payload.title, "Second");
     assert_eq!(payload.history_len, 2);
     assert!(payload.viewport.contains("linked by text or selector"));
+    let expected_text_feedback = format!(
+        "Opened link text Open target; opened local page: {}",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_text_feedback.as_str())
+    );
 
     let back = RequestTarget {
         path: "/browser".to_owned(),
@@ -184,6 +200,14 @@ async fn browser_session_registry_opens_links_by_text_and_selector() {
     assert_eq!(payload.title, "Second");
     assert_eq!(payload.history_len, 2);
     assert!(payload.viewport.contains("linked by text or selector"));
+    let expected_selector_feedback = format!(
+        "Opened link selector #go; opened local page: {}",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_selector_feedback.as_str())
+    );
 }
 
 #[tokio::test]
@@ -8329,13 +8353,17 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(payload.can_back);
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("arrived"));
+    let expected_feedback = format!(
+        "Clicked selector #go; opened local page: {}",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked selector #go; navigated")
+        Some(expected_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Clicked selector #go; navigated"));
+    assert!(html.contains(&expected_feedback));
 }
 
 #[tokio::test]
@@ -8375,11 +8403,13 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert!(payload.viewport.contains("Clicked"));
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked DOM point x 0, y 0 (page 0, 0); page updated")
+        Some("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated"));
+    assert!(
+        html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
+    );
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(!html.contains("data-browser-fast-scroll"));
 }
@@ -8415,10 +8445,43 @@ async fn browser_session_registry_click_selector_reports_no_navigation() {
     let (payload, _) = registry.apply_target(&click).await.unwrap();
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Clicked selector #press; page updated")
+        Some("Clicked selector #press; page updated; viewport preserved")
     );
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("Clicked"));
+}
+
+#[tokio::test]
+async fn browser_session_registry_click_selector_reports_no_visible_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("plain.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Plain</title><main><p>Static page</p></main>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), page.display().to_string())],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "click-selector".to_owned()),
+            ("selector".to_owned(), "main".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.title, "Plain");
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Clicked selector main; no visible change; viewport preserved")
+    );
 }
 
 #[tokio::test]
@@ -8493,8 +8556,9 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     assert_eq!(payload.viewport_y, button_y);
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("Clicked"));
-    let expected_feedback =
-        format!("Clicked DOM point x 0, y 0 (page 0, {button_y}); page updated");
+    let expected_feedback = format!(
+        "Clicked DOM point x 0, y 0 (page 0, {button_y}); page updated; viewport preserved"
+    );
     assert_eq!(
         payload.action_feedback.as_deref(),
         Some(expected_feedback.as_str())
@@ -8504,6 +8568,28 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
     assert!(html.contains(&expected_feedback));
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(!html.contains("data-browser-fast-scroll"));
+}
+
+#[test]
+fn browser_session_navigation_scope_labels_local_internal_and_external_targets() {
+    assert_eq!(
+        browser_session_navigation_scope(None, "/private/tmp/page.html"),
+        "local page"
+    );
+    assert_eq!(
+        browser_session_navigation_scope(
+            Some("https://example.com/start"),
+            "https://example.com/next"
+        ),
+        "internal page"
+    );
+    assert_eq!(
+        browser_session_navigation_scope(
+            Some("https://example.com/start"),
+            "https://other.example/next"
+        ),
+        "external page"
+    );
 }
 
 #[test]
