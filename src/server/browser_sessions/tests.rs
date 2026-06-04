@@ -2190,6 +2190,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
     ));
     assert!(html.contains(r#"data-browser-controls-tray"#));
+    assert!(html.contains(r#"data-browser-chrome"#));
+    assert!(html.contains(r#"data-browser-chrome-status"#));
+    assert!(
+        html.contains(
+            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+        )
+    );
+    assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-auto-visual-control"#));
@@ -2486,16 +2494,25 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"title="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
+    let chrome_index = html.find(r#"data-browser-chrome"#).unwrap();
+    let chrome_status_index = html.find(r#"data-browser-chrome-status"#).unwrap();
     let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let command_strip_index = controls_tray_index
         + html[controls_tray_index..]
             .find(r#"data-browser-viewport-command-strip"#)
             .unwrap();
+    assert!(chrome_index < raster_index);
+    assert!(chrome_status_index < raster_index);
     assert!(raster_index < status_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"<summary>Advanced browser controls</summary>"#));
+    assert!(
+        html.contains(
+            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+        )
+    );
     assert!(html.contains(r#"scroll-margin-top: 76px"#));
     assert!(html.contains(r#"touch-action: pan-x pan-y"#));
     assert!(html.contains(r#"scrollbar-gutter: stable"#));
@@ -9965,6 +9982,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(r#"data-browser-viewport-page-state"#));
     assert!(html.contains(r#"data-browser-render-status"#));
+    assert!(html.contains(r#"data-browser-chrome-status"#));
+    assert!(html.contains(r#"<a class="browser-chrome-tool primary-action" href="/browser?"#));
+    assert!(html.contains(r#">Make readable</a>"#));
+    assert!(html.contains(r#"<a class="browser-chrome-tool" href="/browser?"#));
+    assert!(html.contains(r#">Load 1 image</a>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Render</span>"#));
     let viewport_image = payload.viewport_image.as_ref().unwrap();
     assert!(html.contains(&format!(
@@ -11488,8 +11510,18 @@ async fn browser_session_page_renders_form_controls() {
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     assert!(topbar_index < title_index);
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
+    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">session "#));
+    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">viewport "#));
+    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">raster "#));
+    assert!(
+        topbar_html.contains(
+            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+        )
+    );
     assert!(!topbar_html.contains(">Top</a>"));
     assert!(!topbar_html.contains(">Down</a>"));
     assert!(!topbar_html.contains(">Bottom</a>"));
@@ -11564,7 +11596,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains("checkbox · unchecked disabled"));
     assert!(html.contains("select · fixed disabled"));
     assert!(html.contains("read-only"));
-    assert!(!html.contains(r##"href="#"##));
+    assert!(
+        topbar_html.contains(
+            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+        )
+    );
     assert_eq!(html.matches(r#"name="action" value="select""#).count(), 1);
     assert!(html.contains(r#"name="value" value="old""#));
     assert!(html.contains("Submit form"));
