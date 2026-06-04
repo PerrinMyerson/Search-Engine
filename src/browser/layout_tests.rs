@@ -1336,6 +1336,9 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     for ch in ['@', '#', '%', '*', '|', '<', '>'] {
         assert_ne!(glyph_rows(ch), unknown, "{ch} should not use unknown glyph");
     }
+    let cell_width = BrowserRasterOptions::default().cell_width;
+    assert!(raster_glyph_advance('i', cell_width) < raster_glyph_advance('m', cell_width));
+    assert!(raster_glyph_advance(' ', cell_width) < cell_width);
 
     let render = BrowserRender {
         source: "mem://raster-typography".to_owned(),
@@ -1385,6 +1388,51 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
             x: 0,
             y: 0,
             width: 5,
+            height: 1,
+        }
+    );
+
+    let density_render = BrowserRender {
+        source: "mem://raster-density".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 1,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default()],
+        display_list: vec![DisplayCommand::Text {
+            x: 0,
+            y: 0,
+            text: "im".to_owned(),
+        }],
+        text: "im".to_owned(),
+    };
+    let density_raster =
+        rasterize_render(&density_render, raster_options).expect("rasterize density glyphs");
+    let early_m_pixel = raster_options
+        .padding_y
+        .saturating_add(4)
+        .saturating_mul(density_raster.width)
+        .saturating_add(raster_options.padding_x.saturating_add(6));
+    let monospace_m_left = raster_options
+        .padding_x
+        .saturating_add(raster_options.cell_width)
+        .saturating_add(1);
+    assert!(raster_options.padding_x.saturating_add(6) < monospace_m_left);
+    assert_eq!(density_raster.pixels[early_m_pixel], 0);
+    assert_eq!(
+        display_command_bounds(&density_render.display_list[0]),
+        DisplayCommandBounds {
+            x: 0,
+            y: 0,
+            width: 2,
             height: 1,
         }
     );

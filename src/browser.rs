@@ -5087,22 +5087,7 @@ fn draw_raster_text_command(
         return;
     }
     let text = readable_display_text(text);
-    for (column_offset, ch) in text.chars().enumerate() {
-        let document_column = x.saturating_add(column_offset);
-        if document_column < viewport.x || document_column >= viewport.end_x() {
-            continue;
-        }
-        let cell_x = options.padding_x.saturating_add(
-            document_column
-                .saturating_sub(viewport.x)
-                .saturating_mul(options.cell_width),
-        );
-        let cell_y = options.padding_y.saturating_add(
-            y.saturating_sub(viewport.y)
-                .saturating_mul(options.cell_height),
-        );
-        draw_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
-    }
+    draw_raster_text_run(pixels, raster_width, &text, x, y, viewport, options, ink);
 }
 
 pub fn rasterize_render_rgba(
@@ -5867,15 +5852,16 @@ fn draw_raster_text_context_lines(
     rows: &[usize],
 ) {
     for (text, row) in lines.iter().zip(rows) {
-        let cell_y = options
-            .padding_y
-            .saturating_add(row.saturating_mul(options.cell_height));
-        for (column, ch) in text.chars().take(viewport.width).enumerate() {
-            let cell_x = options
-                .padding_x
-                .saturating_add(column.saturating_mul(options.cell_width));
-            draw_glyph(pixels, raster_width, cell_x, cell_y, ch, 0);
-        }
+        draw_raster_text_run(
+            pixels,
+            raster_width,
+            text,
+            viewport.x,
+            viewport.y.saturating_add(*row),
+            viewport,
+            options,
+            0,
+        );
     }
 }
 
@@ -6081,6 +6067,72 @@ fn trim_trailing_spaces(mut line: String) -> String {
         line.pop();
     }
     line
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_raster_text_run(
+    pixels: &mut [u8],
+    raster_width: usize,
+    text: &str,
+    document_x: usize,
+    document_y: usize,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+    ink: u8,
+) {
+    if document_y < viewport.y || document_y >= viewport.end_y() {
+        return;
+    }
+    let viewport_pixel_x = viewport.x.saturating_mul(options.cell_width);
+    let viewport_end_pixel_x = viewport.end_x().saturating_mul(options.cell_width);
+    let mut cursor_x = document_x.saturating_mul(options.cell_width);
+    let cell_y = options.padding_y.saturating_add(
+        document_y
+            .saturating_sub(viewport.y)
+            .saturating_mul(options.cell_height),
+    );
+    for (column_offset, ch) in text.chars().enumerate() {
+        let document_column = document_x.saturating_add(column_offset);
+        let advance = raster_glyph_advance(ch, options.cell_width);
+        let glyph_end = cursor_x.saturating_add(options.cell_width);
+        if document_column >= viewport.x
+            && document_column < viewport.end_x()
+            && cursor_x < viewport_end_pixel_x
+            && glyph_end > viewport_pixel_x
+        {
+            let cell_x = options
+                .padding_x
+                .saturating_add(cursor_x.saturating_sub(viewport_pixel_x));
+            draw_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
+        }
+        cursor_x = cursor_x.saturating_add(advance);
+    }
+}
+
+fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
+    if ch.is_whitespace() {
+        return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
+    }
+    let Some((left, right)) = glyph_ink_bounds(ch) else {
+        return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
+    };
+    let ink_width = right.saturating_sub(left).saturating_add(1);
+    ink_width.saturating_add(2).clamp(3, cell_width.max(3))
+}
+
+fn glyph_ink_bounds(ch: char) -> Option<(usize, usize)> {
+    let mut left = usize::MAX;
+    let mut right = 0usize;
+    for mask in glyph_rows(ch) {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            left = left.min(column);
+            right = right.max(column);
+        }
+    }
+    (left != usize::MAX).then_some((left, right))
 }
 
 fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch: char, ink: u8) {
