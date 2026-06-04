@@ -5183,7 +5183,12 @@ fn browser_session_summaries(
             let (page_title, source) = session
                 .session
                 .current()
-                .map(|render| (browser_session_title(render), render.source.clone()))
+                .map(|render| {
+                    (
+                        browser_session_display_title(render, session.display_source.as_deref()),
+                        render.source.clone(),
+                    )
+                })
                 .unwrap_or_else(|| ("Untitled".to_owned(), String::new()));
             let (page_title, source) = if let Some(pending_source) = session.pending_source.as_ref()
             {
@@ -8714,33 +8719,52 @@ fn browser_session_payload_with_options(
         let can_forward = history
             .current_index
             .is_some_and(|index| index + 1 < history.entries.len());
+        let display_source = web_session.display_source.as_deref();
+        let current_render_source = render.source.as_str();
         let history_entries = history
             .entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| BrowserSessionHistoryEntryPayload {
-                index,
-                title: if entry.title.trim().is_empty() {
-                    entry.source.clone()
+            .map(|(index, entry)| {
+                let source = if history.current_index == Some(index)
+                    && entry.source == current_render_source
+                    && let Some(display_source) = display_source
+                {
+                    display_source
                 } else {
-                    entry.title.clone()
-                },
-                source: entry.source.clone(),
-                target: entry.target.clone(),
-                action_url: browser_session_action_href(
-                    id,
-                    "history",
-                    &[("history", index.to_string())],
-                    web_session,
-                ),
-                new_session_url: browser_session_new_session_href(&entry.source, web_session),
-                background_session_url: browser_session_action_href(
-                    id,
-                    "open-background-session",
-                    &[("url", entry.source.clone())],
-                    web_session,
-                ),
-                current: history.current_index == Some(index),
+                    entry.source.as_str()
+                };
+                BrowserSessionHistoryEntryPayload {
+                    index,
+                    title: if entry.title.trim().is_empty() {
+                        browser_session_feedback_excerpt(source)
+                    } else {
+                        entry.title.clone()
+                    },
+                    source: source.to_owned(),
+                    target: if history.current_index == Some(index)
+                        && entry.target == current_render_source
+                        && display_source.is_some()
+                    {
+                        source.to_owned()
+                    } else {
+                        entry.target.clone()
+                    },
+                    action_url: browser_session_action_href(
+                        id,
+                        "history",
+                        &[("history", index.to_string())],
+                        web_session,
+                    ),
+                    new_session_url: browser_session_new_session_href(source, web_session),
+                    background_session_url: browser_session_action_href(
+                        id,
+                        "open-background-session",
+                        &[("url", source.to_owned())],
+                        web_session,
+                    ),
+                    current: history.current_index == Some(index),
+                }
             })
             .collect::<Vec<_>>();
         let anchors = render
@@ -9113,6 +9137,7 @@ fn browser_session_payload_with_options(
             payload.viewport_x = web_session.viewport_x;
             payload.viewport_y = web_session.viewport_y;
         } else if let Some(display_source) = web_session.display_source.as_ref() {
+            payload.title = browser_session_display_title(render, Some(display_source));
             payload.source = display_source.clone();
         }
         payload
@@ -12947,6 +12972,9 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
 fn render_browser_session_visual_flow_status(payload: &BrowserSessionPayload) -> String {
     let Some(report) = payload.resource_report.as_ref() else {
         if payload.resource_stylesheet_count == 0 && payload.resource_image_count == 0 {
+            if payload.viewport_image.is_some() {
+                return r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#.to_owned();
+            }
             return r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions unavailable</span>"#.to_owned();
         }
         return format!(
@@ -14956,6 +14984,19 @@ fn scroll_nav_control(enabled: bool, label: &str, href: &str, disabled_reason: &
 fn browser_session_title(render: &crate::browser::BrowserRender) -> String {
     if render.title.trim().is_empty() {
         render.source.clone()
+    } else {
+        render.title.clone()
+    }
+}
+
+fn browser_session_display_title(
+    render: &crate::browser::BrowserRender,
+    display_source: Option<&str>,
+) -> String {
+    if render.title.trim().is_empty() {
+        display_source
+            .map(browser_session_feedback_excerpt)
+            .unwrap_or_else(|| render.source.clone())
     } else {
         render.title.clone()
     }
