@@ -5884,6 +5884,9 @@ async fn apply_browser_action(
             control_index,
         } => {
             focus_browser_form_control(web_session, form_index, control_index)?;
+            web_session.action_feedback = Some(format!(
+                "Focused form {form_index} control {control_index}."
+            ));
         }
         BrowserSessionAction::ActivateControl {
             form_index,
@@ -5896,40 +5899,56 @@ async fn apply_browser_action(
                 .submit_focused_form()
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            if current_session_source(web_session) != before {
+            let navigated = current_session_source(web_session) != before;
+            if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
+            set_browser_form_navigation_feedback(
+                web_session,
+                format!("Activated form {form_index} control {control_index}"),
+                navigated,
+            );
         }
         BrowserSessionAction::FocusNext => {
             web_session
                 .session
                 .focus_next_control()
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            set_browser_focused_control_feedback(web_session, "Focused next control");
         }
         BrowserSessionAction::FocusPrevious => {
             web_session
                 .session
                 .focus_previous_control()
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            set_browser_focused_control_feedback(web_session, "Focused previous control");
         }
         BrowserSessionAction::TypeText(text) => {
             web_session
                 .session
                 .type_text(&text)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Typed {} into focused control.",
+                browser_session_feedback_excerpt(&text)
+            ));
         }
         BrowserSessionAction::Backspace(count) => {
             web_session
                 .session
                 .delete_text_backward(count)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Deleted {count} character(s) from focused control."
+            ));
         }
         BrowserSessionAction::ClearInput => {
             web_session
                 .session
                 .clear_focused_text()
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some("Cleared focused input.".to_owned());
         }
         BrowserSessionAction::Enter => {
             let before = current_session_source(web_session);
@@ -5938,10 +5957,16 @@ async fn apply_browser_action(
                 .submit_focused_form()
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            if current_session_source(web_session) != before {
+            let navigated = current_session_source(web_session) != before;
+            if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
             }
+            set_browser_form_navigation_feedback(
+                web_session,
+                "Submitted focused form".to_owned(),
+                navigated,
+            );
         }
         BrowserSessionAction::Space => {
             let focused = web_session.session.focused_control().ok_or_else(|| {
@@ -5953,12 +5978,20 @@ async fn apply_browser_action(
                 .session
                 .toggle_form_control(focused.form_index, focused.control_index)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Toggled focused form {} control {}.",
+                focused.form_index, focused.control_index
+            ));
         }
         BrowserSessionAction::Choose(value) => {
             web_session
                 .session
                 .select_focused_option(&value)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Chose {} in focused select.",
+                browser_session_feedback_excerpt(&value)
+            ));
         }
         BrowserSessionAction::ClearCookies => {
             web_session.session.clear_cookies();
@@ -6208,6 +6241,10 @@ async fn apply_browser_action(
                 .session
                 .set_form_field(form_index, &name, &value)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Set form {form_index} field {}.",
+                browser_session_feedback_excerpt(&name)
+            ));
         }
         BrowserSessionAction::FillControl {
             form_index,
@@ -6215,6 +6252,8 @@ async fn apply_browser_action(
             value,
         } => {
             fill_browser_form_control(web_session, form_index, control_index, &value)?;
+            web_session.action_feedback =
+                Some(format!("Set form {form_index} control {control_index}."));
         }
         BrowserSessionAction::TypeControl {
             form_index,
@@ -6222,12 +6261,17 @@ async fn apply_browser_action(
             value,
         } => {
             type_browser_form_control(web_session, form_index, control_index, &value)?;
+            web_session.action_feedback =
+                Some(format!("Typed form {form_index} control {control_index}."));
         }
         BrowserSessionAction::ClearControl {
             form_index,
             control_index,
         } => {
             type_browser_form_control(web_session, form_index, control_index, "")?;
+            web_session.action_feedback = Some(format!(
+                "Cleared form {form_index} control {control_index}."
+            ));
         }
         BrowserSessionAction::Select {
             form_index,
@@ -6238,6 +6282,10 @@ async fn apply_browser_action(
                 .session
                 .select_form_option(form_index, control_index, &value)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Selected {} for form {form_index} control {control_index}.",
+                browser_session_feedback_excerpt(&value)
+            ));
         }
         BrowserSessionAction::Toggle {
             form_index,
@@ -6247,15 +6295,27 @@ async fn apply_browser_action(
                 .session
                 .toggle_form_control(form_index, control_index)
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            web_session.action_feedback = Some(format!(
+                "Toggled form {form_index} control {control_index}."
+            ));
         }
         BrowserSessionAction::Submit { form_index } => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .submit_form(form_index, &[])
                 .await
                 .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
+            let navigated = current_session_source(web_session) != before;
+            if navigated {
+                reset_viewport_after_navigation(web_session);
+                clear_browser_find_active_line(web_session);
+            }
+            set_browser_form_navigation_feedback(
+                web_session,
+                format!("Submitted form {form_index}"),
+                navigated,
+            );
         }
     }
     Ok(())
@@ -9488,6 +9548,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     });
     return;
   }
+  try {
+    if (sessionStorage.getItem("browserViewportAnchor") === "1") {
+      sessionStorage.removeItem("browserViewportAnchor");
+      requestAnimationFrame(() => shell.scrollIntoView({ block: "start", inline: "nearest" }));
+    }
+  } catch (_) {}
   const raster = shell.querySelector(".browser-raster");
   const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
   const status = document.querySelector("[data-browser-viewport-status]");
@@ -9531,7 +9597,36 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return "Refreshing visual viewport...";
   };
-  const navigate = (dx, dy) => {
+  const replaceViewportPage = (url, message) => {
+    setViewportPending(message);
+    if (typeof fetch !== "function" || !window.history || typeof window.history.pushState !== "function") {
+      window.location.href = url.toString();
+      return;
+    }
+    shell.dataset.viewportRequest = "true";
+    try {
+      sessionStorage.setItem("browserViewportAnchor", "1");
+    } catch (_) {}
+    fetch(url.toString(), {
+      headers: { "X-Requested-With": "browser-viewport-scroll" }
+    }).then((response) => {
+      if (!response.ok) {
+        throw new Error("viewport request failed");
+      }
+      return response.text();
+    }).then((html) => {
+      window.history.pushState(null, "", url.toString());
+      document.open();
+      document.write(html);
+      document.close();
+    }).catch(() => {
+      window.location.href = url.toString();
+    });
+  };
+  let pendingScrollDx = 0;
+  let pendingScrollDy = 0;
+  let pendingScrollTimer = null;
+  const buildScrollUrl = (dx, dy) => {
     const x = numberData("viewportX");
     const y = numberData("viewportY");
     const maxX = Math.max(0, numberData("maxScrollX"));
@@ -9552,13 +9647,42 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       } else {
         setViewportFeedback("Viewport is already at that position.");
       }
-      return false;
+      return null;
     }
     const url = new URL(shell.dataset.scrollUrl, window.location.href);
     url.searchParams.set("dx", String(appliedDx));
     url.searchParams.set("dy", String(appliedDy));
-    setViewportPending(scrollMessage(appliedDx, appliedDy));
-    window.location.href = url.toString();
+    return { url, dx: appliedDx, dy: appliedDy };
+  };
+  const flushPendingScroll = () => {
+    pendingScrollTimer = null;
+    const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
+    pendingScrollDx = 0;
+    pendingScrollDy = 0;
+    if (!scroll) {
+      return false;
+    }
+    replaceViewportPage(scroll.url, scrollMessage(scroll.dx, scroll.dy));
+    return true;
+  };
+  const queueViewportScroll = (dx, dy) => {
+    pendingScrollDx += dx;
+    pendingScrollDy += dy;
+    const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
+    if (!pending) {
+      pendingScrollDx = 0;
+      pendingScrollDy = 0;
+      if (pendingScrollTimer) {
+        clearTimeout(pendingScrollTimer);
+        pendingScrollTimer = null;
+      }
+      return false;
+    }
+    setViewportPending("Scrolling visual viewport...");
+    if (pendingScrollTimer) {
+      clearTimeout(pendingScrollTimer);
+    }
+    pendingScrollTimer = setTimeout(flushPendingScroll, 80);
     return true;
   };
   const wheelCells = (delta, deltaMode, viewportSize) => {
@@ -9580,7 +9704,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const dy = wheelCells(event.deltaY, event.deltaMode, numberData("viewportHeight"));
     if (dx || dy) {
       event.preventDefault();
-      navigate(dx, dy);
+      queueViewportScroll(dx, dy);
     }
   }, { passive: false });
   shell.addEventListener("click", (event) => {
@@ -9603,8 +9727,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const url = new URL(shell.dataset.clickUrl, window.location.href);
     url.searchParams.set("x", String(x));
     url.searchParams.set("y", String(y));
-    setViewportPending("Clicking DOM point in browser viewport...");
-    window.location.href = url.toString();
+    replaceViewportPage(url, "Clicking DOM point in browser viewport...");
   });
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
@@ -9612,7 +9735,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!target) {
       return;
     }
-    setViewportPending("Moving visual viewport...");
+    event.preventDefault();
+    replaceViewportPage(new URL(target.href, window.location.href), "Moving visual viewport...");
   });
   const keyboardDelta = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) {
@@ -9649,7 +9773,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return false;
     }
     event.preventDefault();
-    navigate(delta.dx, delta.dy);
+    queueViewportScroll(delta.dx, delta.dy);
     return true;
   };
   const isInteractiveTarget = (target) => {
@@ -13971,6 +14095,29 @@ fn set_browser_click_feedback(
         "; no visible change"
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
+}
+
+fn set_browser_form_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    label: String,
+    navigated: bool,
+) {
+    let suffix = if navigated {
+        "; navigated"
+    } else {
+        "; no navigation"
+    };
+    web_session.action_feedback = Some(format!("{label}{suffix}"));
+}
+
+fn set_browser_focused_control_feedback(web_session: &mut BrowserWebSession, label: &str) {
+    web_session.action_feedback = Some(match web_session.session.focused_control() {
+        Some(focused) => format!(
+            "{label}: form {} control {}.",
+            focused.form_index, focused.control_index
+        ),
+        None => format!("{label}; no focused control."),
+    });
 }
 
 fn browser_session_feedback_excerpt(value: &str) -> String {

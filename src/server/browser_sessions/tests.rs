@@ -2476,6 +2476,19 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(html.contains("setViewportPending"));
+    assert!(html.contains("const replaceViewportPage"));
+    assert!(html.contains(r#""X-Requested-With": "browser-viewport-scroll""#));
+    assert!(html.contains("window.history.pushState(null"));
+    assert!(html.contains("document.write(html)"));
+    assert!(html.contains(r#"sessionStorage.setItem("browserViewportAnchor", "1")"#));
+    assert!(html.contains(r#"sessionStorage.getItem("browserViewportAnchor") === "1""#));
+    assert!(html.contains(r#"shell.scrollIntoView({ block: "start", inline: "nearest" })"#));
+    assert!(html.contains("let pendingScrollDx = 0"));
+    assert!(html.contains("let pendingScrollDy = 0"));
+    assert!(html.contains("const flushPendingScroll"));
+    assert!(html.contains("const queueViewportScroll"));
+    assert!(html.contains("setTimeout(flushPendingScroll, 80)"));
+    assert!(html.contains("Scrolling visual viewport..."));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(
         r#"const controls = Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"))"#
@@ -8619,6 +8632,10 @@ async fn browser_session_registry_edits_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&fill).await.unwrap();
     assert_eq!(payload.forms[0].controls[0].value, "rust browser");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Set form 0 field q.")
+    );
 
     let select = RequestTarget {
         path: "/browser".to_owned(),
@@ -8640,6 +8657,10 @@ async fn browser_session_registry_edits_and_submits_forms() {
             .iter()
             .any(|option| option.value == "docs" && option.selected)
     );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Selected docs for form 0 control 1.")
+    );
 
     let toggle = RequestTarget {
         path: "/browser".to_owned(),
@@ -8652,6 +8673,10 @@ async fn browser_session_registry_edits_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&toggle).await.unwrap();
     assert!(payload.forms[0].controls[2].checked);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Toggled form 0 control 2.")
+    );
 
     let submit = RequestTarget {
         path: "/browser".to_owned(),
@@ -8669,6 +8694,13 @@ async fn browser_session_registry_edits_and_submits_forms() {
     assert!(payload.source.contains("q=rust+browser"));
     assert!(payload.source.contains("kind=docs"));
     assert!(payload.source.contains("fast=on"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Submitted form 0; navigated")
+    );
+    let html = render_browser_session_page(&payload, "");
+    assert!(html.contains(r#"data-browser-action-feedback"#));
+    assert!(html.contains("Submitted form 0; navigated"));
 }
 
 #[tokio::test]
@@ -8862,7 +8894,13 @@ async fn browser_session_registry_activates_form_action_controls() {
     let registry = BrowserSessionRegistry::default();
     let create = RequestTarget {
         path: "/browser".to_owned(),
-        params: vec![("url".to_owned(), form_page.display().to_string())],
+        params: vec![
+            ("url".to_owned(), form_page.display().to_string()),
+            ("from".to_owned(), "/search?q=form-actions".to_owned()),
+            ("width".to_owned(), "77".to_owned()),
+            ("height".to_owned(), "12".to_owned()),
+            ("max_bytes".to_owned(), "12345".to_owned()),
+        ],
     };
     let (payload, _) = registry.create_target(&create).await.unwrap();
     assert_eq!(payload.forms[0].controls[2].kind, "reset");
@@ -8895,6 +8933,16 @@ async fn browser_session_registry_activates_form_action_controls() {
             .as_deref()
             .is_some_and(|href| href.contains("action=activate-control-background-session"))
     );
+    let activate_submit_href = payload.forms[0].controls[3]
+        .activate_url
+        .as_deref()
+        .unwrap();
+    assert!(activate_submit_href.contains("from=%2Fsearch%3Fq%3Dform-actions"));
+    assert!(activate_submit_href.contains("width=77"));
+    assert!(activate_submit_href.contains(&format!("height={}", payload.height)));
+    assert!(activate_submit_href.contains("viewport_x=0"));
+    assert!(activate_submit_href.contains("viewport_y=0"));
+    assert!(activate_submit_href.contains(&format!("max_bytes={}", payload.max_bytes)));
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -8907,6 +8955,10 @@ async fn browser_session_registry_activates_form_action_controls() {
         ],
     };
     let (payload, _) = registry.apply_target(&fill).await.unwrap();
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Set form 0 field q.")
+    );
     let toggle = RequestTarget {
         path: "/browser".to_owned(),
         params: form_urlencoded::parse(
@@ -8923,6 +8975,10 @@ async fn browser_session_registry_activates_form_action_controls() {
     let (payload, _) = registry.apply_target(&toggle).await.unwrap();
     assert_eq!(payload.forms[0].controls[0].value, "changed");
     assert!(!payload.forms[0].controls[1].checked);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Toggled form 0 control 1.")
+    );
 
     let reset = RequestTarget {
         path: "/browser".to_owned(),
@@ -8941,6 +8997,10 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert_eq!(payload.title, "Action Controls");
     assert_eq!(payload.forms[0].controls[0].value, "old");
     assert!(payload.forms[0].controls[1].checked);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Activated form 0 control 2; no navigation")
+    );
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -8953,6 +9013,10 @@ async fn browser_session_registry_activates_form_action_controls() {
         ],
     };
     let (payload, _) = registry.apply_target(&fill).await.unwrap();
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Set form 0 field q.")
+    );
     let original_id = payload.id.clone();
     let submit_new_session = RequestTarget {
         path: "/browser".to_owned(),
@@ -9021,6 +9085,10 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert!(payload.source.contains("q=rust+browser"));
     assert!(payload.source.contains("fast=on"));
     assert!(payload.source.contains("commit=yes"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Activated form 0 control 3; navigated")
+    );
 }
 
 #[tokio::test]
@@ -9185,6 +9253,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_select).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "kind");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Focused form 0 control 1.")
+    );
     let html = render_browser_session_page(&payload, "");
     assert!(html.contains(r#"name="action" value="choose""#));
     assert!(html.contains(">Enter</a>"));
@@ -9209,6 +9281,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
             .iter()
             .any(|option| option.value == "docs" && option.selected)
     );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Chose docs in focused select.")
+    );
 
     let focus_check = RequestTarget {
         path: "/browser".to_owned(),
@@ -9220,6 +9296,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_check).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "fast");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Focused selector #fast.")
+    );
     let html = render_browser_session_page(&payload, "");
     assert!(html.contains(">Space</a>"));
     assert!(html.contains(">Enter</a>"));
@@ -9238,6 +9318,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&space).await.unwrap();
     assert!(payload.forms[0].controls[2].checked);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Toggled focused form 0 control 2.")
+    );
 
     let focus_input = RequestTarget {
         path: "/browser".to_owned(),
@@ -9249,6 +9333,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&focus_input).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().name, "q");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Focused selector #q.")
+    );
     let html = render_browser_session_page(&payload, "");
     assert!(html.contains(r#"name="action" value="type-text""#));
     assert!(html.contains(r#"data-browser-primary-input"#));
@@ -9277,6 +9365,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&type_text).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().value, "old browser");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Typed browser into focused control.")
+    );
 
     let backspace = RequestTarget {
         path: "/browser".to_owned(),
@@ -9288,6 +9380,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&backspace).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().value, "old browse");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Deleted 1 character(s) from focused control.")
+    );
 
     let type_tail = RequestTarget {
         path: "/browser".to_owned(),
@@ -9299,6 +9395,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     };
     let (payload, _) = registry.apply_target(&type_tail).await.unwrap();
     assert_eq!(payload.focused.as_ref().unwrap().value, "old browser");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Typed r into focused control.")
+    );
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -9344,6 +9444,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(payload.source.contains("q=old+browser"));
     assert!(payload.source.contains("kind=docs"));
     assert!(payload.source.contains("fast=on"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Submitted focused form; navigated")
+    );
 }
 
 #[tokio::test]
