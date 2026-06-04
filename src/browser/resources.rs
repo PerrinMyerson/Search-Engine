@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use reqwest::StatusCode;
@@ -17,6 +17,9 @@ use super::images::{
     supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
+
+const DEFAULT_RESOURCE_CACHE_MAX_ENTRIES: usize = 256;
+const DEFAULT_RESOURCE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -53,6 +56,10 @@ pub struct BrowserResourceFetch {
     pub bytes: usize,
     pub content_type: Option<String>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+    #[serde(default)]
+    pub elapsed_ms: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_decode_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,9 +117,26 @@ pub struct BrowserImageRenderReport {
     pub fetches: Vec<BrowserResourceFetch>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserDocumentLoadReport {
+    pub target: String,
+    pub status: String,
+    pub source: Option<String>,
+    pub bytes: usize,
+    pub content_type: Option<String>,
+    pub error: Option<String>,
+    pub error_kind: Option<String>,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct BrowserResourceCache {
     entries: HashMap<String, BrowserCachedResource>,
+    order: VecDeque<String>,
+    max_entries: usize,
+    max_bytes: usize,
+    evicted_entries: usize,
+    evicted_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +153,8 @@ struct BrowserResourceFetchArgs {
     bytes: usize,
     content_type: Option<String>,
     error: Option<String>,
+    error_kind: Option<String>,
+    elapsed_ms: u128,
 }
 
 impl BrowserResourceFetch {
@@ -168,6 +194,8 @@ impl BrowserResourceFetch {
             bytes: args.bytes,
             content_type: args.content_type,
             error: args.error,
+            error_kind: args.error_kind,
+            elapsed_ms: args.elapsed_ms,
             image_decode_status,
             image_decode_error,
             decoded_width,
@@ -229,7 +257,27 @@ fn media_type_declares_image(media_type: &str) -> bool {
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
 }
 
+impl Default for BrowserResourceCache {
+    fn default() -> Self {
+        Self::with_limits(
+            DEFAULT_RESOURCE_CACHE_MAX_ENTRIES,
+            DEFAULT_RESOURCE_CACHE_MAX_BYTES,
+        )
+    }
+}
+
 impl BrowserResourceCache {
+    fn with_limits(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            max_entries,
+            max_bytes,
+            evicted_entries: 0,
+            evicted_bytes: 0,
+        }
+    }
+
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -247,6 +295,14 @@ impl BrowserResourceCache {
             .map(|resource| resource.bytes.as_slice())
     }
 
+    pub(super) fn evicted_entries(&self) -> usize {
+        self.evicted_entries
+    }
+
+    pub(super) fn evicted_bytes(&self) -> usize {
+        self.evicted_bytes
+    }
+
     pub(super) fn cached_resources(&self) -> impl Iterator<Item = (&str, Option<&str>, &[u8])> {
         self.entries.iter().map(|(url, resource)| {
             (
@@ -256,10 +312,78 @@ impl BrowserResourceCache {
             )
         })
     }
+
+    fn touch(&mut self, url: &str) {
+        self.order.retain(|entry| entry != url);
+        self.order.push_back(url.to_owned());
+    }
+
+    fn insert(&mut self, url: String, resource: BrowserCachedResource) {
+        if self.max_entries == 0 || self.max_bytes == 0 {
+            return;
+        }
+
+        let byte_len = resource.bytes.len();
+        if byte_len > self.max_bytes {
+            return;
+        }
+
+        if let Some(previous) = self.entries.remove(&url) {
+            self.order.retain(|entry| entry != &url);
+            self.evicted_entries += 1;
+            self.evicted_bytes += previous.bytes.len();
+        }
+
+        self.order.push_back(url.clone());
+        self.entries.insert(url, resource);
+        self.evict_over_limits();
+    }
+
+    fn evict_over_limits(&mut self) {
+        while self.entries.len() > self.max_entries || self.total_bytes() > self.max_bytes {
+            let Some(url) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(resource) = self.entries.remove(&url) {
+                self.evicted_entries += 1;
+                self.evicted_bytes += resource.bytes.len();
+            }
+        }
+    }
 }
 
 pub(super) async fn load_target(target: &str, max_bytes: usize) -> Result<(String, Vec<u8>)> {
     load_target_with_cookie_jar(target, max_bytes, None).await
+}
+
+pub(super) async fn load_target_with_cookie_jar_report(
+    target: &str,
+    max_bytes: usize,
+    cookie_jar: Option<&mut BrowserCookieJar>,
+) -> BrowserDocumentLoadReport {
+    let started = Instant::now();
+    match load_target_with_cookie_jar_inner(target, max_bytes, cookie_jar).await {
+        Ok((source, bytes, content_type)) => BrowserDocumentLoadReport {
+            target: target.to_owned(),
+            status: "loaded".to_owned(),
+            source: Some(source),
+            bytes: bytes.len(),
+            content_type,
+            error: None,
+            error_kind: None,
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+        Err(error) => BrowserDocumentLoadReport {
+            target: target.to_owned(),
+            status: "failed".to_owned(),
+            source: None,
+            bytes: 0,
+            content_type: None,
+            error: Some(error.to_string()),
+            error_kind: Some(classify_load_error(&error)),
+            elapsed_ms: started.elapsed().as_millis(),
+        },
+    }
 }
 
 pub(super) async fn fetch_resource_with_cache(
@@ -268,7 +392,13 @@ pub(super) async fn fetch_resource_with_cache(
     cookie_jar: &mut BrowserCookieJar,
     cache: &mut BrowserResourceCache,
 ) -> BrowserResourceFetch {
-    if let Some(cached) = cache.entries.get(&resource.resolved) {
+    let started = Instant::now();
+    if cache.entries.contains_key(&resource.resolved) {
+        cache.touch(&resource.resolved);
+        let cached = cache
+            .entries
+            .get(&resource.resolved)
+            .expect("cache entry must exist after touch");
         return BrowserResourceFetch::from_args(
             BrowserResourceFetchArgs {
                 resource,
@@ -277,6 +407,8 @@ pub(super) async fn fetch_resource_with_cache(
                 bytes: cached.bytes.len(),
                 content_type: cached.content_type.clone(),
                 error: None,
+                error_kind: None,
+                elapsed_ms: started.elapsed().as_millis(),
             },
             Some(cached.bytes.as_slice()),
         );
@@ -294,10 +426,12 @@ pub(super) async fn fetch_resource_with_cache(
                         bytes: byte_len,
                         content_type: Some(content_type.clone()),
                         error: None,
+                        error_kind: None,
+                        elapsed_ms: started.elapsed().as_millis(),
                     },
                     Some(bytes.as_slice()),
                 );
-                cache.entries.insert(
+                cache.insert(
                     resource.resolved.clone(),
                     BrowserCachedResource {
                         source: source.clone(),
@@ -315,6 +449,8 @@ pub(super) async fn fetch_resource_with_cache(
                     bytes: 0,
                     content_type: None,
                     error: Some(error.to_string()),
+                    error_kind: Some(classify_load_error(&error)),
+                    elapsed_ms: started.elapsed().as_millis(),
                 },
                 None,
             ),
@@ -330,6 +466,8 @@ pub(super) async fn fetch_resource_with_cache(
                 bytes: 0,
                 content_type: None,
                 error: Some("unsupported resource scheme".to_owned()),
+                error_kind: Some("unsupported_scheme".to_owned()),
+                elapsed_ms: started.elapsed().as_millis(),
             },
             None,
         );
@@ -346,10 +484,12 @@ pub(super) async fn fetch_resource_with_cache(
                     bytes: byte_len,
                     content_type: content_type.clone(),
                     error: None,
+                    error_kind: None,
+                    elapsed_ms: started.elapsed().as_millis(),
                 },
                 Some(bytes.as_slice()),
             );
-            cache.entries.insert(
+            cache.insert(
                 resource.resolved.clone(),
                 BrowserCachedResource {
                     source: source.clone(),
@@ -367,6 +507,8 @@ pub(super) async fn fetch_resource_with_cache(
                 bytes: 0,
                 content_type: None,
                 error: Some(error.to_string()),
+                error_kind: Some(classify_load_error(&error)),
+                elapsed_ms: started.elapsed().as_millis(),
             },
             None,
         ),
@@ -485,18 +627,31 @@ pub(super) async fn load_target_with_cookie_jar(
     max_bytes: usize,
     cookie_jar: Option<&mut BrowserCookieJar>,
 ) -> Result<(String, Vec<u8>)> {
+    let (source, bytes, _) =
+        load_target_with_cookie_jar_inner(target, max_bytes, cookie_jar).await?;
+    Ok((source, bytes))
+}
+
+async fn load_target_with_cookie_jar_inner(
+    target: &str,
+    max_bytes: usize,
+    cookie_jar: Option<&mut BrowserCookieJar>,
+) -> Result<(String, Vec<u8>, Option<String>)> {
     if target.starts_with("http://") || target.starts_with("https://") {
-        let (source, bytes, _) = load_http_bytes(target, max_bytes, cookie_jar, true, None).await?;
-        Ok((source, bytes))
+        load_http_bytes(target, max_bytes, cookie_jar, true, None).await
     } else if target.starts_with("file://") {
         let url = Url::parse(target).with_context(|| format!("parse file URL {target}"))?;
         let path = url.to_file_path().map_err(|_| {
             anyhow::anyhow!("file URL cannot be converted to a local path: {target}")
         })?;
-        load_file_with_source(target, &path, max_bytes)
+        let content_type = content_type_for_path(&path).map(str::to_owned);
+        let (source, bytes) = load_file_with_source(target, &path, max_bytes)?;
+        Ok((source, bytes, content_type))
     } else {
         let path = local_path_without_url_parts(target);
-        load_file_with_source(target, Path::new(path), max_bytes)
+        let content_type = content_type_for_path(Path::new(path)).map(str::to_owned);
+        let (source, bytes) = load_file_with_source(target, Path::new(path), max_bytes)?;
+        Ok((source, bytes, content_type))
     }
 }
 
@@ -714,6 +869,34 @@ fn load_file_with_source(source: &str, path: &Path, max_bytes: usize) -> Result<
         max_bytes
     );
     Ok((source.to_owned(), bytes))
+}
+
+fn classify_load_error(error: &anyhow::Error) -> String {
+    let error_text = error.to_string().to_ascii_lowercase();
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    }) || error_text.contains("operation timed out")
+        || error_text.contains("deadline has elapsed")
+        || error_text.contains("request timed out")
+    {
+        "timeout".to_owned()
+    } else if error_text.contains("unsupported resource scheme") {
+        "unsupported_scheme".to_owned()
+    } else if error_text.contains("unsupported content type") {
+        "unsupported_content_type".to_owned()
+    } else if error_text.contains("exceeds byte cap") {
+        "byte_cap".to_owned()
+    } else if error_text.contains("redirect") {
+        "redirect".to_owned()
+    } else if error_text.contains("dns") || error_text.contains("resolve") {
+        "dns".to_owned()
+    } else if error_text.contains("connect") {
+        "connect".to_owned()
+    } else {
+        "error".to_owned()
+    }
 }
 
 fn content_type_for_path(path: &Path) -> Option<&'static str> {
@@ -1445,6 +1628,19 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
+    fn test_resource(url: &str) -> BrowserResource {
+        BrowserResource {
+            kind: "stylesheet".to_owned(),
+            initiator: "link".to_owned(),
+            url: url.to_owned(),
+            resolved: url.to_owned(),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        }
+    }
+
     async fn read_http_request(stream: &mut TcpStream) -> (String, String) {
         let mut request_bytes = Vec::new();
         let mut buf = [0u8; 4096];
@@ -1470,6 +1666,108 @@ mod tests {
                 return (request_head.to_string(), body);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn resource_cache_evicts_oldest_entries_and_tracks_pressure() {
+        let mut cache = BrowserResourceCache::with_limits(2, 1024);
+        let mut jar = BrowserCookieJar::default();
+        let first = "data:text/css,one";
+        let second = "data:text/css,two";
+        let third = "data:text/css,three";
+
+        let first_fetch =
+            fetch_resource_with_cache(test_resource(first), 64, &mut jar, &mut cache).await;
+        assert_eq!(first_fetch.status, "cached");
+        assert_eq!(first_fetch.error_kind, None);
+        assert!(cache.cached_bytes(first).is_some());
+
+        let second_fetch =
+            fetch_resource_with_cache(test_resource(second), 64, &mut jar, &mut cache).await;
+        assert_eq!(second_fetch.status, "cached");
+        assert_eq!(cache.len(), 2);
+
+        let hit = fetch_resource_with_cache(test_resource(first), 64, &mut jar, &mut cache).await;
+        assert_eq!(hit.status, "cached");
+        assert_eq!(hit.bytes, 3);
+
+        let third_fetch =
+            fetch_resource_with_cache(test_resource(third), 64, &mut jar, &mut cache).await;
+        assert_eq!(third_fetch.status, "cached");
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.cached_bytes(first).is_some());
+        assert!(cache.cached_bytes(second).is_none());
+        assert!(cache.cached_bytes(third).is_some());
+        assert_eq!(cache.evicted_entries(), 1);
+        assert_eq!(cache.evicted_bytes(), 3);
+    }
+
+    #[tokio::test]
+    async fn resource_cache_skips_entries_over_byte_cap() {
+        let mut cache = BrowserResourceCache::with_limits(8, 4);
+        let mut jar = BrowserCookieJar::default();
+        let oversized = "data:text/css,large";
+
+        let fetch =
+            fetch_resource_with_cache(test_resource(oversized), 64, &mut jar, &mut cache).await;
+
+        assert_eq!(fetch.status, "cached");
+        assert_eq!(fetch.bytes, 5);
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.total_bytes(), 0);
+        assert_eq!(cache.evicted_entries(), 0);
+    }
+
+    #[tokio::test]
+    async fn resource_fetch_reports_error_kind_and_elapsed_time() {
+        let mut cache = BrowserResourceCache::default();
+        let mut jar = BrowserCookieJar::default();
+
+        let fetch = fetch_resource_with_cache(
+            test_resource("mailto:hello@example.com"),
+            64,
+            &mut jar,
+            &mut cache,
+        )
+        .await;
+
+        assert_eq!(fetch.status, "skipped");
+        assert_eq!(fetch.error_kind.as_deref(), Some("unsupported_scheme"));
+        assert!(fetch.error.is_some());
+    }
+
+    #[test]
+    fn load_error_classification_identifies_request_timeouts() {
+        let error = anyhow::anyhow!(
+            "load https://www.truveta.com/: error sending request for url \
+             (https://www.truveta.com/): operation timed out"
+        );
+
+        assert_eq!(classify_load_error(&error), "timeout");
+    }
+
+    #[tokio::test]
+    async fn document_load_report_records_elapsed_bytes_and_error_kind() {
+        let path = std::env::temp_dir().join(format!(
+            "brutal-document-load-report-{}-{}.html",
+            std::process::id(),
+            "byte-cap"
+        ));
+        fs::write(&path, "<html><body>browser</body></html>").unwrap();
+
+        let loaded = load_target_with_cookie_jar_report(path.to_str().unwrap(), 1024, None).await;
+        assert_eq!(loaded.status, "loaded");
+        assert_eq!(loaded.bytes, 33);
+        assert_eq!(loaded.content_type.as_deref(), Some("text/html"));
+        assert_eq!(loaded.error_kind, None);
+
+        let failed = load_target_with_cookie_jar_report(path.to_str().unwrap(), 4, None).await;
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.bytes, 0);
+        assert_eq!(failed.error_kind.as_deref(), Some("byte_cap"));
+
+        let _ = fs::remove_file(path);
     }
 
     #[tokio::test]
