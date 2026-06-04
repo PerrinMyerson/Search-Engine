@@ -2486,6 +2486,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-y="4""#));
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
+    assert!(html.contains(r#"data-viewport-state="settled""#));
+    assert!(html.contains(r#"data-settled-viewport-x="8""#));
+    assert!(html.contains(r#"data-settled-viewport-y="4""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
     assert!(html.contains(
         r#"aria-label="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
@@ -2525,6 +2528,17 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(html.contains("setViewportPending"));
+    assert!(html.contains("shell.dataset.viewportState = \"pending\""));
+    assert!(html.contains("shell.dataset.pendingViewportX = String(target.x)"));
+    assert!(html.contains("shell.dataset.pendingViewportY = String(target.y)"));
+    assert!(html.contains("shell.dataset.viewportState = \"settled\""));
+    assert!(html.contains("shell.dataset.settledViewportX = String(numberData(\"viewportX\"))"));
+    assert!(html.contains("shell.dataset.settledViewportY = String(numberData(\"viewportY\"))"));
+    assert!(html.contains("const markStaleViewportResponse"));
+    assert!(html.contains("shell.dataset.viewportState = \"stale-response\""));
+    assert!(html.contains("shell.dataset.staleViewportResponse = \"true\""));
+    assert!(html.contains("Ignored stale visual viewport update; newer scroll is pending."));
+    assert!(html.contains("Ignored stale visual viewport error; newer scroll is pending."));
     assert!(html.contains("const viewportPointFromEvent"));
     assert!(html.contains("const pointMessage"));
     assert!(html.contains("let clickMarker"));
@@ -2555,6 +2569,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));
     assert!(html.contains("let pendingScrollAfterRequest = false"));
+    assert!(html.contains("shell.dataset.queuedScrollDx = String(pending.dx)"));
+    assert!(html.contains("shell.dataset.queuedScrollDy = String(pending.dy)"));
+    assert!(html.contains("shell.dataset.queuedScrollDx = String(pendingScrollDx)"));
+    assert!(html.contains("shell.dataset.queuedScrollDy = String(pendingScrollDy)"));
     assert!(html.contains("const requestSeq = ++viewportRequestSeq"));
     assert!(html.contains("if (requestSeq !== viewportRequestSeq)"));
     assert!(html.contains("partialRequestInFlight = true"));
@@ -2569,6 +2587,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("restoreClickMarkerAfterPartial();"));
     assert!(html.contains(r#"shell.removeAttribute("data-pending-viewport-x")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-pending-viewport-y")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-dx")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-dy")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-stale-viewport-response")"#));
     assert!(html.contains("new DOMParser().parseFromString"));
     assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-partial""#));
@@ -2609,7 +2630,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Refreshing visual viewport..."));
     assert!(html.contains("Moving visual viewport..."));
     assert!(html.contains(r#"shell.dataset.viewportRequest"#));
-    assert!(html.contains("Viewport is updating; click after it settles."));
+    assert!(html.contains("Viewport is updating; saved"));
+    assert!(html.contains("Click again after it settles."));
     assert!(html.contains("Clicking ${pointMessage(point)}..."));
     assert!(html.contains("Already at top."));
     assert!(html.contains("Already at bottom."));
@@ -8416,6 +8438,16 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("getBoundingClientRect"));
     assert!(html.contains(r#"url.searchParams.set("x""#));
     assert!(html.contains(r#"url.searchParams.set("y""#));
+    assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
+    assert!(html.contains("shell.dataset.deferredClickY = String(point.y)"));
+    assert!(html.contains("shell.dataset.deferredClickPageX = String(point.pageX)"));
+    assert!(html.contains("shell.dataset.deferredClickPageY = String(point.pageY)"));
+    assert!(html.contains("Viewport is updating; saved"));
+    assert!(html.contains("Click again after it settles."));
+    assert!(html.contains("shell.dataset.lastClickX = String(point.x)"));
+    assert!(html.contains("shell.dataset.lastClickY = String(point.y)"));
+    assert!(html.contains("shell.dataset.lastClickPageX = String(point.pageX)"));
+    assert!(html.contains("shell.dataset.lastClickPageY = String(point.pageY)"));
 
     let click = RequestTarget {
         path: "/browser".to_owned(),
