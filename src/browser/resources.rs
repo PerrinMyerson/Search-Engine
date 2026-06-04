@@ -68,6 +68,12 @@ pub struct BrowserResourceFetch {
     pub cache_evicted_entries: usize,
     #[serde(default)]
     pub cache_evicted_bytes: usize,
+    #[serde(default)]
+    pub cache_max_entries: usize,
+    #[serde(default)]
+    pub cache_max_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_decode_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +171,7 @@ struct BrowserResourceFetchArgs {
     error_kind: Option<String>,
     elapsed_ms: u128,
     cache_pressure: BrowserResourceCachePressure,
+    cache_outcome: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -173,6 +180,27 @@ struct BrowserResourceCachePressure {
     bytes: usize,
     evicted_entries: usize,
     evicted_bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserResourceCacheStoreOutcome {
+    Stored,
+    Replaced,
+    SkippedDisabled,
+    SkippedOversize,
+}
+
+impl BrowserResourceCacheStoreOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stored => "stored",
+            Self::Replaced => "replaced",
+            Self::SkippedDisabled => "skipped_disabled",
+            Self::SkippedOversize => "skipped_oversize",
+        }
+    }
 }
 
 impl BrowserResourceFetch {
@@ -218,6 +246,9 @@ impl BrowserResourceFetch {
             cache_bytes: args.cache_pressure.bytes,
             cache_evicted_entries: args.cache_pressure.evicted_entries,
             cache_evicted_bytes: args.cache_pressure.evicted_bytes,
+            cache_max_entries: args.cache_pressure.max_entries,
+            cache_max_bytes: args.cache_pressure.max_bytes,
+            cache_outcome: args.cache_outcome,
             image_decode_status,
             image_decode_error,
             decoded_width,
@@ -233,6 +264,12 @@ impl BrowserResourceFetch {
         self.cache_bytes = pressure.bytes;
         self.cache_evicted_entries = pressure.evicted_entries;
         self.cache_evicted_bytes = pressure.evicted_bytes;
+        self.cache_max_entries = pressure.max_entries;
+        self.cache_max_bytes = pressure.max_bytes;
+    }
+
+    fn set_cache_outcome(&mut self, outcome: BrowserResourceCacheStoreOutcome) {
+        self.cache_outcome = Some(outcome.as_str().to_owned());
     }
 }
 
@@ -350,6 +387,8 @@ impl BrowserResourceCache {
             bytes: self.total_bytes(),
             evicted_entries: self.evicted_entries,
             evicted_bytes: self.evicted_bytes,
+            max_entries: self.max_entries,
+            max_bytes: self.max_bytes,
         }
     }
 
@@ -358,24 +397,32 @@ impl BrowserResourceCache {
         self.order.push_back(url.to_owned());
     }
 
-    fn insert(&mut self, url: String, resource: BrowserCachedResource) {
+    fn insert(
+        &mut self,
+        url: String,
+        resource: BrowserCachedResource,
+    ) -> BrowserResourceCacheStoreOutcome {
         if self.max_entries == 0 || self.max_bytes == 0 {
-            return;
+            return BrowserResourceCacheStoreOutcome::SkippedDisabled;
         }
 
         let byte_len = resource.bytes.len();
         if byte_len > self.max_bytes {
-            return;
+            return BrowserResourceCacheStoreOutcome::SkippedOversize;
         }
 
-        if let Some(previous) = self.entries.remove(&url) {
+        let outcome = if let Some(previous) = self.entries.remove(&url) {
             self.order.retain(|entry| entry != &url);
             drop(previous);
-        }
+            BrowserResourceCacheStoreOutcome::Replaced
+        } else {
+            BrowserResourceCacheStoreOutcome::Stored
+        };
 
         self.order.push_back(url.clone());
         self.entries.insert(url, resource);
         self.evict_over_limits();
+        outcome
     }
 
     fn evict_over_limits(&mut self) {
@@ -450,6 +497,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error_kind: None,
                 elapsed_ms: started.elapsed().as_millis(),
                 cache_pressure: cache.pressure(),
+                cache_outcome: Some("hit".to_owned()),
             },
             Some(cached.bytes.as_slice()),
         );
@@ -470,10 +518,11 @@ pub(super) async fn fetch_resource_with_cache(
                         error_kind: None,
                         elapsed_ms: started.elapsed().as_millis(),
                         cache_pressure: BrowserResourceCachePressure::default(),
+                        cache_outcome: None,
                     },
                     Some(bytes.as_slice()),
                 );
-                cache.insert(
+                let cache_outcome = cache.insert(
                     resource.resolved.clone(),
                     BrowserCachedResource {
                         source: source.clone(),
@@ -482,6 +531,7 @@ pub(super) async fn fetch_resource_with_cache(
                     },
                 );
                 fetch.set_cache_pressure(cache.pressure());
+                fetch.set_cache_outcome(cache_outcome);
                 fetch
             }
             Err(error) => BrowserResourceFetch::from_args(
@@ -495,6 +545,7 @@ pub(super) async fn fetch_resource_with_cache(
                     error_kind: Some(classify_load_error(&error)),
                     elapsed_ms: started.elapsed().as_millis(),
                     cache_pressure: cache.pressure(),
+                    cache_outcome: Some("miss_failed".to_owned()),
                 },
                 None,
             ),
@@ -513,6 +564,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error_kind: Some("unsupported_scheme".to_owned()),
                 elapsed_ms: started.elapsed().as_millis(),
                 cache_pressure: cache.pressure(),
+                cache_outcome: Some("skipped".to_owned()),
             },
             None,
         );
@@ -532,10 +584,11 @@ pub(super) async fn fetch_resource_with_cache(
                     error_kind: None,
                     elapsed_ms: started.elapsed().as_millis(),
                     cache_pressure: BrowserResourceCachePressure::default(),
+                    cache_outcome: None,
                 },
                 Some(bytes.as_slice()),
             );
-            cache.insert(
+            let cache_outcome = cache.insert(
                 resource.resolved.clone(),
                 BrowserCachedResource {
                     source: source.clone(),
@@ -544,6 +597,7 @@ pub(super) async fn fetch_resource_with_cache(
                 },
             );
             fetch.set_cache_pressure(cache.pressure());
+            fetch.set_cache_outcome(cache_outcome);
             fetch
         }
         Err(error) => BrowserResourceFetch::from_args(
@@ -557,6 +611,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error_kind: Some(classify_load_error(&error)),
                 elapsed_ms: started.elapsed().as_millis(),
                 cache_pressure: cache.pressure(),
+                cache_outcome: Some("miss_failed".to_owned()),
             },
             None,
         ),
@@ -1730,11 +1785,15 @@ mod tests {
         assert_eq!(first_fetch.error_kind, None);
         assert_eq!(first_fetch.cache_entries, 1);
         assert_eq!(first_fetch.cache_bytes, 3);
+        assert_eq!(first_fetch.cache_max_entries, 2);
+        assert_eq!(first_fetch.cache_max_bytes, 1024);
+        assert_eq!(first_fetch.cache_outcome.as_deref(), Some("stored"));
         assert!(cache.cached_bytes(first).is_some());
 
         let second_fetch =
             fetch_resource_with_cache(test_resource(second), 64, &mut jar, &mut cache).await;
         assert_eq!(second_fetch.status, "cached");
+        assert_eq!(second_fetch.cache_outcome.as_deref(), Some("stored"));
         assert_eq!(cache.len(), 2);
 
         let hit = fetch_resource_with_cache(test_resource(first), 64, &mut jar, &mut cache).await;
@@ -1742,6 +1801,7 @@ mod tests {
         assert_eq!(hit.bytes, 3);
         assert_eq!(hit.cache_entries, 2);
         assert_eq!(hit.cache_bytes, 6);
+        assert_eq!(hit.cache_outcome.as_deref(), Some("hit"));
 
         let third_fetch =
             fetch_resource_with_cache(test_resource(third), 64, &mut jar, &mut cache).await;
@@ -1750,6 +1810,7 @@ mod tests {
         assert_eq!(third_fetch.cache_bytes, 8);
         assert_eq!(third_fetch.cache_evicted_entries, 1);
         assert_eq!(third_fetch.cache_evicted_bytes, 3);
+        assert_eq!(third_fetch.cache_outcome.as_deref(), Some("stored"));
 
         assert_eq!(cache.len(), 2);
         assert!(cache.cached_bytes(first).is_some());
@@ -1773,6 +1834,9 @@ mod tests {
         assert_eq!(fetch.cache_entries, 0);
         assert_eq!(fetch.cache_bytes, 0);
         assert_eq!(fetch.cache_evicted_entries, 0);
+        assert_eq!(fetch.cache_max_entries, 8);
+        assert_eq!(fetch.cache_max_bytes, 4);
+        assert_eq!(fetch.cache_outcome.as_deref(), Some("skipped_oversize"));
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.total_bytes(), 0);
         assert_eq!(cache.evicted_entries(), 0);
@@ -1781,7 +1845,7 @@ mod tests {
     #[test]
     fn resource_cache_replacement_does_not_count_as_eviction_pressure() {
         let mut cache = BrowserResourceCache::with_limits(2, 1024);
-        cache.insert(
+        let first_insert = cache.insert(
             "https://example.test/app.css".to_owned(),
             BrowserCachedResource {
                 source: "https://example.test/app.css".to_owned(),
@@ -1789,7 +1853,7 @@ mod tests {
                 content_type: Some("text/css".to_owned()),
             },
         );
-        cache.insert(
+        let replacement = cache.insert(
             "https://example.test/app.css".to_owned(),
             BrowserCachedResource {
                 source: "https://example.test/app.css".to_owned(),
@@ -1798,6 +1862,8 @@ mod tests {
             },
         );
 
+        assert_eq!(first_insert, BrowserResourceCacheStoreOutcome::Stored);
+        assert_eq!(replacement, BrowserResourceCacheStoreOutcome::Replaced);
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.total_bytes(), 11);
         assert_eq!(cache.evicted_entries(), 0);
@@ -1821,6 +1887,7 @@ mod tests {
         assert_eq!(fetch.error_kind.as_deref(), Some("unsupported_scheme"));
         assert_eq!(fetch.cache_entries, 0);
         assert_eq!(fetch.cache_bytes, 0);
+        assert_eq!(fetch.cache_outcome.as_deref(), Some("skipped"));
         assert!(fetch.error.is_some());
     }
 
