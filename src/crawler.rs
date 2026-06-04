@@ -16,6 +16,10 @@ use crate::frontier::{FrontierStore, unix_now};
 use crate::robots::{RobotsTxt, robots_origin_key};
 use crate::urlcanon::{canonicalize_url, parse_seed, same_host};
 
+const DOCUMENT_SNAPSHOT_COMPACT_CHECK_INTERVAL: usize = 128;
+const DOCUMENT_SNAPSHOT_COMPACT_MIN_ENTRIES: usize = 1024;
+const DOCUMENT_SNAPSHOT_COMPACT_DUPLICATE_FACTOR: usize = 2;
+
 #[derive(Debug, Clone)]
 pub struct CrawlOptions {
     pub max_pages: usize,
@@ -450,6 +454,9 @@ async fn crawl_with_frontier(
                 doc_positions.insert(doc.url.clone(), docs.len());
                 docs.push(doc);
             }
+            if let Some(path) = options.document_snapshot_path.as_deref() {
+                compact_document_snapshot_if_needed(path, docs.len(), fetched_this_run)?;
+            }
         }
 
         frontier.record_fetched(
@@ -573,6 +580,48 @@ fn compact_document_snapshot(path: &Path) -> Result<usize> {
 
     write_document_snapshot(path, &docs)?;
     Ok(removed)
+}
+
+fn compact_document_snapshot_if_needed(
+    path: &Path,
+    unique_docs: usize,
+    appended_this_run: usize,
+) -> Result<usize> {
+    if unique_docs == 0 || appended_this_run % DOCUMENT_SNAPSHOT_COMPACT_CHECK_INTERVAL != 0 {
+        return Ok(0);
+    }
+
+    let entries = count_document_snapshot_entries(path)?;
+    let threshold = DOCUMENT_SNAPSHOT_COMPACT_MIN_ENTRIES
+        .max(unique_docs.saturating_mul(DOCUMENT_SNAPSHOT_COMPACT_DUPLICATE_FACTOR));
+    if entries <= threshold {
+        return Ok(0);
+    }
+
+    compact_document_snapshot(path)
+}
+
+fn count_document_snapshot_entries(path: &Path) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("open crawl document snapshot {}", path.display()))?;
+    let mut entries = 0usize;
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from crawl document snapshot {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if !line.trim().is_empty() {
+            entries += 1;
+        }
+    }
+    Ok(entries)
 }
 
 fn write_document_snapshot(path: &Path, docs: &[FieldedDocument]) -> Result<()> {
@@ -740,6 +789,38 @@ mod tests {
         assert_eq!(docs[0].url, new_doc.url);
         assert_eq!(docs[0].body, new_doc.body);
         assert_eq!(docs[1].url, other_doc.url);
+    }
+
+    #[test]
+    fn document_snapshot_compaction_runs_periodically_after_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crawl-docs.jsonl");
+        for index in 0..=DOCUMENT_SNAPSHOT_COMPACT_MIN_ENTRIES {
+            let doc = FieldedDocument::from_plain_text(
+                "https://example.com/a".to_owned(),
+                format!("A {index}"),
+                format!("body {index}"),
+                None,
+            );
+            append_document_snapshot(&path, &doc).unwrap();
+        }
+
+        assert_eq!(count_document_snapshot_entries(&path).unwrap(), 1025);
+        assert_eq!(
+            compact_document_snapshot_if_needed(&path, 1, 127).unwrap(),
+            0
+        );
+        assert_eq!(count_document_snapshot_entries(&path).unwrap(), 1025);
+
+        assert_eq!(
+            compact_document_snapshot_if_needed(&path, 1, 128).unwrap(),
+            1024
+        );
+        assert_eq!(count_document_snapshot_entries(&path).unwrap(), 1);
+        let docs = load_document_snapshot(&path).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "A 1024");
+        assert_eq!(docs[0].body, "body 1024");
     }
 
     #[test]
