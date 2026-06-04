@@ -563,6 +563,16 @@ pub enum DisplayCommand {
         height: usize,
         shade: u8,
     },
+    ColorRect {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        red: u8,
+        green: u8,
+        blue: u8,
+        shade: u8,
+    },
     Image {
         x: usize,
         y: usize,
@@ -4060,6 +4070,13 @@ fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
             height,
             ..
         }
+        | DisplayCommand::ColorRect {
+            x,
+            y,
+            width,
+            height,
+            ..
+        }
         | DisplayCommand::Image {
             x,
             y,
@@ -4203,6 +4220,7 @@ fn display_command_node_bounds(
     match command {
         DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => Vec::new(),
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => vec![(node_id, command_bounds)],
     }
@@ -4767,6 +4785,18 @@ fn browser_hit_test(
             url: None,
             shade: Some(*shade),
         },
+        DisplayCommand::ColorRect { shade, .. } => BrowserHitTest {
+            command_index,
+            kind: "rect".to_owned(),
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+            text: None,
+            alt: None,
+            url: None,
+            shade: Some(*shade),
+        },
         DisplayCommand::Image {
             alt, url, shade, ..
         } => BrowserHitTest {
@@ -4877,6 +4907,14 @@ pub fn rasterize_render(
                 width: _,
                 height: _,
                 shade,
+            }
+            | DisplayCommand::ColorRect {
+                x: _,
+                y: _,
+                width: _,
+                height: _,
+                shade,
+                ..
             } => {
                 let rect_x = options.padding_x.saturating_add(
                     visible_bounds
@@ -5237,6 +5275,7 @@ fn draw_raster_text_command(
         DisplayCommand::Text { x, y, text } => (*x, *y, text.as_str(), 0),
         DisplayCommand::StyledText { x, y, text, shade } => (*x, *y, text.as_str(), *shade),
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => return,
     };
@@ -5267,6 +5306,7 @@ fn draw_rgba_text_command(
         DisplayCommand::Text { x, y, text } => (*x, *y, text.as_str(), 0),
         DisplayCommand::StyledText { x, y, text, shade } => (*x, *y, text.as_str(), *shade),
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => return,
     };
@@ -5503,6 +5543,33 @@ pub fn rasterize_render_rgba(
                     [*shade, *shade, *shade, 255],
                 );
             }
+            DisplayCommand::ColorRect {
+                red, green, blue, ..
+            } => {
+                let rect_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let rect_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
+                fill_rgba_rect(
+                    &mut rgba.pixels,
+                    rgba.width,
+                    rect_x,
+                    rect_y,
+                    rect_width,
+                    rect_height,
+                    [*red, *green, *blue, 255],
+                );
+            }
             DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
         }
     }
@@ -5622,7 +5689,7 @@ pub fn browser_text_viewport(
         };
         match command {
             DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
-            DisplayCommand::Rect { .. } => {
+            DisplayCommand::Rect { .. } | DisplayCommand::ColorRect { .. } => {
                 fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '#')
             }
             DisplayCommand::Image { alt, .. } => {
@@ -5685,6 +5752,7 @@ fn draw_text_viewport_command(
             (*x, *y, text.as_str())
         }
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => return,
     };
@@ -6072,6 +6140,7 @@ fn display_command_text(command: &DisplayCommand) -> Option<&str> {
             Some(text.as_str())
         }
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => None,
     }
@@ -6181,6 +6250,7 @@ fn display_command_is_visual_fill(command: &DisplayCommand) -> bool {
     matches!(
         command,
         DisplayCommand::Rect { .. }
+            | DisplayCommand::ColorRect { .. }
             | DisplayCommand::Image { .. }
             | DisplayCommand::BackgroundImage { .. }
     )
@@ -13231,8 +13301,13 @@ fn parse_css_border_width(value: &str) -> Option<usize> {
 }
 
 fn parse_css_color_shade(value: &str) -> Option<u8> {
+    let (red, green, blue) = parse_css_color_rgb_value(value)?;
+    Some(rgb_to_luma(red, green, blue))
+}
+
+fn parse_css_color_rgb_value(value: &str) -> Option<(u8, u8, u8)> {
     if let Some((red, green, blue)) = parse_css_rgb_function(value) {
-        return Some(rgb_to_luma(red, green, blue));
+        return Some((red, green, blue));
     }
     for token in value.split_ascii_whitespace() {
         let token = token.trim_matches(|ch: char| ch == ',' || ch == ';');
@@ -13240,20 +13315,20 @@ fn parse_css_color_shade(value: &str) -> Option<u8> {
             return None;
         }
         if let Some((red, green, blue)) = parse_css_rgb_function(token) {
-            return Some(rgb_to_luma(red, green, blue));
+            return Some((red, green, blue));
         }
-        if let Some(shade) = parse_hex_color_shade(token) {
-            return Some(shade);
+        if let Some(rgb) = parse_hex_color_rgb(token) {
+            return Some(rgb);
         }
         match token.to_ascii_lowercase().as_str() {
-            "black" => return Some(0),
-            "white" => return Some(255),
-            "gray" | "grey" => return Some(128),
-            "silver" => return Some(192),
-            "red" => return Some(rgb_to_luma(255, 0, 0)),
-            "green" => return Some(rgb_to_luma(0, 128, 0)),
-            "blue" => return Some(rgb_to_luma(0, 0, 255)),
-            "yellow" => return Some(rgb_to_luma(255, 255, 0)),
+            "black" => return Some((0, 0, 0)),
+            "white" => return Some((255, 255, 255)),
+            "gray" | "grey" => return Some((128, 128, 128)),
+            "silver" => return Some((192, 192, 192)),
+            "red" => return Some((255, 0, 0)),
+            "green" => return Some((0, 128, 0)),
+            "blue" => return Some((0, 0, 255)),
+            "yellow" => return Some((255, 255, 0)),
             _ => {}
         }
     }
@@ -14150,11 +14225,6 @@ fn parse_css_list_style_type(value: &str) -> Option<CssListStyleType> {
     }
 }
 
-fn parse_hex_color_shade(token: &str) -> Option<u8> {
-    let (red, green, blue) = parse_hex_color_rgb(token)?;
-    Some(rgb_to_luma(red, green, blue))
-}
-
 fn parse_hex_color_rgb(token: &str) -> Option<(u8, u8, u8)> {
     let hex = token.strip_prefix('#')?;
     match hex.len() {
@@ -14863,18 +14933,31 @@ fn render_node(
             if element.tag == "svg" {
                 let (svg_width, svg_height) =
                     replaced_media_placeholder_extent(element, &style, renderer);
-                let shade = svg_paint_shade(dom, node_id, element)
+                let rgb = svg_paint_rgb(dom, node_id, element);
+                let shade = rgb
+                    .map(|(red, green, blue)| rgb_to_luma(red, green, blue))
+                    .or_else(|| svg_paint_shade(dom, node_id, element))
                     .or(style.background_shade)
                     .unwrap_or(220);
+                let shapes = svg_paint_shapes(dom, node_id, element, svg_width, svg_height);
                 if is_row_item {
-                    renderer.push_inline_rect_placeholder(
+                    renderer.push_inline_svg_placeholder(
                         svg_width,
                         svg_height,
+                        &shapes,
+                        rgb,
                         shade,
                         Some(node_id),
                     );
                 } else {
-                    renderer.push_rect_placeholder(svg_width, svg_height, shade, Some(node_id));
+                    renderer.push_svg_placeholder(
+                        svg_width,
+                        svg_height,
+                        &shapes,
+                        rgb,
+                        shade,
+                        Some(node_id),
+                    );
                 }
                 exit_outer_contexts(
                     renderer,
@@ -15665,6 +15748,10 @@ fn svg_paint_shade(dom: &Dom, node_id: usize, element: &ElementData) -> Option<u
         .or_else(|| svg_child_paint_shade(dom, node_id))
 }
 
+fn svg_paint_rgb(dom: &Dom, node_id: usize, element: &ElementData) -> Option<(u8, u8, u8)> {
+    svg_element_paint_rgb(element).or_else(|| svg_child_paint_rgb(dom, node_id, None))
+}
+
 fn svg_child_paint_shade(dom: &Dom, node_id: usize) -> Option<u8> {
     let node = dom.nodes.get(node_id)?;
     for &child_id in &node.children {
@@ -15686,6 +15773,29 @@ fn svg_child_paint_shade(dom: &Dom, node_id: usize) -> Option<u8> {
     None
 }
 
+fn svg_child_paint_rgb(
+    dom: &Dom,
+    node_id: usize,
+    inherited: Option<(u8, u8, u8)>,
+) -> Option<(u8, u8, u8)> {
+    let node = dom.nodes.get(node_id)?;
+    for &child_id in &node.children {
+        let Some(child) = dom.nodes.get(child_id) else {
+            continue;
+        };
+        if let NodeKind::Element(element) = &child.kind {
+            let fill = svg_element_paint_rgb(element).or(inherited);
+            if fill.is_some() {
+                return fill;
+            }
+            if let Some(fill) = svg_child_paint_rgb(dom, child_id, inherited) {
+                return Some(fill);
+            }
+        }
+    }
+    None
+}
+
 fn svg_style_paint_shade(style: &str) -> Option<u8> {
     for declaration in strip_css_comments(style).split(';') {
         let Some((name, value)) = declaration.split_once(':') else {
@@ -15700,6 +15810,165 @@ fn svg_style_paint_shade(style: &str) -> Option<u8> {
         }
     }
     None
+}
+
+fn svg_style_paint_rgb(style: &str) -> Option<(u8, u8, u8)> {
+    for declaration in strip_css_comments(style).split(';') {
+        let Some((name, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "fill" | "color" | "background" | "background-color"
+        ) && let Some(rgb) = parse_css_color_rgb_value(css_declaration_value(value))
+        {
+            return Some(rgb);
+        }
+    }
+    None
+}
+
+fn svg_element_paint_rgb(element: &ElementData) -> Option<(u8, u8, u8)> {
+    element
+        .attrs
+        .get("fill")
+        .and_then(|fill| parse_css_color_rgb_value(fill))
+        .or_else(|| element.style.as_deref().and_then(svg_style_paint_rgb))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SvgPaintShape {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+fn svg_paint_shapes(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    svg_width: usize,
+    svg_height: usize,
+) -> Vec<SvgPaintShape> {
+    let mut shapes = Vec::new();
+    let inherited = svg_element_paint_rgb(element);
+    collect_svg_paint_shapes(dom, node_id, inherited, svg_width, svg_height, &mut shapes);
+    shapes
+}
+
+fn collect_svg_paint_shapes(
+    dom: &Dom,
+    node_id: usize,
+    inherited: Option<(u8, u8, u8)>,
+    svg_width: usize,
+    svg_height: usize,
+    shapes: &mut Vec<SvgPaintShape>,
+) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    for &child_id in &node.children {
+        let Some(child) = dom.nodes.get(child_id) else {
+            continue;
+        };
+        let NodeKind::Element(element) = &child.kind else {
+            continue;
+        };
+        let fill = svg_element_paint_rgb(element).or(inherited);
+        if let Some((red, green, blue)) = fill {
+            if let Some((x, y, width, height)) = svg_shape_bounds(element, svg_width, svg_height) {
+                shapes.push(SvgPaintShape {
+                    x,
+                    y,
+                    width,
+                    height,
+                    red,
+                    green,
+                    blue,
+                });
+            }
+        }
+        collect_svg_paint_shapes(dom, child_id, fill, svg_width, svg_height, shapes);
+    }
+}
+
+fn svg_shape_bounds(
+    element: &ElementData,
+    svg_width: usize,
+    svg_height: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    match element.tag.as_str() {
+        "rect" => {
+            let x = svg_attr_pixels(element, "x").unwrap_or(0.0);
+            let y = svg_attr_pixels(element, "y").unwrap_or(0.0);
+            let width = svg_attr_pixels(element, "width")?;
+            let height = svg_attr_pixels(element, "height")?;
+            svg_pixels_to_bounds(x, y, width, height, svg_width, svg_height)
+        }
+        "circle" => {
+            let cx = svg_attr_pixels(element, "cx").unwrap_or(0.0);
+            let cy = svg_attr_pixels(element, "cy").unwrap_or(0.0);
+            let r = svg_attr_pixels(element, "r")?;
+            svg_pixels_to_bounds(cx - r, cy - r, r * 2.0, r * 2.0, svg_width, svg_height)
+        }
+        "ellipse" => {
+            let cx = svg_attr_pixels(element, "cx").unwrap_or(0.0);
+            let cy = svg_attr_pixels(element, "cy").unwrap_or(0.0);
+            let rx = svg_attr_pixels(element, "rx")?;
+            let ry = svg_attr_pixels(element, "ry")?;
+            svg_pixels_to_bounds(cx - rx, cy - ry, rx * 2.0, ry * 2.0, svg_width, svg_height)
+        }
+        "path" | "polygon" | "polyline" => Some((0, 0, svg_width.max(1), svg_height.max(1))),
+        _ => None,
+    }
+}
+
+fn svg_attr_pixels(element: &ElementData, name: &str) -> Option<f32> {
+    let pixels = element
+        .attrs
+        .get(name)
+        .and_then(|value| parse_css_signed_length_pixels(value))?;
+    pixels.is_finite().then_some(pixels)
+}
+
+fn svg_pixels_to_bounds(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    svg_width: usize,
+    svg_height: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let start_x_px = x.max(0.0);
+    let start_y_px = y.max(0.0);
+    let end_x_px = (x + width).max(start_x_px);
+    let end_y_px = (y + height).max(start_y_px);
+    let start_x = (start_x_px / css_axis_cell_px(CssAxis::Horizontal)).floor() as usize;
+    let start_y = (start_y_px / css_axis_cell_px(CssAxis::Vertical)).floor() as usize;
+    let end_x = (end_x_px / css_axis_cell_px(CssAxis::Horizontal))
+        .ceil()
+        .max(start_x.saturating_add(1) as f32) as usize;
+    let end_y = (end_y_px / css_axis_cell_px(CssAxis::Vertical))
+        .ceil()
+        .max(start_y.saturating_add(1) as f32) as usize;
+    if start_x >= svg_width || start_y >= svg_height {
+        return None;
+    }
+    let end_x = end_x.min(svg_width.max(1));
+    let end_y = end_y.min(svg_height.max(1));
+    (end_x > start_x && end_y > start_y).then_some((
+        start_x,
+        start_y,
+        end_x - start_x,
+        end_y - start_y,
+    ))
 }
 
 fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
@@ -17412,6 +17681,34 @@ impl FlowRenderer {
         })
     }
 
+    fn clipped_color_rect_command(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        red: u8,
+        green: u8,
+        blue: u8,
+    ) -> Option<DisplayCommand> {
+        let clipped = self.clipped_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        })?;
+        Some(DisplayCommand::ColorRect {
+            x: clipped.x,
+            y: clipped.y,
+            width: clipped.width,
+            height: clipped.height,
+            red,
+            green,
+            blue,
+            shade: rgb_to_luma(red, green, blue),
+        })
+    }
+
     fn clipped_image_command(
         &self,
         command: DisplayCommand,
@@ -18413,10 +18710,12 @@ impl FlowRenderer {
         self.next_y += 1;
     }
 
-    fn push_inline_rect_placeholder(
+    fn push_inline_svg_placeholder(
         &mut self,
         width: usize,
         height: usize,
+        shapes: &[SvgPaintShape],
+        fallback_rgb: Option<(u8, u8, u8)>,
         shade: u8,
         target_node: Option<usize>,
     ) {
@@ -18450,44 +18749,89 @@ impl FlowRenderer {
         }
         let remaining_width = self.available_width().saturating_sub(self.current_width);
         let rect_width = rect_width.min(remaining_width.max(1));
-        if self.paint_visible()
-            && let Some(command) = self.clipped_rect_command(
-                self.box_x().saturating_add(self.current_width),
-                self.next_y,
-                rect_width,
-                rect_height,
-                shade,
-            )
-        {
-            let target = self.node_hit_target(target_node);
-            self.push_display_command(command, target);
-        }
+        let x = self.box_x().saturating_add(self.current_width);
+        self.push_svg_paint_commands(
+            x,
+            self.next_y,
+            rect_width,
+            rect_height,
+            shapes,
+            fallback_rgb,
+            shade,
+            target_node,
+        );
         self.current_width = self.current_width.saturating_add(rect_width);
         self.inline_replaced_height = self.inline_replaced_height.max(rect_height);
     }
 
-    fn push_rect_placeholder(
+    fn push_svg_placeholder(
         &mut self,
         width: usize,
         height: usize,
+        shapes: &[SvgPaintShape],
+        fallback_rgb: Option<(u8, u8, u8)>,
         shade: u8,
         target_node: Option<usize>,
     ) {
         self.break_line();
+        let rect_width = width.min(self.available_width()).max(1);
         let rect_height = height.max(1);
-        if self.paint_visible()
-            && let Some(command) = self.clipped_rect_command(
-                self.left_inset,
-                self.next_y,
-                width.min(self.available_width()).max(1),
-                rect_height,
-                shade,
-            )
-        {
-            let target = self.node_hit_target(target_node);
-            self.push_display_command(command, target);
-        }
+        self.push_svg_paint_commands(
+            self.left_inset,
+            self.next_y,
+            rect_width,
+            rect_height,
+            shapes,
+            fallback_rgb,
+            shade,
+            target_node,
+        );
         self.next_y = self.next_y.saturating_add(rect_height);
+    }
+
+    fn push_svg_paint_commands(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shapes: &[SvgPaintShape],
+        fallback_rgb: Option<(u8, u8, u8)>,
+        shade: u8,
+        target_node: Option<usize>,
+    ) {
+        if !self.paint_visible() {
+            return;
+        }
+        let target = self.node_hit_target(target_node);
+        if shapes.is_empty() {
+            let command = if let Some((red, green, blue)) = fallback_rgb {
+                self.clipped_color_rect_command(x, y, width, height, red, green, blue)
+            } else {
+                self.clipped_rect_command(x, y, width, height, shade)
+            };
+            if let Some(command) = command {
+                self.push_display_command(command, target);
+            }
+            return;
+        }
+        for shape in shapes {
+            let shape_x = x.saturating_add(shape.x.min(width.saturating_sub(1)));
+            let shape_y = y.saturating_add(shape.y.min(height.saturating_sub(1)));
+            let shape_width = shape.width.min(width.saturating_sub(shape.x).max(1));
+            let shape_height = shape.height.min(height.saturating_sub(shape.y).max(1));
+            if let Some(command) = self.clipped_color_rect_command(
+                shape_x,
+                shape_y,
+                shape_width,
+                shape_height,
+                shape.red,
+                shape.green,
+                shape.blue,
+            ) {
+                self.push_display_command(command, target.clone());
+            }
+        }
     }
 
     fn push_inline_image_placeholder(

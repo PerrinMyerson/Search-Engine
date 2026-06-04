@@ -446,6 +446,7 @@ fn css_not_pseudo_selectors_filter_rendered_layout_rules() {
                 DisplayCommand::Text { text, .. } => Some(text.as_str()),
                 DisplayCommand::StyledText { text, .. } => Some(text.as_str()),
                 DisplayCommand::Rect { .. }
+                | DisplayCommand::ColorRect { .. }
                 | DisplayCommand::Image { .. }
                 | DisplayCommand::BackgroundImage { .. } => None,
             })
@@ -508,6 +509,7 @@ fn style_display_command_text(command: &DisplayCommand) -> &str {
     match command {
         DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => text,
         DisplayCommand::Rect { .. }
+        | DisplayCommand::ColorRect { .. }
         | DisplayCommand::Image { .. }
         | DisplayCommand::BackgroundImage { .. } => "",
     }
