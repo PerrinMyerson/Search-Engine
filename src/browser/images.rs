@@ -1600,11 +1600,15 @@ fn parse_svg_number_list(value: &str) -> Option<Vec<f32>> {
     (!numbers.is_empty()).then_some(numbers)
 }
 
+const SVG_PATH_CURVE_SEGMENTS: usize = 12;
+
 fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
     let mut cursor = 0usize;
     let mut command = None;
     let mut current = SvgPoint { x: 0.0, y: 0.0 };
     let mut subpath_start = None;
+    let mut last_cubic_control = None;
+    let mut last_quadratic_control = None;
     let mut points = Vec::new();
 
     while cursor < value.len() {
@@ -1619,7 +1623,25 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
         {
             if !matches!(
                 next_command,
-                'M' | 'm' | 'L' | 'l' | 'H' | 'h' | 'V' | 'v' | 'Z' | 'z'
+                'M' | 'm'
+                    | 'L'
+                    | 'l'
+                    | 'H'
+                    | 'h'
+                    | 'V'
+                    | 'v'
+                    | 'C'
+                    | 'c'
+                    | 'S'
+                    | 's'
+                    | 'Q'
+                    | 'q'
+                    | 'T'
+                    | 't'
+                    | 'A'
+                    | 'a'
+                    | 'Z'
+                    | 'z'
             ) {
                 return None;
             }
@@ -1630,6 +1652,8 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
                     current = start;
                     points.push(start);
                 }
+                last_cubic_control = None;
+                last_quadratic_control = None;
                 continue;
             }
         }
@@ -1652,29 +1676,17 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
                 cursor = next_cursor;
 
                 while let Some((x, y, next_cursor)) = try_read_svg_point_pair(value, cursor) {
-                    current = if command == 'm' {
-                        SvgPoint {
-                            x: current.x + x,
-                            y: current.y + y,
-                        }
-                    } else {
-                        SvgPoint { x, y }
-                    };
+                    current = svg_path_point(current, x, y, command == 'm');
                     points.push(current);
                     cursor = next_cursor;
                 }
+                last_cubic_control = None;
+                last_quadratic_control = None;
             }
             'L' | 'l' => {
                 let mut read_any = false;
                 while let Some((x, y, next_cursor)) = try_read_svg_point_pair(value, cursor) {
-                    current = if command == 'l' {
-                        SvgPoint {
-                            x: current.x + x,
-                            y: current.y + y,
-                        }
-                    } else {
-                        SvgPoint { x, y }
-                    };
+                    current = svg_path_point(current, x, y, command == 'l');
                     points.push(current);
                     cursor = next_cursor;
                     read_any = true;
@@ -1682,6 +1694,8 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
                 if !read_any {
                     return None;
                 }
+                last_cubic_control = None;
+                last_quadratic_control = None;
             }
             'H' | 'h' => {
                 let mut read_any = false;
@@ -1694,12 +1708,125 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
                 if !read_any {
                     return None;
                 }
+                last_cubic_control = None;
+                last_quadratic_control = None;
             }
             'V' | 'v' => {
                 let mut read_any = false;
                 while let Some((y, next_cursor)) = try_read_svg_number(value, cursor) {
                     current.y = if command == 'v' { current.y + y } else { y };
                     points.push(current);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+                last_cubic_control = None;
+                last_quadratic_control = None;
+            }
+            'C' | 'c' => {
+                let mut read_any = false;
+                while let Some((x1, y1, cursor_after_control1)) =
+                    try_read_svg_point_pair(value, cursor)
+                {
+                    let (x2, y2, cursor_after_control2) =
+                        read_svg_point_pair(value, cursor_after_control1)?;
+                    let (x, y, next_cursor) = read_svg_point_pair(value, cursor_after_control2)?;
+                    let control1 = svg_path_point(current, x1, y1, command == 'c');
+                    let control2 = svg_path_point(current, x2, y2, command == 'c');
+                    let end = svg_path_point(current, x, y, command == 'c');
+                    push_cubic_svg_path_points(&mut points, current, control1, control2, end);
+                    current = end;
+                    last_cubic_control = Some(control2);
+                    last_quadratic_control = None;
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'S' | 's' => {
+                let mut read_any = false;
+                while let Some((x2, y2, cursor_after_control2)) =
+                    try_read_svg_point_pair(value, cursor)
+                {
+                    let (x, y, next_cursor) = read_svg_point_pair(value, cursor_after_control2)?;
+                    let control1 = reflect_svg_path_control(current, last_cubic_control);
+                    let control2 = svg_path_point(current, x2, y2, command == 's');
+                    let end = svg_path_point(current, x, y, command == 's');
+                    push_cubic_svg_path_points(&mut points, current, control1, control2, end);
+                    current = end;
+                    last_cubic_control = Some(control2);
+                    last_quadratic_control = None;
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'Q' | 'q' => {
+                let mut read_any = false;
+                while let Some((x1, y1, cursor_after_control)) =
+                    try_read_svg_point_pair(value, cursor)
+                {
+                    let (x, y, next_cursor) = read_svg_point_pair(value, cursor_after_control)?;
+                    let control = svg_path_point(current, x1, y1, command == 'q');
+                    let end = svg_path_point(current, x, y, command == 'q');
+                    push_quadratic_svg_path_points(&mut points, current, control, end);
+                    current = end;
+                    last_cubic_control = None;
+                    last_quadratic_control = Some(control);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'T' | 't' => {
+                let mut read_any = false;
+                while let Some((x, y, next_cursor)) = try_read_svg_point_pair(value, cursor) {
+                    let control = reflect_svg_path_control(current, last_quadratic_control);
+                    let end = svg_path_point(current, x, y, command == 't');
+                    push_quadratic_svg_path_points(&mut points, current, control, end);
+                    current = end;
+                    last_cubic_control = None;
+                    last_quadratic_control = Some(control);
+                    cursor = next_cursor;
+                    read_any = true;
+                }
+                if !read_any {
+                    return None;
+                }
+            }
+            'A' | 'a' => {
+                let mut read_any = false;
+                while let Some((rx, cursor_after_rx)) = try_read_svg_number(value, cursor) {
+                    let (ry, cursor_after_ry) = try_read_svg_number(value, cursor_after_rx)?;
+                    let (rotation, cursor_after_rotation) =
+                        try_read_svg_number(value, cursor_after_ry)?;
+                    let (large_arc, cursor_after_large_arc) =
+                        read_svg_arc_flag(value, cursor_after_rotation)?;
+                    let (sweep, cursor_after_sweep) =
+                        read_svg_arc_flag(value, cursor_after_large_arc)?;
+                    let (x, y, next_cursor) = read_svg_point_pair(value, cursor_after_sweep)?;
+                    let end = svg_path_point(current, x, y, command == 'a');
+                    push_arc_svg_path_points(
+                        &mut points,
+                        current,
+                        rx,
+                        ry,
+                        rotation,
+                        large_arc,
+                        sweep,
+                        end,
+                    );
+                    current = end;
+                    last_cubic_control = None;
+                    last_quadratic_control = None;
                     cursor = next_cursor;
                     read_any = true;
                 }
@@ -1713,6 +1840,154 @@ fn parse_simple_svg_path(value: &str) -> Option<Vec<SvgPoint>> {
     }
 
     (points.len() >= 2).then_some(points)
+}
+
+fn svg_path_point(current: SvgPoint, x: f32, y: f32, relative: bool) -> SvgPoint {
+    if relative {
+        SvgPoint {
+            x: current.x + x,
+            y: current.y + y,
+        }
+    } else {
+        SvgPoint { x, y }
+    }
+}
+
+fn reflect_svg_path_control(current: SvgPoint, control: Option<SvgPoint>) -> SvgPoint {
+    control
+        .map(|control| SvgPoint {
+            x: current.x.mul_add(2.0, -control.x),
+            y: current.y.mul_add(2.0, -control.y),
+        })
+        .unwrap_or(current)
+}
+
+fn push_cubic_svg_path_points(
+    points: &mut Vec<SvgPoint>,
+    start: SvgPoint,
+    control1: SvgPoint,
+    control2: SvgPoint,
+    end: SvgPoint,
+) {
+    for step in 1..=SVG_PATH_CURVE_SEGMENTS {
+        let t = step as f32 / SVG_PATH_CURVE_SEGMENTS as f32;
+        let inverse = 1.0 - t;
+        let inverse_squared = inverse * inverse;
+        let t_squared = t * t;
+        points.push(SvgPoint {
+            x: inverse_squared * inverse * start.x
+                + 3.0 * inverse_squared * t * control1.x
+                + 3.0 * inverse * t_squared * control2.x
+                + t_squared * t * end.x,
+            y: inverse_squared * inverse * start.y
+                + 3.0 * inverse_squared * t * control1.y
+                + 3.0 * inverse * t_squared * control2.y
+                + t_squared * t * end.y,
+        });
+    }
+}
+
+fn push_quadratic_svg_path_points(
+    points: &mut Vec<SvgPoint>,
+    start: SvgPoint,
+    control: SvgPoint,
+    end: SvgPoint,
+) {
+    for step in 1..=SVG_PATH_CURVE_SEGMENTS {
+        let t = step as f32 / SVG_PATH_CURVE_SEGMENTS as f32;
+        let inverse = 1.0 - t;
+        points.push(SvgPoint {
+            x: inverse * inverse * start.x + 2.0 * inverse * t * control.x + t * t * end.x,
+            y: inverse * inverse * start.y + 2.0 * inverse * t * control.y + t * t * end.y,
+        });
+    }
+}
+
+fn push_arc_svg_path_points(
+    points: &mut Vec<SvgPoint>,
+    start: SvgPoint,
+    rx: f32,
+    ry: f32,
+    x_axis_rotation: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: SvgPoint,
+) {
+    if (start.x - end.x).abs() <= f32::EPSILON && (start.y - end.y).abs() <= f32::EPSILON {
+        return;
+    }
+    let mut rx = rx.abs();
+    let mut ry = ry.abs();
+    if rx <= f32::EPSILON || ry <= f32::EPSILON {
+        points.push(end);
+        return;
+    }
+
+    let rotation = x_axis_rotation.to_radians();
+    let cos_rotation = rotation.cos();
+    let sin_rotation = rotation.sin();
+    let dx = (start.x - end.x) / 2.0;
+    let dy = (start.y - end.y) / 2.0;
+    let x1_prime = cos_rotation.mul_add(dx, sin_rotation * dy);
+    let y1_prime = (-sin_rotation).mul_add(dx, cos_rotation * dy);
+    let radii_scale = (x1_prime * x1_prime / (rx * rx) + y1_prime * y1_prime / (ry * ry)).sqrt();
+    if radii_scale > 1.0 {
+        rx *= radii_scale;
+        ry *= radii_scale;
+    }
+
+    let rx_squared = rx * rx;
+    let ry_squared = ry * ry;
+    let x1_prime_squared = x1_prime * x1_prime;
+    let y1_prime_squared = y1_prime * y1_prime;
+    let denominator = rx_squared * y1_prime_squared + ry_squared * x1_prime_squared;
+    if denominator <= f32::EPSILON {
+        points.push(end);
+        return;
+    }
+    let numerator =
+        (rx_squared * ry_squared - rx_squared * y1_prime_squared - ry_squared * x1_prime_squared)
+            .max(0.0);
+    let center_scale =
+        if large_arc == sweep { -1.0 } else { 1.0 } * (numerator / denominator).sqrt();
+    let center_x_prime = center_scale * rx * y1_prime / ry;
+    let center_y_prime = center_scale * -ry * x1_prime / rx;
+    let center_x = cos_rotation.mul_add(center_x_prime, -sin_rotation * center_y_prime)
+        + (start.x + end.x) / 2.0;
+    let center_y = sin_rotation.mul_add(center_x_prime, cos_rotation * center_y_prime)
+        + (start.y + end.y) / 2.0;
+
+    let start_vector = SvgPoint {
+        x: (x1_prime - center_x_prime) / rx,
+        y: (y1_prime - center_y_prime) / ry,
+    };
+    let end_vector = SvgPoint {
+        x: (-x1_prime - center_x_prime) / rx,
+        y: (-y1_prime - center_y_prime) / ry,
+    };
+    let start_angle = svg_vector_angle(SvgPoint { x: 1.0, y: 0.0 }, start_vector);
+    let mut delta_angle = svg_vector_angle(start_vector, end_vector);
+    if !sweep && delta_angle > 0.0 {
+        delta_angle -= std::f32::consts::TAU;
+    } else if sweep && delta_angle < 0.0 {
+        delta_angle += std::f32::consts::TAU;
+    }
+
+    let segments =
+        ((delta_angle.abs() / (std::f32::consts::PI / 8.0)).ceil() as usize).clamp(4, 64);
+    for step in 1..=segments {
+        let angle = start_angle + delta_angle * step as f32 / segments as f32;
+        let cos_angle = angle.cos();
+        let sin_angle = angle.sin();
+        points.push(SvgPoint {
+            x: center_x + rx * cos_rotation * cos_angle - ry * sin_rotation * sin_angle,
+            y: center_y + rx * sin_rotation * cos_angle + ry * cos_rotation * sin_angle,
+        });
+    }
+}
+
+fn svg_vector_angle(from: SvgPoint, to: SvgPoint) -> f32 {
+    (from.x * to.y - from.y * to.x).atan2(from.x * to.x + from.y * to.y)
 }
 
 fn read_svg_point_pair(value: &str, cursor: usize) -> Option<(f32, f32, usize)> {
@@ -1738,6 +2013,16 @@ fn try_read_svg_number(value: &str, cursor: usize) -> Option<(f32, usize)> {
         return None;
     }
     read_svg_number(value, cursor)
+}
+
+fn read_svg_arc_flag(value: &str, cursor: usize) -> Option<(bool, usize)> {
+    let cursor = skip_svg_number_delimiters(value, cursor);
+    let flag = value[cursor..].chars().next()?;
+    match flag {
+        '0' => Some((false, cursor + flag.len_utf8())),
+        '1' => Some((true, cursor + flag.len_utf8())),
+        _ => None,
+    }
 }
 
 fn read_svg_number(value: &str, cursor: usize) -> Option<(f32, usize)> {
