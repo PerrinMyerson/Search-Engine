@@ -1558,8 +1558,15 @@ fn svg_shape_paint(attrs: &HashMap<String, String>, property: &str) -> Option<Sv
             alpha,
         });
     }
+    if let Some(rgb) = parse_svg_css_color_rgb(value) {
+        return Some(SvgPaint {
+            shade: svg_rgb_to_luma(rgb),
+            rgb,
+            alpha,
+        });
+    }
     let shade = parse_css_color_shade(value)?;
-    let rgb = parse_svg_css_color_rgb(value).unwrap_or([shade, shade, shade]);
+    let rgb = [shade, shade, shade];
     Some(SvgPaint { shade, rgb, alpha })
 }
 
@@ -1636,12 +1643,29 @@ fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
             "silver" => return Some([192, 192, 192]),
             "red" => return Some([255, 0, 0]),
             "green" => return Some([0, 128, 0]),
+            "lime" => return Some([0, 255, 0]),
             "blue" => return Some([0, 0, 255]),
             "yellow" => return Some([255, 255, 0]),
+            "orange" => return Some([255, 165, 0]),
+            "purple" => return Some([128, 0, 128]),
+            "rebeccapurple" => return Some([102, 51, 153]),
+            "cyan" | "aqua" => return Some([0, 255, 255]),
+            "magenta" | "fuchsia" => return Some([255, 0, 255]),
+            "navy" => return Some([0, 0, 128]),
+            "teal" => return Some([0, 128, 128]),
+            "maroon" => return Some([128, 0, 0]),
+            "olive" => return Some([128, 128, 0]),
             _ => {}
         }
     }
     None
+}
+
+fn svg_rgb_to_luma(rgb: [u8; 3]) -> u8 {
+    let red = rgb[0] as u16;
+    let green = rgb[1] as u16;
+    let blue = rgb[2] as u16;
+    ((red * 77 + green * 150 + blue * 29) >> 8) as u8
 }
 
 fn parse_svg_hex_color_rgb(value: &str) -> Option<[u8; 3]> {
