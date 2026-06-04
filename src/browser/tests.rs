@@ -4831,13 +4831,16 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
     let page = dir.path().join("page.html");
     let hero = dir.path().join("hero.webp");
     let wide = dir.path().join("wide.webp");
+    let set = dir.path().join("set.webp");
     fs::write(&hero, tiny_test_webp_bytes()).unwrap();
     fs::write(&wide, tiny_test_webp_bytes()).unwrap();
+    fs::write(&set, tiny_test_webp_bytes()).unwrap();
     fs::write(
         &page,
         r#"<html><body>
             <section data-background-image="url('hero.webp')">Hero</section>
             <section data-bgset="wide.avif 320w, wide.webp 640w">Wide</section>
+            <section data-lazy-background-image="-webkit-image-set(url('set.avif') type('image/avif') 1x, url('set.webp') type('image/webp') 2x)">Set</section>
         </body></html>"#,
     )
     .unwrap();
@@ -4849,10 +4852,10 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 2);
-    assert_eq!(report.decoded, 2);
+    assert_eq!(report.image_count, 3);
+    assert_eq!(report.decoded, 3);
     assert_eq!(report.failed, 0);
-    assert_eq!(report.fetches.len(), 2);
+    assert_eq!(report.fetches.len(), 3);
 
     let hero_fetch = report
         .fetches
@@ -4879,6 +4882,25 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
     assert_eq!(wide_fetch.content_type.as_deref(), Some("image/webp"));
     assert_eq!(wide_fetch.image_decode_status.as_deref(), Some("decoded"));
     assert!(wide_fetch.decoded_hash.is_some());
+
+    let set_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == set.display().to_string())
+        .unwrap();
+    assert_eq!(set_fetch.resource.kind, "background_image");
+    assert_eq!(set_fetch.resource.initiator, "section");
+    assert_eq!(set_fetch.resource.url, "set.webp");
+    assert_eq!(set_fetch.status, "fetched");
+    assert_eq!(set_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(set_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(set_fetch.decoded_hash.is_some());
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "set.avif")
+    );
 }
 
 #[tokio::test]
