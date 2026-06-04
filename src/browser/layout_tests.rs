@@ -4551,6 +4551,112 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
     );
 }
 
+#[test]
+fn render_fidelity_scrolled_viewport_keeps_rgb_css_text_and_decoded_image() {
+    let image_url = "mem://render-fidelity-photo".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![76],
+        rgb_pixels: Some(vec![200, 24, 24]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <section style="background-color: rgb(10, 20, 30); color: rgb(240 240 240); height: 48px">
+                <img src="{image_url}" width="16" height="16" alt="">
+                <p style="margin:0">Readable mixed body</p>
+              </section>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://render-fidelity",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render mixed rgb css and decoded image fixture");
+
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Rect {
+            shade,
+            ..
+        } if *shade == rgb_to_luma(10, 20, 30)
+    )));
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::StyledText {
+            text,
+            shade,
+            ..
+        } if text == "Readable mixed body" && *shade == rgb_to_luma(240, 240, 240)
+    )));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(32),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled rgb css and decoded image");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[200, 24, 24, 255]
+    );
+
+    let text_row_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height.saturating_mul(1));
+    let text_row_end = text_row_y
+        .saturating_add(raster_options.cell_height)
+        .min(rgba.height);
+    let text_col_end = raster_options
+        .padding_x
+        .saturating_add(
+            "Readable mixed body"
+                .len()
+                .saturating_mul(raster_options.cell_width),
+        )
+        .min(rgba.width);
+    let mut bright_text_pixels = 0usize;
+    for y in text_row_y..text_row_end {
+        for x in raster_options.padding_x..text_col_end {
+            if pixel(x, y) == &[240, 240, 240, 255] {
+                bright_text_pixels = bright_text_pixels.saturating_add(1);
+            }
+        }
+    }
+    assert!(bright_text_pixels >= 8);
+}
+
 #[tokio::test]
 async fn viewport_scroll_normal_rerender_attaches_decoded_resource_cache_images() {
     let image_url = tiny_test_jpeg_data_url();
