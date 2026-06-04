@@ -5524,27 +5524,19 @@ fn nearby_visual_region_text_context(
             if !inside_visual && !near_visual && !near_viewport {
                 return None;
             }
-            let viewport_distance = if bounds.y < viewport.y {
-                viewport.y.saturating_sub(bounds.y)
-            } else {
-                bounds.y.saturating_sub(viewport.end_y())
-            };
-            let rank = if inside_visual {
-                0
-            } else if near_visual {
-                1
-            } else {
-                2
-            };
-            let distance = if near_visual {
-                visual_distance.unwrap_or(viewport_distance)
-            } else {
-                viewport_distance
-            };
-            Some((rank, distance, text))
+            let viewport_distance = bounds_viewport_distance(bounds, viewport);
+            let rank = usize::from(!(inside_visual || near_visual));
+            Some((
+                rank,
+                viewport_distance,
+                visual_distance.unwrap_or(usize::MAX),
+                text,
+            ))
         })
-        .min_by_key(|(rank, distance, _)| (*rank, *distance))
-        .map(|(_, _, text)| text)
+        .min_by_key(|(rank, viewport_distance, visual_distance, _)| {
+            (*rank, *viewport_distance, *visual_distance)
+        })
+        .map(|(_, _, _, text)| text)
 }
 
 fn display_command_text(command: &DisplayCommand) -> Option<&str> {
@@ -5683,10 +5675,17 @@ fn bounds_near_visual_viewport(text: DisplayCommandBounds, viewport: RasterViewp
         return false;
     }
     let search_rows = viewport.height.saturating_mul(2).max(4);
-    if text.y < viewport.y {
-        return viewport.y.saturating_sub(text.y) <= search_rows;
+    bounds_viewport_distance(text, viewport) <= search_rows
+}
+
+fn bounds_viewport_distance(bounds: DisplayCommandBounds, viewport: RasterViewport) -> usize {
+    if bounds.y < viewport.y {
+        viewport
+            .y
+            .saturating_sub(bounds.y.saturating_add(bounds.height))
+    } else {
+        bounds.y.saturating_sub(viewport.end_y())
     }
-    text.y.saturating_sub(viewport.end_y()) <= search_rows
 }
 
 fn bounds_visual_region_search_rows(viewport: RasterViewport) -> usize {

@@ -2965,6 +2965,92 @@ fn decoded_image_viewports_preserve_following_body_context() {
 }
 
 #[test]
+fn scrolled_image_viewports_choose_nearest_body_context() {
+    let image_url = tiny_test_jpeg_data_url();
+    let render = BrowserRender {
+        source: "mem://scrolled-image-context".to_owned(),
+        title: String::new(),
+        viewport_width: 36,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default(); 3],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Navigation overview".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 36,
+                height: 16,
+                shade: 220,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 17,
+                text: "Readable body evidence".to_owned(),
+            },
+        ],
+        text: "Navigation overview\nReadable body evidence".to_owned(),
+    };
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 12,
+            width: 36,
+            height: 4,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains('@'));
+    assert!(scrolled_text.contains("Readable body evidence"));
+    assert!(!scrolled_text.contains("Navigation overview"));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(12),
+        viewport_width: Some(36),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster =
+        rasterize_render(&render, raster_options).expect("rasterize scrolled image context");
+    let overlay_row_y = raster_options.padding_y;
+    let overlay_row_end = overlay_row_y.saturating_add(raster_options.cell_height);
+    let overlay_col_end = raster_options.padding_x.saturating_add(
+        "Readable body evidence"
+            .len()
+            .saturating_mul(raster_options.cell_width),
+    );
+    let mut overlay_glyph_pixels = 0usize;
+    for y in overlay_row_y..overlay_row_end {
+        for x in raster_options.padding_x..overlay_col_end {
+            let index = y.saturating_mul(raster.width).saturating_add(x);
+            if raster.pixels.get(index).is_some_and(|pixel| *pixel == 255) {
+                overlay_glyph_pixels = overlay_glyph_pixels.saturating_add(1);
+            }
+        }
+    }
+    assert!(overlay_glyph_pixels >= 8);
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
