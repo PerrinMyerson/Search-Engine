@@ -11801,6 +11801,75 @@ async fn browser_session_page_renders_form_controls() {
 }
 
 #[tokio::test]
+async fn browser_page_completes_data_html_initial_render_without_pending_shell() {
+    let registry = BrowserSessionRegistry::default();
+    let long_lines = (0..80)
+        .map(|index| format!("{index:02} Hello data page ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data_url = format!(
+        "data:text/html,<!doctype html><title>Data Fixture</title><style>.grid{{display:grid;grid-template-columns:1fr 1fr;}}</style><div class=grid><pre>{long_lines}</pre><svg width=20 height=12><rect width=20 height=12 fill=blue /></svg></div>"
+    );
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), data_url.clone()),
+            ("from".to_owned(), "/search?q=data".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "16".to_owned()),
+            ("viewport_x".to_owned(), "3".to_owned()),
+            ("viewport_y".to_owned(), "5".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+        ],
+    };
+
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Data Fixture");
+    assert_eq!(payload.source, data_url);
+    assert_eq!(payload.pending_source, None);
+    assert_eq!(payload.back_href, "/search?q=data");
+    assert_eq!(payload.viewport_x, 3);
+    assert_eq!(payload.viewport_y, 5);
+    assert!(payload.page_text.contains("Hello data page"));
+    assert!(payload.max_scroll_x > 0);
+    assert!(payload.max_scroll_y > 0);
+    assert!(payload.viewport_image.is_some());
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert_eq!(current_tab.source, data_url);
+    assert_eq!(current_tab.title, "Data Fixture");
+    assert!(!current_tab.source.contains("about:blank"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains("<h1>Data Fixture</h1>"));
+    assert!(html.contains(r#"data-browser-primary-state"#));
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(!html.contains(r#"data-browser-pending-load="true""#));
+    assert!(!html.contains("Continue loading"));
+    assert!(!html.contains("about:blank"));
+    assert!(html.contains(r#"data-browser-address type="text""#));
+    assert!(html.contains("data:text/html"));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Ddata"));
+    assert!(html.contains("width=40"));
+    assert!(html.contains("height=16"));
+    assert!(html.contains("viewport_x=3"));
+    assert!(html.contains("viewport_y=5"));
+    assert!(html.contains("max_bytes=1048576"));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let params: std::collections::HashMap<String, String> =
+        form_urlencoded::parse(current_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+    assert_eq!(
+        params.get("source").map(String::as_str),
+        Some(data_url.as_str())
+    );
+}
+
+#[tokio::test]
 async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
