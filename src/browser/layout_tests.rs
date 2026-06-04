@@ -4162,6 +4162,119 @@ fn overflow_clipped_image_samples_original_source_in_scrolled_viewport() {
 }
 
 #[test]
+fn fixed_visuals_do_not_extend_scroll_extent_but_paint_in_scrolled_viewport() {
+    let image_url = "mem://fixed-scroll-extent-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![24, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://fixed-scroll-extent".to_owned(),
+        title: String::new(),
+        viewport_width: 24,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default().with_viewport_fixed(true),
+        ],
+        display_list: vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 24,
+                height: 5,
+                shade: 230,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Tail body text".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 10,
+                shade: 96,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+        ],
+        text: "Tail body text".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 99,
+            width: 24,
+            height: 3,
+        },
+        None,
+    );
+    assert_eq!(viewport.document_height, 5);
+    assert_eq!(viewport.max_scroll_y, 2);
+    assert_eq!(viewport.viewport.y, 2);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(2),
+        viewport_width: Some(24),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize fixed scrolled viewport");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    let fixed_image_y = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height);
+    assert_eq!(
+        pixel(raster_options.padding_x, fixed_image_y),
+        &[24, 120, 220, 255]
+    );
+
+    let text_y = raster_options
+        .padding_y
+        .saturating_add(2usize.saturating_mul(raster_options.cell_height))
+        .saturating_add(2);
+    let text_has_ink = (raster_options.padding_x
+        ..raster_options
+            .padding_x
+            .saturating_add(8usize.saturating_mul(raster_options.cell_width)))
+        .any(|x| pixel(x, text_y) == &[0, 0, 0, 255]);
+    assert!(text_has_ink);
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
