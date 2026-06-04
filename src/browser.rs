@@ -5039,8 +5039,16 @@ pub fn rasterize_render(
     if raster_viewport_needs_readable_context(render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
-        let row = raster_text_context_overlay_row(render, viewport, context.bounds);
-        draw_raster_text_context(&mut pixels, width, &context.text, viewport, options, row);
+        let rows =
+            raster_text_context_overlay_rows(render, viewport, context.bounds, context.lines.len());
+        draw_raster_text_context_lines(
+            &mut pixels,
+            width,
+            &context.lines,
+            viewport,
+            options,
+            &rows,
+        );
     }
 
     Ok(BrowserRaster {
@@ -5216,7 +5224,7 @@ pub fn browser_text_viewport(
     if text_viewport_needs_readable_context(&cells, render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
-        overlay_text_viewport_context(&mut cells, viewport, context.bounds, &context.text);
+        overlay_text_viewport_context(&mut cells, viewport, context.bounds, &context.lines);
     }
 
     BrowserTextViewportReport {
@@ -5417,11 +5425,12 @@ fn raster_viewport_visual_fill_row_count(
         .count()
 }
 
-fn raster_text_context_overlay_row(
+fn raster_text_context_overlay_rows(
     render: &BrowserRender,
     viewport: RasterViewport,
     context_bounds: DisplayCommandBounds,
-) -> usize {
+    line_count: usize,
+) -> Vec<usize> {
     let mut row_has_text = vec![false; viewport.height];
     let mut row_has_visual = vec![false; viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
@@ -5458,18 +5467,27 @@ fn raster_text_context_overlay_row(
             }
         }
     }
-    nearest_visual_context_overlay_row(
+    visual_context_overlay_rows(
         row_has_visual
             .iter()
             .zip(row_has_text.iter())
             .map(|(has_visual, has_text)| *has_visual && !*has_text),
         preferred_context_overlay_row(viewport, context_bounds),
+        line_count,
     )
-    .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VisualTextContext {
+    lines: Vec<String>,
+    bounds: DisplayCommandBounds,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisualTextCandidate {
+    rank: usize,
+    viewport_distance: usize,
+    visual_distance: usize,
     text: String,
     bounds: DisplayCommandBounds,
 }
@@ -5502,54 +5520,101 @@ fn nearby_visual_region_text_context(
         return None;
     }
 
-    render
+    let selected = render
         .display_list
         .iter()
         .enumerate()
         .filter_map(|(command_index, command)| {
-            let text = display_command_text(command)?;
-            let text = readable_display_text(text);
-            let text = collapse_ascii_whitespace(&text);
-            if text.is_empty() || !text.chars().any(|ch| ch.is_ascii_alphanumeric()) {
-                return None;
-            }
-            let viewport_fixed = display_command_viewport_fixed(render, command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let bounds = display_command_bounds_for_viewport(
-                command,
-                viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
-            if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
-                return None;
-            }
-            let inside_visual = visual_bounds
-                .iter()
-                .any(|visual| bounds_inside_visual_region(bounds, *visual));
-            let visual_distance = visual_bounds
-                .iter()
-                .filter_map(|visual| bounds_visual_region_distance(bounds, *visual))
-                .min();
-            let near_visual = visual_distance
-                .is_some_and(|distance| distance <= bounds_visual_region_search_rows(viewport));
-            let near_viewport = bounds_near_visual_viewport(bounds, viewport);
-            if !inside_visual && !near_visual && !near_viewport {
-                return None;
-            }
-            let viewport_distance = bounds_viewport_distance(bounds, viewport);
-            let rank = usize::from(!(inside_visual || near_visual));
-            Some((
-                rank,
-                viewport_distance,
-                visual_distance.unwrap_or(usize::MAX),
-                VisualTextContext { text, bounds },
-            ))
+            visual_text_context_candidate(render, viewport, &visual_bounds, command_index, command)
         })
-        .min_by_key(|(rank, viewport_distance, visual_distance, _)| {
-            (*rank, *viewport_distance, *visual_distance)
-        })
-        .map(|(_, _, _, context)| context)
+        .min_by_key(|candidate| {
+            (
+                candidate.rank,
+                candidate.viewport_distance,
+                candidate.visual_distance,
+            )
+        })?;
+    let lines =
+        nearby_visual_region_text_context_lines(render, viewport, &visual_bounds, &selected);
+    Some(VisualTextContext {
+        lines,
+        bounds: selected.bounds,
+    })
+}
+
+fn visual_text_context_candidate(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    visual_bounds: &[DisplayCommandBounds],
+    command_index: usize,
+    command: &DisplayCommand,
+) -> Option<VisualTextCandidate> {
+    let text = display_command_text(command)?;
+    let text = readable_display_text(text);
+    let text = collapse_ascii_whitespace(&text);
+    if text.is_empty() || !text.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let viewport_fixed = display_command_viewport_fixed(render, command_index);
+    let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+    let bounds =
+        display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
+    if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
+        return None;
+    }
+    let inside_visual = visual_bounds
+        .iter()
+        .any(|visual| bounds_inside_visual_region(bounds, *visual));
+    let visual_distance = visual_bounds
+        .iter()
+        .filter_map(|visual| bounds_visual_region_distance(bounds, *visual))
+        .min();
+    let near_visual = visual_distance
+        .is_some_and(|distance| distance <= bounds_visual_region_search_rows(viewport));
+    let near_viewport = bounds_near_visual_viewport(bounds, viewport);
+    if !inside_visual && !near_visual && !near_viewport {
+        return None;
+    }
+    let viewport_distance = bounds_viewport_distance(bounds, viewport);
+    let rank = usize::from(!(inside_visual || near_visual));
+    Some(VisualTextCandidate {
+        rank,
+        viewport_distance,
+        visual_distance: visual_distance.unwrap_or(usize::MAX),
+        text,
+        bounds,
+    })
+}
+
+fn nearby_visual_region_text_context_lines(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    visual_bounds: &[DisplayCommandBounds],
+    selected: &VisualTextCandidate,
+) -> Vec<String> {
+    let mut lines =
+        render
+            .display_list
+            .iter()
+            .enumerate()
+            .filter_map(|(command_index, command)| {
+                let candidate = visual_text_context_candidate(
+                    render,
+                    viewport,
+                    visual_bounds,
+                    command_index,
+                    command,
+                )?;
+                bounds_near_selected_context(candidate.bounds, selected.bounds, viewport)
+                    .then_some((candidate.bounds.y, candidate.bounds.x, candidate.text))
+            })
+            .collect::<Vec<_>>();
+    lines.sort_by_key(|(y, x, _)| (*y, *x));
+    lines.dedup_by(|left, right| left.2 == right.2);
+    if lines.is_empty() {
+        return vec![selected.text.clone()];
+    }
+    lines.into_iter().take(2).map(|(_, _, text)| text).collect()
 }
 
 fn display_command_text(command: &DisplayCommand) -> Option<&str> {
@@ -5725,47 +5790,64 @@ fn bounds_visual_region_distance(
     }
 }
 
+fn bounds_near_selected_context(
+    candidate: DisplayCommandBounds,
+    selected: DisplayCommandBounds,
+    viewport: RasterViewport,
+) -> bool {
+    if bounds_visual_region_distance(candidate, selected)
+        .is_some_and(|distance| distance <= viewport.height.saturating_mul(2).max(2))
+    {
+        return true;
+    }
+    candidate.y.abs_diff(selected.y) <= viewport.height
+}
+
 fn overlay_text_viewport_context(
     cells: &mut [Vec<char>],
     viewport: RasterViewport,
     context_bounds: DisplayCommandBounds,
-    text: &str,
+    lines: &[String],
 ) {
-    let row = nearest_visual_context_overlay_row(
+    let rows = visual_context_overlay_rows(
         cells.iter().map(|line| {
             let has_text = line.iter().any(|ch| ch.is_ascii_alphanumeric());
             let has_visual = line.iter().any(|ch| matches!(*ch, '#' | '@'));
             has_visual && !has_text
         }),
         preferred_context_overlay_row(viewport, context_bounds),
-    )
-    .unwrap_or(0);
-    let Some(line) = cells.get_mut(row) else {
-        return;
-    };
-    for (column, ch) in text.chars().take(line.len()).enumerate() {
-        if let Some(cell) = line.get_mut(column) {
-            *cell = ch;
+        lines.len(),
+    );
+    for (text, row) in lines.iter().zip(rows) {
+        let Some(line) = cells.get_mut(row) else {
+            continue;
+        };
+        for (column, ch) in text.chars().take(line.len()).enumerate() {
+            if let Some(cell) = line.get_mut(column) {
+                *cell = ch;
+            }
         }
     }
 }
 
-fn draw_raster_text_context(
+fn draw_raster_text_context_lines(
     pixels: &mut [u8],
     raster_width: usize,
-    text: &str,
+    lines: &[String],
     viewport: RasterViewport,
     options: BrowserRasterOptions,
-    row: usize,
+    rows: &[usize],
 ) {
-    for (column, ch) in text.chars().take(viewport.width).enumerate() {
-        let cell_x = options
-            .padding_x
-            .saturating_add(column.saturating_mul(options.cell_width));
+    for (text, row) in lines.iter().zip(rows) {
         let cell_y = options
             .padding_y
             .saturating_add(row.saturating_mul(options.cell_height));
-        draw_glyph(pixels, raster_width, cell_x, cell_y, ch, 0);
+        for (column, ch) in text.chars().take(viewport.width).enumerate() {
+            let cell_x = options
+                .padding_x
+                .saturating_add(column.saturating_mul(options.cell_width));
+            draw_glyph(pixels, raster_width, cell_x, cell_y, ch, 0);
+        }
     }
 }
 
@@ -5785,21 +5867,74 @@ fn preferred_context_overlay_row(
     }
 }
 
-fn nearest_visual_context_overlay_row(
+fn visual_context_overlay_rows(
+    rows: impl IntoIterator<Item = bool>,
+    preferred_row: usize,
+    line_count: usize,
+) -> Vec<usize> {
+    if line_count == 0 {
+        return Vec::new();
+    }
+    let available = rows.into_iter().collect::<Vec<_>>();
+    if available.is_empty() {
+        return Vec::new();
+    }
+    let count = line_count.min(available.len());
+    if count == 1 {
+        return nearest_available_visual_row(available.iter().copied(), preferred_row)
+            .into_iter()
+            .collect();
+    }
+
+    let mut best_start = None;
+    for start in 0..=available.len().saturating_sub(count) {
+        if !available[start..start.saturating_add(count)]
+            .iter()
+            .all(|row| *row)
+        {
+            continue;
+        }
+        let end = start.saturating_add(count).saturating_sub(1);
+        let distance = end.abs_diff(preferred_row);
+        if best_start.is_none_or(|(_, best_distance)| distance < best_distance) {
+            best_start = Some((start, distance));
+        }
+    }
+    if let Some((start, _)) = best_start {
+        return (start..start.saturating_add(count)).collect();
+    }
+
+    let mut chosen = Vec::new();
+    let mut occupied = vec![false; available.len()];
+    for offset in 0..count {
+        let preferred = preferred_row
+            .saturating_add(offset)
+            .min(available.len().saturating_sub(1));
+        let Some(row) = nearest_available_visual_row(
+            available
+                .iter()
+                .zip(occupied.iter())
+                .map(|(available, occupied)| *available && !*occupied),
+            preferred,
+        ) else {
+            break;
+        };
+        occupied[row] = true;
+        chosen.push(row);
+    }
+    chosen.sort_unstable();
+    chosen
+}
+
+fn nearest_available_visual_row(
     rows: impl IntoIterator<Item = bool>,
     preferred_row: usize,
 ) -> Option<usize> {
-    let mut best = None;
-    for (row, available) in rows.into_iter().enumerate() {
-        if !available {
-            continue;
-        }
-        let distance = row.abs_diff(preferred_row);
-        if best.is_none_or(|(_, best_distance)| distance < best_distance) {
-            best = Some((row, distance));
-        }
-    }
-    best.map(|(row, _)| row)
+    rows.into_iter()
+        .enumerate()
+        .filter(|(_, available)| *available)
+        .min_by_key(|(row, _)| row.abs_diff(preferred_row))
+        .map(|(row, _)| row)
 }
 
 fn fill_text_viewport_empty_cells(
