@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::images::{
-    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, selected_srcset_candidate,
-    selected_supported_srcset_candidate, srcset_candidate_urls,
+    ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source,
+    selected_supported_srcset_candidate, srcset_candidate_urls, supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -803,12 +803,12 @@ fn collect_resources_at(
             "script" => push_src_resource(resources, source, element, "script"),
             "img" => {
                 push_src_resource(resources, source, element, "image");
-                push_srcset_resources(resources, source, element, "image_candidate");
+                push_image_srcset_resources(resources, source, element, "image_candidate");
                 push_image_alias_resources(resources, source, element);
             }
             "source" if parent_element_tag_is(dom, node_id, "picture") => {
                 push_src_resource(resources, source, element, "image");
-                push_srcset_resources(resources, source, element, "image_candidate");
+                push_image_srcset_resources(resources, source, element, "image_candidate");
                 push_image_alias_resources(resources, source, element);
             }
             "source" => {
@@ -887,6 +887,20 @@ fn push_srcset_resources(
     }
 }
 
+fn push_image_srcset_resources(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    element: &ElementData,
+    kind: &str,
+) {
+    let Some(srcset) = element.srcset.as_deref() else {
+        return;
+    };
+    for url in supported_srcset_candidate_urls(srcset) {
+        push_resource(resources, source, element, kind, &element.tag, &url);
+    }
+}
+
 fn push_image_alias_resources(
     resources: &mut Vec<BrowserResource>,
     source: &str,
@@ -904,7 +918,7 @@ fn push_image_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        for url in srcset_candidate_urls(srcset) {
+        for url in supported_srcset_candidate_urls(srcset) {
             push_resource(
                 resources,
                 source,
@@ -953,7 +967,8 @@ fn push_selected_background_alias_resource(
 ) {
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
         if let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = selected_srcset_candidate(srcset, None, viewport_width_css_px)
+            && let Some(url) =
+                selected_supported_srcset_candidate(srcset, None, viewport_width_css_px)
         {
             push_resource(
                 resources,
@@ -1010,7 +1025,7 @@ fn push_background_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        for url in srcset_candidate_urls(srcset) {
+        for url in supported_srcset_candidate_urls(srcset) {
             push_resource(
                 resources,
                 source,
@@ -1226,7 +1241,7 @@ fn push_link_image_resources(
     let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str) else {
         return;
     };
-    for url in srcset_candidate_urls(srcset) {
+    for url in supported_srcset_candidate_urls(srcset) {
         push_resource(resources, source, element, "image_candidate", "link", &url);
     }
 }
