@@ -118,6 +118,7 @@ pub struct BrowserImageRenderReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct BrowserDocumentLoadReport {
     pub target: String,
     pub status: String,
@@ -295,10 +296,12 @@ impl BrowserResourceCache {
             .map(|resource| resource.bytes.as_slice())
     }
 
+    #[allow(dead_code)]
     pub(super) fn evicted_entries(&self) -> usize {
         self.evicted_entries
     }
 
+    #[allow(dead_code)]
     pub(super) fn evicted_bytes(&self) -> usize {
         self.evicted_bytes
     }
@@ -330,8 +333,7 @@ impl BrowserResourceCache {
 
         if let Some(previous) = self.entries.remove(&url) {
             self.order.retain(|entry| entry != &url);
-            self.evicted_entries += 1;
-            self.evicted_bytes += previous.bytes.len();
+            drop(previous);
         }
 
         self.order.push_back(url.clone());
@@ -356,6 +358,7 @@ pub(super) async fn load_target(target: &str, max_bytes: usize) -> Result<(Strin
     load_target_with_cookie_jar(target, max_bytes, None).await
 }
 
+#[allow(dead_code)]
 pub(super) async fn load_target_with_cookie_jar_report(
     target: &str,
     max_bytes: usize,
@@ -1717,6 +1720,32 @@ mod tests {
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.total_bytes(), 0);
         assert_eq!(cache.evicted_entries(), 0);
+    }
+
+    #[test]
+    fn resource_cache_replacement_does_not_count_as_eviction_pressure() {
+        let mut cache = BrowserResourceCache::with_limits(2, 1024);
+        cache.insert(
+            "https://example.test/app.css".to_owned(),
+            BrowserCachedResource {
+                source: "https://example.test/app.css".to_owned(),
+                bytes: b"one".to_vec(),
+                content_type: Some("text/css".to_owned()),
+            },
+        );
+        cache.insert(
+            "https://example.test/app.css".to_owned(),
+            BrowserCachedResource {
+                source: "https://example.test/app.css".to_owned(),
+                bytes: b"replacement".to_vec(),
+                content_type: Some("text/css".to_owned()),
+            },
+        );
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.total_bytes(), 11);
+        assert_eq!(cache.evicted_entries(), 0);
+        assert_eq!(cache.evicted_bytes(), 0);
     }
 
     #[tokio::test]
