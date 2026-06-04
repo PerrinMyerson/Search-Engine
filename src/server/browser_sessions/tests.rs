@@ -2290,6 +2290,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
 
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback>Moved visual viewport to x 8, y 4.</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
+    ));
     assert!(html.contains(">Top</a>"));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
@@ -2453,6 +2460,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"viewport-scroll-feedback"#));
     assert!(html.contains(r#"data-scroll-url="/browser?"#));
     assert!(html.contains(r#"data-click-url="/browser?"#));
+    assert!(!html.contains("Load 0 images"));
     assert!(html.contains(r#"data-browser-click-marker"#));
     assert!(html.contains(r#"class="browser-click-marker""#));
     assert!(html.contains(r#".browser-raster-shell { position: relative;"#));
@@ -8452,6 +8460,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(html.contains(&expected_feedback));
 }
 
@@ -8496,9 +8505,13 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains("data-browser-action-feedback"));
+    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(
         html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip" data-browser-click-status aria-live="polite">Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved</span>"#
+    ));
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(!html.contains("data-browser-fast-scroll"));
 }
@@ -10686,6 +10699,35 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));
     assert!(html.contains("Report CSV"));
+
+    let mut no_decode_payload = payload.clone();
+    {
+        let report = no_decode_payload.resource_report.as_mut().unwrap();
+        report.decoded = Some(0);
+    }
+    let no_decode_html = render_browser_session_page(&no_decode_payload, &back_href);
+    assert!(
+        no_decode_html
+            .contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=0")
+    );
+    assert!(no_decode_html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images not decoded: fetched 1, failed 0, skipped 0</span>"#
+    ));
+    assert!(no_decode_html.contains("Report JSON"));
+    assert!(no_decode_html.contains("Clear report"));
+    assert!(!no_decode_html.contains(">Load 1 image</a>"));
+    let no_decode_state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), no_decode_payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&no_decode_state_export, &no_decode_payload);
+    assert_eq!(response.status, 200);
+    let exported_no_decode: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported_no_decode["resource_report"]["decoded"], 0);
+    assert!(exported_no_decode["action_urls"]["load_images"].is_null());
 
     let resource_report_json_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
