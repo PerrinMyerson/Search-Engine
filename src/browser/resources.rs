@@ -927,6 +927,7 @@ const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-image-src",
     "data-img-src",
     "data-current-src",
+    "data-currentsrc",
     "current-src",
     "currentsrc",
 ];
@@ -939,6 +940,7 @@ const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-image-srcset",
     "data-img-srcset",
     "data-current-srcset",
+    "data-currentsrcset",
     "current-srcset",
     "currentsrcset",
 ];

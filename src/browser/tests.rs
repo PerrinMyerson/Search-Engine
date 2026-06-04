@@ -3163,7 +3163,7 @@ async fn image_lazy_source_uses_current_srcset_for_placeholder_rendering() {
     fs::write(
         &page,
         r#"<html><body>
-            <img src="/assets/placeholder.gif" data-current-srcset="hero.avif 320w, hero.webp 640w" sizes="80px" alt="Current source WebP" width="80" height="24">
+            <img src="/assets/placeholder.gif" data-currentSrcset="hero.avif 320w, hero.webp 640w" sizes="80px" alt="Current source WebP" width="80" height="24">
         </body></html>"#,
     )
     .unwrap();
@@ -4827,9 +4827,9 @@ async fn image_css_background_coverage_fetches_lazy_alias_resources() {
     fs::write(
         &page,
         r#"<html><body>
-            <img data-current-src="hero.webp" alt="Current image">
+            <img data-currentSrc="hero.webp" alt="Current image">
             <picture>
-                <source type="image/webp" data-current-srcset="wide.webp 640w">
+                <source type="image/webp" data-currentSrcset="wide.webp 640w">
                 <img alt="Picture current image">
             </picture>
         </body></html>"#,
