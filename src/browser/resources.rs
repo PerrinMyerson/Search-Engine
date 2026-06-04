@@ -22,6 +22,7 @@ const DEFAULT_RESOURCE_CACHE_MAX_ENTRIES: usize = 256;
 const DEFAULT_RESOURCE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const DOCUMENT_HTTP_TIMEOUT: Duration = Duration::from_secs(6);
 const RESOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+const DATA_URL_SOURCE_METADATA_MAX_CHARS: usize = 80;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -682,7 +683,24 @@ fn load_data_url_resource(target: &str, max_bytes: usize) -> Result<(String, Vec
         bytes.len(),
         max_bytes
     );
-    Ok((target.to_owned(), bytes, content_type))
+    let source = data_url_source_label(target, metadata, bytes.len());
+    Ok((source, bytes, content_type))
+}
+
+fn data_url_source_label(target: &str, metadata: &str, decoded_bytes: usize) -> String {
+    let metadata = if metadata.chars().count() > DATA_URL_SOURCE_METADATA_MAX_CHARS {
+        let preview: String = metadata
+            .chars()
+            .take(DATA_URL_SOURCE_METADATA_MAX_CHARS)
+            .collect();
+        format!("{preview}...")
+    } else {
+        metadata.to_owned()
+    };
+    format!(
+        "data:{metadata},... decoded_bytes={decoded_bytes} source_chars={}",
+        target.len()
+    )
 }
 
 fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
@@ -1993,6 +2011,31 @@ mod tests {
         assert_eq!(fetch.decoded_height, Some(2));
         assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
         assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
+        let source = fetch.source.as_deref().unwrap();
+        assert_ne!(source, image);
+        assert!(source.starts_with("data:image/svg+xml,..."));
+        assert!(source.contains("decoded_bytes="));
+        assert!(source.contains(&format!("source_chars={}", image.len())));
+
+        let cached = fetch_resource_with_cache(
+            BrowserResource {
+                kind: "image".to_owned(),
+                initiator: "img".to_owned(),
+                url: image.to_owned(),
+                resolved: image.to_owned(),
+                rel: None,
+                media: None,
+                alt: None,
+                type_hint: None,
+            },
+            4096,
+            &mut jar,
+            &mut cache,
+        )
+        .await;
+
+        assert_eq!(cached.cache_outcome.as_deref(), Some("hit"));
+        assert_eq!(cached.source.as_deref(), Some(source));
     }
 
     #[test]
