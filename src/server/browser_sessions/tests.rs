@@ -11781,3 +11781,138 @@ async fn browser_session_page_renders_form_controls() {
     assert!(response.body.contains("action=submit-new-session"));
     assert!(response.body.contains("action=submit-background-session"));
 }
+
+#[tokio::test]
+async fn browser_page_returns_recovery_shell_when_initial_render_times_out() {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf).await.unwrap();
+        tokio::time::sleep(BROWSER_CREATE_TARGET_TIMEOUT * 3).await;
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), format!("http://{addr}/slow")),
+            ("from".to_owned(), "/search?q=fixture".to_owned()),
+            ("width".to_owned(), "90".to_owned()),
+            ("height".to_owned(), "32".to_owned()),
+            ("viewport_x".to_owned(), "4".to_owned()),
+            ("viewport_y".to_owned(), "6".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+        ],
+    };
+    let error = registry.create_target(&create).await.unwrap_err();
+    let response = error.browser_response(&create);
+    assert_eq!(response.status, 502);
+    assert_eq!(response.content_type, "text/html; charset=utf-8");
+    assert!(response.body.contains("Browser page is still loading"));
+    assert!(
+        response
+            .body
+            .contains(r#"class="browser-chrome-row" data-browser-chrome"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"data-browser-address type="text""#)
+    );
+    assert!(response.body.contains(r#"data-browser-chrome-status"#));
+    assert!(
+        response
+            .body
+            .contains(r#"<span class="viewport-state-chip">page loading</span>"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"<span class="viewport-state-chip">shell ready</span>"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"<a class="primary-action" href="/browser?url=http%3A%2F%2F"#)
+    );
+    assert!(response.body.contains("from=%2Fsearch%3Fq%3Dfixture"));
+    assert!(response.body.contains("width=90"));
+    assert!(response.body.contains("height=32"));
+    assert!(response.body.contains("viewport_x=4"));
+    assert!(response.body.contains("viewport_y=6"));
+    assert!(response.body.contains("max_bytes=1048576"));
+    assert!(
+        response
+            .body
+            .contains(r#"<a href="/search?q=fixture">Back to search</a>"#)
+    );
+    assert!(response.body.contains("browser render timed out"));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn browser_page_renders_stale_session_recovery_shell() {
+    let registry = BrowserSessionRegistry::default();
+    let stale = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), "s999".to_owned()),
+            ("action".to_owned(), "current".to_owned()),
+            ("from".to_owned(), "/search?q=stale".to_owned()),
+            ("width".to_owned(), "88".to_owned()),
+            ("height".to_owned(), "30".to_owned()),
+            ("viewport_x".to_owned(), "2".to_owned()),
+            ("viewport_y".to_owned(), "12".to_owned()),
+            ("max_bytes".to_owned(), "2097152".to_owned()),
+        ],
+    };
+    let error = registry.apply_target(&stale).await.unwrap_err();
+    let response = error.browser_response(&stale);
+    assert_eq!(response.status, 404);
+    assert_eq!(response.content_type, "text/html; charset=utf-8");
+    assert!(
+        response
+            .body
+            .contains(r#"data-browser-route-error data-browser-missing-session="true""#)
+    );
+    assert!(response.body.contains("Browser session unavailable"));
+    assert!(response.body.contains("browser session s999 not found"));
+    assert!(
+        response
+            .body
+            .contains(r#"class="browser-chrome-row" data-browser-chrome"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"data-browser-address type="text""#)
+    );
+    assert!(response.body.contains(r#"data-browser-chrome-status"#));
+    assert!(
+        response
+            .body
+            .contains(r#"<span class="viewport-state-chip">session missing</span>"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"<span class="viewport-state-chip">shell ready</span>"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"<span class="browser-error-disabled">No original URL to retry</span>"#)
+    );
+    assert!(
+        response
+            .body
+            .contains(r#"<a href="/search?q=stale">Back to search</a>"#)
+    );
+    assert!(!response.body.contains("More browser tools"));
+}
