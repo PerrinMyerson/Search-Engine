@@ -5403,6 +5403,144 @@ async fn image_source_coverage_reports_supported_responsive_candidates() {
 }
 
 #[tokio::test]
+async fn image_real_pages_decode_normalized_lazy_alias_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let picture = dir.path().join("picture.webp");
+    let background = dir.path().join("background.webp");
+    let discovery = dir.path().join("discovery.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&picture, tiny_test_webp_bytes()).unwrap();
+    fs::write(&background, tiny_test_webp_bytes()).unwrap();
+    fs::write(&discovery, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <img src="/assets/placeholder.gif" data-lazySrcset="hero.avif 320w, hero.webp 640w" data-lazySizes="80px" alt="Lazy hero" width="80" height="24">
+            <picture>
+                <source type="image/webp" data-originalSrcset="picture.avif 320w, picture.webp 640w">
+                <img src="/assets/blank.gif" alt="Picture hero" width="80" height="24">
+            </picture>
+            <section data-lazyBackgroundSrcset="background.avif 320w, background.webp 640w">Background</section>
+            <img data-imageSrc="discovery.webp" alt="Discovery-only image">
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 4);
+    assert_eq!(report.decoded, 4);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.ends_with(".avif"))
+    );
+
+    let expected = [
+        (hero.display().to_string(), "image", "img", "hero.webp"),
+        (
+            picture.display().to_string(),
+            "image",
+            "img",
+            "picture.webp",
+        ),
+        (
+            background.display().to_string(),
+            "background_image",
+            "section",
+            "background.webp",
+        ),
+        (
+            discovery.display().to_string(),
+            "image",
+            "img",
+            "discovery.webp",
+        ),
+    ];
+    let mut decoded_hashes = Vec::new();
+    for (resolved, kind, initiator, url) in expected {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        decoded_hashes.push((resolved, kind, fetch.decoded_hash.clone().unwrap()));
+    }
+
+    let render = render_session.current().unwrap();
+    for (resolved, kind, decoded_hash) in decoded_hashes {
+        let attached = render.display_list.iter().any(|command| match kind {
+            "background_image" => matches!(
+                command,
+                DisplayCommand::BackgroundImage {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            ),
+            _ => matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            ),
+        });
+        assert!(attached, "expected decoded {kind} command for {resolved}");
+    }
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url.ends_with(".avif"))
+    );
+    for expected in [&hero, &picture, &background, &discovery] {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == expected.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+    }
+}
+
+#[tokio::test]
 async fn fetches_current_resources_and_uses_session_cache() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

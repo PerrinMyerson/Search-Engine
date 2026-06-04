@@ -2359,6 +2359,61 @@ pub(super) fn image_render_source(
     selected_source
 }
 
+pub(super) fn background_image_render_source(element: &ElementData) -> Option<String> {
+    first_non_empty_attr(
+        element,
+        &[
+            "data-bgset",
+            "data-background-srcset",
+            "data-backgroundsrcset",
+            "data-lazy-bgset",
+            "data-lazybgset",
+            "data-lazy-background-srcset",
+            "data-lazybackgroundsrcset",
+        ],
+    )
+    .and_then(|srcset| choose_srcset_candidate(srcset, None))
+    .or_else(|| {
+        first_non_empty_attr(
+            element,
+            &[
+                "data-bg",
+                "data-bg-src",
+                "data-bgsrc",
+                "data-background",
+                "data-background-image",
+                "data-backgroundimage",
+                "data-background-src",
+                "data-backgroundsrc",
+                "data-lazy-bg",
+                "data-lazybg",
+                "data-lazy-background",
+                "data-lazybackground",
+                "data-lazy-background-image",
+                "data-lazybackgroundimage",
+            ],
+        )
+        .and_then(background_image_attr_source)
+    })
+}
+
+fn background_image_attr_source(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches(';').trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let url = value
+        .strip_prefix("url(")
+        .and_then(|url| url.strip_suffix(')'))
+        .map(|url| url.trim().trim_matches(['"', '\'']))
+        .unwrap_or(value)
+        .trim();
+    if url.is_empty() || image_source_clearly_unsupported(url) {
+        return None;
+    }
+    Some(url.to_owned())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PictureSourceSet<'a> {
     srcset: &'a str,
@@ -2384,22 +2439,30 @@ fn picture_source_lazy_srcset(
         &[
             "data-srcset",
             "data-lazy-srcset",
+            "data-lazysrcset",
             "data-original-srcset",
             "data-originalset",
+            "data-originalsrcset",
             "data-image-srcset",
+            "data-imagesrcset",
             "data-img-srcset",
+            "data-imgsrcset",
             "data-current-srcset",
             "data-currentsrcset",
             "current-srcset",
             "currentsrcset",
             "data-src",
             "data-lazy-src",
+            "data-lazysrc",
             "data-original-url",
             "data-original",
             "data-original-src",
+            "data-originalsrc",
             "data-image",
             "data-image-src",
+            "data-imagesrc",
             "data-img-src",
+            "data-imgsrc",
             "data-current-src",
             "data-currentsrc",
             "current-src",
@@ -2465,10 +2528,14 @@ fn lazy_image_render_source(
                 &[
                     "data-srcset",
                     "data-lazy-srcset",
+                    "data-lazysrcset",
                     "data-original-srcset",
                     "data-originalset",
+                    "data-originalsrcset",
                     "data-image-srcset",
+                    "data-imagesrcset",
                     "data-img-srcset",
+                    "data-imgsrcset",
                     "data-current-srcset",
                     "data-currentsrcset",
                     "current-srcset",
@@ -2483,12 +2550,16 @@ fn lazy_image_render_source(
                 &[
                     "data-src",
                     "data-lazy-src",
+                    "data-lazysrc",
                     "data-original-url",
                     "data-original",
                     "data-original-src",
+                    "data-originalsrc",
                     "data-image",
                     "data-image-src",
+                    "data-imagesrc",
                     "data-img-src",
+                    "data-imgsrc",
                     "data-current-src",
                     "data-currentsrc",
                     "current-src",
@@ -2517,9 +2588,13 @@ pub(super) fn image_sizes_attr(element: &ElementData) -> Option<&str> {
             "sizes",
             "data-sizes",
             "data-lazy-sizes",
+            "data-lazysizes",
             "data-original-sizes",
+            "data-originalsizes",
             "data-image-sizes",
+            "data-imagesizes",
             "data-img-sizes",
+            "data-imgsizes",
             "data-current-sizes",
             "data-currentsizes",
             "current-sizes",

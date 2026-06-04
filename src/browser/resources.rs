@@ -819,7 +819,7 @@ fn collect_resources_at(
         match element.tag.as_str() {
             "script" => push_src_resource(resources, source, element, "script"),
             "img" => {
-                push_src_resource(resources, source, element, "image");
+                push_img_primary_resource(resources, source, dom, node_id, element);
                 push_image_srcset_resources(resources, source, element, "image_candidate");
                 push_image_alias_resources(resources, source, element);
             }
@@ -890,6 +890,28 @@ fn push_src_resource(
     }
 }
 
+fn push_img_primary_resource(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+) {
+    let Some(src) = element
+        .src
+        .as_deref()
+        .map(str::trim)
+        .filter(|src| !src.is_empty())
+    else {
+        return;
+    };
+    let selected = image_render_source(dom, node_id, element, usize::MAX);
+    if selected.as_deref().is_some_and(|selected| selected != src) {
+        return;
+    }
+    push_resource(resources, source, element, "image", &element.tag, src);
+}
+
 fn push_srcset_resources(
     resources: &mut Vec<BrowserResource>,
     source: &str,
@@ -951,12 +973,16 @@ fn push_image_alias_resources(
 const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-src",
     "data-lazy-src",
+    "data-lazysrc",
     "data-original-url",
     "data-original",
     "data-original-src",
+    "data-originalsrc",
     "data-image",
     "data-image-src",
+    "data-imagesrc",
     "data-img-src",
+    "data-imgsrc",
     "data-current-src",
     "data-currentsrc",
     "current-src",
@@ -966,10 +992,14 @@ const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
 const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-srcset",
     "data-lazy-srcset",
+    "data-lazysrcset",
     "data-original-srcset",
     "data-originalset",
+    "data-originalsrcset",
     "data-image-srcset",
+    "data-imagesrcset",
     "data-img-srcset",
+    "data-imgsrcset",
     "data-current-srcset",
     "data-currentsrcset",
     "current-srcset",
@@ -1216,19 +1246,28 @@ fn background_image_candidate_clearly_unsupported(url: &str) -> bool {
 const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-bg",
     "data-bg-src",
+    "data-bgsrc",
     "data-background",
     "data-background-image",
+    "data-backgroundimage",
     "data-background-src",
+    "data-backgroundsrc",
     "data-lazy-bg",
+    "data-lazybg",
     "data-lazy-background",
+    "data-lazybackground",
     "data-lazy-background-image",
+    "data-lazybackgroundimage",
 ];
 
 const BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-bgset",
     "data-background-srcset",
+    "data-backgroundsrcset",
     "data-lazy-bgset",
+    "data-lazybgset",
     "data-lazy-background-srcset",
+    "data-lazybackgroundsrcset",
 ];
 
 fn push_link_image_resources(
