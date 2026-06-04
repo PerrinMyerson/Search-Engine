@@ -13,7 +13,7 @@ use url::Url;
 
 use super::images::{
     ImageDecodeDiagnostic, image_decode_diagnostic, image_render_source, selected_srcset_candidate,
-    srcset_candidate_urls,
+    selected_supported_srcset_candidate, srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -1206,7 +1206,7 @@ fn push_link_image_resources(
     }
     if let Some(viewport_width_css_px) = selected_viewport_width_css_px
         && let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str)
-        && let Some(url) = selected_srcset_candidate(
+        && let Some(url) = selected_supported_srcset_candidate(
             srcset,
             element.attrs.get("imagesizes").map(String::as_str),
             viewport_width_css_px,

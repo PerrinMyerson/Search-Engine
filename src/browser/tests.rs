@@ -2367,7 +2367,7 @@ async fn session_render_images_decodes_data_url_image_resource() {
     let report = session.render_current_with_images(1024).await.unwrap();
     assert_eq!(report.image_count, 1);
     assert_eq!(report.decoded, 1);
-    assert_eq!(report.failed, 0);
+    assert_eq!(report.failed, 1);
     assert_eq!(report.fetches.len(), 1);
     assert_eq!(report.fetches[0].status, "cached");
     assert_eq!(report.fetches[0].content_type.as_deref(), Some("image/png"));
@@ -3105,6 +3105,53 @@ async fn image_css_backgrounds_selects_renderable_preload_imagesrcset_candidate(
             } if url == &hero_url && hash == &decoded_hash
         )
     }));
+}
+
+#[tokio::test]
+async fn image_responsive_preload_uses_href_when_imagesrcset_candidates_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <link rel="preload" as="image" href="hero.webp" imagesrcset="hero.avif 640w" imagesizes="80px">
+        </head><body>
+            <p>Preload fallback</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 1);
+
+    let hero_url = hero.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.url == "hero.webp")
+        .expect("supported href fallback fetch");
+    assert_eq!(fetch.resource.initiator, "link");
+    assert_eq!(fetch.resource.resolved, hero_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_hash.is_some());
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "hero.avif" && fetch.status == "fetched")
+    );
 }
 
 #[tokio::test]
