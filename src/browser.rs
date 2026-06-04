@@ -8389,10 +8389,9 @@ fn parse_html(html: &[u8]) -> ParsedHtml {
             &mut inline_scripts,
         );
 
-        let Some(tag_end_offset) = memchr(b'>', &html[tag_start + 1..]) else {
+        let Some(tag_end) = find_tag_end(html, tag_start) else {
             break;
         };
-        let tag_end = tag_start + 1 + tag_end_offset;
         let raw_tag = &html[tag_start + 1..tag_end];
         if let Some(tag) = parse_tag(raw_tag) {
             match tag.kind {
@@ -8496,6 +8495,21 @@ fn find_closing_tag(html: &[u8], start: usize, tag: &str) -> Option<usize> {
         .windows(needle.len())
         .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
         .map(|offset| start + offset)
+}
+
+fn find_tag_end(html: &[u8], tag_start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut index = tag_start.saturating_add(1);
+    while index < html.len() {
+        match html[index] {
+            b'\'' | b'"' if quote == Some(html[index]) => quote = None,
+            b'\'' | b'"' if quote.is_none() => quote = Some(html[index]),
+            b'>' if quote.is_none() => return Some(index),
+            _ => {}
+        }
+        index += 1;
+    }
+    None
 }
 
 const MAX_TIMER_TASKS_PER_RENDER: usize = 1024;

@@ -84,6 +84,37 @@ fn materializes_element_data_from_parsed_attributes() {
 }
 
 #[test]
+fn parse_html_keeps_quoted_data_svg_src_with_raw_tag_markers() {
+    let raw_src = "data:image/svg+xml,<svg viewBox='0 0 120 40' xmlns='http://www.w3.org/2000/svg'><rect width='120' height='40' fill='red'/></svg>";
+    let parsed = parse_html(
+        br##"
+            <html><body>
+              <img src="data:image/svg+xml,<svg viewBox='0 0 120 40' xmlns='http://www.w3.org/2000/svg'><rect width='120' height='40' fill='red'/></svg>" alt="raw svg">
+              <p>After image</p>
+            </body></html>
+            "##,
+    );
+
+    let image = parsed
+        .dom
+        .nodes
+        .iter()
+        .find_map(|node| match &node.kind {
+            NodeKind::Element(element) if element.tag == "img" => Some(element.as_ref()),
+            _ => None,
+        })
+        .expect("quoted raw data SVG image survives parsing");
+    assert_eq!(image.src.as_deref(), Some(raw_src));
+    assert_eq!(image.attrs.get("src").map(String::as_str), Some(raw_src));
+    assert!(parsed.dom.nodes.iter().any(|node| {
+        matches!(
+            &node.kind,
+            NodeKind::Text(text) if text.contains("After image")
+        )
+    }));
+}
+
+#[test]
 fn rasterizes_display_list_into_stable_grayscale_pixels() {
     let render = render_html(
         "mem://page",
