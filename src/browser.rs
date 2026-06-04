@@ -5090,12 +5090,249 @@ fn draw_raster_text_command(
     draw_raster_text_run(pixels, raster_width, &text, x, y, viewport, options, ink);
 }
 
+fn draw_rgba_text_command(
+    pixels: &mut [u8],
+    raster_width: usize,
+    command: &DisplayCommand,
+    render: &BrowserRender,
+    command_index: usize,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+) {
+    let (x, y, text, ink) = match command {
+        DisplayCommand::Text { x, y, text } => (*x, *y, text.as_str(), 0),
+        DisplayCommand::StyledText { x, y, text, shade } => (*x, *y, text.as_str(), *shade),
+        DisplayCommand::Rect { .. }
+        | DisplayCommand::Image { .. }
+        | DisplayCommand::BackgroundImage { .. } => return,
+    };
+    let viewport_fixed = display_command_viewport_fixed(render, command_index);
+    let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+    let (x, y) =
+        display_command_origin_for_viewport(x, y, viewport, viewport_fixed, viewport_sticky_top);
+    if y < viewport.y || y >= viewport.end_y() {
+        return;
+    }
+    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
+        return;
+    }
+    let text = readable_display_text(text);
+    draw_rgba_text_run(pixels, raster_width, &text, x, y, viewport, options, ink);
+}
+
 pub fn rasterize_render_rgba(
     render: &BrowserRender,
     options: BrowserRasterOptions,
 ) -> Result<BrowserRgbaRaster> {
     let raster = rasterize_render(render, options)?;
-    Ok(BrowserRgbaRaster::from_grayscale(&raster))
+    let mut rgba = BrowserRgbaRaster::from_grayscale(&raster);
+    let viewport = effective_raster_viewport(render, options);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) {
+            continue;
+        }
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+        else {
+            continue;
+        };
+        match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width: image_width,
+                height,
+                url,
+                ..
+            } => {
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
+                let image_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let image_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let clipped_image_height =
+                    visible_bounds.height.saturating_mul(options.cell_height);
+                let full_width = image_width.saturating_mul(options.cell_width);
+                let full_height = height.saturating_mul(options.cell_height);
+                let source_offset_x = visible_bounds
+                    .x
+                    .saturating_sub(x)
+                    .saturating_mul(options.cell_width);
+                let source_offset_y = visible_bounds
+                    .y
+                    .saturating_sub(y)
+                    .saturating_mul(options.cell_height);
+                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
+                    draw_decoded_image_region_rgba(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        full_width,
+                        full_height,
+                        decoded,
+                    );
+                } else if let Some(decoded) = url
+                    .as_deref()
+                    .and_then(|url| decode_image_reference(&render.source, url))
+                {
+                    draw_decoded_image_region_rgba(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        full_width,
+                        full_height,
+                        &decoded,
+                    );
+                }
+            }
+            DisplayCommand::BackgroundImage {
+                x,
+                y,
+                width: image_width,
+                height,
+                url,
+                size,
+                position,
+                repeat,
+                ..
+            } => {
+                let (x, y) = display_command_origin_for_viewport(
+                    *x,
+                    *y,
+                    viewport,
+                    viewport_fixed,
+                    viewport_sticky_top,
+                );
+                let image_x = options.padding_x.saturating_add(
+                    visible_bounds
+                        .x
+                        .saturating_sub(viewport.x)
+                        .saturating_mul(options.cell_width),
+                );
+                let image_y = options.padding_y.saturating_add(
+                    visible_bounds
+                        .y
+                        .saturating_sub(viewport.y)
+                        .saturating_mul(options.cell_height),
+                );
+                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
+                let clipped_image_height =
+                    visible_bounds.height.saturating_mul(options.cell_height);
+                let full_width = image_width.saturating_mul(options.cell_width);
+                let full_height = height.saturating_mul(options.cell_height);
+                let source_offset_x = visible_bounds
+                    .x
+                    .saturating_sub(x)
+                    .saturating_mul(options.cell_width);
+                let source_offset_y = visible_bounds
+                    .y
+                    .saturating_sub(y)
+                    .saturating_mul(options.cell_height);
+                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
+                    draw_background_image_region_rgba(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        full_width,
+                        full_height,
+                        *size,
+                        *position,
+                        *repeat,
+                        decoded,
+                    );
+                } else if let Some(decoded) = url
+                    .as_deref()
+                    .and_then(|url| decode_image_reference(&render.source, url))
+                {
+                    draw_background_image_region_rgba(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        source_offset_x,
+                        source_offset_y,
+                        full_width,
+                        full_height,
+                        *size,
+                        *position,
+                        *repeat,
+                        &decoded,
+                    );
+                }
+            }
+            DisplayCommand::Text { .. }
+            | DisplayCommand::StyledText { .. }
+            | DisplayCommand::Rect { .. } => {}
+        }
+    }
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        draw_rgba_text_command(
+            &mut rgba.pixels,
+            rgba.width,
+            command,
+            render,
+            command_index,
+            viewport,
+            options,
+        );
+    }
+    if raster_viewport_needs_readable_context(render, viewport)
+        && let Some(context) = nearby_visual_region_text_context(render, viewport)
+    {
+        let rows =
+            raster_text_context_overlay_rows(render, viewport, context.bounds, context.lines.len());
+        draw_rgba_text_context_lines(
+            &mut rgba.pixels,
+            rgba.width,
+            &context.lines,
+            viewport,
+            options,
+            &rows,
+        );
+    }
+    Ok(rgba)
 }
 
 pub fn raster_report(
@@ -5865,6 +6102,28 @@ fn draw_raster_text_context_lines(
     }
 }
 
+fn draw_rgba_text_context_lines(
+    pixels: &mut [u8],
+    raster_width: usize,
+    lines: &[String],
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+    rows: &[usize],
+) {
+    for (text, row) in lines.iter().zip(rows) {
+        draw_rgba_text_run(
+            pixels,
+            raster_width,
+            text,
+            viewport.x,
+            viewport.y.saturating_add(*row),
+            viewport,
+            options,
+            0,
+        );
+    }
+}
+
 fn preferred_context_overlay_row(
     viewport: RasterViewport,
     context_bounds: DisplayCommandBounds,
@@ -6109,6 +6368,46 @@ fn draw_raster_text_run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_rgba_text_run(
+    pixels: &mut [u8],
+    raster_width: usize,
+    text: &str,
+    document_x: usize,
+    document_y: usize,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+    ink: u8,
+) {
+    if document_y < viewport.y || document_y >= viewport.end_y() {
+        return;
+    }
+    let viewport_pixel_x = viewport.x.saturating_mul(options.cell_width);
+    let viewport_end_pixel_x = viewport.end_x().saturating_mul(options.cell_width);
+    let mut cursor_x = document_x.saturating_mul(options.cell_width);
+    let cell_y = options.padding_y.saturating_add(
+        document_y
+            .saturating_sub(viewport.y)
+            .saturating_mul(options.cell_height),
+    );
+    for (column_offset, ch) in text.chars().enumerate() {
+        let document_column = document_x.saturating_add(column_offset);
+        let advance = raster_glyph_advance(ch, options.cell_width);
+        let glyph_end = cursor_x.saturating_add(options.cell_width);
+        if document_column >= viewport.x
+            && document_column < viewport.end_x()
+            && cursor_x < viewport_end_pixel_x
+            && glyph_end > viewport_pixel_x
+        {
+            let cell_x = options
+                .padding_x
+                .saturating_add(cursor_x.saturating_sub(viewport_pixel_x));
+            draw_rgba_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
+        }
+        cursor_x = cursor_x.saturating_add(advance);
+    }
+}
+
 fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
     if ch.is_whitespace() {
         return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
@@ -6153,6 +6452,31 @@ fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch:
     }
 }
 
+fn draw_rgba_glyph(
+    pixels: &mut [u8],
+    width: usize,
+    cell_x: usize,
+    cell_y: usize,
+    ch: char,
+    ink: u8,
+) {
+    let ink = contrasting_rgba_glyph_ink(pixels, width, cell_x, cell_y, ch, ink);
+    for (row, mask) in glyph_rows(ch).iter().enumerate() {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            set_rgba_pixel(
+                pixels,
+                width,
+                cell_x.saturating_add(1 + column),
+                cell_y.saturating_add(2 + row),
+                [ink, ink, ink, 255],
+            );
+        }
+    }
+}
+
 fn contrasting_glyph_ink(
     pixels: &[u8],
     width: usize,
@@ -6190,6 +6514,47 @@ fn contrasting_glyph_ink(
     }
 }
 
+fn contrasting_rgba_glyph_ink(
+    pixels: &[u8],
+    width: usize,
+    cell_x: usize,
+    cell_y: usize,
+    ch: char,
+    ink: u8,
+) -> u8 {
+    let mut total = 0usize;
+    let mut count = 0usize;
+    for (row, mask) in glyph_rows(ch).iter().enumerate() {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            let pixel_x = cell_x.saturating_add(1 + column);
+            let pixel_y = cell_y.saturating_add(2 + row);
+            let index = pixel_y
+                .saturating_mul(width)
+                .saturating_add(pixel_x)
+                .saturating_mul(4);
+            let Some(pixel) = pixels.get(index..index.saturating_add(3)) else {
+                continue;
+            };
+            total = total.saturating_add(rgb_to_luma(pixel[0], pixel[1], pixel[2]) as usize);
+            count = count.saturating_add(1);
+        }
+    }
+    if count == 0 {
+        return ink;
+    }
+    let background = total / count;
+    if ink.abs_diff(background as u8) >= 96 {
+        ink
+    } else if background < 128 {
+        255
+    } else {
+        0
+    }
+}
+
 fn fill_raster_rect(
     pixels: &mut [u8],
     raster_width: usize,
@@ -6202,6 +6567,64 @@ fn fill_raster_rect(
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
             set_raster_pixel(pixels, raster_width, column, row, value);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_decoded_image_region_rgba(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    source_offset_x: usize,
+    source_offset_y: usize,
+    full_width: usize,
+    full_height: usize,
+    decoded: &DecodedImage,
+) {
+    if width == 0
+        || height == 0
+        || full_width == 0
+        || full_height == 0
+        || decoded.width == 0
+        || decoded.height == 0
+        || !decoded_image_has_rgb(decoded)
+    {
+        return;
+    }
+    for row in 0..height {
+        let (source_y_start, source_y_end) = scaled_sample_range(
+            source_offset_y.saturating_add(row),
+            source_offset_y.saturating_add(row).saturating_add(1),
+            decoded.height,
+            full_height,
+        );
+        for column in 0..width {
+            let (source_x_start, source_x_end) = scaled_sample_range(
+                source_offset_x.saturating_add(column),
+                source_offset_x.saturating_add(column).saturating_add(1),
+                decoded.width,
+                full_width,
+            );
+            let Some(rgb) = averaged_decoded_image_rgb_sample(
+                decoded,
+                source_x_start,
+                source_x_end,
+                source_y_start,
+                source_y_end,
+            ) else {
+                continue;
+            };
+            set_rgba_pixel(
+                pixels,
+                raster_width,
+                x.saturating_add(column),
+                y.saturating_add(row),
+                [rgb[0], rgb[1], rgb[2], 255],
+            );
         }
     }
 }
@@ -6256,6 +6679,86 @@ fn draw_decoded_image_region(
                 x.saturating_add(column),
                 y.saturating_add(row),
                 value,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_background_image_region_rgba(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    visible_offset_x: usize,
+    visible_offset_y: usize,
+    container_width: usize,
+    container_height: usize,
+    size: BackgroundImageSize,
+    position: BackgroundImagePosition,
+    repeat: BackgroundImageRepeat,
+    decoded: &DecodedImage,
+) {
+    if width == 0
+        || height == 0
+        || container_width == 0
+        || container_height == 0
+        || decoded.width == 0
+        || decoded.height == 0
+        || !decoded_image_has_rgb(decoded)
+    {
+        return;
+    }
+    let (tile_width, tile_height) =
+        background_image_tile_size(container_width, container_height, size, decoded);
+    if tile_width == 0 || tile_height == 0 {
+        return;
+    }
+    let tile_x = background_position_offset(container_width, tile_width, position.x_percent);
+    let tile_y = background_position_offset(container_height, tile_height, position.y_percent);
+    for row in 0..height {
+        let local_y = visible_offset_y.saturating_add(row) as i64;
+        let Some(tile_local_y) =
+            background_tile_local_coordinate(local_y, tile_y, tile_height, repeat)
+        else {
+            continue;
+        };
+        let (source_y_start, source_y_end) = scaled_sample_range(
+            tile_local_y,
+            tile_local_y.saturating_add(1),
+            decoded.height,
+            tile_height,
+        );
+        for column in 0..width {
+            let local_x = visible_offset_x.saturating_add(column) as i64;
+            let Some(tile_local_x) =
+                background_tile_local_coordinate(local_x, tile_x, tile_width, repeat)
+            else {
+                continue;
+            };
+            let (source_x_start, source_x_end) = scaled_sample_range(
+                tile_local_x,
+                tile_local_x.saturating_add(1),
+                decoded.width,
+                tile_width,
+            );
+            let Some(rgb) = averaged_decoded_image_rgb_sample(
+                decoded,
+                source_x_start,
+                source_x_end,
+                source_y_start,
+                source_y_end,
+            ) else {
+                continue;
+            };
+            set_rgba_pixel(
+                pixels,
+                raster_width,
+                x.saturating_add(column),
+                y.saturating_add(row),
+                [rgb[0], rgb[1], rgb[2], 255],
             );
         }
     }
@@ -6338,6 +6841,16 @@ fn draw_background_image_region(
     }
 }
 
+fn decoded_image_has_rgb(decoded: &DecodedImage) -> bool {
+    decoded.rgb_pixels.as_ref().is_some_and(|pixels| {
+        pixels.len()
+            == decoded
+                .width
+                .saturating_mul(decoded.height)
+                .saturating_mul(3)
+    })
+}
+
 fn scaled_sample_range(
     start: usize,
     end: usize,
@@ -6352,6 +6865,47 @@ fn scaled_sample_range(
         .max(start.saturating_add(1))
         .min(source_extent);
     (start.min(source_extent.saturating_sub(1)), end)
+}
+
+fn averaged_decoded_image_rgb_sample(
+    decoded: &DecodedImage,
+    start_x: usize,
+    end_x: usize,
+    start_y: usize,
+    end_y: usize,
+) -> Option<[u8; 3]> {
+    let rgb_pixels = decoded.rgb_pixels.as_ref()?;
+    if !decoded_image_has_rgb(decoded) {
+        return None;
+    }
+    let start_x = start_x.min(decoded.width.saturating_sub(1));
+    let end_x = end_x.min(decoded.width).max(start_x.saturating_add(1));
+    let start_y = start_y.min(decoded.height.saturating_sub(1));
+    let end_y = end_y.min(decoded.height).max(start_y.saturating_add(1));
+    let mut red = 0usize;
+    let mut green = 0usize;
+    let mut blue = 0usize;
+    let mut count = 0usize;
+    for source_y in start_y..end_y {
+        for source_x in start_x..end_x {
+            let index = source_y
+                .saturating_mul(decoded.width)
+                .saturating_add(source_x)
+                .saturating_mul(3);
+            let Some(pixel) = rgb_pixels.get(index..index.saturating_add(3)) else {
+                continue;
+            };
+            red = red.saturating_add(pixel[0] as usize);
+            green = green.saturating_add(pixel[1] as usize);
+            blue = blue.saturating_add(pixel[2] as usize);
+            count = count.saturating_add(1);
+        }
+    }
+    (count > 0).then_some([
+        (red / count).min(u8::MAX as usize) as u8,
+        (green / count).min(u8::MAX as usize) as u8,
+        (blue / count).min(u8::MAX as usize) as u8,
+    ])
 }
 
 fn averaged_decoded_image_sample(
@@ -6471,6 +7025,19 @@ fn set_raster_pixel(pixels: &mut [u8], width: usize, x: usize, y: usize, value: 
     };
     if let Some(pixel) = pixels.get_mut(index) {
         *pixel = value;
+    }
+}
+
+fn set_rgba_pixel(pixels: &mut [u8], width: usize, x: usize, y: usize, value: [u8; 4]) {
+    let Some(index) = y
+        .checked_mul(width)
+        .and_then(|row| row.checked_add(x))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    if let Some(pixel) = pixels.get_mut(index..index.saturating_add(4)) {
+        pixel.copy_from_slice(&value);
     }
 }
 

@@ -4273,6 +4273,143 @@ fn decoded_image_and_background_downscale_with_area_samples() {
 }
 
 #[test]
+fn rgba_raster_paints_decoded_image_color_and_preserves_grayscale_fallback() {
+    let red_url = "mem://red-image".to_owned();
+    let green_url = "mem://green-background".to_owned();
+    let gray_url = "mem://gray-fallback".to_owned();
+    let red = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![64],
+        rgb_pixels: Some(vec![200, 0, 0]),
+    };
+    let green = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![72],
+        rgb_pixels: Some(vec![0, 180, 0]),
+    };
+    let gray = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![90],
+        rgb_pixels: None,
+    };
+    let render = BrowserRender {
+        source: "mem://rgba-color-paint".to_owned(),
+        title: String::new(),
+        viewport_width: 4,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: red_url.clone(),
+                width: red.width,
+                height: red.height,
+                pixel_hash: red.pixel_hash(),
+                image: red,
+            },
+            DecodedImageEntry {
+                url: green_url.clone(),
+                width: green.width,
+                height: green.height,
+                pixel_hash: green.pixel_hash(),
+                image: green,
+            },
+            DecodedImageEntry {
+                url: gray_url.clone(),
+                width: gray.width,
+                height: gray.height,
+                pixel_hash: gray.pixel_hash(),
+                image: gray,
+            },
+        ],
+        hit_targets: vec![DisplayHitTarget::default(); 4],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                shade: 220,
+                alt: None,
+                url: Some(red_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 1,
+                y: 0,
+                width: 1,
+                height: 1,
+                shade: 220,
+                url: Some(green_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Auto,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::Image {
+                x: 2,
+                y: 0,
+                width: 1,
+                height: 1,
+                shade: 220,
+                alt: None,
+                url: Some(gray_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "A".to_owned(),
+            },
+        ],
+        text: "A".to_owned(),
+    };
+
+    let raster_options = BrowserRasterOptions::default();
+    let rgba = rasterize_render_rgba(&render, raster_options).expect("rasterize rgba color");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let red_sample_x = raster_options.padding_x;
+    let green_sample_x = raster_options
+        .padding_x
+        .saturating_add(raster_options.cell_width);
+    let gray_sample_x = raster_options
+        .padding_x
+        .saturating_add(raster_options.cell_width.saturating_mul(2));
+    let sample_y = raster_options.padding_y;
+    let text_sample_x = raster_options.padding_x.saturating_add(2);
+    let text_sample_y = raster_options.padding_y.saturating_add(2);
+
+    assert_eq!(pixel(red_sample_x, sample_y), &[200, 0, 0, 255]);
+    assert_eq!(pixel(green_sample_x, sample_y), &[0, 180, 0, 255]);
+    assert_eq!(pixel(gray_sample_x, sample_y), &[90, 90, 90, 255]);
+    assert_eq!(pixel(text_sample_x, text_sample_y), &[255, 255, 255, 255]);
+}
+
+#[test]
 fn css_height_controls_block_and_image_extent() {
     let render = render_html(
         "mem://css-height",
