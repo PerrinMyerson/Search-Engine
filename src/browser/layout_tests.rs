@@ -621,6 +621,133 @@ fn css_flex_row_images_keep_following_text_on_row() {
 }
 
 #[test]
+fn css_gap_row_flow_preserves_image_text_in_scrolled_viewport() {
+    let image_url = "mem://gap-row-flow-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![20, 120, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <div style="height:12px"></div>
+              <section style="display:flex; gap:12px 16px; column-gap:24px">
+                <img src="{image_url}" alt="" width="16" height="24">
+                <div>Hero copy</div>
+              </section>
+              <p>After</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://gap-row-flow",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render flex row gap with decoded image");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    assert_eq!(image_bounds, (0, 1, 2, 2));
+    let (hero_text_run_x, hero_text_y, hero_text) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Hero copy") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("hero text command");
+    let hero_text_x = hero_text_run_x.saturating_add(
+        hero_text
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .count(),
+    );
+    assert_eq!(hero_text_y, image_bounds.1);
+    assert!(
+        hero_text_x
+            >= image_bounds
+                .0
+                .saturating_add(image_bounds.2)
+                .saturating_add(3),
+        "expected explicit column gap between image and text, got image={image_bounds:?} text_x={hero_text_x}"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(32),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled flex gap row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[20, 120, 220, 255]
+    );
+
+    let text_row_y = raster_options.padding_y.saturating_add(2);
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(hero_text_x.saturating_mul(raster_options.cell_width));
+    let text_col_end = text_col_start.saturating_add("Hero copy".len() * raster_options.cell_width);
+    let mut glyph_pixels = 0usize;
+    for y in text_row_y..text_row_y.saturating_add(7).min(rgba.height) {
+        for x in text_col_start..text_col_end.min(rgba.width) {
+            if pixel(x, y) == &[0, 0, 0, 255] {
+                glyph_pixels = glyph_pixels.saturating_add(1);
+            }
+        }
+    }
+    assert!(glyph_pixels >= 8);
+}
+
+#[test]
 fn css_inline_block_menu_items_keep_block_links_on_row() {
     let render = render_html(
         "mem://css-inline-block-menu-links",

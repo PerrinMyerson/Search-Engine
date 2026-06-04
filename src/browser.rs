@@ -1371,6 +1371,8 @@ struct ComputedStyle {
     text_indent: Option<usize>,
     line_height: Option<usize>,
     font_scale: Option<usize>,
+    row_gap: Option<usize>,
+    column_gap: Option<usize>,
     box_sizing: BoxSizing,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
@@ -1522,6 +1524,8 @@ struct CssDeclarations {
     text_indent: Option<usize>,
     line_height: Option<usize>,
     font_scale: Option<usize>,
+    row_gap: Option<usize>,
+    column_gap: Option<usize>,
     box_sizing: Option<BoxSizing>,
     list_style_type: Option<CssListStyleType>,
     border: Option<BorderPaint>,
@@ -3625,6 +3629,7 @@ fn render_page_state_with_timings(
         &mut renderer,
         &mut layout_box_count,
         false,
+        None,
     );
 
     let flow = renderer.finish();
@@ -12445,6 +12450,20 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.font_scale =
                     parse_css_font_shorthand_scale(value).or(declarations.font_scale);
             }
+            "gap" => {
+                if let Some((row_gap, column_gap)) = parse_css_gap(value) {
+                    declarations.row_gap = Some(row_gap);
+                    declarations.column_gap = Some(column_gap);
+                }
+            }
+            "row-gap" => {
+                declarations.row_gap =
+                    parse_css_axis_gap(value, CssAxis::Vertical).or(declarations.row_gap);
+            }
+            "column-gap" => {
+                declarations.column_gap =
+                    parse_css_axis_gap(value, CssAxis::Horizontal).or(declarations.column_gap);
+            }
             "box-sizing" => {
                 declarations.box_sizing = parse_css_box_sizing(value).or(declarations.box_sizing);
             }
@@ -12707,6 +12726,30 @@ fn css_length_cell_units(value: &str, axis: CssAxis, max_cells: usize) -> Option
     }
     let units = ((pixels / css_axis_cell_px(axis)) * CSS_TEXT_CELL_UNITS as f32).round() as usize;
     Some(units.clamp(1, max_cells.saturating_mul(CSS_TEXT_CELL_UNITS)))
+}
+
+fn parse_css_gap(value: &str) -> Option<(usize, usize)> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match tokens.as_slice() {
+        [gap] => {
+            let row_gap = parse_css_axis_gap(gap, CssAxis::Vertical)?;
+            let column_gap = parse_css_axis_gap(gap, CssAxis::Horizontal)?;
+            Some((row_gap, column_gap))
+        }
+        [row_gap, column_gap, ..] => Some((
+            parse_css_axis_gap(row_gap, CssAxis::Vertical)?,
+            parse_css_axis_gap(column_gap, CssAxis::Horizontal)?,
+        )),
+        _ => None,
+    }
+}
+
+fn parse_css_axis_gap(value: &str, axis: CssAxis) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';');
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(0);
+    }
+    css_length_cells(value, axis, 64)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -14252,6 +14295,7 @@ fn render_children(
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
     children_are_row_items: bool,
+    row_item_gap: Option<usize>,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
         return;
@@ -14262,7 +14306,10 @@ fn render_children(
             continue;
         }
         if children_are_row_items && row_item_seen {
-            renderer.push_text(" ", None);
+            match row_item_gap {
+                Some(gap) => renderer.push_fixed_space_width(gap, None),
+                None => renderer.push_text(" ", None),
+            }
         }
         render_node(
             dom,
@@ -14313,6 +14360,7 @@ fn render_node(
             renderer,
             layout_box_count,
             false,
+            None,
         ),
         NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
         NodeKind::Element(element) => {
@@ -14724,6 +14772,7 @@ fn render_node(
                     renderer,
                     layout_box_count,
                     style.display.lays_out_children_in_row(),
+                    style.column_gap,
                 );
             } else {
                 render_children(
@@ -14734,6 +14783,7 @@ fn render_node(
                     renderer,
                     layout_box_count,
                     style.display.lays_out_children_in_row(),
+                    style.column_gap,
                 );
             }
 
@@ -14941,6 +14991,7 @@ fn render_contents_node(
         renderer,
         layout_box_count,
         children_are_row_items,
+        None,
     );
 
     if font_scale_entered.is_some() {
@@ -14993,6 +15044,7 @@ fn render_details_children(
     renderer: &mut FlowRenderer,
     layout_box_count: &mut usize,
     children_are_row_items: bool,
+    row_item_gap: Option<usize>,
 ) {
     let is_open = element.attrs.contains_key("open");
     let summary_child = first_details_summary_child(dom, node_id, css_cascade);
@@ -15025,6 +15077,7 @@ fn render_details_children(
         renderer,
         layout_box_count,
         children_are_row_items,
+        row_item_gap,
     );
 }
 
@@ -15310,6 +15363,8 @@ fn computed_style(
             text_indent: None,
             line_height: None,
             font_scale: None,
+            row_gap: None,
+            column_gap: None,
             box_sizing: BoxSizing::ContentBox,
             list_style_type: None,
             border: None,
@@ -15353,6 +15408,8 @@ fn computed_style(
     let mut text_indent = None;
     let mut line_height = None;
     let mut font_scale = None;
+    let mut row_gap = None;
+    let mut column_gap = None;
     let mut box_sizing = BoxSizing::ContentBox;
     let mut list_style_type = None;
     let mut border = None;
@@ -15394,6 +15451,8 @@ fn computed_style(
     let mut text_indent_specificity = 0u32;
     let mut line_height_specificity = 0u32;
     let mut font_scale_specificity = 0u32;
+    let mut row_gap_specificity = 0u32;
+    let mut column_gap_specificity = 0u32;
     let mut box_sizing_specificity = 0u32;
     let mut list_style_type_specificity = 0u32;
     let mut border_specificity = 0u32;
@@ -15583,6 +15642,18 @@ fn computed_style(
                 font_scale = Some(rule_font_scale);
                 font_scale_specificity = rule_specificity;
             }
+            if let Some(rule_row_gap) = rule.declarations.row_gap
+                && rule_specificity >= row_gap_specificity
+            {
+                row_gap = Some(rule_row_gap);
+                row_gap_specificity = rule_specificity;
+            }
+            if let Some(rule_column_gap) = rule.declarations.column_gap
+                && rule_specificity >= column_gap_specificity
+            {
+                column_gap = Some(rule_column_gap);
+                column_gap_specificity = rule_specificity;
+            }
             if let Some(rule_box_sizing) = rule.declarations.box_sizing
                 && rule_specificity >= box_sizing_specificity
             {
@@ -15751,6 +15822,12 @@ fn computed_style(
         if let Some(inline_font_scale) = inline.font_scale {
             font_scale = Some(inline_font_scale);
         }
+        if let Some(inline_row_gap) = inline.row_gap {
+            row_gap = Some(inline_row_gap);
+        }
+        if let Some(inline_column_gap) = inline.column_gap {
+            column_gap = Some(inline_column_gap);
+        }
         if let Some(inline_box_sizing) = inline.box_sizing {
             box_sizing = inline_box_sizing;
         }
@@ -15825,6 +15902,8 @@ fn computed_style(
         text_indent,
         line_height,
         font_scale,
+        row_gap,
+        column_gap,
         box_sizing,
         list_style_type,
         border,
