@@ -6035,6 +6035,62 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
 }
 
 #[tokio::test]
+async fn image_background_fidelity_skips_unsupported_typed_imageset_candidate_for_rendering() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <section data-lazy-background-image="image-set(url('dead-resource') type('image/avif') 1x, url('hero.webp') type('image/webp') 2x)">Hero</section>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "dead-resource")
+    );
+    let hero_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero.display().to_string())
+        .unwrap();
+    assert_eq!(hero_fetch.resource.kind, "background_image");
+    assert_eq!(hero_fetch.resource.initiator, "section");
+    assert_eq!(hero_fetch.resource.url, "hero.webp");
+    assert_eq!(hero_fetch.status, "fetched");
+    assert_eq!(hero_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(hero_fetch.image_decode_status.as_deref(), Some("decoded"));
+    let hero_hash = hero_fetch.decoded_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero.display().to_string() && hash == &hero_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn external_stylesheets_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

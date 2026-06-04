@@ -1141,9 +1141,36 @@ fn background_image_urls_from_attr_value(value: &str) -> Vec<&str> {
 }
 
 fn background_image_set_candidate_url(candidate: &str) -> Option<&str> {
+    if background_image_set_candidate_type_unsupported(candidate) {
+        return None;
+    }
     css_function_args(candidate, &["url"])
         .and_then(css_url_token)
         .or_else(|| css_quoted_url(candidate))
+}
+
+fn background_image_set_candidate_type_unsupported(candidate: &str) -> bool {
+    css_nested_function_args(candidate, &["type"])
+        .and_then(css_url_token)
+        .is_some_and(|image_type| !image_mime_type_supported(image_type))
+}
+
+fn css_nested_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
+    for (open, _) in value.match_indices('(') {
+        let name_start = value[..open]
+            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        let name = value[name_start..open].trim();
+        if names
+            .iter()
+            .any(|expected| name.eq_ignore_ascii_case(expected))
+        {
+            let close = matching_closing_paren(value, open)?;
+            return Some(&value[open + 1..close]);
+        }
+    }
+    None
 }
 
 fn css_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
