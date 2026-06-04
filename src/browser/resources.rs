@@ -967,7 +967,9 @@ fn push_selected_background_alias_resource(
 
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
         if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = background_image_url_from_attr_value(value)
+            && let Some(url) = background_image_urls_from_attr_value(value)
+                .into_iter()
+                .next()
         {
             push_resource(
                 resources,
@@ -988,17 +990,17 @@ fn push_background_alias_resources(
     element: &ElementData,
 ) {
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = background_image_url_from_attr_value(value)
-        {
-            push_resource(
-                resources,
-                source,
-                element,
-                "background_image",
-                &element.tag,
-                url,
-            );
+        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str) {
+            for url in background_image_urls_from_attr_value(value) {
+                push_resource(
+                    resources,
+                    source,
+                    element,
+                    "background_image",
+                    &element.tag,
+                    url,
+                );
+            }
         }
     }
 
@@ -1019,22 +1021,159 @@ fn push_background_alias_resources(
     }
 }
 
-fn background_image_url_from_attr_value(value: &str) -> Option<&str> {
+fn background_image_urls_from_attr_value(value: &str) -> Vec<&str> {
     let value = value.trim();
     if value.is_empty() {
-        return None;
+        return Vec::new();
+    }
+    if let Some(args) = css_function_args(value, &["image-set", "-webkit-image-set"]) {
+        let urls = split_css_top_level_commas(args)
+            .into_iter()
+            .filter_map(background_image_set_candidate_url)
+            .collect::<Vec<_>>();
+        if urls
+            .iter()
+            .any(|url| !background_image_candidate_clearly_unsupported(url))
+        {
+            return urls
+                .into_iter()
+                .filter(|url| !background_image_candidate_clearly_unsupported(url))
+                .collect();
+        }
+        return urls;
     }
     if let Some(inner) = value
         .strip_prefix("url(")
         .and_then(|value| value.strip_suffix(')'))
     {
         let url = inner.trim().trim_matches(['"', '\'']);
-        return (!url.is_empty()).then_some(url);
+        return (!url.is_empty()).then_some(url).into_iter().collect();
     }
     if value.contains(';') || value.contains('{') || value.contains('}') {
+        return Vec::new();
+    }
+    vec![value]
+}
+
+fn background_image_set_candidate_url(candidate: &str) -> Option<&str> {
+    css_function_args(candidate, &["url"])
+        .and_then(css_url_token)
+        .or_else(|| css_quoted_url(candidate))
+}
+
+fn css_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
+    let value = value.trim();
+    let open = value.find('(')?;
+    let name = value[..open].trim();
+    if !names
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected))
+    {
         return None;
     }
-    Some(value)
+    let close = matching_closing_paren(value, open)?;
+    Some(&value[open + 1..close])
+}
+
+fn matching_closing_paren(input: &str, open_index: usize) -> Option<usize> {
+    if input.as_bytes().get(open_index) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut quote = None;
+    for (index, byte) in input.as_bytes().iter().enumerate().skip(open_index) {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_css_top_level_commas(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote = None;
+    for (index, byte) in input.as_bytes().iter().enumerate() {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+
+fn css_url_token(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let url = if bytes.len() >= 2
+        && matches!(bytes[0], b'\'' | b'"')
+        && bytes.last() == Some(&bytes[0])
+    {
+        &value[1..value.len().saturating_sub(1)]
+    } else {
+        value
+    };
+    (!url.is_empty()).then_some(url)
+}
+
+fn css_quoted_url(value: &str) -> Option<&str> {
+    let value = value.trim_start();
+    let quote = value.as_bytes().first().copied()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let end = value[1..]
+        .find(quote as char)
+        .map(|offset| 1usize.saturating_add(offset))?;
+    css_url_token(&value[..=end])
+}
+
+fn background_image_candidate_clearly_unsupported(url: &str) -> bool {
+    let url = url.trim();
+    let path = Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
+    Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
+            )
+        })
 }
 
 const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
