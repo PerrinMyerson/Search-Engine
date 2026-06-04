@@ -1060,6 +1060,9 @@ fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport
     if report.dry_run && !report.skipped {
         println!("dry_run_note: no files were rewritten; projected_after shows retained rows");
     }
+    for line in web_storage_result_log_query_cap_lines(web_storage_result_log_query_cap()) {
+        println!("{line}");
+    }
     print_web_storage_compaction_artifact(
         "web-cache",
         &report.cache_path,
@@ -1130,6 +1133,23 @@ fn web_storage_compaction_artifact_lines(
             "{label}_entries_projected_removed: {}",
             before.entries.saturating_sub(projected_after.entries)
         ),
+    ]
+}
+
+fn web_storage_result_log_query_cap() -> usize {
+    env::var("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn web_storage_result_log_query_cap_lines(max_entries_per_query: usize) -> Vec<String> {
+    if max_entries_per_query == 0 {
+        return Vec::new();
+    }
+    vec![
+        format!("brave-results_entries_per_query_cap: {max_entries_per_query}"),
+        "brave-results_entries_per_query_cap_note: applies only to compact-web-cache and dry-run projection; normal search append is unchanged".to_owned(),
     ]
 }
 
@@ -1577,5 +1597,17 @@ mod tests {
         assert!(lines.contains(&"web-cache_entries_projected_removed: 2".to_owned()));
         assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
         assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_result_log_query_cap_lines_explain_compaction_scope() {
+        assert!(web_storage_result_log_query_cap_lines(0).is_empty());
+
+        let lines = web_storage_result_log_query_cap_lines(2);
+
+        assert!(lines.contains(&"brave-results_entries_per_query_cap: 2".to_owned()));
+        assert!(lines.contains(
+            &"brave-results_entries_per_query_cap_note: applies only to compact-web-cache and dry-run projection; normal search append is unchanged".to_owned()
+        ));
     }
 }

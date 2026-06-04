@@ -306,6 +306,8 @@ pub fn compact_web_search_storage_from_env(
         env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
     let result_log_max_entries =
         env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
+    let result_log_max_entries_per_query =
+        env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0);
 
     compact_web_search_storage(
         cache_path,
@@ -313,6 +315,7 @@ pub fn compact_web_search_storage_from_env(
         cache_ttl_secs,
         cache_max_entries,
         result_log_max_entries,
+        result_log_max_entries_per_query,
         options,
     )
 }
@@ -323,6 +326,7 @@ fn compact_web_search_storage(
     cache_ttl_secs: u64,
     cache_max_entries: usize,
     result_log_max_entries: usize,
+    result_log_max_entries_per_query: usize,
     options: WebSearchStorageCompactionOptions,
 ) -> Result<WebSearchStorageCompactionReport> {
     let cache_before = web_storage_artifact_state(&cache_path)?;
@@ -339,6 +343,7 @@ fn compact_web_search_storage(
             cache_ttl_secs,
             cache_max_entries,
             result_log_max_entries,
+            result_log_max_entries_per_query,
         )?
     } else {
         (cache_before, result_log_before)
@@ -348,7 +353,11 @@ fn compact_web_search_storage(
         let _ = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
     }
     if should_compact {
-        enforce_result_log_retention(&result_log_path, result_log_max_entries)?;
+        enforce_result_log_retention_with_query_cap(
+            &result_log_path,
+            result_log_max_entries,
+            result_log_max_entries_per_query,
+        )?;
     }
 
     let cache_after = web_storage_artifact_state(&cache_path)?;
@@ -373,6 +382,7 @@ fn projected_web_search_storage_state(
     cache_ttl_secs: u64,
     cache_max_entries: usize,
     result_log_max_entries: usize,
+    result_log_max_entries_per_query: usize,
 ) -> Result<(WebSearchStorageArtifactState, WebSearchStorageArtifactState)> {
     let temp_dir = WebStorageProjectionTempDir::create()?;
     let temp_cache_path = temp_dir.path().join("web-cache.jsonl");
@@ -396,7 +406,11 @@ fn projected_web_search_storage_state(
                 temp_result_log_path.display()
             )
         })?;
-        enforce_result_log_retention(&temp_result_log_path, result_log_max_entries)?;
+        enforce_result_log_retention_with_query_cap(
+            &temp_result_log_path,
+            result_log_max_entries,
+            result_log_max_entries_per_query,
+        )?;
     }
 
     Ok((
@@ -784,6 +798,14 @@ fn append_result_log(
 }
 
 fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
+    enforce_result_log_retention_with_query_cap(path, max_entries, 0)
+}
+
+fn enforce_result_log_retention_with_query_cap(
+    path: &Path,
+    max_entries: usize,
+    max_entries_per_query: usize,
+) -> Result<()> {
     if max_entries == 0 || !path.exists() {
         return Ok(());
     }
@@ -817,11 +839,21 @@ fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
 
     let original_entries = entries.len();
     let mut seen = HashSet::new();
+    let mut query_counts = HashMap::new();
     let mut retained = Vec::new();
     for entry in entries.into_iter().rev() {
-        if seen.insert(result_log_dedupe_key(&entry)) {
-            retained.push(entry);
+        if !seen.insert(result_log_dedupe_key(&entry)) {
+            continue;
         }
+        let query_key = (entry.normalized_query.clone(), entry.provider.clone());
+        if max_entries_per_query > 0 {
+            let count = query_counts.entry(query_key).or_insert(0usize);
+            if *count >= max_entries_per_query {
+                continue;
+            }
+            *count += 1;
+        }
+        retained.push(entry);
         if retained.len() >= max_entries {
             break;
         }
@@ -1243,6 +1275,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            0,
             WebSearchStorageCompactionOptions::default(),
         )
         .unwrap();
@@ -1294,6 +1327,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            0,
             WebSearchStorageCompactionOptions {
                 dry_run: true,
                 min_entries: 0,
@@ -1333,6 +1367,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            0,
             WebSearchStorageCompactionOptions {
                 dry_run: false,
                 min_entries: 2,
@@ -1344,6 +1379,58 @@ mod tests {
         assert!(report.skipped);
         assert_eq!(report.cache_before, report.cache_after);
         assert_eq!(report.cache_before, report.cache_projected_after);
+    }
+
+    #[test]
+    fn compact_web_search_storage_caps_result_log_entries_per_query_when_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        {
+            let mut file = fs::File::create(&result_log_path).unwrap();
+            for (query, base, count) in [
+                ("heavy query", "https://example.com/heavy", 4usize),
+                ("light query", "https://example.com/light", 2usize),
+            ] {
+                for index in 0..count {
+                    let entry = WebSearchResultLogEntry {
+                        query: query.to_owned(),
+                        normalized_query: query.to_owned(),
+                        provider: "brave".to_owned(),
+                        fetched_at_unix: 100 + index as u64,
+                        rank: index + 1,
+                        title: format!("{query} {index}"),
+                        url: format!("{base}/{index}"),
+                        snippet: "Snippet".to_owned(),
+                        score: 1.0,
+                    };
+                    serde_json::to_writer(&mut file, &entry).unwrap();
+                    file.write_all(b"\n").unwrap();
+                }
+            }
+            file.flush().unwrap();
+        }
+
+        let report = compact_web_search_storage(
+            cache_path,
+            result_log_path.clone(),
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            2,
+            WebSearchStorageCompactionOptions::default(),
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(result_log_path).unwrap();
+        assert_eq!(report.result_log_before.entries, 6);
+        assert_eq!(report.result_log_after.entries, 4);
+        assert!(!lines.contains("https://example.com/heavy/0"));
+        assert!(!lines.contains("https://example.com/heavy/1"));
+        assert!(lines.contains("https://example.com/heavy/2"));
+        assert!(lines.contains("https://example.com/heavy/3"));
+        assert!(lines.contains("https://example.com/light/0"));
+        assert!(lines.contains("https://example.com/light/1"));
     }
 
     #[test]
