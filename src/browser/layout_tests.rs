@@ -3065,6 +3065,105 @@ fn scrolled_image_viewports_choose_nearest_body_context() {
 }
 
 #[test]
+fn image_viewports_project_adjacent_caption_and_body_lines() {
+    let image_url = tiny_test_jpeg_data_url();
+    let render = BrowserRender {
+        source: "mem://image-card-context".to_owned(),
+        title: String::new(),
+        viewport_width: 36,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default(); 3],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 36,
+                height: 16,
+                shade: 220,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 16,
+                text: "Card insight headline".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 17,
+                text: "Supporting caption detail".to_owned(),
+            },
+        ],
+        text: "Card insight headline\nSupporting caption detail".to_owned(),
+    };
+
+    let scrolled = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 10,
+            width: 36,
+            height: 6,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let scrolled_text = scrolled.lines.join("\n");
+    assert!(scrolled_text.contains('@'));
+    assert!(
+        scrolled
+            .lines
+            .get(4)
+            .is_some_and(|line| line.contains("Card insight headline"))
+    );
+    assert!(
+        scrolled
+            .lines
+            .get(5)
+            .is_some_and(|line| line.contains("Supporting caption detail"))
+    );
+    assert!(scrolled_text.matches('@').count() > 8);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(10),
+        viewport_width: Some(36),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options).expect("rasterize image card context");
+    let overlay_rows = [4usize, 5usize];
+    for row in overlay_rows {
+        let overlay_row_y = raster_options
+            .padding_y
+            .saturating_add(row.saturating_mul(raster_options.cell_height));
+        let overlay_row_end = overlay_row_y.saturating_add(raster_options.cell_height);
+        let overlay_col_end = raster_options
+            .padding_x
+            .saturating_add(24usize.saturating_mul(raster_options.cell_width));
+        let mut overlay_glyph_pixels = 0usize;
+        for y in overlay_row_y..overlay_row_end {
+            for x in raster_options.padding_x..overlay_col_end {
+                let index = y.saturating_mul(raster.width).saturating_add(x);
+                if raster.pixels.get(index).is_some_and(|pixel| *pixel == 255) {
+                    overlay_glyph_pixels = overlay_glyph_pixels.saturating_add(1);
+                }
+            }
+        }
+        assert!(overlay_glyph_pixels >= 8);
+    }
+}
+
+#[test]
 fn css_viewport_units_size_first_viewport_hero() {
     let render = render_html(
         "mem://viewport-unit-hero",
