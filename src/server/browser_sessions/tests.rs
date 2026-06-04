@@ -2491,7 +2491,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(raster_index < status_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < command_strip_index);
-    assert!(html.contains(r#"<summary>Browser controls and status</summary>"#));
+    assert!(html.contains(r#"<summary>Advanced browser controls</summary>"#));
+    assert!(html.contains(r#"scroll-margin-top: 76px"#));
+    assert!(html.contains(r#"touch-action: pan-x pan-y"#));
+    assert!(html.contains(r#"scrollbar-gutter: stable"#));
+    assert!(html.contains(r#".browser-raster-shell[data-viewport-pending="true"]"#));
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
@@ -2503,6 +2507,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const replaceViewportPage"));
     assert!(html.contains("const replaceViewportPartial"));
     assert!(html.contains("const applyViewportPartial"));
+    assert!(html.contains("const clearViewportPending"));
+    assert!(html.contains("const keepFocus = document.activeElement === shell"));
+    assert!(html.contains(r#"shell.focus({ preventScroll: true })"#));
     assert!(html.contains("new DOMParser().parseFromString"));
     assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-partial""#));
@@ -2525,8 +2532,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("for (const feedback of viewportFeedbackTargets())"));
     assert!(html.contains("feedback.textContent = message"));
     assert!(html.contains(r#"shell.dataset.viewportPending = "true""#));
+    assert!(html.contains(r#"shell.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
+    assert!(html.contains(r#"control.removeAttribute("data-scroll-pending")"#));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
+    assert!(html.contains(r#"status.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains("const scrollMessage"));
     assert!(html.contains("Moving visual viewport left..."));
     assert!(html.contains("Moving visual viewport right..."));

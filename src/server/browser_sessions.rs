@@ -9102,13 +9102,14 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
 .resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
 .resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
-.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; cursor: crosshair; }}
+.browser-raster-shell {{ background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
+.browser-raster-shell[data-viewport-pending="true"] {{ cursor: wait; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-raster-placeholder {{ min-height: 96px; display: grid; align-content: center; gap: 6px; padding: 14px; background: #f6f8fb; color: #3a3f45; font-size: 13px; cursor: default; }}
 .browser-raster-placeholder strong {{ color: #20242a; }}
 .browser-raster-error {{ margin: 12px 0; border: 1px solid #d7a8a8; border-radius: 6px; padding: 10px 12px; background: #fff5f5; color: #7a2020; font-size: 13px; }}
-.browser-viewport-primary {{ margin: 10px 0 18px; }}
+.browser-viewport-primary {{ margin: 10px 0 18px; scroll-margin-top: 76px; }}
 .browser-controls-tray {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; margin: 12px 0 16px; }}
 .browser-controls-tray > summary {{ cursor: pointer; padding: 10px 12px; color: #20242a; font-size: 13px; font-weight: 900; }}
 .browser-controls-content {{ display: grid; gap: 10px; padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
@@ -9200,7 +9201,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details class="browser-controls-tray" data-browser-controls-tray><summary>Browser controls and status</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
+<details class="browser-controls-tray" data-browser-controls-tray><summary>Advanced browser controls</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_jump}{viewport_text}</div></details>
 </section>
 <details class="debug-stack browser-tools-menu" data-browser-tools-tray>
 <summary>More browser tools</summary>
@@ -9646,6 +9647,20 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     setViewportFeedback(message);
   };
+  const clearViewportPending = () => {
+    shell.removeAttribute("data-viewport-pending");
+    shell.removeAttribute("aria-busy");
+    for (const control of viewportControls()) {
+      control.removeAttribute("data-scroll-pending");
+      control.removeAttribute("aria-busy");
+    }
+    const status = document.querySelector("[data-browser-viewport-status]");
+    if (status) {
+      status.removeAttribute("data-viewport-pending");
+      status.removeAttribute("aria-busy");
+      status.removeAttribute("aria-label");
+    }
+  };
   const numberData = (name) => {
     const value = Number(shell.dataset[name]);
     return Number.isFinite(value) ? value : 0;
@@ -9685,6 +9700,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!partial || !nextShell) {
       return false;
     }
+    const keepFocus = document.activeElement === shell;
     for (const attribute of Array.from(shell.attributes)) {
       shell.removeAttribute(attribute.name);
     }
@@ -9698,8 +9714,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     replaceElementFromPartial(doc, "[data-browser-viewport-controls]");
     replaceElementFromPartial(doc, "[data-browser-viewport-command-strip]");
     shell.dataset.viewportPartial = "true";
-    shell.removeAttribute("aria-busy");
-    shell.removeAttribute("data-viewport-pending");
+    clearViewportPending();
+    if (keepFocus) {
+      shell.focus({ preventScroll: true });
+    }
     return true;
   };
   const replaceViewportPage = (url, message) => {
