@@ -2920,10 +2920,12 @@ impl BrowserSession {
         click_default_action: Option<BrowserClickDefaultAction>,
     ) -> BrowserProfiledRender {
         let entry = &self.entries[current_index];
-        render_page_state_profiled(
+        let cached_images = decoded_cached_images(&self.resource_cache);
+        render_page_state_profiled_with_cached_images(
             &entry.render.source,
             self.options,
             &entry.page_state,
+            &cached_images,
             click_default_action,
         )
     }
@@ -3538,6 +3540,7 @@ fn render_html_prepared_with_state(
         source,
         options,
         &page_state,
+        &[],
         parse_us,
         script_us,
         total_start,
@@ -3552,10 +3555,27 @@ fn render_page_state_profiled(
     page_state: &BrowserPageState,
     click_default_action: Option<BrowserClickDefaultAction>,
 ) -> BrowserProfiledRender {
+    render_page_state_profiled_with_cached_images(
+        source,
+        options,
+        page_state,
+        &[],
+        click_default_action,
+    )
+}
+
+fn render_page_state_profiled_with_cached_images(
+    source: &str,
+    options: BrowserRenderOptions,
+    page_state: &BrowserPageState,
+    resource_cached_images: &[DecodedImageEntry],
+    click_default_action: Option<BrowserClickDefaultAction>,
+) -> BrowserProfiledRender {
     render_page_state_with_timings(
         source,
         options,
         page_state,
+        resource_cached_images,
         0,
         0,
         Instant::now(),
@@ -3567,6 +3587,7 @@ fn render_page_state_with_timings(
     source: &str,
     options: BrowserRenderOptions,
     page_state: &BrowserPageState,
+    resource_cached_images: &[DecodedImageEntry],
     parse_us: u128,
     script_us: u128,
     total_start: Instant,
@@ -3591,6 +3612,7 @@ fn render_page_state_with_timings(
     let layout_start = Instant::now();
     let mut renderer = FlowRenderer::new(options.width.max(20));
     renderer.seed_decoded_images(&page_state.cached_images);
+    renderer.seed_decoded_images(resource_cached_images);
     let mut layout_box_count = 0usize;
 
     render_children(
@@ -4150,23 +4172,27 @@ fn effective_raster_viewport(
     options: BrowserRasterOptions,
 ) -> RasterViewport {
     let (full_width, full_height) = raster_full_grid(render);
-    let x = options.viewport_x.unwrap_or(0);
-    let y = options.viewport_y.unwrap_or(0);
+    let requested_x = options.viewport_x.unwrap_or(0);
+    let requested_y = options.viewport_y.unwrap_or(0);
     let active = options.viewport_x.is_some()
         || options.viewport_y.is_some()
         || options.viewport_width.is_some()
         || options.viewport_height.is_some();
     let width = options
         .viewport_width
-        .unwrap_or_else(|| full_width.saturating_sub(x).max(1));
+        .unwrap_or_else(|| full_width.saturating_sub(requested_x).max(1))
+        .max(1);
     let height = options
         .viewport_height
-        .unwrap_or_else(|| full_height.saturating_sub(y).max(1));
+        .unwrap_or_else(|| full_height.saturating_sub(requested_y).max(1))
+        .max(1);
+    let x = requested_x.min(full_width.saturating_sub(width));
+    let y = requested_y.min(full_height.saturating_sub(height));
     RasterViewport {
         x,
         y,
-        width: width.max(1),
-        height: height.max(1),
+        width,
+        height,
         active,
     }
 }
@@ -6359,10 +6385,8 @@ fn draw_raster_text_run(
             && cursor_x < viewport_end_pixel_x
             && glyph_end > viewport_pixel_x
         {
-            let cell_x = options
-                .padding_x
-                .saturating_add(cursor_x.saturating_sub(viewport_pixel_x));
-            draw_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
+            let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
+            draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
         }
         cursor_x = cursor_x.saturating_add(advance);
     }
@@ -6399,10 +6423,8 @@ fn draw_rgba_text_run(
             && cursor_x < viewport_end_pixel_x
             && glyph_end > viewport_pixel_x
         {
-            let cell_x = options
-                .padding_x
-                .saturating_add(cursor_x.saturating_sub(viewport_pixel_x));
-            draw_rgba_glyph(pixels, raster_width, cell_x, cell_y, ch, ink);
+            let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
+            draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
         }
         cursor_x = cursor_x.saturating_add(advance);
     }
@@ -6434,42 +6456,59 @@ fn glyph_ink_bounds(ch: char) -> Option<(usize, usize)> {
     (left != usize::MAX).then_some((left, right))
 }
 
-fn draw_glyph(pixels: &mut [u8], width: usize, cell_x: usize, cell_y: usize, ch: char, ink: u8) {
-    let ink = contrasting_glyph_ink(pixels, width, cell_x, cell_y, ch, ink);
-    for (row, mask) in glyph_rows(ch).iter().enumerate() {
-        for column in 0..5 {
-            if (mask & (1 << (4 - column))) == 0 {
-                continue;
-            }
-            set_raster_pixel(
-                pixels,
-                width,
-                cell_x.saturating_add(1 + column),
-                cell_y.saturating_add(2 + row),
-                ink,
-            );
-        }
-    }
-}
-
-fn draw_rgba_glyph(
+fn draw_glyph_clipped(
     pixels: &mut [u8],
     width: usize,
-    cell_x: usize,
+    cell_x: isize,
     cell_y: usize,
     ch: char,
     ink: u8,
 ) {
-    let ink = contrasting_rgba_glyph_ink(pixels, width, cell_x, cell_y, ch, ink);
+    let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
+        contrasting_glyph_ink(pixels, width, cell_x, cell_y, ch, ink)
+    } else {
+        ink
+    };
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
         for column in 0..5 {
             if (mask & (1 << (4 - column))) == 0 {
                 continue;
             }
+            let pixel_x = cell_x + 1 + column as isize;
+            let Ok(pixel_x) = usize::try_from(pixel_x) else {
+                continue;
+            };
+            set_raster_pixel(pixels, width, pixel_x, cell_y.saturating_add(2 + row), ink);
+        }
+    }
+}
+
+fn draw_rgba_glyph_clipped(
+    pixels: &mut [u8],
+    width: usize,
+    cell_x: isize,
+    cell_y: usize,
+    ch: char,
+    ink: u8,
+) {
+    let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
+        contrasting_rgba_glyph_ink(pixels, width, cell_x, cell_y, ch, ink)
+    } else {
+        ink
+    };
+    for (row, mask) in glyph_rows(ch).iter().enumerate() {
+        for column in 0..5 {
+            if (mask & (1 << (4 - column))) == 0 {
+                continue;
+            }
+            let pixel_x = cell_x + 1 + column as isize;
+            let Ok(pixel_x) = usize::try_from(pixel_x) else {
+                continue;
+            };
             set_rgba_pixel(
                 pixels,
                 width,
-                cell_x.saturating_add(1 + column),
+                pixel_x,
                 cell_y.saturating_add(2 + row),
                 [ink, ink, ink, 255],
             );
@@ -6489,7 +6528,7 @@ fn contrasting_glyph_ink(
     let mut count = 0usize;
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
         for column in 0..5 {
-            if (mask & (1 << (4 - column))) == 0 {
+            if (mask & (1 << (4 - column))) != 0 {
                 continue;
             }
             let pixel_x = cell_x.saturating_add(1 + column);
@@ -6526,7 +6565,7 @@ fn contrasting_rgba_glyph_ink(
     let mut count = 0usize;
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
         for column in 0..5 {
-            if (mask & (1 << (4 - column))) == 0 {
+            if (mask & (1 << (4 - column))) != 0 {
                 continue;
             }
             let pixel_x = cell_x.saturating_add(1 + column);
