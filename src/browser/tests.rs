@@ -3523,6 +3523,103 @@ async fn image_render_coverage_skips_unsupported_picture_source_for_renderable_c
 }
 
 #[tokio::test]
+async fn image_picture_srcset_skips_unsupported_typed_source_resources() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <picture>
+                <source type="image/avif" srcset="dead-resource 1x">
+                <source type="image/webp" srcset="hero.webp 1x">
+                <img src="fallback.jpg" alt="Renderable typed picture" width="80" height="24">
+            </picture>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "dead-resource")
+    );
+
+    let hero_url = hero.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "hero.webp");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+
+    let render = render_session.current().unwrap();
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url == "dead-resource")
+    );
+    let hero_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(hero_fetch.resource.kind, "image_candidate");
+    assert_eq!(hero_fetch.resource.initiator, "source");
+    assert_eq!(hero_fetch.resource.url, "hero.webp");
+    assert_eq!(hero_fetch.status, "fetched");
+    assert_eq!(hero_fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(hero_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(hero_fetch.decoded_hash.is_some());
+}
+
+#[tokio::test]
 async fn image_css_backgrounds_selects_renderable_preload_imagesrcset_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
