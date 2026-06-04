@@ -516,6 +516,8 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
     let mut compression_method = None;
     let mut filter_method = None;
     let mut interlace_method = None;
+    let mut palette = Vec::new();
+    let mut transparency = Vec::new();
     let mut idat = Vec::new();
 
     while cursor.checked_add(12)? <= bytes.len() {
@@ -544,6 +546,13 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
                 filter_method = Some(data[11]);
                 interlace_method = Some(data[12]);
             }
+            b"PLTE" => {
+                if data.len() % 3 != 0 {
+                    return None;
+                }
+                palette.extend_from_slice(data);
+            }
+            b"tRNS" => transparency.extend_from_slice(data),
             b"IDAT" => idat.extend_from_slice(data),
             b"IEND" => break,
             _ => {}
@@ -567,6 +576,12 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
     let channels = match color_type {
         0 => 1,
         2 => 3,
+        3 => {
+            if palette.is_empty() {
+                return None;
+            }
+            1
+        }
         4 => 2,
         6 => 4,
         _ => return None,
@@ -592,7 +607,7 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
         current.copy_from_slice(&raw[offset..offset + row_bytes]);
         offset += row_bytes;
         reconstruct_png_scanline(filter, channels, &previous, &mut current)?;
-        push_png_grayscale_pixels(&current, color_type, &mut pixels);
+        push_png_grayscale_pixels(&current, color_type, &palette, &transparency, &mut pixels)?;
         previous.copy_from_slice(&current);
     }
 
@@ -655,12 +670,28 @@ fn paeth_predictor(left: u8, up: u8, upper_left: u8) -> u8 {
     }
 }
 
-fn push_png_grayscale_pixels(row: &[u8], color_type: u8, pixels: &mut Vec<u8>) {
+fn push_png_grayscale_pixels(
+    row: &[u8],
+    color_type: u8,
+    palette: &[u8],
+    transparency: &[u8],
+    pixels: &mut Vec<u8>,
+) -> Option<()> {
     match color_type {
         0 => pixels.extend_from_slice(row),
         2 => {
             for rgb in row.chunks_exact(3) {
                 pixels.push(rgb_to_gray(rgb[0], rgb[1], rgb[2]));
+            }
+        }
+        3 => {
+            for &index in row {
+                let index = usize::from(index);
+                let palette_offset = index.checked_mul(3)?;
+                let rgb = palette.get(palette_offset..palette_offset.checked_add(3)?)?;
+                let gray = rgb_to_gray(rgb[0], rgb[1], rgb[2]);
+                let alpha = transparency.get(index).copied().unwrap_or(255);
+                pixels.push(blend_gray_over_white(gray, alpha));
             }
         }
         4 => {
@@ -676,6 +707,7 @@ fn push_png_grayscale_pixels(row: &[u8], color_type: u8, pixels: &mut Vec<u8>) {
         }
         _ => {}
     }
+    Some(())
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
