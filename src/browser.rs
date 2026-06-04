@@ -16023,6 +16023,7 @@ impl FlowRenderer {
     }
 
     fn push_wrapped_text_token(&mut self, word: &str, target_node: Option<usize>) {
+        self.clear_narrow_float_column_for_text();
         let available_width = self.available_width();
         let word_width = self.letter_spaced_text_width(word);
         if self.current_width == 0 {
@@ -16097,6 +16098,7 @@ impl FlowRenderer {
     }
 
     fn push_nowrap_text_token(&mut self, word: &str, target_node: Option<usize>) {
+        self.clear_narrow_float_column_for_text();
         if self.current_width > 0 {
             if let Some(space_width) = self.pending_inter_word_space.take() {
                 self.push_inter_word_space_width(space_width, target_node);
@@ -16157,6 +16159,7 @@ impl FlowRenderer {
     }
 
     fn push_breakable_text_segment(&mut self, text: &str, target_node: Option<usize>) {
+        self.clear_narrow_float_column_for_text();
         let mut start = 0usize;
         let mut char_count = 0usize;
         for (index, _) in text.char_indices() {
@@ -17069,6 +17072,23 @@ impl FlowRenderer {
             .max(1)
     }
 
+    fn clear_narrow_float_column_for_text(&mut self) {
+        if self.current_width > 0 || self.inline_replaced_height > 0 {
+            return;
+        }
+        let Some(clear_y) = self.next_active_float_bottom_y() else {
+            return;
+        };
+        if self.available_width() >= self.minimum_readable_float_text_width() {
+            return;
+        }
+        self.next_y = clear_y.max(self.next_y);
+    }
+
+    fn minimum_readable_float_text_width(&self) -> usize {
+        self.width.saturating_div(4).clamp(8, 16)
+    }
+
     fn viewport_width_css_px(&self) -> usize {
         self.width.saturating_mul(8)
     }
@@ -17086,6 +17106,14 @@ impl FlowRenderer {
             }
         }
         (left, right)
+    }
+
+    fn next_active_float_bottom_y(&self) -> Option<usize> {
+        self.active_floats
+            .iter()
+            .filter(|active_float| self.next_y < active_float.bottom_y)
+            .map(|active_float| active_float.bottom_y)
+            .min()
     }
 
     fn enter_inset(&mut self, border_width: usize) {

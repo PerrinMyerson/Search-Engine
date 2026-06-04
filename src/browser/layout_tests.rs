@@ -3468,6 +3468,71 @@ fn css_positive_z_index_positions_foreground_above_later_media() {
 }
 
 #[test]
+fn narrow_float_columns_clear_before_body_text() {
+    let render = render_html(
+        "mem://narrow-float-column-readable-flow",
+        br#"
+            <html><body>
+              <img alt="left visual" width="144" height="48" style="float:left">
+              <img alt="right visual" width="144" height="48" style="float:right">
+              <p style="margin:0">Readable body text after crowded media</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image_rows = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image { y, height, .. } => Some((*y, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(image_rows.len(), 2);
+    let image_bottom = image_rows
+        .iter()
+        .map(|(y, height)| y.saturating_add(*height))
+        .max()
+        .expect("image bottom");
+
+    let body_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Readable body text") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("body text display command");
+    assert_eq!(body_text.0, 0);
+    assert!(body_text.1 >= image_bottom);
+    assert_eq!(body_text.2, "Readable body text after crowded media");
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: 0,
+            width: 40,
+            height: 8,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let viewport_text = viewport.lines.join("\n");
+    assert!(viewport_text.contains('@'));
+    assert!(
+        viewport
+            .lines
+            .get(body_text.1)
+            .is_some_and(|line| line.contains("Readable body text"))
+    );
+}
+
+#[test]
 fn css_overflow_hidden_clips_paint_and_flow_extent() {
     let render = render_html(
         "mem://overflow-hidden",
