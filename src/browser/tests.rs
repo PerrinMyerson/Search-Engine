@@ -987,6 +987,85 @@ async fn image_svg_fidelity_decodes_viewbox_shape_pixels_for_rendered_resource()
     }));
 }
 
+#[tokio::test]
+async fn image_svg_paths_decodes_line_shape_pixels_for_rendered_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("icon.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 24 20" xmlns="http://www.w3.org/2000/svg">
+                <rect width="24" height="20" fill="#f0f0f0"/>
+                <path d="M 2 2 L 10 2 H 10 V 10 L 2 10 Z" style="fill:#202020"/>
+                <polygon points="14,2 21,6 14,10" fill="#606060"/>
+                <polyline points="3,16 10,12 20,17" fill="none" stroke="#404040"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before icon</p><img src="icon.svg" alt="Path icon" width="24" height="20"><p>After icon</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "icon.svg").unwrap();
+    assert_eq!(decoded.width, 24);
+    assert_eq!(decoded.height, 20);
+    assert!(decoded.pixels.iter().any(|&pixel| pixel <= 40));
+    assert!(
+        decoded
+            .pixels
+            .iter()
+            .any(|&pixel| (58..=72).contains(&pixel))
+    );
+    assert!(
+        decoded
+            .pixels
+            .iter()
+            .any(|&pixel| (88..=104).contains(&pixel))
+    );
+    assert!(decoded.pixels.iter().any(|&pixel| pixel >= 230));
+    let expected_hash = decoded.pixel_hash();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.resolved, icon.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(24));
+    assert_eq!(fetch.decoded_height, Some(20));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+
+    let render = session.current().unwrap();
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(render.decoded_images[0].pixel_hash, expected_hash);
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(24),
+                decoded_height: Some(20),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+}
+
 #[test]
 fn decodes_local_png_image_into_cached_raster_pixels() {
     let dir = tempfile::tempdir().unwrap();
