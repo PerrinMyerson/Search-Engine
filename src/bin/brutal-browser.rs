@@ -2346,6 +2346,20 @@ fn print_render(
                 } => {
                     println!("rect x={x} y={y} width={width} height={height} shade={shade}");
                 }
+                brutal_search::browser::DisplayCommand::ColorRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    shade,
+                    red,
+                    green,
+                    blue,
+                } => {
+                    println!(
+                        "color-rect x={x} y={y} width={width} height={height} shade={shade} rgb={red},{green},{blue}"
+                    );
+                }
                 brutal_search::browser::DisplayCommand::Image {
                     x,
                     y,
