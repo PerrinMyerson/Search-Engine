@@ -60,6 +60,14 @@ pub struct BrowserResourceFetch {
     pub error_kind: Option<String>,
     #[serde(default)]
     pub elapsed_ms: u128,
+    #[serde(default)]
+    pub cache_entries: usize,
+    #[serde(default)]
+    pub cache_bytes: usize,
+    #[serde(default)]
+    pub cache_evicted_entries: usize,
+    #[serde(default)]
+    pub cache_evicted_bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_decode_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,6 +164,15 @@ struct BrowserResourceFetchArgs {
     error: Option<String>,
     error_kind: Option<String>,
     elapsed_ms: u128,
+    cache_pressure: BrowserResourceCachePressure,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BrowserResourceCachePressure {
+    entries: usize,
+    bytes: usize,
+    evicted_entries: usize,
+    evicted_bytes: usize,
 }
 
 impl BrowserResourceFetch {
@@ -197,6 +214,10 @@ impl BrowserResourceFetch {
             error: args.error,
             error_kind: args.error_kind,
             elapsed_ms: args.elapsed_ms,
+            cache_entries: args.cache_pressure.entries,
+            cache_bytes: args.cache_pressure.bytes,
+            cache_evicted_entries: args.cache_pressure.evicted_entries,
+            cache_evicted_bytes: args.cache_pressure.evicted_bytes,
             image_decode_status,
             image_decode_error,
             decoded_width,
@@ -205,6 +226,13 @@ impl BrowserResourceFetch {
             decoded_color_hash,
             decoded_color_bytes,
         }
+    }
+
+    fn set_cache_pressure(&mut self, pressure: BrowserResourceCachePressure) {
+        self.cache_entries = pressure.entries;
+        self.cache_bytes = pressure.bytes;
+        self.cache_evicted_entries = pressure.evicted_entries;
+        self.cache_evicted_bytes = pressure.evicted_bytes;
     }
 }
 
@@ -316,6 +344,15 @@ impl BrowserResourceCache {
         })
     }
 
+    fn pressure(&self) -> BrowserResourceCachePressure {
+        BrowserResourceCachePressure {
+            entries: self.len(),
+            bytes: self.total_bytes(),
+            evicted_entries: self.evicted_entries,
+            evicted_bytes: self.evicted_bytes,
+        }
+    }
+
     fn touch(&mut self, url: &str) {
         self.order.retain(|entry| entry != url);
         self.order.push_back(url.to_owned());
@@ -412,6 +449,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: None,
                 error_kind: None,
                 elapsed_ms: started.elapsed().as_millis(),
+                cache_pressure: cache.pressure(),
             },
             Some(cached.bytes.as_slice()),
         );
@@ -421,7 +459,7 @@ pub(super) async fn fetch_resource_with_cache(
         return match load_data_url_resource(&resource.resolved, max_resource_bytes) {
             Ok((source, bytes, content_type)) => {
                 let byte_len = bytes.len();
-                let fetch = BrowserResourceFetch::from_args(
+                let mut fetch = BrowserResourceFetch::from_args(
                     BrowserResourceFetchArgs {
                         resource: resource.clone(),
                         status: "cached".to_owned(),
@@ -431,6 +469,7 @@ pub(super) async fn fetch_resource_with_cache(
                         error: None,
                         error_kind: None,
                         elapsed_ms: started.elapsed().as_millis(),
+                        cache_pressure: BrowserResourceCachePressure::default(),
                     },
                     Some(bytes.as_slice()),
                 );
@@ -442,6 +481,7 @@ pub(super) async fn fetch_resource_with_cache(
                         content_type: Some(content_type.clone()),
                     },
                 );
+                fetch.set_cache_pressure(cache.pressure());
                 fetch
             }
             Err(error) => BrowserResourceFetch::from_args(
@@ -454,6 +494,7 @@ pub(super) async fn fetch_resource_with_cache(
                     error: Some(error.to_string()),
                     error_kind: Some(classify_load_error(&error)),
                     elapsed_ms: started.elapsed().as_millis(),
+                    cache_pressure: cache.pressure(),
                 },
                 None,
             ),
@@ -471,6 +512,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: Some("unsupported resource scheme".to_owned()),
                 error_kind: Some("unsupported_scheme".to_owned()),
                 elapsed_ms: started.elapsed().as_millis(),
+                cache_pressure: cache.pressure(),
             },
             None,
         );
@@ -479,7 +521,7 @@ pub(super) async fn fetch_resource_with_cache(
     match load_resource_target(&resource.resolved, max_resource_bytes, cookie_jar).await {
         Ok((source, bytes, content_type)) => {
             let byte_len = bytes.len();
-            let fetch = BrowserResourceFetch::from_args(
+            let mut fetch = BrowserResourceFetch::from_args(
                 BrowserResourceFetchArgs {
                     resource: resource.clone(),
                     status: "fetched".to_owned(),
@@ -489,6 +531,7 @@ pub(super) async fn fetch_resource_with_cache(
                     error: None,
                     error_kind: None,
                     elapsed_ms: started.elapsed().as_millis(),
+                    cache_pressure: BrowserResourceCachePressure::default(),
                 },
                 Some(bytes.as_slice()),
             );
@@ -500,6 +543,7 @@ pub(super) async fn fetch_resource_with_cache(
                     content_type: content_type.clone(),
                 },
             );
+            fetch.set_cache_pressure(cache.pressure());
             fetch
         }
         Err(error) => BrowserResourceFetch::from_args(
@@ -512,6 +556,7 @@ pub(super) async fn fetch_resource_with_cache(
                 error: Some(error.to_string()),
                 error_kind: Some(classify_load_error(&error)),
                 elapsed_ms: started.elapsed().as_millis(),
+                cache_pressure: cache.pressure(),
             },
             None,
         ),
@@ -1683,6 +1728,8 @@ mod tests {
             fetch_resource_with_cache(test_resource(first), 64, &mut jar, &mut cache).await;
         assert_eq!(first_fetch.status, "cached");
         assert_eq!(first_fetch.error_kind, None);
+        assert_eq!(first_fetch.cache_entries, 1);
+        assert_eq!(first_fetch.cache_bytes, 3);
         assert!(cache.cached_bytes(first).is_some());
 
         let second_fetch =
@@ -1693,10 +1740,16 @@ mod tests {
         let hit = fetch_resource_with_cache(test_resource(first), 64, &mut jar, &mut cache).await;
         assert_eq!(hit.status, "cached");
         assert_eq!(hit.bytes, 3);
+        assert_eq!(hit.cache_entries, 2);
+        assert_eq!(hit.cache_bytes, 6);
 
         let third_fetch =
             fetch_resource_with_cache(test_resource(third), 64, &mut jar, &mut cache).await;
         assert_eq!(third_fetch.status, "cached");
+        assert_eq!(third_fetch.cache_entries, 2);
+        assert_eq!(third_fetch.cache_bytes, 8);
+        assert_eq!(third_fetch.cache_evicted_entries, 1);
+        assert_eq!(third_fetch.cache_evicted_bytes, 3);
 
         assert_eq!(cache.len(), 2);
         assert!(cache.cached_bytes(first).is_some());
@@ -1717,6 +1770,9 @@ mod tests {
 
         assert_eq!(fetch.status, "cached");
         assert_eq!(fetch.bytes, 5);
+        assert_eq!(fetch.cache_entries, 0);
+        assert_eq!(fetch.cache_bytes, 0);
+        assert_eq!(fetch.cache_evicted_entries, 0);
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.total_bytes(), 0);
         assert_eq!(cache.evicted_entries(), 0);
@@ -1763,6 +1819,8 @@ mod tests {
 
         assert_eq!(fetch.status, "skipped");
         assert_eq!(fetch.error_kind.as_deref(), Some("unsupported_scheme"));
+        assert_eq!(fetch.cache_entries, 0);
+        assert_eq!(fetch.cache_bytes, 0);
         assert!(fetch.error.is_some());
     }
 
