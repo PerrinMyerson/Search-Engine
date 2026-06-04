@@ -1379,6 +1379,7 @@ struct ComputedStyle {
     animation_reveals_opacity: bool,
     overflow: Overflow,
     flex_direction: FlexDirection,
+    grid_columns: Option<usize>,
     position: Position,
     position_top: Option<CssPositionOffset>,
     position_left: Option<CssPositionOffset>,
@@ -1514,10 +1515,18 @@ impl ComputedStyle {
     fn child_layout(&self) -> ChildLayout {
         let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
             && self.flex_direction == FlexDirection::Column;
+        let grid_columns = matches!(self.display, Display::Grid | Display::InlineGrid)
+            .then_some(self.grid_columns)
+            .flatten();
         ChildLayout {
             row_items: self.display.lays_out_children_in_row() && !flex_column,
-            row_gap: flex_column.then_some(self.row_gap.unwrap_or(0)),
+            row_gap: if flex_column {
+                Some(self.row_gap.unwrap_or(0))
+            } else {
+                grid_columns.and_then(|_| self.row_gap)
+            },
             column_gap: self.column_gap,
+            wrap_after: grid_columns,
         }
     }
 }
@@ -1527,6 +1536,7 @@ struct ChildLayout {
     row_items: bool,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
+    wrap_after: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1540,6 +1550,7 @@ struct CssDeclarations {
     display: Option<Display>,
     float: Option<Option<FloatSide>>,
     flex_direction: Option<FlexDirection>,
+    grid_columns: Option<usize>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
     background_image_size: Option<BackgroundImageSize>,
@@ -12478,6 +12489,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.flex_direction =
                     parse_css_flex_direction(value).or(declarations.flex_direction);
             }
+            "grid-template-columns" => {
+                declarations.grid_columns =
+                    parse_css_grid_template_columns(value).or(declarations.grid_columns);
+            }
             "float" => {
                 declarations.float = parse_css_float(value).or(declarations.float);
             }
@@ -12910,6 +12925,68 @@ fn parse_css_flex_direction(value: &str) -> Option<FlexDirection> {
             _ => None,
         }
     })
+}
+
+fn parse_css_grid_template_columns(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("none")
+        || value.eq_ignore_ascii_case("subgrid")
+        || value.eq_ignore_ascii_case("masonry")
+    {
+        return None;
+    }
+    let lower = value.to_ascii_lowercase();
+    if let Some(repeat_index) = lower.find("repeat(") {
+        let mut count_start = repeat_index.saturating_add("repeat(".len());
+        while lower
+            .as_bytes()
+            .get(count_start)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            count_start = count_start.saturating_add(1);
+        }
+        let count_end = lower[count_start..]
+            .find(',')
+            .map(|offset| count_start.saturating_add(offset))?;
+        let repeated = lower[count_start..count_end].trim();
+        if matches!(repeated, "auto-fill" | "auto-fit") {
+            return None;
+        }
+        return repeated
+            .parse::<usize>()
+            .ok()
+            .map(|count| count.clamp(1, 12));
+    }
+
+    let mut count = 0usize;
+    let mut depth = 0usize;
+    let mut in_token = false;
+    for ch in value.chars() {
+        match ch {
+            '(' => {
+                depth = depth.saturating_add(1);
+                in_token = true;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                in_token = true;
+            }
+            ch if ch.is_whitespace() && depth == 0 => {
+                if in_token {
+                    count = count.saturating_add(1);
+                    in_token = false;
+                }
+            }
+            _ => {
+                in_token = true;
+            }
+        }
+    }
+    if in_token {
+        count = count.saturating_add(1);
+    }
+    (count > 0).then(|| count.clamp(1, 12))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -14460,15 +14537,27 @@ fn render_children(
         return;
     };
     let mut child_seen = false;
+    let mut row_item_count = 0usize;
     for &child in &node.children {
         if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
             continue;
         }
         if child_seen {
             if child_layout.row_items {
-                match child_layout.column_gap {
-                    Some(gap) => renderer.push_fixed_space_width(gap, None),
-                    None => renderer.push_text(" ", None),
+                if child_layout
+                    .wrap_after
+                    .is_some_and(|wrap_after| row_item_count >= wrap_after)
+                {
+                    renderer.break_line();
+                    if let Some(row_gap) = child_layout.row_gap {
+                        renderer.push_vertical_space(row_gap);
+                    }
+                    row_item_count = 0;
+                } else {
+                    match child_layout.column_gap {
+                        Some(gap) => renderer.push_fixed_space_width(gap, None),
+                        None => renderer.push_text(" ", None),
+                    }
                 }
             } else if let Some(row_gap) = child_layout.row_gap {
                 renderer.push_vertical_space(row_gap);
@@ -14484,6 +14573,9 @@ fn render_children(
             child_layout.row_items,
         );
         child_seen = true;
+        if child_layout.row_items {
+            row_item_count = row_item_count.saturating_add(1);
+        }
     }
 }
 
@@ -15508,6 +15600,7 @@ fn computed_style(
             animation_reveals_opacity: false,
             overflow: Overflow::Visible,
             flex_direction: FlexDirection::Row,
+            grid_columns: None,
             position: Position::Static,
             position_top: None,
             position_left: None,
@@ -15555,6 +15648,7 @@ fn computed_style(
     let mut animation_reveals_opacity = false;
     let mut overflow = Overflow::Visible;
     let mut flex_direction = FlexDirection::Row;
+    let mut grid_columns = None;
     let mut position = Position::Static;
     let mut position_top = None;
     let mut position_left = None;
@@ -15600,6 +15694,7 @@ fn computed_style(
     let mut animation_reveals_opacity_specificity = 0u32;
     let mut overflow_specificity = 0u32;
     let mut flex_direction_specificity = 0u32;
+    let mut grid_columns_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
     let mut position_left_specificity = 0u32;
@@ -15721,6 +15816,12 @@ fn computed_style(
             {
                 flex_direction = rule_flex_direction;
                 flex_direction_specificity = rule_specificity;
+            }
+            if let Some(rule_grid_columns) = rule.declarations.grid_columns
+                && rule_specificity >= grid_columns_specificity
+            {
+                grid_columns = Some(rule_grid_columns);
+                grid_columns_specificity = rule_specificity;
             }
             if let Some(rule_position) = rule.declarations.position
                 && rule_specificity >= position_specificity
@@ -15951,6 +16052,9 @@ fn computed_style(
         if let Some(inline_flex_direction) = inline.flex_direction {
             flex_direction = inline_flex_direction;
         }
+        if let Some(inline_grid_columns) = inline.grid_columns {
+            grid_columns = Some(inline_grid_columns);
+        }
         if let Some(inline_position) = inline.position {
             position = inline_position;
         }
@@ -16063,6 +16167,7 @@ fn computed_style(
         animation_reveals_opacity,
         overflow,
         flex_direction,
+        grid_columns,
         position,
         position_top,
         position_left,
