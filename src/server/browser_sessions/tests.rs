@@ -12006,10 +12006,12 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 1024];
-        let _ = stream.read(&mut buf).await.unwrap();
-        tokio::time::sleep(BROWSER_CREATE_TARGET_TIMEOUT * 3).await;
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await.unwrap();
+            tokio::time::sleep(BROWSER_CREATE_TARGET_TIMEOUT * 3).await;
+        }
     });
 
     let registry = BrowserSessionRegistry::default();
@@ -12064,6 +12066,8 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("Opening http://"));
     assert!(html.contains("Continue loading"));
     assert!(html.contains("Loading http://"));
+    assert!(html.contains(r#"data-browser-pending-session-retained"#));
+    assert!(html.contains("same tab retained"));
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains("action=open"));
@@ -12081,6 +12085,90 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     assert!(primary_state_index < raster_index);
     assert!(continue_index < raster_index);
+
+    let continue_load = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "open".to_owned()),
+            ("url".to_owned(), target_source.clone()),
+            ("from".to_owned(), "/search?q=fixture".to_owned()),
+            ("width".to_owned(), "90".to_owned()),
+            ("height".to_owned(), "32".to_owned()),
+            ("viewport_x".to_owned(), "4".to_owned()),
+            ("viewport_y".to_owned(), "6".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+            ("source".to_owned(), target_source.clone()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&continue_load).await.unwrap();
+    assert_eq!(payload.id, continue_load.params[0].1);
+    assert_eq!(payload.source, target_source);
+    assert_eq!(
+        payload.pending_source.as_deref(),
+        Some(target_source.as_str())
+    );
+    assert_eq!(payload.sessions.len(), 1);
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(payload.back_href, "/search?q=fixture");
+    assert_eq!(payload.width, 90);
+    assert_eq!(payload.height, 32);
+    assert_eq!(payload.viewport_x, 4);
+    assert_eq!(payload.viewport_y, 6);
+    assert_eq!(payload.max_bytes, 1048576);
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("retry stayed in this tab"))
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-pending-session-retained"#));
+    assert!(html.contains("same tab retained"));
+    assert!(html.contains("retry stayed in this tab"));
+    assert!(html.contains("Continue loading"));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
+    assert!(html.contains("width=90"));
+    assert!(html.contains("height=32"));
+    assert!(html.contains("viewport_x=4"));
+    assert!(html.contains("viewport_y=6"));
+    assert!(html.contains("max_bytes=1048576"));
+
+    let reload_pending = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "reload".to_owned()),
+            ("from".to_owned(), "/search?q=fixture".to_owned()),
+            ("width".to_owned(), "90".to_owned()),
+            ("height".to_owned(), "32".to_owned()),
+            ("viewport_x".to_owned(), "4".to_owned()),
+            ("viewport_y".to_owned(), "6".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+            ("source".to_owned(), target_source.clone()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&reload_pending).await.unwrap();
+    assert_eq!(payload.id, reload_pending.params[0].1);
+    assert_eq!(payload.source, target_source);
+    assert_eq!(
+        payload.pending_source.as_deref(),
+        Some(target_source.as_str())
+    );
+    assert_eq!(payload.sessions.len(), 1);
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(payload.viewport_x, 4);
+    assert_eq!(payload.viewport_y, 6);
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("retry stayed in this tab"))
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-pending-session-retained"#));
+    assert!(html.contains("same tab retained"));
+    assert!(html.contains("Continue loading"));
 
     server.abort();
 }
@@ -12135,6 +12223,7 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-pending-load="true""#));
     assert!(html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
+    assert!(html.contains(r#"data-browser-pending-session-retained"#));
     assert!(html.contains("Continue loading"));
     assert!(html.contains("Opening http://"));
     assert!(html.contains("Loading http://"));
@@ -12149,6 +12238,40 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(primary_state_index < raster_index);
 
     server.await.unwrap();
+
+    let continue_load = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "open".to_owned()),
+            ("url".to_owned(), target_source.clone()),
+            ("from".to_owned(), "/search?q=broken".to_owned()),
+            ("width".to_owned(), "80".to_owned()),
+            ("height".to_owned(), "24".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+            ("source".to_owned(), target_source.clone()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&continue_load).await.unwrap();
+    assert_eq!(payload.source, target_source);
+    assert_eq!(
+        payload.pending_source.as_deref(),
+        Some(target_source.as_str())
+    );
+    assert_eq!(payload.sessions.len(), 1);
+    assert_eq!(payload.history_len, 1);
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("renderer reported"))
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-pending-session-retained"#));
+    assert!(html.contains("same tab retained"));
+    assert!(html.contains("Continue loading"));
+    assert!(html.contains("renderer reported"));
+    assert!(!html.contains("browser render failed for"));
 }
 
 #[tokio::test]
