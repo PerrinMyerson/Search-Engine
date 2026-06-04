@@ -10936,6 +10936,8 @@ fn browser_session_resources_export_payload(
 fn browser_session_resource_action_urls(
     payload: &BrowserSessionPayload,
 ) -> BrowserSessionResourceActionUrls {
+    let can_load_images =
+        payload.resource_image_count > 0 && !browser_session_image_load_action_exhausted(payload);
     BrowserSessionResourceActionUrls {
         fetch_resources: (payload.resource_count > 0)
             .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
@@ -10945,12 +10947,18 @@ fn browser_session_resource_action_urls(
             .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
         run_scripts: (payload.resource_script_count > 0)
             .then(|| browser_session_action_href(&payload.id, "run-scripts", &[], payload)),
-        load_images: (payload.resource_image_count > 0)
+        load_images: can_load_images
             .then(|| browser_session_action_href(&payload.id, "load-images", &[], payload)),
         clear_resource_report: payload.resource_report.as_ref().map(|_| {
             browser_session_action_href(&payload.id, "clear-resource-report", &[], payload)
         }),
     }
+}
+
+fn browser_session_image_load_action_exhausted(payload: &BrowserSessionPayload) -> bool {
+    payload.resource_report.as_ref().is_some_and(|report| {
+        report.action == "Load images" && report.total > 0 && report.decoded == Some(0)
+    })
 }
 
 fn browser_session_forms_export_payload(
@@ -12652,31 +12660,38 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         max_y = payload.max_scroll_y,
         raster = html_escape::encode_text(&raster_label),
     );
+    status.push_str(&render_browser_session_chrome_action_feedback(payload));
 
     let action_urls = browser_session_resource_action_urls(payload);
-    status.push_str(
-        &browser_session_resource_action_link_with_class_and_attributes(
-            action_urls.make_visual.as_deref(),
-            "Make readable",
-            "browser-chrome-tool primary-action",
-            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
-        ),
-    );
+    if action_urls.make_visual.is_some() {
+        status.push_str(
+            &browser_session_resource_action_link_with_class_and_attributes(
+                action_urls.make_visual.as_deref(),
+                "Make readable",
+                "browser-chrome-tool primary-action",
+                r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
+            ),
+        );
+    }
     let load_images_label = format!(
         "Load {}",
         browser_resource_count_label(payload.resource_image_count, "image", "images")
     );
-    status.push_str(
-        &browser_session_resource_action_link_with_class_and_attributes(
-            action_urls.load_images.as_deref(),
-            &load_images_label,
-            "browser-chrome-tool",
-            r#" data-browser-resource-action data-browser-resource-status="Loading images...""#,
-        ),
-    );
-    status.push_str(
-        r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
-    );
+    if action_urls.load_images.is_some() {
+        status.push_str(
+            &browser_session_resource_action_link_with_class_and_attributes(
+                action_urls.load_images.as_deref(),
+                &load_images_label,
+                "browser-chrome-tool",
+                r#" data-browser-resource-action data-browser-resource-status="Loading images...""#,
+            ),
+        );
+    }
+    if action_urls.make_visual.is_some() || action_urls.load_images.is_some() {
+        status.push_str(
+            r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
+        );
+    }
     status
 }
 
@@ -12751,11 +12766,13 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
             .to_owned()
     };
     let visual_flow_status = render_browser_session_visual_flow_status(payload);
+    let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<div class="browser-surface-state" data-browser-primary-state>{render_chip}{visual_flow_status}{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div>"#,
+        r#"<div class="browser-surface-state" data-browser-primary-state>{render_chip}{visual_flow_status}{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
         render_chip = render_chip,
         visual_flow_status = visual_flow_status,
         action_feedback = action_feedback,
+        viewport_feedback = viewport_feedback,
     )
 }
 
@@ -12774,8 +12791,9 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
+    let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
         left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
         page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
@@ -12799,6 +12817,7 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
             "Already at right edge"
         ),
         bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
+        viewport_feedback = viewport_feedback,
     )
 }
 
@@ -12825,13 +12844,15 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
 
     let default_click_x = payload.width.saturating_sub(1) / 2;
     let default_click_y = payload.height.saturating_sub(1) / 2;
+    let click_status = browser_session_click_status(payload);
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">Hover rendered page to inspect click target.</span></form><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span></form><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
         default_click_x = default_click_x,
         default_click_y = default_click_y,
+        click_status = click_status,
         quick_links = quick_links,
     )
 }
@@ -12897,9 +12918,10 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     };
     let page_state = render_browser_session_viewport_page_state(payload);
     let render_status = render_browser_session_render_status(payload);
+    let viewport_feedback = render_browser_session_viewport_feedback(payload);
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}{render_status}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls"><span class="viewport-command-label">Scroll</span>{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite"></span></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}{render_status}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls"><span class="viewport-command-label">Scroll</span>{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -12936,6 +12958,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
             "Already at right edge"
         ),
         common = browser_session_common_hidden_inputs(payload),
+        viewport_feedback = viewport_feedback,
     )
 }
 
@@ -13075,7 +13098,10 @@ fn render_browser_session_visual_flow_status(payload: &BrowserSessionPayload) ->
     if payload.resource_image_count > 0 {
         let label = match report.decoded {
             Some(count) if count > 0 => format!("images loaded: {count}"),
-            Some(_) => "images not decoded".to_owned(),
+            Some(_) => format!(
+                "images not decoded: fetched {}, failed {}, skipped {}",
+                report.fetched, report.failed, report.skipped
+            ),
             None => "images waiting".to_owned(),
         };
         let _ = write!(
@@ -13099,11 +13125,7 @@ fn render_browser_session_visual_flow_status(payload: &BrowserSessionPayload) ->
 }
 
 fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> String {
-    payload
-        .action_feedback
-        .as_deref()
-        .map(str::trim)
-        .filter(|feedback| !feedback.is_empty())
+    browser_session_action_feedback_text(payload)
         .map(|feedback| {
             format!(
                 r#"<span class="viewport-state-chip report" data-browser-action-feedback>{}</span>"#,
@@ -13111,6 +13133,51 @@ fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> St
             )
         })
         .unwrap_or_default()
+}
+
+fn browser_session_action_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    payload
+        .action_feedback
+        .as_deref()
+        .map(str::trim)
+        .filter(|feedback| !feedback.is_empty())
+}
+
+fn render_browser_session_chrome_action_feedback(payload: &BrowserSessionPayload) -> String {
+    browser_session_action_feedback_text(payload)
+        .map(|feedback| {
+            format!(
+                r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback>{}</span>"#,
+                html_escape::encode_text(feedback),
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    browser_session_action_feedback_text(payload).filter(|feedback| {
+        feedback.starts_with("Moved visual viewport")
+            || feedback.starts_with("Viewport moved")
+            || feedback.starts_with("Viewport is already")
+            || feedback.starts_with("Already at")
+    })
+}
+
+fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> String {
+    browser_session_scroll_feedback_text(payload)
+        .map(|feedback| html_escape::encode_text(feedback).into_owned())
+        .unwrap_or_default()
+}
+
+fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
+    browser_session_action_feedback_text(payload)
+        .filter(|feedback| {
+            feedback.starts_with("Clicked ")
+                || feedback.starts_with("Click ")
+                || feedback.starts_with("No click")
+        })
+        .map(|feedback| html_escape::encode_text(feedback).into_owned())
+        .unwrap_or_else(|| "Hover rendered page to inspect click target.".to_owned())
 }
 
 fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> String {
@@ -14336,12 +14403,12 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     let image_count_label =
         browser_resource_count_label(payload.resource_image_count, "image", "images");
     let resource_summary = browser_session_resource_summary(payload);
+    let action_urls = browser_session_resource_action_urls(payload);
     let fetch_control = if payload.resource_count == 0 {
         String::new()
     } else {
-        let fetch_href = browser_session_action_href(&payload.id, "fetch-resources", &[], payload);
         browser_session_resource_action_link_with_status(
-            Some(&fetch_href),
+            action_urls.fetch_resources.as_deref(),
             "Fetch",
             "Fetching resources...",
         )
@@ -14351,10 +14418,8 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     {
         String::new()
     } else {
-        let make_visual_href =
-            browser_session_action_href(&payload.id, "make-visual", &[], payload);
         browser_session_resource_action_link_with_class_and_attributes(
-            Some(&make_visual_href),
+            action_urls.make_visual.as_deref(),
             "Make visual",
             "clear-link primary-action",
             r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#,
@@ -14363,9 +14428,8 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     let styles_control = if payload.resource_stylesheet_count == 0 {
         String::new()
     } else {
-        let styles_href = browser_session_action_href(&payload.id, "apply-styles", &[], payload);
         browser_session_resource_action_link_with_status(
-            Some(&styles_href),
+            action_urls.apply_stylesheets.as_deref(),
             "Apply styles",
             "Applying styles...",
         )
@@ -14373,9 +14437,8 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     let scripts_control = if payload.resource_script_count == 0 {
         String::new()
     } else {
-        let scripts_href = browser_session_action_href(&payload.id, "run-scripts", &[], payload);
         browser_session_resource_action_link_with_status(
-            Some(&scripts_href),
+            action_urls.run_scripts.as_deref(),
             "Run scripts",
             "Running scripts...",
         )
@@ -14383,10 +14446,9 @@ fn render_browser_session_resources(payload: &BrowserSessionPayload) -> String {
     let load_images_control = if payload.resource_image_count == 0 {
         String::new()
     } else {
-        let images_href = browser_session_action_href(&payload.id, "load-images", &[], payload);
         let load_images_label = format!("Load {image_count_label}");
         browser_session_resource_action_link_with_status(
-            Some(&images_href),
+            action_urls.load_images.as_deref(),
             &load_images_label,
             "Loading images...",
         )
