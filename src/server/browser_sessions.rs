@@ -5977,21 +5977,7 @@ async fn apply_browser_action(
         BrowserSessionAction::Current => {}
         BrowserSessionAction::Open(url) => {
             let target_url = web_session.session.resolve_current_target(&url);
-            let navigation_target =
-                browser_session_navigation_target(&target_url, web_session.max_bytes)?;
-            web_session
-                .session
-                .navigate(&navigation_target.target)
-                .await
-                .map_err(|error| {
-                    BrowserRouteError::Upstream(format!(
-                        "browser render failed for {target_url}: {error:#}"
-                    ))
-                })?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
-            web_session.pending_source = None;
-            web_session.display_source = navigation_target.display_source;
+            apply_browser_open_with_pending_shell(web_session, &target_url).await?;
         }
         BrowserSessionAction::Back => {
             web_session
@@ -6014,11 +6000,15 @@ async fn apply_browser_action(
             web_session.display_source = None;
         }
         BrowserSessionAction::Reload => {
-            web_session.session.reload().await.map_err(|error| {
-                BrowserRouteError::Upstream(format!("browser reload failed: {error:#}"))
-            })?;
-            reset_viewport_after_navigation(web_session);
-            clear_browser_find_active_line(web_session);
+            if let Some(pending_source) = web_session.pending_source.clone() {
+                apply_browser_open_with_pending_shell(web_session, &pending_source).await?;
+            } else {
+                web_session.session.reload().await.map_err(|error| {
+                    BrowserRouteError::Upstream(format!("browser reload failed: {error:#}"))
+                })?;
+                reset_viewport_after_navigation(web_session);
+                clear_browser_find_active_line(web_session);
+            }
         }
         BrowserSessionAction::Link(index) => {
             let before = current_session_source(web_session);
@@ -8501,6 +8491,83 @@ fn browser_find_active_match(
 
 fn clear_browser_find_active_line(web_session: &mut BrowserWebSession) {
     web_session.find_active_line = None;
+}
+
+async fn apply_browser_open_with_pending_shell(
+    web_session: &mut BrowserWebSession,
+    target_url: &str,
+) -> Result<(), BrowserRouteError> {
+    let navigation_target = browser_session_navigation_target(target_url, web_session.max_bytes)?;
+    match timeout(
+        BROWSER_CREATE_TARGET_TIMEOUT,
+        web_session.session.navigate(&navigation_target.target),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            reset_viewport_after_navigation(web_session);
+            clear_browser_find_active_line(web_session);
+            web_session.pending_source = None;
+            web_session.display_source = navigation_target.display_source;
+            web_session.action_feedback = Some(format!(
+                "Opened {}.",
+                browser_session_feedback_excerpt(target_url)
+            ));
+        }
+        Ok(Err(error)) => {
+            set_browser_pending_open_feedback(
+                web_session,
+                target_url,
+                format!(
+                    "Still opening {}; renderer reported: {}",
+                    browser_session_feedback_excerpt(target_url),
+                    browser_session_feedback_excerpt(&error.to_string())
+                ),
+            )
+            .await?;
+        }
+        Err(_) => {
+            set_browser_pending_open_feedback(
+                web_session,
+                target_url,
+                format!(
+                    "Still opening {}; retry stayed in this tab after {}ms.",
+                    browser_session_feedback_excerpt(target_url),
+                    BROWSER_CREATE_TARGET_TIMEOUT.as_millis()
+                ),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn set_browser_pending_open_feedback(
+    web_session: &mut BrowserWebSession,
+    target_url: &str,
+    feedback: String,
+) -> Result<(), BrowserRouteError> {
+    let already_showing_pending_shell = current_session_source(web_session)
+        .as_deref()
+        .is_some_and(|source| source == BROWSER_ABOUT_BLANK_TARGET)
+        && web_session.pending_source.as_deref() == Some(target_url);
+    if !already_showing_pending_shell {
+        web_session
+            .session
+            .navigate(BROWSER_ABOUT_BLANK_TARGET)
+            .await
+            .map_err(|blank_error| {
+                BrowserRouteError::Upstream(format!(
+                    "browser fallback shell failed after {target_url} stayed pending: {blank_error:#}"
+                ))
+            })?;
+    }
+    web_session.pending_source = Some(target_url.to_owned());
+    web_session.display_source = None;
+    web_session.resource_report = None;
+    web_session.action_feedback = Some(feedback);
+    clear_browser_find_active_line(web_session);
+    Ok(())
 }
 
 fn browser_session_resource_report_from_fetch(
@@ -12664,7 +12731,7 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
             payload,
         );
         return format!(
-            r#"<div class="browser-surface-state" data-browser-primary-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Opening {source}</span>{action_feedback}<a class="primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            r#"<div class="browser-surface-state" data-browser-primary-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Opening {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span>{action_feedback}<a class="primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
             source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
             action_feedback = action_feedback,
             continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
@@ -12883,7 +12950,7 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
             payload,
         );
         return format!(
-            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Waiting for {source}</span>{action_feedback}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Waiting for {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span>{action_feedback}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
             source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
             action_feedback = action_feedback,
             continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
