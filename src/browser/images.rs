@@ -1036,6 +1036,11 @@ fn read_png_u32(bytes: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes(bytes))
 }
 
+fn read_png_u16(bytes: &[u8]) -> Option<u16> {
+    let bytes: [u8; 2] = bytes.try_into().ok()?;
+    Some(u16::from_be_bytes(bytes))
+}
+
 fn reconstruct_png_scanline(
     filter: u8,
     bytes_per_pixel: usize,
@@ -1091,10 +1096,27 @@ fn push_png_grayscale_pixels(
     pixels: &mut Vec<u8>,
 ) -> Option<()> {
     match color_type {
-        0 => pixels.extend_from_slice(row),
+        0 => {
+            let transparent_gray = png_grayscale_transparent_value(transparency);
+            for &gray in row {
+                let alpha = if transparent_gray == Some(gray) {
+                    0
+                } else {
+                    255
+                };
+                pixels.push(blend_gray_over_white(gray, alpha));
+            }
+        }
         2 => {
+            let transparent_rgb = png_rgb_transparent_color(transparency);
             for rgb in row.chunks_exact(3) {
-                pixels.push(rgb_to_gray(rgb[0], rgb[1], rgb[2]));
+                let alpha = if transparent_rgb == Some([rgb[0], rgb[1], rgb[2]]) {
+                    0
+                } else {
+                    255
+                };
+                let gray = rgb_to_gray(rgb[0], rgb[1], rgb[2]);
+                pixels.push(blend_gray_over_white(gray, alpha));
             }
         }
         3 => {
@@ -1132,11 +1154,30 @@ fn push_png_rgb_pixels(
 ) -> Option<()> {
     match color_type {
         0 => {
+            let transparent_gray = png_grayscale_transparent_value(transparency);
             for &gray in row {
-                pixels.extend_from_slice(&[gray, gray, gray]);
+                let alpha = if transparent_gray == Some(gray) {
+                    0
+                } else {
+                    255
+                };
+                let value = blend_channel_over_white(gray, alpha);
+                pixels.extend_from_slice(&[value, value, value]);
             }
         }
-        2 => pixels.extend_from_slice(row),
+        2 => {
+            let transparent_rgb = png_rgb_transparent_color(transparency);
+            for rgb in row.chunks_exact(3) {
+                let alpha = if transparent_rgb == Some([rgb[0], rgb[1], rgb[2]]) {
+                    0
+                } else {
+                    255
+                };
+                pixels.push(blend_channel_over_white(rgb[0], alpha));
+                pixels.push(blend_channel_over_white(rgb[1], alpha));
+                pixels.push(blend_channel_over_white(rgb[2], alpha));
+            }
+        }
         3 => {
             for &index in row {
                 let index = usize::from(index);
@@ -1164,6 +1205,19 @@ fn push_png_rgb_pixels(
         _ => {}
     }
     Some(())
+}
+
+fn png_grayscale_transparent_value(transparency: &[u8]) -> Option<u8> {
+    let value = read_png_u16(transparency.get(0..2)?)?;
+    u8::try_from(value).ok()
+}
+
+fn png_rgb_transparent_color(transparency: &[u8]) -> Option<[u8; 3]> {
+    Some([
+        u8::try_from(read_png_u16(transparency.get(0..2)?)?).ok()?,
+        u8::try_from(read_png_u16(transparency.get(2..4)?)?).ok()?,
+        u8::try_from(read_png_u16(transparency.get(4..6)?)?).ok()?,
+    ])
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
