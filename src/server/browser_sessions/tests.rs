@@ -2200,9 +2200,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Page left</span>"#
+        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
     ));
-    assert!(html.contains(r#">Page right</a>"#));
+    assert!(html.contains(r#">Right</a>"#));
     assert!(html.contains(r#"data-browser-viewport-page-controls"#));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Page up</span>"#
@@ -2301,8 +2301,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
     assert!(html.contains(">Page down</a>"));
-    assert!(html.contains(">Page left</a>"));
-    assert!(html.contains(">Page right</a>"));
+    assert!(html.contains(">Left</a>"));
+    assert!(html.contains(">Right</a>"));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(&format!(
@@ -2325,25 +2325,17 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"<span class="viewport-command-label">State</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Page</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Session</span>"#));
-    assert!(html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
+    assert!(!html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Jump</span>"#));
     assert!(!html.contains(r#">Make page readable</a><a class="clear-link""#));
     assert!(html.contains(r#">Refresh viewport</a>"#));
     assert!(html.contains(r#">Reload page</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
-    let page_left_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", format!("-{}", payload.width.max(1)))],
-        &payload,
-    );
-    let page_right_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", payload.width.max(1).to_string())],
-        &payload,
-    );
+    let page_left_href =
+        browser_session_action_href(&payload.id, "scroll", &[("dx", "-1".to_owned())], &payload);
+    let page_right_href =
+        browser_session_action_href(&payload.id, "scroll", &[("dx", "1".to_owned())], &payload);
     let top_href = browser_session_action_href(&payload.id, "top", &[], &payload);
     let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], &payload);
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], &payload);
@@ -2405,11 +2397,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Page left</a>"#,
+        r#"href="{}">Left</a>"#,
         html_escape::encode_double_quoted_attribute(&page_left_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Page right</a>"#,
+        r#"href="{}">Right</a>"#,
         html_escape::encode_double_quoted_attribute(&page_right_href)
     )));
     assert!(html.contains(r#"class="viewport-command-jump""#));
@@ -2485,6 +2477,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let chrome_status_index = html.find(r#"data-browser-chrome-status"#).unwrap();
     let primary_state_index = html.find(r#"data-browser-primary-state"#).unwrap();
     let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
+    let visible_scroll_controls_index =
+        html.find(r#"data-browser-viewport-page-controls"#).unwrap();
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let command_strip_index = controls_tray_index
         + html[controls_tray_index..]
@@ -2494,6 +2488,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(chrome_status_index < raster_index);
     assert!(primary_state_index < raster_index);
     assert!(raster_index < status_index);
+    assert!(status_index < visible_scroll_controls_index);
+    assert!(visible_scroll_controls_index < controls_tray_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
@@ -3112,8 +3108,9 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(html.contains(">Pin current</a>"));
     assert!(html.contains(">Pin</a>"));
     assert!(html.contains(">Close tab</a>"));
-    assert!(html.contains(">Prev tab</a>"));
-    assert!(html.contains(">Next tab</a>"));
+    assert!(html.contains(">Search</a>"));
+    assert!(!html.contains(">Prev tab</a>"));
+    assert!(!html.contains(">Next tab</a>"));
     assert!(html.contains(">Move left</a>"));
     assert!(html.contains(">Reload</a>"));
     assert!(html.contains(">Right</a>"));
@@ -10080,7 +10077,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"<span class="viewport-command-label">State</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Page</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Session</span>"#));
-    assert!(html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
+    assert!(!html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Jump</span>"#));
     assert!(html.contains(r#">Refresh viewport</a>"#));
     assert!(html.contains(r#">Reload page</a>"#));

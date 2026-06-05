@@ -9345,6 +9345,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_image = render_browser_session_viewport_image(payload);
     let primary_input_controls = render_browser_session_primary_input_controls(payload);
     let viewport_status = render_browser_session_viewport_status(payload);
+    let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let primary_page_state = render_browser_session_primary_page_state(payload);
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
@@ -9439,11 +9440,6 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
         "Unpin all",
         &unpin_all_href,
     );
-    let previous_tab_href = browser_session_action_href(&payload.id, "previous-tab", &[], payload);
-    let previous_tab_control =
-        nav_control(payload.sessions.len() > 1, "Prev tab", &previous_tab_href);
-    let next_tab_href = browser_session_action_href(&payload.id, "next-tab", &[], payload);
-    let next_tab_control = nav_control(payload.sessions.len() > 1, "Next tab", &next_tab_href);
     let move_left_href = current_session_summary
         .map(|session| session.move_left_url.as_str())
         .unwrap_or("");
@@ -9555,10 +9551,10 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill strong, .browser-tab-pill span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-tab-pill strong {{ font-size: 13px; font-weight: 800; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
-.browser-page-head {{ margin: 12px 0 10px; }}
-.browser-page-head h1 {{ margin-top: 0; }}
-.browser-page-title {{ display: grid; gap: 2px; margin: 8px 0; }}
-.browser-page-title h1 {{ margin: 0; font-size: 18px; }}
+.browser-page-head {{ margin: 6px 0 8px; }}
+.browser-page-title {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 4px 0 6px; }}
+.browser-page-title h1 {{ margin: 0; font-size: 15px; font-weight: 900; }}
+.browser-page-title .meta {{ min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-page-summary {{ margin: 4px 0 8px; color: #3a3f45; }}
 .browser-page-summary > summary {{ cursor: pointer; color: #5d636b; font-size: 12px; font-weight: 800; }}
 .browser-page-summary-content {{ display: grid; gap: 6px; padding-top: 8px; }}
@@ -9732,7 +9728,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <main>
 <header class="browser-topbar">
 <div class="browser-chrome-row" data-browser-chrome>
-<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Back to search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a>{previous_tab_control}{next_tab_control}</nav>
+<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a></nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
@@ -9757,6 +9753,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {primary_page_state}
 {viewport_image}
 {viewport_status}
+{viewport_scroll_controls}
 {viewport_interaction_controls}
 {primary_input_controls}
 <details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
@@ -9784,8 +9781,6 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         forward_control = forward_control,
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         keyboard_controls_script = keyboard_controls_script,
-        previous_tab_control = previous_tab_control,
-        next_tab_control = next_tab_control,
         move_left_control = move_left_control,
         move_right_control = move_right_control,
         duplicate_href = html_escape::encode_double_quoted_attribute(&duplicate_href),
@@ -9823,6 +9818,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         history_index = payload.current_history_index.map_or(0, |index| index + 1),
         history_len = payload.history_len,
         viewport_status = viewport_status,
+        viewport_scroll_controls = viewport_scroll_controls,
         primary_page_state = primary_page_state,
         auto_visual_bootstrap = auto_visual_bootstrap,
         browser_chrome_status = render_browser_session_chrome_status(payload),
@@ -12801,7 +12797,7 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Primary viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
         left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
         page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
@@ -12880,26 +12876,6 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     ));
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
-    let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
-    let page_left_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", format!("-{}", payload.width.max(1)))],
-        payload,
-    );
-    let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
-    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
-    let page_right_href = browser_session_action_href(
-        &payload.id,
-        "scroll",
-        &[("dx", payload.width.max(1).to_string())],
-        payload,
-    );
-    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
-    let can_scroll_left = payload.viewport_x > 0;
-    let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
-    let can_scroll_up = payload.viewport_y > 0;
-    let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
     let visual_status = if visual_actions.is_empty() {
         render_browser_session_visual_flow_status(payload)
@@ -12911,7 +12887,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
 
     format!(
-        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport controls"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}{render_status}<div class="viewport-command-row"><nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls aria-label="Primary viewport scroll controls"><span class="viewport-command-label">Scroll</span>{page_left}{top}{page_up}{page_down}{bottom}{page_right}</nav><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div></section>"#,
+        r#"<section class="viewport-command-strip" data-browser-viewport-command-strip data-browser-resource-actions data-browser-auto-visual-control aria-label="Browser viewport tools"><div class="viewport-command-row viewport-command-state" data-browser-viewport-state-row><div class="viewport-command-group" data-browser-viewport-state-group aria-label="Viewport state"><span class="viewport-command-label">State</span><span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{percent}%</span></div><div class="resource-actions viewport-command-group" data-browser-viewport-page-actions aria-label="Page actions"><span class="viewport-command-label">Page</span>{visual_actions}{visual_status}</div><div class="resource-actions viewport-command-group" data-browser-viewport-session-actions aria-label="Session actions"><span class="viewport-command-label">Session</span><a class="clear-link" href="{current_href}">Refresh viewport</a><a class="clear-link" href="{reload_href}">Reload page</a></div></div>{page_state}{render_status}<div class="viewport-command-row"><form class="viewport-command-jump" action="/browser" method="get"><span class="viewport-command-label">Jump</span>{common}<input type="hidden" name="action" value="current"><label for="browser-command-viewport-x">x</label><input id="browser-command-viewport-x" type="number" min="0" max="{max_x}" name="x" value="{x}" aria-label="Viewport x quick jump" aria-describedby="browser-command-viewport-range"><label for="browser-command-viewport-y">y</label><input id="browser-command-viewport-y" type="number" min="0" max="{max_y}" name="y" value="{y}" aria-label="Viewport y quick jump" aria-describedby="browser-command-viewport-range"><span id="browser-command-viewport-range" class="viewport-jump-range">range x 0-{max_x}, y 0-{max_y}</span><button type="submit">Jump</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div></section>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -12926,27 +12902,6 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         visual_status = visual_status,
         page_state = page_state,
         render_status = render_status,
-        page_left = scroll_nav_control(
-            can_scroll_left,
-            "Page left",
-            &page_left_href,
-            "Already at left edge"
-        ),
-        top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
-        page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
-        page_down = scroll_nav_control(
-            can_scroll_down,
-            "Page down",
-            &page_down_href,
-            "Already at bottom"
-        ),
-        bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
-        page_right = scroll_nav_control(
-            can_scroll_right,
-            "Page right",
-            &page_right_href,
-            "Already at right edge"
-        ),
         common = browser_session_common_hidden_inputs(payload),
         viewport_feedback = viewport_feedback,
     )
