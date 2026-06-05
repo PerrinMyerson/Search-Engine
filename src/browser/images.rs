@@ -4287,20 +4287,89 @@ fn srcset_candidate_strings(srcset: &str) -> Vec<&str> {
             if *byte != b',' {
                 continue;
             }
+            let comma = candidate_start + offset;
             if !skipped_data_metadata_comma {
                 skipped_data_metadata_comma = true;
                 continue;
             }
-            end = candidate_start + offset;
+            if is_data_url && !data_srcset_candidate_separator(srcset, candidate_start, comma) {
+                continue;
+            }
+            end = comma;
             break;
         }
-        candidates.push(&srcset[start..end]);
+        candidates.push(&srcset[candidate_start..end]);
         if end == srcset.len() {
             break;
         }
         start = end + 1;
     }
     candidates
+}
+
+fn data_srcset_candidate_separator(srcset: &str, candidate_start: usize, comma: usize) -> bool {
+    let candidate = &srcset[candidate_start..comma];
+    srcset_candidate_has_explicit_descriptor(candidate)
+        || (data_url_payload_balanced(candidate)
+            && data_url_payload_can_end(candidate)
+            && has_srcset_candidate_after_comma(srcset, comma))
+}
+
+fn srcset_candidate_has_explicit_descriptor(raw_candidate: &str) -> bool {
+    let mut parts = raw_candidate.split_ascii_whitespace();
+    if parts.next().is_none() {
+        return false;
+    }
+    let descriptors = parts.collect::<Vec<_>>();
+    !descriptors.is_empty() && parse_srcset_candidate_descriptors(descriptors.into_iter()).is_some()
+}
+
+fn data_url_payload_balanced(candidate: &str) -> bool {
+    let Some((_, payload)) = candidate.split_once(',') else {
+        return false;
+    };
+    let mut paren_depth = 0usize;
+    let mut quote = None;
+    for byte in payload.bytes() {
+        if let Some(quote_byte) = quote {
+            if byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' => quote = Some(byte),
+            b'(' => paren_depth = paren_depth.saturating_add(1),
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    paren_depth == 0 && quote.is_none()
+}
+
+fn data_url_payload_can_end(candidate: &str) -> bool {
+    let Some((metadata, payload)) = candidate
+        .strip_prefix("data:")
+        .or_else(|| candidate.strip_prefix("DATA:"))
+        .and_then(|payload| payload.split_once(','))
+    else {
+        return false;
+    };
+    if metadata
+        .split(';')
+        .any(|part| part.eq_ignore_ascii_case("base64"))
+    {
+        return true;
+    }
+    let payload = payload.to_ascii_lowercase();
+    payload.contains("</svg")
+        || payload.contains("%3c%2fsvg")
+        || payload.contains("/>")
+        || payload.contains("%2f%3e")
+}
+
+fn has_srcset_candidate_after_comma(srcset: &str, comma: usize) -> bool {
+    skip_ascii_whitespace(srcset, comma.saturating_add(1)) < srcset.len()
 }
 
 fn skip_ascii_whitespace(input: &str, mut index: usize) -> usize {
