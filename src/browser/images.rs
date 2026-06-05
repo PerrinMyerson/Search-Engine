@@ -4836,6 +4836,8 @@ fn is_lazy_image_placeholder_src(src: &str) -> bool {
         || src.starts_with("data:image/png")
         || src.starts_with("data:image/x-png")
         || src.starts_with("data:image/gif")
+        || src.starts_with("data:image/webp")
+        || src.starts_with("data:image/x-webp")
     {
         return true;
     }
@@ -4850,28 +4852,37 @@ fn is_lazy_image_placeholder_src(src: &str) -> bool {
         "blank.gif"
             | "blank.png"
             | "blank.svg"
+            | "blank.webp"
             | "spacer.gif"
             | "spacer.png"
             | "spacer.svg"
+            | "spacer.webp"
             | "transparent.gif"
             | "transparent.png"
             | "transparent.svg"
+            | "transparent.webp"
             | "pixel.gif"
             | "pixel.png"
+            | "pixel.webp"
             | "loading.gif"
             | "loading.png"
             | "loading.svg"
+            | "loading.webp"
             | "loader.gif"
             | "loader.png"
             | "loader.svg"
+            | "loader.webp"
             | "lazyload.gif"
             | "lazyload.png"
             | "lazyload.svg"
+            | "lazyload.webp"
             | "preloader.gif"
             | "preloader.png"
             | "preloader.svg"
+            | "preloader.webp"
             | "1x1.gif"
             | "1x1.png"
+            | "1x1.webp"
     ) || filename.contains("placeholder")
 }
 
