@@ -13,6 +13,7 @@ use super::{
 const BROWSER_APP_CLOSED_TAB_LIMIT: usize = 10;
 const BROWSER_APP_REPORT_TEXT_MAX_CHARS: usize = 16 * 1024;
 const BROWSER_APP_CACHED_FRAME_MAX_BYTES: usize = 4 * 1024 * 1024;
+const BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserAppOptions {
@@ -182,6 +183,12 @@ pub struct BrowserAppWindowFrameReport {
     pub raster_pixel_bytes: usize,
     #[serde(default)]
     pub page_frame_pixel_bytes: usize,
+    #[serde(default)]
+    pub cached_window_frame_pixel_bytes: usize,
+    #[serde(default)]
+    pub cached_window_frame_limit_bytes: usize,
+    #[serde(default)]
+    pub window_frame_cache_reusable: bool,
     pub pixel_hash: String,
     pub non_background_pixels: usize,
     pub artifact_format: String,
@@ -239,8 +246,15 @@ struct BrowserAppTab {
     viewport: BrowserViewportState,
     last_presented_viewport: Option<BrowserViewportState>,
     last_presented_frame: Option<BrowserViewportFrame>,
+    last_presented_window_frame: Option<BrowserAppCachedWindowFrame>,
     content_dirty: bool,
     find: Option<BrowserAppFindState>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserAppCachedWindowFrame {
+    options: BrowserAppWindowFrameOptions,
+    frame: BrowserAppWindowFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +291,7 @@ impl BrowserApp {
                 viewport,
                 last_presented_viewport: None,
                 last_presented_frame: None,
+                last_presented_window_frame: None,
                 content_dirty: true,
                 find: None,
             }],
@@ -445,8 +460,30 @@ impl BrowserApp {
         &mut self,
         options: BrowserAppWindowFrameOptions,
     ) -> Result<BrowserAppWindowFrame> {
+        let cached_window_frame = {
+            let tab = self.active_tab_ref()?;
+            tab.last_presented_window_frame
+                .as_ref()
+                .filter(|cached| !tab.content_dirty && cached.options == options)
+                .filter(|cached| cached.frame.report.page.viewport.viewport == tab.viewport)
+                .map(|cached| cached.frame.clone())
+        };
+        if let Some(frame) = cached_window_frame {
+            return Ok(frame);
+        }
+
         let page_frame = self.present_frame()?;
-        self.window_frame_for_presented_frame_with_options(page_frame, options)
+        let window_frame =
+            self.window_frame_for_presented_frame_with_options(page_frame, options.clone())?;
+        let tab = self.active_tab_mut()?;
+        tab.last_presented_window_frame =
+            browser_app_window_frame_is_reusable(&window_frame).then(|| {
+                BrowserAppCachedWindowFrame {
+                    options,
+                    frame: window_frame.clone(),
+                }
+            });
+        Ok(window_frame)
     }
 
     pub fn window_frame_for_presented_frame(
@@ -613,6 +650,7 @@ impl BrowserApp {
             viewport,
             last_presented_viewport: None,
             last_presented_frame: None,
+            last_presented_window_frame: None,
             content_dirty: true,
             find: None,
         });
@@ -624,6 +662,7 @@ impl BrowserApp {
         let mut tab = self.active_tab_ref()?.clone();
         tab.last_presented_viewport = None;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -655,6 +694,7 @@ impl BrowserApp {
         let mut closed_tab = self.tabs.remove(index);
         closed_tab.last_presented_viewport = None;
         closed_tab.last_presented_frame = None;
+        closed_tab.last_presented_window_frame = None;
         closed_tab.content_dirty = true;
         self.closed_tabs.push(closed_tab);
         if self.closed_tabs.len() > BROWSER_APP_CLOSED_TAB_LIMIT {
@@ -674,6 +714,7 @@ impl BrowserApp {
         };
         tab.last_presented_viewport = None;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -695,6 +736,7 @@ impl BrowserApp {
         let default_prevented = tab.session.dispatch_wheel_event(delta_x, delta_y)?;
         if default_prevented {
             tab.last_presented_frame = None;
+            tab.last_presented_window_frame = None;
             tab.content_dirty = true;
             return Ok(());
         }
@@ -708,6 +750,7 @@ impl BrowserApp {
         tab.viewport.width = width.max(1);
         tab.viewport.height = height.max(1);
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         self.clamp_active_viewport()
     }
@@ -851,6 +894,7 @@ impl BrowserApp {
         tab.viewport = initial_app_viewport(&tab.session, self.options);
         tab.last_presented_viewport = None;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         tab.find = None;
         let insert_index = active_index.saturating_add(1);
@@ -926,6 +970,7 @@ impl BrowserApp {
         tab.viewport = initial_app_viewport(&tab.session, options);
         tab.last_presented_viewport = None;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         tab.find = None;
         Ok(())
@@ -935,6 +980,7 @@ impl BrowserApp {
         let tab = self.active_tab_mut()?;
         tab.last_presented_viewport = None;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         Ok(())
     }
@@ -949,6 +995,7 @@ impl BrowserApp {
         tab.viewport = report.viewport;
         if tab.viewport != previous_viewport {
             tab.last_presented_frame = None;
+            tab.last_presented_window_frame = None;
         }
         Ok(())
     }
@@ -956,6 +1003,7 @@ impl BrowserApp {
     fn mark_active_content_dirty(&mut self) -> Result<()> {
         let tab = self.active_tab_mut()?;
         tab.last_presented_frame = None;
+        tab.last_presented_window_frame = None;
         tab.content_dirty = true;
         Ok(())
     }
@@ -1036,6 +1084,11 @@ fn browser_app_frame_is_reusable(frame: &BrowserViewportFrame) -> bool {
     !frame.report.viewport.full_repaint
         && frame.report.dirty_pixel_area == 0
         && browser_viewport_frame_pixel_bytes(&frame.report) <= BROWSER_APP_CACHED_FRAME_MAX_BYTES
+}
+
+fn browser_app_window_frame_is_reusable(frame: &BrowserAppWindowFrame) -> bool {
+    frame.report.window_frame_cache_reusable
+        && frame.raster.pixels.len() <= BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES
 }
 
 fn serialize_browser_app_report_text<S>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -1353,6 +1406,12 @@ fn compose_browser_app_window_frame(
 
     let page_frame_pixel_bytes = page_frame.raster.pixels.len();
     let raster_pixel_bytes = raster.pixels.len();
+    let window_frame_cache_reusable = !report.frame_full_repaint
+        && report.frame_dirty_pixel_area == 0
+        && raster_pixel_bytes <= BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES;
+    let cached_window_frame_pixel_bytes = window_frame_cache_reusable
+        .then_some(raster_pixel_bytes)
+        .unwrap_or(0);
     let pixel_hash = raster.pixel_hash();
     let non_background_pixels = raster.non_background_pixels();
     Ok(BrowserAppWindowFrame {
@@ -1371,6 +1430,9 @@ fn compose_browser_app_window_frame(
             bytes_per_pixel: 4,
             raster_pixel_bytes,
             page_frame_pixel_bytes,
+            cached_window_frame_pixel_bytes,
+            cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
+            window_frame_cache_reusable,
             pixel_hash,
             non_background_pixels,
             artifact_format: "png-rgba8-browser-window".to_owned(),
@@ -1642,6 +1704,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_app_reuses_stable_window_frames_with_bounds() {
+        let mut app = BrowserApp::open(
+            "bench/browser-fixtures/max-width-layout.html",
+            app_options(),
+        )
+        .await
+        .unwrap();
+
+        let initial = app.present_window_frame().unwrap();
+        assert!(initial.report.page.viewport.full_repaint);
+        assert!(!initial.report.window_frame_cache_reusable);
+        assert!(app.tabs[0].last_presented_window_frame.is_none());
+
+        let stable = app.present_window_frame().unwrap();
+        assert!(!stable.report.page.viewport.full_repaint);
+        assert_eq!(stable.report.page.dirty_pixel_area, 0);
+        assert!(stable.report.window_frame_cache_reusable);
+        assert_eq!(
+            stable.report.cached_window_frame_pixel_bytes,
+            stable.raster.pixels.len()
+        );
+        assert_eq!(
+            stable.report.cached_window_frame_limit_bytes,
+            BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES
+        );
+        assert!(app.tabs[0].last_presented_window_frame.is_some());
+        assert!(browser_app_window_frame_is_reusable(&stable));
+
+        let reused = app.present_window_frame().unwrap();
+        assert_eq!(reused.report, stable.report);
+        assert_eq!(reused.raster.pixels, stable.raster.pixels);
+
+        let mut oversized = stable.clone();
+        oversized.report.window_frame_cache_reusable = true;
+        oversized.raster.pixels = vec![0; BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES + 1];
+        assert!(!browser_app_window_frame_is_reusable(&oversized));
+
+        app.apply_action(BrowserAppAction::Scroll {
+            delta_x: 0,
+            delta_y: 99,
+        })
+        .await
+        .unwrap();
+        assert!(app.tabs[0].last_presented_window_frame.is_none());
+    }
+
+    #[tokio::test]
     async fn browser_app_presents_window_frame_with_chrome_and_page_pixels() {
         let mut app = BrowserApp::open("bench/browser-fixtures/static-text.html", app_options())
             .await
@@ -1667,6 +1776,10 @@ mod tests {
                 .page_frame_width
                 .saturating_mul(window.report.page_frame_height)
                 .saturating_mul(window.report.bytes_per_pixel)
+        );
+        assert_eq!(
+            window.report.cached_window_frame_limit_bytes,
+            BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES
         );
         assert_eq!(
             window.raster.pixels.len(),
