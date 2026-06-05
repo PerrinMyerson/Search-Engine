@@ -456,7 +456,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut height = None;
     let mut shapes = SvgDecodedShapes::default();
     let mut stored_shapes: HashMap<String, SvgDecodedShapes> = HashMap::new();
-    let mut linear_gradients: HashMap<String, Vec<SvgGradientStop>> = HashMap::new();
+    let mut linear_gradients: HashMap<String, SvgLinearGradient> = HashMap::new();
     let mut current_linear_gradient = None;
     let mut class_styles: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut definition_stack: Vec<Option<String>> = Vec::new();
@@ -660,7 +660,9 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         "lineargradient" => {
                             current_linear_gradient = attrs.get("id").cloned();
                             if let Some(id) = current_linear_gradient.as_ref() {
-                                linear_gradients.entry(id.clone()).or_default();
+                                linear_gradients
+                                    .entry(id.clone())
+                                    .or_insert_with(|| svg_linear_gradient(&attrs));
                             }
                         }
                         "stop" => {
@@ -668,7 +670,11 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             if let Some(id) = current_linear_gradient.as_ref()
                                 && let Some(stop) = svg_gradient_stop(&attrs)
                             {
-                                linear_gradients.entry(id.clone()).or_default().push(stop);
+                                linear_gradients
+                                    .entry(id.clone())
+                                    .or_default()
+                                    .stops
+                                    .push(stop);
                             }
                         }
                         "style" => {
@@ -732,7 +738,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 .unwrap_or(height.saturating_sub(y))
                 .min(height.saturating_sub(y));
             if let Some(gradient) = svg_shape_fill_linear_gradient(rect, &linear_gradients) {
-                fill_decoded_rect_horizontal_gradient(
+                fill_decoded_rect_linear_gradient(
                     &mut pixels,
                     &mut rgb_pixels,
                     width,
@@ -2096,20 +2102,20 @@ fn svg_shape_fill_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
 
 fn svg_shape_fill_linear_gradient(
     attrs: &HashMap<String, String>,
-    gradients: &HashMap<String, Vec<SvgGradientStop>>,
-) -> Option<Vec<SvgGradientStop>> {
+    gradients: &HashMap<String, SvgLinearGradient>,
+) -> Option<SvgLinearGradient> {
     let value = svg_shape_paint_value(attrs, "fill")?;
     let id = svg_paint_url_fragment(value)?;
-    let mut stops = gradients.get(id)?.clone();
-    if stops.len() < 2 {
+    let mut gradient = gradients.get(id)?.clone();
+    if gradient.stops.len() < 2 {
         return None;
     }
-    stops.sort_by(|left, right| {
+    gradient.stops.sort_by(|left, right| {
         left.offset
             .partial_cmp(&right.offset)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    Some(stops)
+    Some(gradient)
 }
 
 fn svg_paint_url_fragment(value: &str) -> Option<&str> {
@@ -2240,6 +2246,39 @@ fn svg_gradient_stop(attrs: &HashMap<String, String>) -> Option<SvgGradientStop>
             alpha,
         },
     })
+}
+
+fn svg_linear_gradient(attrs: &HashMap<String, String>) -> SvgLinearGradient {
+    SvgLinearGradient {
+        x1: attrs
+            .get("x1")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.0))
+            .unwrap_or(0.0),
+        y1: attrs
+            .get("y1")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.0))
+            .unwrap_or(0.0),
+        x2: attrs
+            .get("x2")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 1.0))
+            .unwrap_or(1.0),
+        y2: attrs
+            .get("y2")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.0))
+            .unwrap_or(0.0),
+        stops: Vec::new(),
+    }
+}
+
+fn parse_svg_gradient_coordinate(value: &str, default: f32) -> Option<f32> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(default);
+    }
+    if let Some(percent) = value.strip_suffix('%') {
+        return Some((percent.trim().parse::<f32>().ok()? / 100.0).clamp(-8.0, 8.0));
+    }
+    Some(value.parse::<f32>().ok()?.clamp(-8.0, 8.0))
 }
 
 fn parse_svg_gradient_offset(value: &str) -> Option<f32> {
@@ -2989,7 +3028,7 @@ fn fill_decoded_rect(
     }
 }
 
-fn fill_decoded_rect_horizontal_gradient(
+fn fill_decoded_rect_linear_gradient(
     pixels: &mut [u8],
     rgb_pixels: &mut [u8],
     image_width: usize,
@@ -2997,13 +3036,24 @@ fn fill_decoded_rect_horizontal_gradient(
     y: usize,
     width: usize,
     height: usize,
-    stops: Vec<SvgGradientStop>,
+    gradient: SvgLinearGradient,
 ) {
-    let denominator = width.saturating_sub(1).max(1) as f32;
+    let gradient_dx = gradient.x2 - gradient.x1;
+    let gradient_dy = gradient.y2 - gradient.y1;
+    let gradient_length_squared = gradient_dx.mul_add(gradient_dx, gradient_dy * gradient_dy);
+    if gradient_length_squared <= f32::EPSILON {
+        return;
+    }
+    let denominator_x = width.saturating_sub(1).max(1) as f32;
+    let denominator_y = height.saturating_sub(1).max(1) as f32;
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
-            let offset = column.saturating_sub(x) as f32 / denominator;
-            let paint = sample_svg_gradient(&stops, offset);
+            let sample_x = column.saturating_sub(x) as f32 / denominator_x;
+            let sample_y = row.saturating_sub(y) as f32 / denominator_y;
+            let offset = ((sample_x - gradient.x1) * gradient_dx
+                + (sample_y - gradient.y1) * gradient_dy)
+                / gradient_length_squared;
+            let paint = sample_svg_gradient(&gradient.stops, offset);
             set_decoded_pixel(
                 pixels,
                 rgb_pixels,
@@ -3380,6 +3430,27 @@ struct SvgPaint {
     shade: u8,
     rgb: [u8; 3],
     alpha: u8,
+}
+
+#[derive(Debug, Clone)]
+struct SvgLinearGradient {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    stops: Vec<SvgGradientStop>,
+}
+
+impl Default for SvgLinearGradient {
+    fn default() -> Self {
+        Self {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 1.0,
+            y2: 0.0,
+            stops: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

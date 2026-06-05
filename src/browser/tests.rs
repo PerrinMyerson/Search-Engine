@@ -1531,6 +1531,115 @@ async fn image_svg_gradient_decodes_linear_gradient_color_for_rendered_resource(
 }
 
 #[tokio::test]
+async fn image_color_detail_svg_vertical_gradient_rasters_visible_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("vertical-gradient.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 4 4" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="vertical" x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" stop-color="#00cc00"/>
+                        <stop offset="100%" stop-color="#cc00ff"/>
+                    </linearGradient>
+                </defs>
+                <rect width="4" height="4" fill="url(#vertical)"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before vertical gradient</p><img src="vertical-gradient.svg" alt="Vertical gradient SVG" width="16" height="16"><p>After vertical gradient</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded =
+        decode_image_reference(&page.display().to_string(), "vertical-gradient.svg").unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 4);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] < 30 && pixel[1] > 180 && pixel[2] < 30)
+    );
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > 180 && pixel[1] < 30 && pixel[2] > 220)
+    );
+    let top_left = &rgb_pixels[0..3];
+    let bottom_left_offset = (decoded.height - 1) * decoded.width * 3;
+    let bottom_left = &rgb_pixels[bottom_left_offset..bottom_left_offset + 3];
+    assert!(top_left[1] > top_left[0] && top_left[1] > top_left[2]);
+    assert!(bottom_left[0] > bottom_left[1] && bottom_left[2] > bottom_left[1]);
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.url, "vertical-gradient.svg");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(4));
+    assert_eq!(fetch.decoded_height, Some(4));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before vertical gradient"));
+    assert!(render.text.contains("After vertical gradient"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 60 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 150 && pixel[1] < 60 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_svg_class_paint_decodes_style_class_color_for_rendered_resource() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
