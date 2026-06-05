@@ -2475,11 +2475,27 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let chrome_index = html.find(r#"data-browser-chrome"#).unwrap();
     let chrome_status_index = html.find(r#"data-browser-chrome-status"#).unwrap();
-    let primary_state_index = html.find(r#"data-browser-primary-state"#).unwrap();
-    let status_index = html.find(r#"data-browser-viewport-status"#).unwrap();
-    let visible_scroll_controls_index =
-        html.find(r#"data-browser-viewport-page-controls"#).unwrap();
-    let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let primary_surface_index = html.find(r#"data-browser-primary-surface"#).unwrap();
+    let primary_state_index = primary_surface_index
+        + html[primary_surface_index..]
+            .find(r#"data-browser-primary-state"#)
+            .unwrap();
+    let status_index = primary_surface_index
+        + html[primary_surface_index..]
+            .find(r#"data-browser-viewport-status"#)
+            .unwrap();
+    let visible_scroll_controls_index = primary_surface_index
+        + html[primary_surface_index..]
+            .find(r#"data-browser-viewport-page-controls"#)
+            .unwrap();
+    let interaction_controls_index = primary_surface_index
+        + html[primary_surface_index..]
+            .find(r#"data-browser-viewport-interactions"#)
+            .unwrap();
+    let controls_tray_index = primary_surface_index
+        + html[primary_surface_index..]
+            .find(r#"data-browser-controls-tray"#)
+            .unwrap();
     let command_strip_index = controls_tray_index
         + html[controls_tray_index..]
             .find(r#"data-browser-viewport-command-strip"#)
@@ -2489,7 +2505,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(primary_state_index < raster_index);
     assert!(raster_index < status_index);
     assert!(status_index < visible_scroll_controls_index);
+    assert!(status_index < interaction_controls_index);
     assert!(visible_scroll_controls_index < controls_tray_index);
+    assert!(interaction_controls_index < controls_tray_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
@@ -8400,11 +8418,17 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
+    assert!(html.contains(r#"data-browser-viewport-click-state"#));
+    assert!(html.contains(r#"<span class="viewport-command-label">Click</span>"#));
+    assert!(html.contains("Click the rendered page to activate links and controls"));
+    assert!(
+        html.contains(r#"class="viewport-click-details" aria-label="Manual click coordinates""#)
+    );
+    assert!(html.contains(r#"<summary>Manual click</summary>"#));
     assert!(html.contains(r#"class="viewport-click-form""#));
     assert!(html.contains(r#"name="action" value="click-at""#));
     assert!(html.contains(r#"id="browser-viewport-click-x""#));
     assert!(html.contains(r#"id="browser-viewport-click-y""#));
-    assert!(html.contains(r#"<span class="viewport-command-label">Click target</span>"#));
     assert!(html.contains(r#"<button type="submit">Activate point</button>"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains("Hover rendered page to inspect click target."));
