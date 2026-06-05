@@ -9785,9 +9785,9 @@ a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 4px; margin: -18px -18px 10px; padding: 5px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
-.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr) auto; gap: 6px; align-items: center; }}
+.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(420px, 1fr) auto; gap: 6px; align-items: center; }}
 .browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
-.browser-primary-nav a, .browser-primary-nav span {{ min-width: 32px; justify-content: center; padding: 0 8px; white-space: nowrap; }}
+.browser-primary-nav a, .browser-primary-nav span {{ min-width: 30px; min-height: 28px; justify-content: center; padding: 0 7px; font-size: 12px; white-space: nowrap; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 5px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 22px; padding: 0 6px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
@@ -9816,23 +9816,25 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-navigation-state a, .browser-navigation-state span {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; color: #3a3f45; font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }}
 .browser-navigation-state a {{ color: #123fae; border-color: #c6cbd2; }}
 .toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }}
-.toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
+.toolbar a, .toolbar span, .toolbar button {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 8px; background: #fff; color: #20242a; font-size: 12px; font-weight: 700; }}
 .toolbar span {{ color: #8a929d; background: #eef0f3; }}
 .toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
-.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 12px; background: #fff; }}
 .toolbar button {{ cursor: pointer; background: #2457d6; color: #fff; border-color: #2457d6; }}
 [data-browser-auto-visual-control][aria-busy="true"] a[href^="/browser"], [data-browser-auto-visual-control][aria-busy="true"] button {{ cursor: wait; opacity: 0.62; }}
 .address-bar {{ margin-bottom: 0; flex-wrap: nowrap; }}
-.address-bar input[name="url"] {{ flex: 1 1 420px; }}
+.address-bar input[name="url"] {{ flex: 1 1 520px; }}
+.address-bar button.browser-background-tab {{ display: none; }}
 .secondary-toolbar {{ margin: 0 0 12px; }}
 .viewport-jump {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }}
 .viewport-jump label {{ color: #3a3f45; font-size: 13px; font-weight: 700; }}
 .viewport-jump input[type="number"] {{ width: 96px; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
 .viewport-jump button {{ min-height: 32px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 10px; background: #2457d6; color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; }}
 .viewport-jump-range {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
-.viewport-status {{ display: grid; gap: 6px; margin: 8px 0 10px; }}
-.viewport-status-text {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: #3a3f45; font-size: 13px; font-weight: 700; }}
-.viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
+.viewport-status {{ display: grid; gap: 5px; margin: 4px 0 8px; }}
+.viewport-status-text {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: #3a3f45; font-size: 12px; font-weight: 700; }}
+.viewport-status-text span {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 6px; background: #fff; }}
+.viewport-scroll-feedback {{ max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
 .viewport-scroll-meter span {{ display: block; height: 100%; background: #2457d6; }}
 .browser-surface-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 8px; }}
@@ -10000,7 +10002,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
 <input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
-<button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
+<button type="submit" name="action" value="open">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
