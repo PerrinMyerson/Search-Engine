@@ -6252,6 +6252,39 @@ fn discovers_data_url_srcset_resource_without_truncating_payload() {
 }
 
 #[test]
+fn quoted_raw_svg_data_urls_survive_tag_scan_and_resource_discovery() {
+    let src_data_url = "data:image/svg+xml,<svg><rect/></svg>";
+    let srcset_data_url = "data:image/svg+xml,<svg><circle/></svg>";
+    let html = format!(
+        r#"<html><body><img src="{src_data_url}" alt="Raw SVG src"><img srcset="{srcset_data_url} 1x, fallback.webp 2x" alt="Raw SVG srcset"></body></html>"#
+    );
+    let render = render_html(
+        "https://example.com/app/page.html",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.url == src_data_url
+            && resource.resolved == src_data_url
+    }));
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image_candidate"
+            && resource.url == srcset_data_url
+            && resource.resolved == srcset_data_url
+    }));
+    assert!(!render.resources.iter().any(|resource| {
+        resource.url.starts_with("data:image/svg+xml,<svg") && !resource.url.ends_with("</svg>")
+    }));
+
+    assert!(render.dom_node_count > 0);
+}
+
+#[test]
 fn skips_invalid_jpeg_srcset_candidate_resources() {
     let render = render_html(
         "https://example.com/app/page.html",

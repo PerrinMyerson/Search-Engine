@@ -8683,14 +8683,27 @@ fn find_closing_tag(html: &[u8], start: usize, tag: &str) -> Option<usize> {
 }
 
 fn find_tag_end(html: &[u8], tag_start: usize) -> Option<usize> {
-    let mut quote = None;
     let mut index = tag_start.saturating_add(1);
     while index < html.len() {
         match html[index] {
-            b'\'' | b'"' if quote == Some(html[index]) => quote = None,
-            b'\'' | b'"' if quote.is_none() => quote = Some(html[index]),
-            b'>' if quote.is_none() => return Some(index),
+            b'\'' | b'"' => {
+                index = skip_quoted_tag_attribute(html, index)?;
+                continue;
+            }
+            b'>' => return Some(index),
             _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn skip_quoted_tag_attribute(html: &[u8], quote_start: usize) -> Option<usize> {
+    let quote = *html.get(quote_start)?;
+    let mut index = quote_start.saturating_add(1);
+    while index < html.len() {
+        if html[index] == quote {
+            return Some(index + 1);
         }
         index += 1;
     }
