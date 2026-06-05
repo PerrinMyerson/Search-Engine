@@ -12312,6 +12312,7 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(html.contains("rendered viewport retained"));
     assert!(html.contains(">Retry load</a>"));
     assert!(!html.contains(">Continue loading</a>"));
+    assert!(!html.contains(r#"data-browser-pending-load-retry"#));
     assert!(html.contains("Click raster to open links/buttons"));
     assert!(html.contains("Ready to scroll."));
     assert!(html.contains("action=open"));
@@ -12530,6 +12531,12 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("Loading http://"));
     assert!(html.contains(r#"data-browser-pending-session-retained"#));
     assert!(html.contains("same tab retained"));
+    assert!(html.contains(r#"data-browser-pending-load-retry"#));
+    assert!(html.contains(r#"data-browser-pending-auto-retry"#));
+    assert!(html.contains(r#"sessionStorage.getItem(stateKey) === "tried""#));
+    assert!(html.contains(r#"window.setTimeout(() => window.location.replace(retryUrl), 900)"#));
+    assert!(html.contains("Still opening; retrying once in this tab..."));
+    assert!(html.contains("Still opening; use Continue loading to retry in this tab."));
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
@@ -12597,6 +12604,8 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-pending-session-retained"#));
     assert!(html.contains("same tab retained"));
     assert!(html.contains("retry stayed in this tab"));
+    assert!(html.contains(r#"data-browser-pending-load-retry"#));
+    assert!(html.contains(r#"continueLink.dataset.pendingAutoRetry = "scheduled""#));
     assert!(html.contains("Continue loading"));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains("Loading browser viewport"));
@@ -12645,6 +12654,7 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-pending-session-retained"#));
     assert!(html.contains("same tab retained"));
     assert!(html.contains("Continue loading"));
+    assert!(html.contains(r#"data-browser-pending-load-retry"#));
 
     server.abort();
 }
@@ -12701,6 +12711,8 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
     assert!(html.contains(r#"data-browser-pending-session-retained"#));
     assert!(html.contains("Continue loading"));
+    assert!(html.contains(r#"data-browser-pending-load-retry"#));
+    assert!(html.contains(r#"data-browser-pending-auto-retry"#));
     assert!(html.contains("Opening http://"));
     assert!(html.contains("Loading http://"));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
@@ -12752,6 +12764,7 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(html.contains("same tab retained"));
     assert!(html.contains("Continue loading"));
     assert!(html.contains("renderer reported"));
+    assert!(html.contains(r#"data-browser-pending-load-retry"#));
     assert!(!html.contains("browser render failed for"));
 }
 

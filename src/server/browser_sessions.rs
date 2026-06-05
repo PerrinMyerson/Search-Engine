@@ -9578,6 +9578,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let settled_primary_page_state = (!browser_session_pending_without_ready_viewport(payload))
         .then_some(primary_page_state.as_str());
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
+    let pending_load_retry = render_browser_session_pending_load_retry_script(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
     let viewport_text = render_browser_session_viewport_text(payload, &viewport);
     let navigation_state = render_browser_session_navigation_state(payload, back_href);
@@ -10009,6 +10010,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <div class="browser-page-title"><h1>{heading}</h1><div class="meta" title="{source_attr}">{source}</div></div>
 </section>
 {auto_visual_bootstrap}
+{pending_load_retry}
 <section class="browser-viewport-primary" data-browser-primary-surface>
 {pending_primary_page_state}
 {viewport_image}
@@ -10074,6 +10076,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         pending_primary_page_state = pending_primary_page_state.unwrap_or_default(),
         settled_primary_page_state = settled_primary_page_state.unwrap_or_default(),
         auto_visual_bootstrap = auto_visual_bootstrap,
+        pending_load_retry = pending_load_retry,
         browser_chrome_status = render_browser_session_chrome_status(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
@@ -10285,6 +10288,68 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         apply_stylesheets = browser_json_script_string(&apply_stylesheets),
         load_images = browser_json_script_string(&load_images),
         refresh_url = browser_json_script_string(&refresh_url),
+        state_key = browser_json_script_string(&state_key),
+    )
+}
+
+fn render_browser_session_pending_load_retry_script(payload: &BrowserSessionPayload) -> String {
+    if !browser_session_pending_without_ready_viewport(payload) {
+        return String::new();
+    }
+    let Some(pending_source) = payload.pending_source.as_ref() else {
+        return String::new();
+    };
+    let continue_href = browser_session_action_href(
+        &payload.id,
+        "open",
+        &[("url", pending_source.clone())],
+        payload,
+    );
+    let state_key = format!(
+        "brutal:pending-open:{}:{}:{}:{}:{}:{}",
+        payload.id,
+        pending_source,
+        payload.width,
+        payload.height,
+        payload.viewport_x,
+        payload.viewport_y
+    );
+    format!(
+        r#"<script data-browser-pending-load-retry>
+(() => {{
+  const retryUrl = {retry_url};
+  const stateKey = {state_key};
+  const status = document.querySelector("[data-browser-pending-auto-retry]");
+  const continueLink = document.querySelector("[data-browser-continue-load]");
+  if (!retryUrl || !stateKey) {{
+    return;
+  }}
+  const setStatus = (message) => {{
+    if (status) {{
+      status.textContent = message;
+    }}
+  }};
+  try {{
+    if (sessionStorage.getItem(stateKey) === "tried") {{
+      setStatus("Still opening; use Continue loading to retry in this tab.");
+      if (continueLink) {{
+        continueLink.dataset.pendingAutoRetry = "used";
+      }}
+      return;
+    }}
+    sessionStorage.setItem(stateKey, "tried");
+  }} catch (_) {{
+    return;
+  }}
+  setStatus("Still opening; retrying once in this tab...");
+  if (continueLink) {{
+    continueLink.dataset.pendingAutoRetry = "scheduled";
+    continueLink.setAttribute("aria-busy", "true");
+  }}
+  window.setTimeout(() => window.location.replace(retryUrl), 900);
+}})();
+</script>"#,
+        retry_url = browser_json_script_string(&continue_href),
         state_key = browser_json_script_string(&state_key),
     )
 }
@@ -13046,7 +13111,7 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
             payload,
         );
         return format!(
-            r#"<div class="browser-surface-state" data-browser-primary-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Opening {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span>{action_feedback}<a class="primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            r#"<div class="browser-surface-state" data-browser-primary-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Opening {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span><span class="viewport-state-chip report" data-browser-pending-auto-retry>Retrying once in this tab</span>{action_feedback}<a class="primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
             source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
             action_feedback = action_feedback,
             continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
@@ -13224,7 +13289,7 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
             payload,
         );
         return format!(
-            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Waiting for {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span>{action_feedback}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
+            r#"<div class="viewport-command-row viewport-page-state" data-browser-viewport-page-state data-browser-pending-load="true"><span class="viewport-state-chip warning">Loading page</span><span class="viewport-state-chip report">Waiting for {source}</span><span class="viewport-state-chip report" data-browser-pending-session-retained>same tab retained</span><span class="viewport-state-chip report" data-browser-pending-auto-retry>Retrying once in this tab</span>{action_feedback}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div>"#,
             source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
             action_feedback = action_feedback,
             continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
