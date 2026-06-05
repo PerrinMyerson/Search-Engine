@@ -5703,6 +5703,78 @@ async fn browser_session_click_viewport_at_hits_fixed_link_after_scroll_over_ima
     assert_eq!(session.snapshot().current_index, Some(1));
 }
 
+#[tokio::test]
+async fn browser_session_click_viewport_at_after_scroll_rejects_outside_visible_slice() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.html");
+    let second = dir.path().join("second.html");
+    fs::write(
+        &first,
+        r#"<html><head><title>First</title></head><body><div style="position:fixed; top:0">Pinned</div><img src="missing.png" width="32" height="48" alt=""><p>Body before link</p><a href="second.html">Open details now</a><p>Body after link</p></body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &second,
+        r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session
+        .navigate(&first.display().to_string())
+        .await
+        .unwrap();
+    let (link_x, link_y) = session
+        .current()
+        .unwrap()
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Open details now") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("link text is rendered after the image");
+    assert!(link_y > 0);
+    let viewport_y = link_y.saturating_sub(1);
+    let local_y = link_y.saturating_sub(viewport_y);
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: viewport_y,
+        width: 8,
+        height: 3,
+    };
+    let document_viewport = browser_document_viewport(session.current().unwrap(), viewport, None);
+    assert_eq!(document_viewport.viewport.y, viewport_y);
+    assert_eq!(document_viewport.viewport.height, viewport.height);
+
+    let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
+    assert_eq!(
+        session
+            .link_target_at_viewport(viewport, link_x, local_y)
+            .as_deref(),
+        Some(expected_target.as_str())
+    );
+    assert_eq!(
+        session.link_target_at_viewport(viewport, viewport.width, local_y),
+        None
+    );
+
+    let render = session
+        .click_viewport_at_with_default_action(viewport, link_x, local_y)
+        .await
+        .unwrap();
+    assert_eq!(render.title, "Second");
+    assert_eq!(render.text, "Arrived");
+    assert_eq!(session.snapshot().current_index, Some(1));
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(
