@@ -14508,7 +14508,7 @@ fn css_font_scale_from_pixels(pixels: f32) -> Option<usize> {
     Some(match pixels {
         pixels if pixels >= 64.0 => 4,
         pixels if pixels >= 40.0 => 3,
-        pixels if pixels >= 22.0 => 2,
+        pixels if pixels >= 15.0 => 2,
         _ => 1,
     })
 }
@@ -18696,10 +18696,16 @@ impl FlowRenderer {
         let run_start = self.current_width;
         self.current_width = self.current_width.saturating_add(width);
         let visible = self.paint_visible();
-        let piece = " ".repeat(width);
+        let active_font_scale = self.font_scale.max(1);
+        let font_scale = if width % active_font_scale == 0 {
+            active_font_scale
+        } else {
+            1
+        };
+        let piece = " ".repeat(width.div_ceil(font_scale));
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
-            && last.font_scale == 1
+            && last.font_scale == font_scale
             && last.background_shade == self.text_background_shade
             && last.visible == visible
             && last
@@ -18709,16 +18715,22 @@ impl FlowRenderer {
         {
             let start = text_cell_width(&last.text, last.font_scale);
             last.text.push_str(&piece);
-            push_text_hit_target_run(&mut last.target_runs, start, &piece, target_node, 1);
+            push_text_hit_target_run(
+                &mut last.target_runs,
+                start,
+                &piece,
+                target_node,
+                font_scale,
+            );
             return;
         }
         let mut target_runs = Vec::new();
-        push_text_hit_target_run(&mut target_runs, 0, &piece, target_node, 1);
+        push_text_hit_target_run(&mut target_runs, 0, &piece, target_node, font_scale);
         self.current_runs.push(TextRun {
             start_x: run_start,
             text: piece,
             shade: self.text_shade,
-            font_scale: 1,
+            font_scale,
             background_shade: self.text_background_shade,
             visible,
             target_runs,
