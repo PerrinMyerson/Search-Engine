@@ -2867,6 +2867,95 @@ async fn image_color_fidelity_sub_byte_palette_png_decodes_and_renders_color() {
 }
 
 #[tokio::test]
+async fn image_real_page_color_gif_decodes_and_rasters_visible_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let gif = dir.path().join("hero.gif");
+    let gif_bytes = tiny_test_gif_palette();
+    fs::write(&gif, &gif_bytes).unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "hero.gif").unwrap();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [230, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 180, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 220]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    fs::write(
+        &page,
+        r#"<html><body><p>Before gif</p><img src="hero.gif" alt="GIF Hero" width="18" height="18"><p>After gif</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.url, "hero.gif");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before gif"));
+    assert!(render.text.contains("After gif"));
+    assert!(
+        render
+            .decoded_images
+            .iter()
+            .any(|image| image.pixel_hash == expected_hash
+                && image.image.rgb_pixels.as_deref() == decoded.rgb_pixels.as_deref())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &gif.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_color_pipeline_preserves_rgb_pixels_in_decoded_resource_report() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
@@ -4952,7 +5041,7 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
     let expected_hash = decoded.pixel_hash();
-    let gif_bytes = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\0\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+    let gif_bytes = tiny_test_gif_palette();
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     let decoded_path = dir.path().join("decoded.png");
@@ -4961,6 +5050,9 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     let missing_path = dir.path().join("missing.jpg");
     fs::write(&decoded_path, png_bytes).unwrap();
     fs::write(&unsupported_path, gif_bytes).unwrap();
+    let gif_expected_hash = decode_image_reference(&page.display().to_string(), "spinner.gif")
+        .expect("test GIF decodes")
+        .pixel_hash();
     fs::write(&undecoded_path, b"not actually a png").unwrap();
     fs::write(
         &page,
@@ -4981,7 +5073,7 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
 
     let report = session.render_current_with_images(1024).await.unwrap();
     assert_eq!(report.image_count, 4);
-    assert_eq!(report.decoded, 1);
+    assert_eq!(report.decoded, 2);
     assert_eq!(report.failed, 1);
 
     let decoded_fetch = report
@@ -5002,21 +5094,20 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     );
     assert_eq!(decoded_fetch.image_decode_error, None);
 
-    let unsupported_fetch = report
+    let gif_fetch = report
         .fetches
         .iter()
         .find(|fetch| fetch.resource.resolved == unsupported_path.display().to_string())
         .unwrap();
-    assert_eq!(unsupported_fetch.status, "fetched");
+    assert_eq!(gif_fetch.status, "fetched");
+    assert_eq!(gif_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(gif_fetch.decoded_width, Some(2));
+    assert_eq!(gif_fetch.decoded_height, Some(2));
     assert_eq!(
-        unsupported_fetch.image_decode_status.as_deref(),
-        Some("unsupported_format")
+        gif_fetch.decoded_hash.as_deref(),
+        Some(gif_expected_hash.as_str())
     );
-    assert_eq!(
-        unsupported_fetch.image_decode_error.as_deref(),
-        Some("unsupported image content type: image/gif")
-    );
-    assert_eq!(unsupported_fetch.decoded_hash, None);
+    assert_eq!(gif_fetch.image_decode_error, None);
 
     let undecoded_fetch = report
         .fetches
@@ -5591,6 +5682,25 @@ fn tiny_test_png_palette4() -> Vec<u8> {
     ];
     let transparency = [0, 255, 255, 255];
     encode_test_indexed_png_with_bit_depth(4, 2, 4, &filtered_scanlines, &palette, &transparency)
+}
+
+fn tiny_test_gif_palette() -> Vec<u8> {
+    vec![
+        b'G', b'I', b'F', b'8', b'9', b'a', // header
+        2, 0, 2, 0, 0xf2, 0, 0, // logical screen, 8-color global palette
+        255, 255, 255, // index 0 white
+        230, 0, 0, // index 1 red
+        0, 180, 0, // index 2 green
+        0, 0, 220, // index 3 blue
+        255, 255, 0, // unused
+        0, 255, 255, // unused
+        255, 0, 255, // unused
+        0, 0, 0, // unused
+        0x2c, 0, 0, 0, 0, 2, 0, 2, 0, 0, // image descriptor
+        3, // LZW minimum code size for 8 palette entries
+        3, 0x18, 0x32, 0x90, // clear, red, green, blue, white, end
+        0, 0x3b, // block terminator, trailer
+    ]
 }
 
 fn tiny_test_indexed_png_with_transparency() -> Vec<u8> {
