@@ -12030,6 +12030,18 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(html.contains(
+        r#".browser-chrome-row { display: grid; grid-template-columns: auto minmax(420px, 1fr) auto;"#
+    ));
+    assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 520px; }"#));
+    assert!(html.contains(r#".address-bar button.browser-background-tab { display: none; }"#));
+    assert!(topbar_html.contains(r#"name="action" value="open">Go</button>"#));
+    assert!(topbar_html.contains(
+        r#"class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>"#
+    ));
     assert!(!topbar_html.contains(">Read</a>"));
     assert!(!topbar_html.contains(">Images</a>"));
     assert!(!topbar_html.contains(">Make readable</a>"));
@@ -12049,6 +12061,12 @@ async fn browser_session_page_renders_form_controls() {
     assert!(viewport_index < debug_index);
     assert!(html.contains(r#"data-browser-primary-surface"#));
     let primary_html = &html[viewport_index..controls_tray_index];
+    assert!(primary_html.contains(r#"<div class="viewport-status" data-browser-viewport-status>"#));
+    assert!(html.contains(r#".viewport-status { display: grid; gap: 5px; margin: 4px 0 8px; }"#));
+    assert!(html.contains(r#".viewport-status-text span { min-height: 22px;"#));
+    assert!(html.contains(
+        r#".viewport-scroll-feedback { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }"#
+    ));
     assert!(!primary_html.contains(r#"<summary>Visible links</summary>"#));
     assert!(!primary_html.contains(r#"class="viewport-link-list""#));
     assert!(html.contains(r#"data-browser-page-details"#));
