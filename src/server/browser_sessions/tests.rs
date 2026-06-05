@@ -10635,6 +10635,36 @@ async fn browser_session_registry_waits_for_in_flight_resource_action_before_scr
         "scroll should wait for the in-flight resource action instead of returning not found"
     );
 
+    let partial_scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "3".to_owned()),
+            ("partial".to_owned(), "viewport".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "16".to_owned()),
+        ],
+    };
+    let (partial_payload, _) = registry.apply_target(&partial_scroll).await.unwrap();
+    assert_eq!(partial_payload.id, session_id);
+    assert_eq!(partial_payload.viewport_y, 3);
+    assert_eq!(
+        partial_payload.action_feedback.as_deref(),
+        Some("Moved visual viewport to x 0, y 3.")
+    );
+    assert!(!partial_payload.fast_scroll);
+    assert!(partial_payload.viewport_image.is_some());
+    let partial_html = render_browser_session_viewport_partial(&partial_payload);
+    assert!(partial_html.contains(r#"data-browser-partial-viewport"#));
+    assert!(partial_html.contains(r#"data-viewport-y="3""#));
+    assert!(partial_html.contains("Moved visual viewport to x 0, y 3."));
+    assert!(!partial_html.contains("<!doctype html>"));
+    assert!(
+        !scroll_task.is_finished(),
+        "full scroll should still wait while partial scroll can update the viewport"
+    );
+
     release_css_tx.send(()).unwrap();
     let (styled_payload, _) = apply_task.await.unwrap().unwrap();
     assert_eq!(styled_payload.id, session_id);
@@ -10645,7 +10675,7 @@ async fn browser_session_registry_waits_for_in_flight_resource_action_before_scr
 
     let (scrolled_payload, _) = scroll_task.await.unwrap().unwrap();
     assert_eq!(scrolled_payload.id, session_id);
-    assert_eq!(scrolled_payload.viewport_y, 3);
+    assert_eq!(scrolled_payload.viewport_y, 6);
     assert!(
         scrolled_payload
             .resource_report

@@ -46,6 +46,7 @@ pub(super) struct BrowserSessionRegistry {
     profile_error: Mutex<Option<String>>,
     sessions: Mutex<HashMap<String, BrowserWebSession>>,
     in_flight_sessions: Mutex<HashMap<String, Arc<Notify>>>,
+    in_flight_viewports: Mutex<HashMap<String, BrowserWebSession>>,
     closed_sessions: Mutex<Vec<BrowserClosedSession>>,
     bookmarks: Mutex<Vec<BrowserStoredBookmark>>,
     profile_tabs: Mutex<Vec<BrowserStoredProfileTab>>,
@@ -68,6 +69,7 @@ impl BrowserSessionRegistry {
             profile_error: Mutex::new(None),
             sessions: Mutex::new(HashMap::new()),
             in_flight_sessions: Mutex::new(HashMap::new()),
+            in_flight_viewports: Mutex::new(HashMap::new()),
             closed_sessions: Mutex::new(Vec::new()),
             bookmarks: Mutex::new(Vec::new()),
             profile_tabs: Mutex::new(Vec::new()),
@@ -123,6 +125,7 @@ impl BrowserSessionRegistry {
             profile_error: Mutex::new(profile_error),
             sessions: Mutex::new(HashMap::new()),
             in_flight_sessions: Mutex::new(HashMap::new()),
+            in_flight_viewports: Mutex::new(HashMap::new()),
             closed_sessions: Mutex::new(Vec::new()),
             bookmarks: Mutex::new(bookmarks),
             profile_tabs: Mutex::new(profile_tabs),
@@ -881,7 +884,7 @@ struct BrowserSessionStateExportActionUrls {
     clear_resource_report: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum BrowserSessionAction {
     Current,
     Open(String),
@@ -1594,8 +1597,17 @@ impl BrowserSessionRegistry {
             let mut in_flight_sessions = self.in_flight_sessions.lock().await;
             let mut sessions = self.sessions.lock().await;
             if let Some(web_session) = sessions.remove(id) {
+                let in_flight_viewport = mark_in_flight.then(|| web_session.clone());
                 if mark_in_flight {
                     in_flight_sessions.insert(id.to_owned(), Arc::new(Notify::new()));
+                }
+                drop(sessions);
+                drop(in_flight_sessions);
+                if let Some(in_flight_viewport) = in_flight_viewport {
+                    self.in_flight_viewports
+                        .lock()
+                        .await
+                        .insert(id.to_owned(), in_flight_viewport);
                 }
                 return Ok(web_session);
             }
@@ -1614,10 +1626,22 @@ impl BrowserSessionRegistry {
     async fn return_session_after_action<'a>(
         &'a self,
         id: &str,
-        web_session: BrowserWebSession,
+        mut web_session: BrowserWebSession,
         notify_in_flight_waiters: bool,
     ) -> MutexGuard<'a, HashMap<String, BrowserWebSession>> {
         if notify_in_flight_waiters {
+            let in_flight_viewport = self.in_flight_viewports.lock().await.remove(id);
+            if let Some(in_flight_viewport) = in_flight_viewport {
+                web_session.width = in_flight_viewport.width;
+                web_session.height = in_flight_viewport.height;
+                web_session.max_bytes = in_flight_viewport.max_bytes;
+                web_session.viewport_x = in_flight_viewport.viewport_x;
+                web_session.viewport_y = in_flight_viewport.viewport_y;
+                web_session.back_href = in_flight_viewport.back_href;
+                if in_flight_viewport.action_feedback.is_some() {
+                    web_session.action_feedback = in_flight_viewport.action_feedback;
+                }
+            }
             let mut in_flight_sessions = self.in_flight_sessions.lock().await;
             let mut sessions = self.sessions.lock().await;
             sessions.insert(id.to_owned(), web_session);
@@ -1632,6 +1656,64 @@ impl BrowserSessionRegistry {
         let mut sessions = self.sessions.lock().await;
         sessions.insert(id.to_owned(), web_session);
         sessions
+    }
+
+    async fn apply_in_flight_viewport_partial(
+        &self,
+        target: &RequestTarget,
+        id: &str,
+        action: &BrowserSessionAction,
+    ) -> Result<Option<(BrowserSessionPayload, String)>, BrowserRouteError> {
+        if !browser_session_target_wants_viewport_partial(target)
+            || !browser_action_can_apply_in_flight_viewport_partial(action)
+        {
+            return Ok(None);
+        }
+
+        {
+            let in_flight_sessions = self.in_flight_sessions.lock().await;
+            if !in_flight_sessions.contains_key(id) {
+                return Ok(None);
+            }
+        }
+
+        let Some(mut web_session) = self.in_flight_viewports.lock().await.remove(id) else {
+            return Ok(None);
+        };
+
+        web_session.width =
+            parse_optional_usize_param(target, "width", 40, 160).unwrap_or(web_session.width);
+        web_session.height =
+            parse_optional_usize_param(target, "height", 16, 120).unwrap_or(web_session.height);
+        web_session.max_bytes =
+            parse_optional_usize_param(target, "max_bytes", 64 * 1024, 16 * 1024 * 1024)
+                .unwrap_or(web_session.max_bytes);
+        if let Some(return_href) = target.param("from") {
+            web_session.back_href = sanitized_search_return_href(Some(&return_href));
+        }
+        apply_browser_action(action.clone(), &mut web_session).await?;
+        let back_href = web_session.back_href.clone();
+        let mut payload = browser_session_payload(id, &mut web_session)?;
+        let mut sessions_view = {
+            let sessions = self.sessions.lock().await;
+            sessions.clone()
+        };
+        sessions_view.insert(id.to_owned(), web_session.clone());
+        self.in_flight_viewports
+            .lock()
+            .await
+            .insert(id.to_owned(), web_session);
+        let closed_sessions = self.closed_sessions.lock().await;
+        let bookmarks = self.bookmarks.lock().await;
+        self.attach_browser_session_registry_state(
+            &mut payload,
+            &sessions_view,
+            &closed_sessions,
+            &bookmarks,
+            id,
+        )
+        .await;
+        Ok(Some((payload, back_href)))
     }
 
     async fn create_profile_tabs_target(
@@ -1752,6 +1834,13 @@ impl BrowserSessionRegistry {
         let notifies_in_flight_waiters = browser_action_marks_session_in_flight(&action);
         let current_viewport_jump_requested = matches!(action, BrowserSessionAction::Current)
             && browser_session_target_has_viewport_position(target);
+
+        if let Some(result) = self
+            .apply_in_flight_viewport_partial(target, &id, &action)
+            .await?
+        {
+            return Ok(result);
+        }
 
         let mut web_session = self
             .take_session_for_action(&id, notifies_in_flight_waiters)
@@ -8232,6 +8321,19 @@ fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool
             | BrowserSessionAction::ApplyStylesheets
             | BrowserSessionAction::RunScripts
             | BrowserSessionAction::LoadImages
+    )
+}
+
+fn browser_action_can_apply_in_flight_viewport_partial(action: &BrowserSessionAction) -> bool {
+    matches!(
+        action,
+        BrowserSessionAction::Scroll { .. }
+            | BrowserSessionAction::Top
+            | BrowserSessionAction::Bottom
+            | BrowserSessionAction::PageUp
+            | BrowserSessionAction::PageDown
+            | BrowserSessionAction::LineUp
+            | BrowserSessionAction::LineDown
     )
 }
 
