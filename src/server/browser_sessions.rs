@@ -6124,11 +6124,19 @@ async fn apply_browser_action(
                 .click_selector_with_default_action(&selector)
                 .await
             {
-                web_session.action_feedback = Some(format!(
-                    "No click target for selector {}; {}; viewport preserved",
-                    browser_session_feedback_excerpt(&selector),
-                    browser_session_feedback_excerpt(&error.to_string())
-                ));
+                set_browser_click_error_feedback(
+                    web_session,
+                    format!(
+                        "Clicked selector {}",
+                        browser_session_feedback_excerpt(&selector)
+                    ),
+                    format!(
+                        "No click target for selector {}",
+                        browser_session_feedback_excerpt(&selector)
+                    ),
+                    &error.to_string(),
+                    "navigation failed",
+                );
                 return Ok(());
             }
             if browser_interaction_snapshot_navigated(&before, web_session) {
@@ -6155,10 +6163,13 @@ async fn apply_browser_action(
                 .click_at_with_default_action(page_x, page_y)
                 .await
             {
-                web_session.action_feedback = Some(format!(
-                    "No click target at x {x}, y {y} (page {page_x}, {page_y}); {}; viewport preserved",
-                    browser_session_feedback_excerpt(&error.to_string())
-                ));
+                set_browser_click_error_feedback(
+                    web_session,
+                    format!("Clicked DOM point x {x}, y {y} (page {page_x}, {page_y})"),
+                    format!("No click target at x {x}, y {y} (page {page_x}, {page_y})"),
+                    &error.to_string(),
+                    "navigation failed",
+                );
                 return Ok(());
             }
             if browser_interaction_snapshot_navigated(&before, web_session) {
@@ -15229,6 +15240,28 @@ fn set_browser_click_feedback(
         "; no visible change; viewport preserved"
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
+}
+
+fn set_browser_click_error_feedback(
+    web_session: &mut BrowserWebSession,
+    click_label: String,
+    miss_label: String,
+    error: &str,
+    failure_label: &str,
+) {
+    let error_excerpt = browser_session_feedback_excerpt(error);
+    let label = if browser_click_error_is_target_miss(error) {
+        miss_label
+    } else {
+        format!("{click_label}; {failure_label}")
+    };
+    web_session.action_feedback = Some(format!("{label}: {error_excerpt}; viewport preserved"));
+}
+
+fn browser_click_error_is_target_miss(error: &str) -> bool {
+    error.contains("did not hit a DOM target")
+        || error.contains("cannot click: session has no current page")
+        || error.contains("cannot click coordinates: session has no current page")
 }
 
 fn set_browser_navigation_feedback(

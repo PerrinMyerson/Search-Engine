@@ -8502,6 +8502,54 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
 }
 
 #[tokio::test]
+async fn browser_session_registry_click_selector_navigation_failure_keeps_browser_shell() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unreachable = listener.local_addr().unwrap();
+    drop(listener);
+
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("failed-link.html");
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><title>Failed Link</title><a id="go" href="http://{unreachable}/next">Go</a>"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), page.display().to_string())],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "click-selector".to_owned()),
+            ("selector".to_owned(), "#go".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.title, "Failed Link");
+    assert_eq!(payload.history_len, 1);
+    assert!(!payload.can_back);
+    assert!(!payload.fast_scroll);
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains("Clicked selector #go; navigation failed:"));
+    assert!(feedback.contains("viewport preserved"));
+    assert!(!feedback.contains("No click target"));
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains("Clicked selector #go; navigation failed:"));
+    assert!(html.contains("viewport preserved"));
+    assert!(!html.contains("No click target for selector #go"));
+}
+
+#[tokio::test]
 async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("button.html");
