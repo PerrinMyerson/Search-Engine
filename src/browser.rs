@@ -1037,6 +1037,8 @@ struct BrowserPageState {
 pub struct BrowserHistorySnapshot {
     pub current_index: Option<usize>,
     pub entries: Vec<BrowserHistoryEntry>,
+    pub retained_entry_limit: usize,
+    pub retained_entry_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1696,6 +1698,7 @@ pub async fn load_and_render(target: &str, options: BrowserRenderOptions) -> Res
 pub const BROWSER_ABOUT_BLANK_TARGET: &str = "about:blank";
 const BROWSER_ABOUT_BLANK_HTML: &[u8] =
     b"<!doctype html><html><head><title></title></head><body></body></html>";
+const BROWSER_SESSION_HISTORY_MAX_ENTRIES: usize = 64;
 
 async fn load_session_document(
     target: &str,
@@ -1838,8 +1841,20 @@ impl BrowserSession {
             checked_state: HashMap::new(),
             focused_control: None,
         });
+        self.compact_history_entries();
         self.current_index = Some(self.entries.len() - 1);
         &self.entries[self.entries.len() - 1].render
+    }
+
+    fn compact_history_entries(&mut self) {
+        if self.entries.len() <= BROWSER_SESSION_HISTORY_MAX_ENTRIES {
+            return;
+        }
+        let remove_count = self.entries.len() - BROWSER_SESSION_HISTORY_MAX_ENTRIES;
+        self.entries.drain(..remove_count);
+        self.current_index = self
+            .current_index
+            .map(|index| index.saturating_sub(remove_count));
     }
 
     pub async fn submit_form(
@@ -3105,6 +3120,8 @@ impl BrowserSession {
     pub fn snapshot(&self) -> BrowserHistorySnapshot {
         BrowserHistorySnapshot {
             current_index: self.current_index,
+            retained_entry_limit: BROWSER_SESSION_HISTORY_MAX_ENTRIES,
+            retained_entry_count: self.entries.len(),
             entries: self
                 .entries
                 .iter()
