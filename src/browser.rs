@@ -13266,17 +13266,32 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     padding.set_all(parsed);
                 }
             }
+            "padding-inline" => {
+                if let Some((start, end)) = parse_css_box_spacing_pair(value, CssAxis::Horizontal) {
+                    padding.left = Some(start);
+                    padding.right = Some(end);
+                }
+            }
+            "padding-block" => {
+                if let Some((start, end)) = parse_css_box_spacing_pair(value, CssAxis::Vertical) {
+                    padding.top = Some(start);
+                    padding.bottom = Some(end);
+                }
+            }
             "padding-top" => {
                 padding.top = parse_css_padding_length(value, CssAxis::Vertical);
             }
-            "padding-right" => {
+            "padding-right" | "padding-inline-end" => {
                 padding.right = parse_css_padding_length(value, CssAxis::Horizontal);
             }
-            "padding-bottom" => {
+            "padding-bottom" | "padding-block-end" => {
                 padding.bottom = parse_css_padding_length(value, CssAxis::Vertical);
             }
-            "padding-left" => {
+            "padding-left" | "padding-inline-start" => {
                 padding.left = parse_css_padding_length(value, CssAxis::Horizontal);
+            }
+            "padding-block-start" => {
+                padding.top = parse_css_padding_length(value, CssAxis::Vertical);
             }
             "margin" => {
                 if let Some(parsed) = parse_css_margin(value) {
@@ -13287,10 +13302,26 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                         parsed.right_auto.or(declarations.margin_right_auto);
                 }
             }
+            "margin-inline" => {
+                if let Some(parsed) = parse_css_logical_margin_pair(value, CssAxis::Horizontal) {
+                    margin.left = parsed.start;
+                    margin.right = parsed.end;
+                    declarations.margin_left_auto =
+                        parsed.start_auto.or(declarations.margin_left_auto);
+                    declarations.margin_right_auto =
+                        parsed.end_auto.or(declarations.margin_right_auto);
+                }
+            }
+            "margin-block" => {
+                if let Some(parsed) = parse_css_logical_margin_pair(value, CssAxis::Vertical) {
+                    margin.top = parsed.start;
+                    margin.bottom = parsed.end;
+                }
+            }
             "margin-top" => {
                 margin.top = parse_css_margin_length(value, CssAxis::Vertical);
             }
-            "margin-right" => {
+            "margin-right" | "margin-inline-end" => {
                 if css_value_is_auto(value) {
                     declarations.margin_right_auto = Some(true);
                 } else {
@@ -13303,7 +13334,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "margin-bottom" => {
                 margin.bottom = parse_css_margin_length(value, CssAxis::Vertical);
             }
-            "margin-left" => {
+            "margin-left" | "margin-inline-start" => {
                 if css_value_is_auto(value) {
                     declarations.margin_left_auto = Some(true);
                 } else {
@@ -13312,6 +13343,12 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                         declarations.margin_left_auto = Some(false);
                     }
                 }
+            }
+            "margin-block-start" => {
+                margin.top = parse_css_margin_length(value, CssAxis::Vertical);
+            }
+            "margin-block-end" => {
+                margin.bottom = parse_css_margin_length(value, CssAxis::Vertical);
             }
             "width" | "inline-size" => {
                 declarations.width =
@@ -13667,6 +13704,19 @@ fn parse_css_box_spacing(value: &str) -> Option<BoxSpacing> {
     })
 }
 
+fn parse_css_box_spacing_pair(value: &str, axis: CssAxis) -> Option<(usize, usize)> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let [start, end] = match tokens.as_slice() {
+        [all] => [*all, *all],
+        [start, end, ..] => [*start, *end],
+        [] => return None,
+    };
+    Some((
+        parse_css_padding_length(start, axis)?,
+        parse_css_padding_length(end, axis)?,
+    ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CssBoxSide {
     Top,
@@ -13699,6 +13749,58 @@ fn set_parsed_margin_side(parsed: &mut ParsedMargin, side: CssBoxSide, value: &s
         CssBoxSide::Left => {
             parsed.spacing.left = Some(length);
             parsed.left_auto = Some(false);
+        }
+    }
+    Some(())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ParsedLogicalMargin {
+    start: Option<usize>,
+    end: Option<usize>,
+    start_auto: Option<bool>,
+    end_auto: Option<bool>,
+}
+
+fn parse_css_logical_margin_pair(value: &str, axis: CssAxis) -> Option<ParsedLogicalMargin> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let [start, end] = match tokens.as_slice() {
+        [all] => [*all, *all],
+        [start, end, ..] => [*start, *end],
+        [] => return None,
+    };
+    let mut parsed = ParsedLogicalMargin::default();
+    set_parsed_logical_margin_side(&mut parsed, true, start, axis)?;
+    set_parsed_logical_margin_side(&mut parsed, false, end, axis)?;
+    Some(parsed)
+}
+
+fn set_parsed_logical_margin_side(
+    parsed: &mut ParsedLogicalMargin,
+    start_side: bool,
+    value: &str,
+    axis: CssAxis,
+) -> Option<()> {
+    if css_value_is_auto(value) {
+        if axis == CssAxis::Horizontal {
+            if start_side {
+                parsed.start_auto = Some(true);
+            } else {
+                parsed.end_auto = Some(true);
+            }
+        }
+        return Some(());
+    }
+    let length = parse_css_margin_length(value, axis)?;
+    if start_side {
+        parsed.start = Some(length);
+        if axis == CssAxis::Horizontal {
+            parsed.start_auto = Some(false);
+        }
+    } else {
+        parsed.end = Some(length);
+        if axis == CssAxis::Horizontal {
+            parsed.end_auto = Some(false);
         }
     }
     Some(())

@@ -7300,6 +7300,129 @@ fn css_percent_media_dimensions_preserve_readable_flow() {
 }
 
 #[test]
+fn css_logical_spacing_keeps_mixed_card_readable_after_scroll() {
+    let render = render_html(
+        "mem://css-logical-spacing-card",
+        br#"
+            <html><head><style>
+              .spacer { height: 24px; }
+              .card {
+                width: 96px;
+                margin-inline: auto;
+                margin-block: 12px;
+                padding-inline: 16px;
+                padding-block: 12px;
+                border: 1px solid black;
+                background-color: rgb(240, 240, 240);
+              }
+              .title, .copy { margin: 0; }
+            </style></head><body>
+              <div class="spacer"></div>
+              <section class="card">
+                <h2 class="title">Readable section</h2>
+                <p class="copy">Body text stays inside the centered card.</p>
+                <img alt="diagram" width="24" height="24">
+                <button>Continue</button>
+              </section>
+              <p>After card</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 240 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("logical spacing card should paint a centered background");
+    assert_eq!(card_background.0, 6);
+    assert_eq!(card_background.2, 18);
+    assert!(card_background.3 >= 8);
+
+    let copy = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Body text") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("body text should render inside card padding");
+    assert_eq!(copy.0, card_background.0 + 3);
+    assert!(copy.1 > card_background.1);
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("diagram") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("image should remain in the card flow");
+    assert_eq!(image.0, copy.0);
+    assert!(image.1 > copy.1);
+
+    let button_box = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232
+                && *x >= card_background.0
+                && *x < card_background.0 + card_background.2 =>
+            {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("button should expose a visual box in the card");
+    assert_eq!(button_box.0, copy.0);
+    assert!(button_box.1 >= image.1);
+    assert!(hit_test_target_node(&render, button_box.0, button_box.1 + 1).is_some());
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: card_background.1 + 1,
+            width: 30,
+            height: 8,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, card_background.1 + 1);
+    assert!(viewport.max_scroll_y > 0);
+    assert!(viewport.visible_command_count >= 4);
+}
+
+#[test]
 fn css_max_height_limits_image_placeholder_extent() {
     let render = render_html(
         "mem://css-max-height-image",
