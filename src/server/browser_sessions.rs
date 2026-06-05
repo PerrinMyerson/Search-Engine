@@ -11067,9 +11067,21 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const requestSeq = ++viewportRequestSeq;
     partialRequestInFlight = true;
     shell.dataset.viewportRequest = "partial";
-    fetch(partialUrl.toString(), {
+    const partialRequestTimeoutMs = 8000;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const fetchOptions = {
       headers: { "X-Requested-With": "browser-viewport-partial" }
-    }).then((response) => {
+    };
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+    }
+    const timeout = controller ? window.setTimeout(() => controller.abort(), partialRequestTimeoutMs) : null;
+    const clearPartialTimeout = () => {
+      if (timeout) {
+        window.clearTimeout(timeout);
+      }
+    };
+    fetch(partialUrl.toString(), fetchOptions).then((response) => {
       if (!response.ok) {
         throw new Error("viewport partial request failed");
       }
@@ -11089,8 +11101,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
         return;
       }
-      replaceViewportPage(url, message);
+      replaceViewportPage(url, "Visual viewport update timed out; opening full page...");
     }).then(() => {
+      clearPartialTimeout();
       if (requestSeq !== viewportRequestSeq) {
         return;
       }
@@ -11219,6 +11232,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   shell.addEventListener("mousemove", (event) => {
     const point = viewportPointFromEvent(event);
     if (!point) {
+      hideClickMarker();
+      setClickStatus("Click inside the rendered page image.");
+      setViewportFeedback("Click missed the rendered page image.");
       return;
     }
     moveClickMarker(point);
