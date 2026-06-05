@@ -92,6 +92,12 @@ pub struct BrowserResourceFetch {
     pub cache_max_entries: usize,
     #[serde(default)]
     pub cache_max_bytes: usize,
+    #[serde(default)]
+    pub cache_remaining_entries: usize,
+    #[serde(default)]
+    pub cache_remaining_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_pressure_level: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,6 +231,43 @@ struct BrowserResourceCachePressure {
     max_bytes: usize,
 }
 
+impl BrowserResourceCachePressure {
+    fn remaining_entries(self) -> usize {
+        self.max_entries.saturating_sub(self.entries)
+    }
+
+    fn remaining_bytes(self) -> usize {
+        self.max_bytes.saturating_sub(self.bytes)
+    }
+
+    fn pressure_level(self) -> &'static str {
+        if self.max_entries == 0 || self.max_bytes == 0 {
+            return "disabled";
+        }
+        let entry_percent = cache_pressure_percent(self.entries, self.max_entries);
+        let byte_percent = cache_pressure_percent(self.bytes, self.max_bytes);
+        let percent = entry_percent.max(byte_percent);
+
+        if percent >= 100 {
+            "full"
+        } else if percent >= 90 {
+            "high"
+        } else if percent >= 75 {
+            "elevated"
+        } else {
+            "normal"
+        }
+    }
+}
+
+fn cache_pressure_percent(value: usize, max: usize) -> usize {
+    if max == 0 {
+        0
+    } else {
+        value.saturating_mul(100) / max
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowserResourceCacheStoreOutcome {
     Stored,
@@ -302,6 +345,9 @@ impl BrowserResourceFetch {
             cache_evicted_bytes: args.cache_pressure.evicted_bytes,
             cache_max_entries: args.cache_pressure.max_entries,
             cache_max_bytes: args.cache_pressure.max_bytes,
+            cache_remaining_entries: args.cache_pressure.remaining_entries(),
+            cache_remaining_bytes: args.cache_pressure.remaining_bytes(),
+            cache_pressure_level: Some(args.cache_pressure.pressure_level().to_owned()),
             cache_outcome: args.cache_outcome,
             diagnostic,
             image_decode_status,
@@ -321,6 +367,9 @@ impl BrowserResourceFetch {
         self.cache_evicted_bytes = pressure.evicted_bytes;
         self.cache_max_entries = pressure.max_entries;
         self.cache_max_bytes = pressure.max_bytes;
+        self.cache_remaining_entries = pressure.remaining_entries();
+        self.cache_remaining_bytes = pressure.remaining_bytes();
+        self.cache_pressure_level = Some(pressure.pressure_level().to_owned());
     }
 
     fn set_cache_outcome(&mut self, outcome: BrowserResourceCacheStoreOutcome) {
@@ -2134,6 +2183,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resource_fetch_reports_cache_pressure_remaining_capacity() {
+        let mut cache = BrowserResourceCache::with_limits(4, 10);
+        let mut jar = BrowserCookieJar::default();
+
+        let first =
+            fetch_resource_with_cache(test_resource("data:text/css,abc"), 64, &mut jar, &mut cache)
+                .await;
+        assert_eq!(first.cache_remaining_entries, 3);
+        assert_eq!(first.cache_remaining_bytes, 7);
+        assert_eq!(first.cache_pressure_level.as_deref(), Some("normal"));
+
+        let second = fetch_resource_with_cache(
+            test_resource("data:text/css,123456"),
+            64,
+            &mut jar,
+            &mut cache,
+        )
+        .await;
+        assert_eq!(second.cache_entries, 2);
+        assert_eq!(second.cache_bytes, 9);
+        assert_eq!(second.cache_remaining_entries, 2);
+        assert_eq!(second.cache_remaining_bytes, 1);
+        assert_eq!(second.cache_pressure_level.as_deref(), Some("high"));
+
+        let third =
+            fetch_resource_with_cache(test_resource("data:text/css,z"), 64, &mut jar, &mut cache)
+                .await;
+        assert_eq!(third.cache_bytes, 10);
+        assert_eq!(third.cache_remaining_bytes, 0);
+        assert_eq!(third.cache_pressure_level.as_deref(), Some("full"));
+    }
+
+    #[tokio::test]
     async fn data_image_fetch_reports_decode_status_and_diagnostic() {
         let mut cache = BrowserResourceCache::with_limits(8, 4096);
         let mut jar = BrowserCookieJar::default();
@@ -2273,6 +2355,9 @@ mod tests {
             cache_evicted_bytes: 0,
             cache_max_entries: 256,
             cache_max_bytes: 32 * 1024 * 1024,
+            cache_remaining_entries: 256,
+            cache_remaining_bytes: 32 * 1024 * 1024,
+            cache_pressure_level: Some("normal".to_owned()),
             cache_outcome: Some("miss_failed".to_owned()),
             diagnostic: Some("network_timeout".to_owned()),
             image_decode_status: None,
