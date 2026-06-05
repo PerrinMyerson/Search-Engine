@@ -16655,7 +16655,23 @@ fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) ->
                 .clone()
                 .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)))
         )),
+        "button" => Some(button_render_text(dom, node_id, element)),
         _ => None,
+    }
+}
+
+fn button_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> String {
+    let label = element
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)));
+    if label.is_empty() {
+        "[Button]".to_owned()
+    } else {
+        format!("[{label}]")
     }
 }
 
@@ -18724,10 +18740,12 @@ impl FlowRenderer {
         if line_was_empty {
             self.push_pending_text_indent();
         }
-        let width = text_cell_width(text, self.font_scale);
-        if width == 0 {
+        let text_width = text_cell_width(text, self.font_scale);
+        if text_width == 0 {
             return;
         }
+        let padding = 1usize;
+        let width = text_width.saturating_add(padding.saturating_mul(2));
         if !line_was_empty && self.current_width > 0 {
             if self.current_width.saturating_add(1).saturating_add(width) > self.available_width() {
                 self.break_line();
@@ -18735,7 +18753,26 @@ impl FlowRenderer {
                 self.push_text_run_piece_unspaced(" ", None);
             }
         }
+        if self.current_width == 0 {
+            self.push_pending_text_indent();
+        }
+        let widget_height = self.line_height.max(self.font_scale).max(2);
+        if self.paint_visible()
+            && let Some(command) = self.clipped_rect_command(
+                self.box_x().saturating_add(self.current_width),
+                self.next_y,
+                width,
+                widget_height,
+                232,
+            )
+        {
+            let target = self.node_hit_target(target_node);
+            self.push_underlay_command(command, target);
+        }
+        self.push_fixed_space_width(padding, target_node);
         self.push_text_run_piece(text, target_node);
+        self.push_fixed_space_width(padding, target_node);
+        self.inline_replaced_height = self.inline_replaced_height.max(widget_height);
     }
 
     fn break_line(&mut self) {
