@@ -1923,6 +1923,105 @@ async fn image_svg_style_selectors_decode_tag_id_and_inline_precedence_for_rende
 }
 
 #[tokio::test]
+async fn image_render_usefulness_svg_defs_group_use_decodes_and_rasters_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("defs-group-use.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 4 2" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <g id="badge">
+                        <rect width="2" height="2" fill="#ff0000"/>
+                        <path d="M2 0 H4 V2 H2 Z" fill="#0055ff"/>
+                    </g>
+                </defs>
+                <use href="#badge"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before defs group</p><img src="defs-group-use.svg" alt="Defs group SVG" width="24" height="12"><p>After defs group</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded =
+        decode_image_reference(&page.display().to_string(), "defs-group-use.svg").unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel == [0, 85, 255])
+    );
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "defs-group-use.svg");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before defs group"));
+    assert!(render.text.contains("After defs group"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 120 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_raster_detail_svg_symbol_use_decodes_and_rasters_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

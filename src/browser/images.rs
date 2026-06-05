@@ -467,6 +467,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut current_radial_gradient = None;
     let mut style_rules = SvgStyleRules::default();
     let mut definition_stack: Vec<Option<String>> = Vec::new();
+    let mut definition_group_stack = Vec::new();
     let mut transform_stack = vec![Some(SvgTransform::identity())];
     let mut paint_stack = vec![HashMap::new()];
 
@@ -523,6 +524,13 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         "g" => {
                             let attrs = svg_attrs_with_style_rules("g", attrs, &style_rules);
                             if !tag.self_closing {
+                                let stores_definition_group =
+                                    definition_stack.last().is_some_and(Option::is_none)
+                                        && attrs.contains_key("id");
+                                if stores_definition_group {
+                                    definition_stack.push(attrs.get("id").cloned());
+                                }
+                                definition_group_stack.push(stores_definition_group);
                                 transform_stack.push(svg_child_transform(&transform_stack, &attrs));
                                 paint_stack.push(svg_child_paint_attrs(&paint_stack, &attrs));
                             }
@@ -713,6 +721,9 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                     if tag.name == "g" && transform_stack.len() > 1 {
                         transform_stack.pop();
                         paint_stack.pop();
+                        if definition_group_stack.pop().unwrap_or(false) {
+                            definition_stack.pop();
+                        }
                     } else if tag.name == "symbol" {
                         if transform_stack.len() > 1 {
                             transform_stack.pop();
