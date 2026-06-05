@@ -8242,3 +8242,134 @@ fn inline_widgets_paint_light_fill_and_border_without_losing_hit_box() {
     assert!(hit_test_target_node(&render, fill.0, fill.1).is_some());
     assert!(hit_test_target_node(&render, fill.0, fill.1 + 1).is_some());
 }
+
+#[test]
+fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
+    let image_url = "mem://link-underlined-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![112],
+        rgb_pixels: Some(vec![96, 144, 208]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://link-underlined-scrolled",
+        format!(
+            r#"
+            <html><head><style>
+              .spacer {{ height: 24px; }}
+              img {{ width: 48px; height: 36px; }}
+              a {{ line-height: 2; }}
+            </style></head><body>
+              <div class="spacer"></div>
+              <img src="{image_url}" alt="preview">
+              <p>Open the <a href="/details">readable details</a> for this example page.</p>
+              <p>More body text keeps the viewport scrollable.</p>
+            </body></html>
+            "#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 34,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render underlined link fixture");
+    let render = profiled.render;
+
+    let link_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("readable details") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("link text should render as styled text");
+    let underline = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == LINK_UNDERLINE_SHADE && *x == link_text.0 && *y == link_text.1 => {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("link text should paint a visual underline hit box");
+    assert_eq!(underline.2, link_text.2.chars().count());
+    assert_eq!(underline.3, 1);
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: underline.1.saturating_sub(1),
+            width: 34,
+            height: 4,
+        },
+        None,
+    );
+    assert!(viewport.max_scroll_y > 0);
+    let local_x = underline.0 + underline.2.saturating_sub(1);
+    let local_y = underline.1.saturating_sub(viewport.viewport.y);
+    let target_node =
+        hit_test_target_node_in_viewport(&render, viewport.viewport, local_x, local_y)
+            .expect("viewport click on link underline should hit the anchor");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, target_node).as_deref(),
+        Some("/details")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled link viewport");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let underline_pixel_x = raster_options
+        .padding_x
+        .saturating_add(local_x.saturating_mul(raster_options.cell_width));
+    let underline_pixel_y = raster_options
+        .padding_y
+        .saturating_add(local_y.saturating_mul(raster_options.cell_height));
+    assert_eq!(
+        pixel(underline_pixel_x, underline_pixel_y),
+        &[
+            LINK_UNDERLINE_SHADE,
+            LINK_UNDERLINE_SHADE,
+            LINK_UNDERLINE_SHADE,
+            255,
+        ]
+    );
+}

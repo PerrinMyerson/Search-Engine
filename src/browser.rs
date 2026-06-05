@@ -515,6 +515,7 @@ const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
 const INLINE_WIDGET_BACKGROUND_SHADE: u8 = 250;
 const INLINE_WIDGET_BORDER_SHADE: u8 = 176;
+const LINK_UNDERLINE_SHADE: u8 = 144;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserLayerMetrics {
@@ -15722,11 +15723,22 @@ fn render_node(
             if positive_z_layer_entered {
                 renderer.enter_positive_z_layer(style.z_index);
             }
+            let link_text_entered = element.tag == "a"
+                && element
+                    .href
+                    .as_ref()
+                    .is_some_and(|href| !href.trim().is_empty());
+            if link_text_entered {
+                renderer.enter_link_text();
+            }
             let exit_outer_contexts = |renderer: &mut FlowRenderer,
                                        out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>,
                                        horizontal_projection_entered: &mut Option<
                 FlowHorizontalProjectionSnapshot,
             >| {
+                if link_text_entered {
+                    renderer.exit_link_text();
+                }
                 if let Some(snapshot) = horizontal_projection_entered.take() {
                     renderer.exit_horizontal_projection(snapshot);
                 }
@@ -18174,6 +18186,7 @@ struct TextRun {
     shade: u8,
     font_scale: usize,
     background_shade: Option<u8>,
+    link_underline: bool,
     visible: bool,
     target_runs: Vec<TextHitTargetRun>,
 }
@@ -18417,6 +18430,7 @@ struct FlowRenderer {
     line_height_stack: Vec<usize>,
     font_scale: usize,
     font_scale_stack: Vec<usize>,
+    link_text_depth: usize,
     positioning_context_stack: Vec<FlowPositioningContext>,
     viewport_fixed_depth: usize,
     viewport_sticky_top_stack: Vec<usize>,
@@ -18480,6 +18494,7 @@ impl FlowRenderer {
             line_height_stack: Vec::new(),
             font_scale: 1,
             font_scale_stack: Vec::new(),
+            link_text_depth: 0,
             positioning_context_stack: Vec::new(),
             viewport_fixed_depth: 0,
             viewport_sticky_top_stack: Vec::new(),
@@ -19134,6 +19149,19 @@ impl FlowRenderer {
                         let target = self.node_hit_target(None);
                         self.push_underlay_command(command, target);
                     }
+                    if run.link_underline
+                        && run_width > 0
+                        && let Some(command) = self.clipped_rect_command(
+                            run_x,
+                            y.saturating_add(row_height.saturating_sub(1)),
+                            run_width,
+                            1,
+                            LINK_UNDERLINE_SHADE,
+                        )
+                    {
+                        let target = self.text_hit_target(run.target_runs.clone());
+                        self.push_underlay_command(command, target);
+                    }
                     text.push_str(&scaled_text_for_line(&run.text, run.font_scale));
                     self.push_text_display_command(
                         run_x,
@@ -19208,10 +19236,12 @@ impl FlowRenderer {
         let piece_width = text_cell_width(piece, self.font_scale);
         self.current_width = self.current_width.saturating_add(piece_width);
         let visible = self.paint_visible();
+        let link_underline = self.link_text_active();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
             && last.font_scale == self.font_scale
             && last.background_shade == self.text_background_shade
+            && last.link_underline == link_underline
             && last.visible == visible
             && last
                 .start_x
@@ -19237,6 +19267,7 @@ impl FlowRenderer {
             shade: self.text_shade,
             font_scale: self.font_scale,
             background_shade: self.text_background_shade,
+            link_underline,
             visible,
             target_runs,
         });
@@ -19265,10 +19296,12 @@ impl FlowRenderer {
             1
         };
         let piece = " ".repeat(width.div_ceil(font_scale));
+        let link_underline = self.link_text_active();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
             && last.font_scale == font_scale
             && last.background_shade == self.text_background_shade
+            && last.link_underline == link_underline
             && last.visible == visible
             && last
                 .start_x
@@ -19294,6 +19327,7 @@ impl FlowRenderer {
             shade: self.text_shade,
             font_scale,
             background_shade: self.text_background_shade,
+            link_underline,
             visible,
             target_runs,
         });
@@ -19351,6 +19385,18 @@ impl FlowRenderer {
 
     fn exit_positive_z_layer(&mut self) {
         self.positive_z_layer_stack.pop();
+    }
+
+    fn enter_link_text(&mut self) {
+        self.link_text_depth = self.link_text_depth.saturating_add(1);
+    }
+
+    fn exit_link_text(&mut self) {
+        self.link_text_depth = self.link_text_depth.saturating_sub(1);
+    }
+
+    fn link_text_active(&self) -> bool {
+        self.link_text_depth > 0
     }
 
     fn node_hit_target(&self, target_node: Option<usize>) -> DisplayHitTarget {
