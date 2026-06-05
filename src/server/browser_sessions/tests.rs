@@ -10946,11 +10946,17 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(r#"eventTarget.closest("[data-browser-auto-visual-control] a, [data-browser-auto-visual-control] button")"#));
     assert!(html.contains(r#"shell.dataset.pendingAutoVisual = "true""#));
     assert!(html.contains(r#"shell.setAttribute("aria-busy", "true")"#));
-    assert!(html.contains("showPendingAutoVisualStatus"));
+    assert!(!html.contains(
+        r#"event.preventDefault();
+      showPendingAutoVisualStatus();
+    }, { passive: false });"#
+    ));
+    assert!(html.contains("const queueViewportScroll"));
+    assert!(html.contains("replaceViewportPartial(scroll.url"));
     assert!(html.contains(r#"{ passive: false }"#));
     let auto_guard_index = html
         .find("const pendingAutoVisual")
-        .expect("viewport script should guard auto-visual pages");
+        .expect("viewport script should mark auto-visual pages");
     let wheel_listener_index = html
         .find(r#"shell.addEventListener("wheel""#)
         .expect("viewport script should still include wheel handling");
