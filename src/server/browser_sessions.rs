@@ -9577,13 +9577,13 @@ a {{ color: #123fae; text-decoration: none; font-weight: 700; overflow-wrap: any
 a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
-.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 6px; margin: -18px -18px 14px; padding: 8px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
-.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 8px; align-items: center; }}
+.browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 4px; margin: -18px -18px 10px; padding: 5px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
+.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 6px; align-items: center; }}
 .browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
-.browser-primary-nav a, .browser-primary-nav span {{ min-width: 36px; justify-content: center; padding: 0 9px; white-space: nowrap; }}
-.browser-chrome-status {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; color: #5d636b; font-size: 12px; font-weight: 800; }}
-.browser-chrome-status .viewport-state-chip {{ min-height: 24px; padding: 0 7px; font-size: 11px; }}
-.browser-chrome-status a {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 8px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
+.browser-primary-nav a, .browser-primary-nav span {{ min-width: 32px; justify-content: center; padding: 0 8px; white-space: nowrap; }}
+.browser-chrome-status {{ display: flex; flex-wrap: nowrap; gap: 5px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; }}
+.browser-chrome-status .viewport-state-chip {{ min-height: 22px; padding: 0 6px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }}
+.browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
 .browser-tab-strip {{ margin: 0; }}
@@ -9628,7 +9628,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-status-text span {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; }}
 .viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
 .viewport-scroll-meter span {{ display: block; height: 100%; background: #2457d6; }}
-.browser-surface-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.browser-surface-state {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 8px; }}
+.browser-surface-state.compact {{ gap: 10px; color: #5d636b; font-size: 12px; font-weight: 800; }}
+.browser-surface-state.compact [data-browser-primary-raster] {{ color: #20242a; }}
 .browser-surface-state .primary-action {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; white-space: nowrap; }}
 .viewport-scroll-controls {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
 .viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
@@ -12708,15 +12710,15 @@ fn browser_scroll_axis_state(
 fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
     let mut status = String::new();
     let raster_label = if let Some(image) = &payload.viewport_image {
-        format!("raster {}x{}", image.width, image.height)
+        format!("visual {}x{}", image.width, image.height)
     } else if payload.viewport_image_error.is_some() {
-        "raster error".to_owned()
+        "visual error".to_owned()
     } else {
-        "raster unavailable".to_owned()
+        "visual pending".to_owned()
     };
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height} @ {x},{y}</span><span class="viewport-state-chip">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session>tab {id}</span><span class="viewport-state-chip" data-browser-shell-viewport>{width}x{height} @ {x},{y}</span><span class="viewport-state-chip" data-browser-shell-render>{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
@@ -12724,36 +12726,6 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         y = payload.viewport_y,
         raster = html_escape::encode_text(&raster_label),
     );
-    let action_urls = browser_session_resource_action_urls(payload);
-    if action_urls.make_visual.is_some() {
-        status.push_str(
-            &browser_session_resource_action_link_with_class_and_attributes(
-                action_urls.make_visual.as_deref(),
-                "Make readable",
-                "browser-chrome-tool primary-action",
-                r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
-            ),
-        );
-    }
-    let load_images_label = format!(
-        "Load {}",
-        browser_resource_count_label(payload.resource_image_count, "image", "images")
-    );
-    if action_urls.load_images.is_some() {
-        status.push_str(
-            &browser_session_resource_action_link_with_class_and_attributes(
-                action_urls.load_images.as_deref(),
-                &load_images_label,
-                "browser-chrome-tool",
-                r#" data-browser-resource-action data-browser-resource-status="Loading images...""#,
-            ),
-        );
-    }
-    if action_urls.make_visual.is_some() || action_urls.load_images.is_some() {
-        status.push_str(
-            r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
-        );
-    }
     status
 }
 
@@ -12829,24 +12801,17 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
         );
     }
 
-    let render_chip = if let Some(image) = payload.viewport_image.as_ref() {
-        format!(
-            r#"<span class="viewport-state-chip" data-browser-primary-raster>raster {}x{}</span>"#,
-            image.width, image.height,
-        )
+    let render_label = if let Some(image) = payload.viewport_image.as_ref() {
+        format!("Browser view ready: {}x{}", image.width, image.height,)
     } else if payload.viewport_image_error.is_some() {
-        r#"<span class="viewport-state-chip warning" data-browser-primary-raster>raster error</span>"#
-            .to_owned()
+        "Browser view has a render error".to_owned()
     } else {
-        r#"<span class="viewport-state-chip warning" data-browser-primary-raster>raster unavailable</span>"#
-            .to_owned()
+        "Browser view waiting for render".to_owned()
     };
-    let visual_flow_status = render_browser_session_visual_flow_status(payload);
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<div class="browser-surface-state" data-browser-primary-state>{render_chip}{visual_flow_status}{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
-        render_chip = render_chip,
-        visual_flow_status = visual_flow_status,
+        r#"<div class="browser-surface-state compact" data-browser-primary-state><span data-browser-primary-raster>{render_label}</span>{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
+        render_label = html_escape::encode_text(&render_label),
         action_feedback = action_feedback,
         viewport_feedback = viewport_feedback,
     )
