@@ -675,7 +675,7 @@ fn load_data_url_resource(target: &str, max_bytes: usize) -> Result<(String, Vec
     let bytes = if base64 {
         decode_base64_data_url_payload(data)?
     } else {
-        percent_decode_data_url_payload(data)?
+        percent_decode_data_url_payload(data)
     };
     ensure!(
         bytes.len() <= max_bytes,
@@ -745,22 +745,21 @@ fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn percent_decode_data_url_payload(input: &str) -> Result<Vec<u8>> {
+fn percent_decode_data_url_payload(input: &str) -> Vec<u8> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
     while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = data_url_hex_value(
-                *bytes
+        if bytes[index] == b'%'
+            && let (Some(high), Some(low)) = (
+                bytes
                     .get(index + 1)
-                    .context("truncated percent escape in data URL")?,
-            )?;
-            let low = data_url_hex_value(
-                *bytes
+                    .and_then(|byte| data_url_hex_value(*byte)),
+                bytes
                     .get(index + 2)
-                    .context("truncated percent escape in data URL")?,
-            )?;
+                    .and_then(|byte| data_url_hex_value(*byte)),
+            )
+        {
             out.push((high << 4) | low);
             index += 3;
         } else {
@@ -768,15 +767,15 @@ fn percent_decode_data_url_payload(input: &str) -> Result<Vec<u8>> {
             index += 1;
         }
     }
-    Ok(out)
+    out
 }
 
-fn data_url_hex_value(byte: u8) -> Result<u8> {
+fn data_url_hex_value(byte: u8) -> Option<u8> {
     match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => anyhow::bail!("invalid percent escape in data URL"),
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
