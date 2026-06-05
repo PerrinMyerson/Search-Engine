@@ -9656,6 +9656,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
 .viewport-interaction-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-interaction-row.compact {{ margin: 6px 0 8px; }}
 .viewport-click-status-row {{ flex: 1 1 280px; min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
 .viewport-click-details {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
 .viewport-click-details > summary {{ min-height: 28px; display: inline-flex; align-items: center; cursor: pointer; padding: 0 9px; color: #20242a; font-size: 12px; font-weight: 800; }}
@@ -12919,28 +12920,6 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
 }
 
 fn render_browser_session_viewport_interaction_controls(payload: &BrowserSessionPayload) -> String {
-    let mut quick_links = String::new();
-    for link in payload.links.iter().take(4) {
-        let label = if link.label.trim().is_empty() {
-            format!("Link {}", link.index + 1)
-        } else {
-            link.label.clone()
-        };
-        let _ = write!(
-            quick_links,
-            r#"<a href="{href}" title="{title}">{index}. {label}</a>"#,
-            href = html_escape::encode_double_quoted_attribute(&link.action_url),
-            title = html_escape::encode_double_quoted_attribute(&link.url),
-            index = link.index + 1,
-            label = html_escape::encode_text(&browser_session_feedback_excerpt(&label)),
-        );
-    }
-    if quick_links.is_empty() {
-        quick_links.push_str(r#"<span class="viewport-state-chip">No visible links</span>"#);
-    }
-
-    let default_click_x = payload.width.saturating_sub(1) / 2;
-    let default_click_y = payload.height.saturating_sub(1) / 2;
     let click_status = browser_session_click_status(payload);
     let click_hint = if browser_session_pending_without_ready_viewport(payload) {
         "Clicks start after render"
@@ -12948,15 +12927,9 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
         "Click raster to open links/buttons"
     };
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">{click_hint}</span></div><details class="viewport-click-details" aria-label="Manual click coordinates"><summary>Manual click</summary><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button></form></details><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
-        common = browser_session_common_hidden_inputs(payload),
-        max_x = payload.width.saturating_sub(1),
-        max_y = payload.height.saturating_sub(1),
-        default_click_x = default_click_x,
-        default_click_y = default_click_y,
+        r#"<div class="viewport-interaction-row compact" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">{click_hint}</span></div></div>"#,
         click_status = click_status,
         click_hint = click_hint,
-        quick_links = quick_links,
     )
 }
 
