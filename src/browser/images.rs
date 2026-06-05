@@ -5549,6 +5549,11 @@ fn media_query_matches_current_screen(query: &str, viewport_width_css_px: usize)
     if query.is_empty() {
         return true;
     }
+    if split_css_top_level_commas(&query).len() > 1 {
+        return split_css_top_level_commas(&query)
+            .into_iter()
+            .any(|query| media_query_matches_current_screen(query, viewport_width_css_px));
+    }
     if let Some(query) = query.strip_prefix("only ") {
         return positive_media_query_matches_current_screen(query.trim(), viewport_width_css_px);
     }
