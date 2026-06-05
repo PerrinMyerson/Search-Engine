@@ -3791,6 +3791,34 @@ pub fn hit_test_render(render: &BrowserRender, x: usize, y: usize) -> BrowserHit
 }
 
 fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
+    hit_test_text_target_node(render, x, y).or_else(|| hit_test_visual_target_node(render, x, y))
+}
+
+fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
+            let bounds = display_command_bounds(command);
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+        })
+}
+
+fn hit_test_visual_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
     render
         .display_list
         .iter()

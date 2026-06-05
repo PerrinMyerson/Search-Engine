@@ -5472,6 +5472,38 @@ async fn browser_session_click_at_default_action_navigates_anchor_text() {
     assert_eq!(session.snapshot().current_index, Some(1));
 }
 
+#[tokio::test]
+async fn browser_session_click_at_prefers_visible_anchor_text_over_later_image_fill() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.html");
+    let second = dir.path().join("second.html");
+    fs::write(
+        &first,
+        r#"<html><head><title>First</title></head><body><a href="second.html">Go</a><img src="missing.png" width="64" height="12" style="position:absolute; top:0; left:0" alt=""></body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &second,
+        r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session
+        .navigate(&first.display().to_string())
+        .await
+        .unwrap();
+    let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
+    assert_eq!(
+        session.link_target_at(0, 0).as_deref(),
+        Some(expected_target.as_str())
+    );
+    let render = session.click_at_with_default_action(0, 0).await.unwrap();
+    assert_eq!(render.title, "Second");
+    assert_eq!(render.text, "Arrived");
+    assert_eq!(session.snapshot().current_index, Some(1));
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(
