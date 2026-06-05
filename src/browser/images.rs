@@ -353,7 +353,7 @@ fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
     let bytes = if base64 {
         decode_base64(data)?
     } else {
-        percent_decode_bytes(data)?
+        percent_decode_data_url_bytes(data)
     };
     Some((mime_type, bytes))
 }
@@ -398,14 +398,17 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     (block_len == 0).then_some(out)
 }
 
-fn percent_decode_bytes(input: &str) -> Option<Vec<u8>> {
+fn percent_decode_data_url_bytes(input: &str) -> Vec<u8> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
     while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = hex_value(*bytes.get(index + 1)?)?;
-            let low = hex_value(*bytes.get(index + 2)?)?;
+        if bytes[index] == b'%'
+            && let (Some(high), Some(low)) = (
+                bytes.get(index + 1).and_then(|byte| hex_value(*byte)),
+                bytes.get(index + 2).and_then(|byte| hex_value(*byte)),
+            )
+        {
             out.push((high << 4) | low);
             index += 3;
         } else {
@@ -413,7 +416,7 @@ fn percent_decode_bytes(input: &str) -> Option<Vec<u8>> {
             index += 1;
         }
     }
-    Some(out)
+    out
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
