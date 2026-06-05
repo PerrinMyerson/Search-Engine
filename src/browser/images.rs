@@ -5503,11 +5503,7 @@ fn parse_source_size_value(value: &str, viewport_width_css_px: usize) -> Option<
         }
         return Some((viewport_width_css_px as f64) * vw / 100.0);
     }
-    let pixels = strip_ascii_case_suffix(value, "px")?
-        .trim()
-        .parse::<f64>()
-        .ok()?;
-    pixels.is_finite().then_some(pixels)
+    parse_source_size_absolute_value(value)
 }
 
 fn parse_source_size_function_args(value: &str, viewport_width_css_px: usize) -> Option<Vec<f64>> {
@@ -5554,11 +5550,21 @@ fn parse_source_size_calc_term(term: &str, viewport_width_css_px: usize) -> Opti
         }
         return Some((viewport_width_css_px as f64) * vw / 100.0);
     }
-    let px = strip_ascii_case_suffix(term, "px")?
-        .trim()
-        .parse::<f64>()
-        .ok()?;
-    px.is_finite().then_some(px)
+    parse_source_size_absolute_value(term)
+}
+
+fn parse_source_size_absolute_value(value: &str) -> Option<f64> {
+    let (value, scale) = if let Some(px) = strip_ascii_case_suffix(value, "px") {
+        (px, 1.0)
+    } else if let Some(rem) = strip_ascii_case_suffix(value, "rem") {
+        (rem, 16.0)
+    } else if let Some(em) = strip_ascii_case_suffix(value, "em") {
+        (em, 16.0)
+    } else {
+        return None;
+    };
+    let pixels = value.trim().parse::<f64>().ok()? * scale;
+    pixels.is_finite().then_some(pixels)
 }
 
 fn strip_ascii_case_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
