@@ -10183,8 +10183,20 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(topbar_html.contains(r#">Read</a>"#));
+    assert!(topbar_html.contains(r#">Images</a>"#));
+    assert!(topbar_html.contains(r#"data-browser-make-visual-action"#));
+    assert!(topbar_html.contains(r#"data-browser-resource-status="Making visual...""#));
+    assert!(topbar_html.contains(r#"data-browser-resource-status="Loading images...""#));
+    assert!(topbar_html.contains(r#"data-browser-resource-status-output aria-live="polite""#));
     assert!(!topbar_html.contains(r#">Make readable</a>"#));
+    assert!(!topbar_html.contains(r#">Make visual</a>"#));
     assert!(!topbar_html.contains(r#">Load 1 image</a>"#));
+    assert!(
+        topbar_html.contains(
+            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+        )
+    );
     let tools_start = html.find(r#"data-browser-controls-tray"#).unwrap();
     let tools_end = html.find(r#"data-browser-tools-tray"#).unwrap();
     let tools_html = &html[tools_start..tools_end];
@@ -11753,6 +11765,8 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(!topbar_html.contains(">Read</a>"));
+    assert!(!topbar_html.contains(">Images</a>"));
     assert!(!topbar_html.contains(">Make readable</a>"));
     assert!(!topbar_html.contains(">Load "));
     assert!(
