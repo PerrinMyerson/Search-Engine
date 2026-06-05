@@ -454,16 +454,12 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut cursor = 0usize;
     let mut width = None;
     let mut height = None;
-    let mut rects = Vec::new();
-    let mut circles = Vec::new();
-    let mut ellipses = Vec::new();
-    let mut polygons = Vec::new();
-    let mut polylines = Vec::new();
-    let mut paths = Vec::new();
-    let mut embedded_images = Vec::new();
+    let mut shapes = SvgDecodedShapes::default();
+    let mut stored_shapes: HashMap<String, SvgDecodedShapes> = HashMap::new();
     let mut linear_gradients: HashMap<String, Vec<SvgGradientStop>> = HashMap::new();
     let mut current_linear_gradient = None;
     let mut class_styles: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut definition_stack: Vec<Option<String>> = Vec::new();
     let mut transform_stack = vec![Some(SvgTransform::identity())];
     let mut paint_stack = vec![HashMap::new()];
 
@@ -504,6 +500,19 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                                 paint_stack.push(svg_child_paint_attrs(&paint_stack, &attrs));
                             }
                         }
+                        "defs" => {
+                            if !tag.self_closing {
+                                definition_stack.push(None);
+                            }
+                        }
+                        "symbol" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
+                            if !tag.self_closing {
+                                definition_stack.push(attrs.get("id").cloned());
+                                transform_stack.push(svg_child_transform(&transform_stack, &attrs));
+                                paint_stack.push(svg_child_paint_attrs(&paint_stack, &attrs));
+                            }
+                        }
                         "g" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if !tag.self_closing {
@@ -514,79 +523,138 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         "rect" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                rects.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Rect(shape),
+                                );
                             }
                         }
                         "circle" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                circles.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Circle(shape),
+                                );
                             }
                         }
                         "ellipse" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                ellipses.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Ellipse(shape),
+                                );
                             }
                         }
                         "polygon" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                polygons.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Polygon(shape),
+                                );
                             }
                         }
                         "polyline" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                polylines.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Polyline(shape),
+                                );
                             }
                         }
                         "path" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                paths.push(SvgShapeAttrs {
+                                let shape = SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
                                         &paint_stack,
                                         attrs,
                                     ),
                                     transform,
-                                });
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Path(shape),
+                                );
                             }
                         }
                         "image" => {
                             let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
-                                embedded_images.push(SvgShapeAttrs { attrs, transform });
+                                let shape = SvgShapeAttrs { attrs, transform };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::EmbeddedImage(shape),
+                                );
+                            }
+                        }
+                        "use" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
+                            if let Some(reference_id) = svg_use_reference_id(&attrs)
+                                && let Some(stored) = stored_shapes.get(reference_id)
+                                && let Some(transform) = svg_use_transform(&transform_stack, &attrs)
+                            {
+                                let inherited =
+                                    svg_shape_attrs_with_inherited_paint(&paint_stack, attrs);
+                                let used = stored.used_with(transform, &inherited);
+                                svg_collect_used_shapes(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    used,
+                                );
                             }
                         }
                         "lineargradient" => {
@@ -615,6 +683,16 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                     if tag.name == "g" && transform_stack.len() > 1 {
                         transform_stack.pop();
                         paint_stack.pop();
+                    } else if tag.name == "symbol" {
+                        if transform_stack.len() > 1 {
+                            transform_stack.pop();
+                        }
+                        if paint_stack.len() > 1 {
+                            paint_stack.pop();
+                        }
+                        definition_stack.pop();
+                    } else if tag.name == "defs" {
+                        definition_stack.pop();
                     } else if tag.name == "svg" && paint_stack.len() > 1 {
                         paint_stack.pop();
                     } else if tag.name == "lineargradient" {
@@ -630,7 +708,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let height = height?.clamp(1, MAX_DECODED_IMAGE_SIDE);
     let mut pixels = vec![255u8; width.checked_mul(height)?];
     let mut rgb_pixels = vec![255u8; width.checked_mul(height)?.checked_mul(3)?];
-    for rect_shape in rects {
+    for rect_shape in shapes.rects {
         let rect = &rect_shape.attrs;
         if rect_shape.transform.is_identity() {
             let x = rect
@@ -684,7 +762,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
-    for circle_shape in circles {
+    for circle_shape in shapes.circles {
         let circle = &circle_shape.attrs;
         let Some(fill) = svg_shape_fill_paint(&circle) else {
             continue;
@@ -712,7 +790,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
-    for ellipse_shape in ellipses {
+    for ellipse_shape in shapes.ellipses {
         let ellipse = &ellipse_shape.attrs;
         let Some(fill) = svg_shape_fill_paint(&ellipse) else {
             continue;
@@ -738,7 +816,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
     }
-    for polygon_shape in polygons {
+    for polygon_shape in shapes.polygons {
         let polygon = &polygon_shape.attrs;
         let Some(fill) = svg_shape_fill_paint(&polygon) else {
             continue;
@@ -752,7 +830,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         let points = transform_svg_points(&points, polygon_shape.transform);
         fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
     }
-    for polyline_shape in polylines {
+    for polyline_shape in shapes.polylines {
         let polyline = &polyline_shape.attrs;
         let Some(points) = polyline
             .get("points")
@@ -777,7 +855,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             );
         }
     }
-    for path_shape in paths {
+    for path_shape in shapes.paths {
         let path = &path_shape.attrs;
         let Some(points) = path.get("d").and_then(|value| parse_simple_svg_path(value)) else {
             continue;
@@ -799,7 +877,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             );
         }
     }
-    for embedded in embedded_images {
+    for embedded in shapes.embedded_images {
         draw_decoded_svg_embedded_image(
             &mut pixels,
             &mut rgb_pixels,
@@ -1501,6 +1579,168 @@ fn parse_svg_viewbox_dimensions(value: &str) -> Option<(usize, usize)> {
 struct SvgShapeAttrs {
     attrs: HashMap<String, String>,
     transform: SvgTransform,
+}
+
+#[derive(Debug, Clone)]
+enum SvgStoredShape {
+    Rect(SvgShapeAttrs),
+    Circle(SvgShapeAttrs),
+    Ellipse(SvgShapeAttrs),
+    Polygon(SvgShapeAttrs),
+    Polyline(SvgShapeAttrs),
+    Path(SvgShapeAttrs),
+    EmbeddedImage(SvgShapeAttrs),
+}
+
+impl SvgStoredShape {
+    fn attrs(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Rect(shape)
+            | Self::Circle(shape)
+            | Self::Ellipse(shape)
+            | Self::Polygon(shape)
+            | Self::Polyline(shape)
+            | Self::Path(shape)
+            | Self::EmbeddedImage(shape) => &shape.attrs,
+        }
+    }
+
+    fn used_with(&self, transform: SvgTransform, inherited: &HashMap<String, String>) -> Self {
+        match self {
+            Self::Rect(shape) => Self::Rect(svg_shape_used_with(shape, transform, inherited)),
+            Self::Circle(shape) => Self::Circle(svg_shape_used_with(shape, transform, inherited)),
+            Self::Ellipse(shape) => Self::Ellipse(svg_shape_used_with(shape, transform, inherited)),
+            Self::Polygon(shape) => Self::Polygon(svg_shape_used_with(shape, transform, inherited)),
+            Self::Polyline(shape) => {
+                Self::Polyline(svg_shape_used_with(shape, transform, inherited))
+            }
+            Self::Path(shape) => Self::Path(svg_shape_used_with(shape, transform, inherited)),
+            Self::EmbeddedImage(shape) => {
+                Self::EmbeddedImage(svg_shape_used_with(shape, transform, inherited))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SvgDecodedShapes {
+    rects: Vec<SvgShapeAttrs>,
+    circles: Vec<SvgShapeAttrs>,
+    ellipses: Vec<SvgShapeAttrs>,
+    polygons: Vec<SvgShapeAttrs>,
+    polylines: Vec<SvgShapeAttrs>,
+    paths: Vec<SvgShapeAttrs>,
+    embedded_images: Vec<SvgShapeAttrs>,
+}
+
+impl SvgDecodedShapes {
+    fn push(&mut self, shape: SvgStoredShape) {
+        match shape {
+            SvgStoredShape::Rect(shape) => self.rects.push(shape),
+            SvgStoredShape::Circle(shape) => self.circles.push(shape),
+            SvgStoredShape::Ellipse(shape) => self.ellipses.push(shape),
+            SvgStoredShape::Polygon(shape) => self.polygons.push(shape),
+            SvgStoredShape::Polyline(shape) => self.polylines.push(shape),
+            SvgStoredShape::Path(shape) => self.paths.push(shape),
+            SvgStoredShape::EmbeddedImage(shape) => self.embedded_images.push(shape),
+        }
+    }
+
+    fn used_with(&self, transform: SvgTransform, inherited: &HashMap<String, String>) -> Self {
+        let mut used = Self::default();
+        for shape in self.iter_stored() {
+            used.push(shape.used_with(transform, inherited));
+        }
+        used
+    }
+
+    fn iter_stored(&self) -> impl Iterator<Item = SvgStoredShape> + '_ {
+        self.rects
+            .iter()
+            .cloned()
+            .map(SvgStoredShape::Rect)
+            .chain(self.circles.iter().cloned().map(SvgStoredShape::Circle))
+            .chain(self.ellipses.iter().cloned().map(SvgStoredShape::Ellipse))
+            .chain(self.polygons.iter().cloned().map(SvgStoredShape::Polygon))
+            .chain(self.polylines.iter().cloned().map(SvgStoredShape::Polyline))
+            .chain(self.paths.iter().cloned().map(SvgStoredShape::Path))
+            .chain(
+                self.embedded_images
+                    .iter()
+                    .cloned()
+                    .map(SvgStoredShape::EmbeddedImage),
+            )
+    }
+}
+
+fn svg_shape_used_with(
+    shape: &SvgShapeAttrs,
+    transform: SvgTransform,
+    inherited: &HashMap<String, String>,
+) -> SvgShapeAttrs {
+    let mut attrs = inherited.clone();
+    svg_merge_shape_attrs(&mut attrs, shape.attrs.clone());
+    SvgShapeAttrs {
+        attrs,
+        transform: transform.multiply(shape.transform),
+    }
+}
+
+fn svg_collect_shape(
+    shapes: &mut SvgDecodedShapes,
+    stored_shapes: &mut HashMap<String, SvgDecodedShapes>,
+    definition_stack: &[Option<String>],
+    shape: SvgStoredShape,
+) {
+    let definition_id = svg_active_definition_id(definition_stack)
+        .map(str::to_owned)
+        .or_else(|| shape.attrs().get("id").cloned());
+    if let Some(id) = definition_id {
+        stored_shapes.entry(id).or_default().push(shape.clone());
+    }
+    if definition_stack.is_empty() {
+        shapes.push(shape);
+    }
+}
+
+fn svg_collect_used_shapes(
+    shapes: &mut SvgDecodedShapes,
+    stored_shapes: &mut HashMap<String, SvgDecodedShapes>,
+    definition_stack: &[Option<String>],
+    used: SvgDecodedShapes,
+) {
+    for shape in used.iter_stored() {
+        svg_collect_shape(shapes, stored_shapes, definition_stack, shape);
+    }
+}
+
+fn svg_active_definition_id(definition_stack: &[Option<String>]) -> Option<&str> {
+    definition_stack.iter().rev().find_map(Option::as_deref)
+}
+
+fn svg_use_reference_id(attrs: &HashMap<String, String>) -> Option<&str> {
+    attrs
+        .get("href")
+        .or_else(|| attrs.get("xlink:href"))?
+        .trim()
+        .strip_prefix('#')
+        .filter(|id| !id.is_empty())
+}
+
+fn svg_use_transform(
+    transform_stack: &[Option<SvgTransform>],
+    attrs: &HashMap<String, String>,
+) -> Option<SvgTransform> {
+    let transform = svg_child_transform(transform_stack, attrs)?;
+    let x = attrs
+        .get("x")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let y = attrs
+        .get("y")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    Some(transform.multiply(SvgTransform::translate(x, y)))
 }
 
 #[derive(Debug, Clone, Copy)]
