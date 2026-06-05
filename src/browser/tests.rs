@@ -7803,7 +7803,7 @@ async fn browser_session_click_viewport_at_hits_button_visual_box_after_image() 
                 width,
                 height,
                 shade,
-            } if *shade == 232
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE
                 && *y <= button_y
                 && button_y < y.saturating_add(*height)
                 && *x <= button_x
