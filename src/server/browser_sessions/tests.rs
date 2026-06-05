@@ -2597,6 +2597,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"scroll-margin-top: 76px"#));
     assert!(html.contains(r#"touch-action: pan-x pan-y"#));
     assert!(html.contains(r#"scrollbar-gutter: stable"#));
+    assert!(html.contains(r#"main { max-width: none; margin: 0;"#));
+    assert!(html.contains(r#".browser-raster-shell { position: relative; width: 100%;"#));
+    assert!(html.contains(
+        r#".browser-raster { display: block; max-width: none; width: auto; height: auto; }"#
+    ));
     assert!(html.contains(r#".browser-raster-shell[data-viewport-pending="true"]"#));
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
@@ -12630,9 +12635,9 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains(r#"data-viewport-state="loading""#));
-    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains("No rendered viewport yet"));
     assert!(html.contains(
-        "The tab is retained; continue loading to retry without losing the browser controls."
+        "The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable."
     ));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
     assert!(html.contains("Clicks start after render"));
@@ -12697,7 +12702,7 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"continueLink.dataset.pendingAutoRetry = "scheduled""#));
     assert!(html.contains("Continue loading"));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
-    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains("No rendered viewport yet"));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
     assert!(html.contains("Clicks start after render"));
     assert!(html.contains("Page is still loading; clicks start after the first render."));
@@ -12805,7 +12810,7 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(html.contains("Opening http://"));
     assert!(html.contains("Loading http://"));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
-    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains("No rendered viewport yet"));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
     assert!(html.contains("Page is still loading; clicks start after the first render."));
     assert!(html.contains("Page is still loading; clicks start after the first render."));
