@@ -1722,6 +1722,89 @@ async fn image_real_parity_sloppy_data_svg_percent_colors_decode_and_attach() {
 }
 
 #[tokio::test]
+async fn image_real_page_srcset_data_svg_commas_decode_color_and_attach() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let data_url = "data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%204%202%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20width%3D%222%22%20height%3D%222%22%20fill%3D%22rgb(255,0,0)%22%2F%3E%3Crect%20x%3D%222%22%20width%3D%222%22%20height%3D%222%22%20fill%3D%22rgb(0,0,255)%22%2F%3E%3C%2Fsvg%3E";
+    let decoded = decode_image_reference("mem://srcset-data-svg", data_url).unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let html = format!(
+        r#"<html><body><p>Before srcset svg</p><img src="/assets/loading.gif" srcset="{data_url}, fallback.webp 2x" alt="Srcset data SVG" width="16" height="8"><p>After srcset svg</p></body></html>"#
+    );
+    fs::write(&page, html).unwrap();
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "/assets/loading.gif")
+    );
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "fallback.webp")
+    );
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.url == data_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.status, "cached");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(4));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before srcset svg"));
+    assert!(render.text.contains("After srcset svg"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(4),
+                decoded_height: Some(2),
+                decoded_hash: Some(hash),
+                ..
+            } if url == data_url && *hash == expected_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn image_resource_discovery_svg_inherits_group_paint_and_current_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
