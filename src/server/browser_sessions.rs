@@ -9587,10 +9587,10 @@ a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
 h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-topbar {{ position: sticky; top: 0; z-index: 20; display: grid; gap: 4px; margin: -18px -18px 10px; padding: 5px 18px; background: rgba(247, 247, 245, 0.97); border-bottom: 1px solid #dfe2e6; backdrop-filter: blur(8px); }}
-.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 6px; align-items: center; }}
+.browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(240px, 1fr) auto; gap: 6px; align-items: center; }}
 .browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
 .browser-primary-nav a, .browser-primary-nav span {{ min-width: 32px; justify-content: center; padding: 0 8px; white-space: nowrap; }}
-.browser-chrome-status {{ display: flex; flex-wrap: nowrap; gap: 5px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; }}
+.browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 5px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 22px; padding: 0 6px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
@@ -9804,8 +9804,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
-</div>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
+</div>
 {primary_tab_strip}
 </header>
 <section class="browser-page-head">
@@ -12723,6 +12723,7 @@ fn browser_scroll_axis_state(
 
 fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
     let mut status = String::new();
+    let action_urls = browser_session_resource_action_urls(payload);
     let raster_label = if let Some(image) = &payload.viewport_image {
         format!("visual {}x{}", image.width, image.height)
     } else if payload.viewport_image_error.is_some() {
@@ -12740,6 +12741,25 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         y = payload.viewport_y,
         raster = html_escape::encode_text(&raster_label),
     );
+    if let Some(href) = action_urls.make_visual.as_deref() {
+        let _ = write!(
+            status,
+            r#"<a class="browser-chrome-tool primary-action" href="{href}" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...">Read</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+        );
+    }
+    if let Some(href) = action_urls.load_images.as_deref() {
+        let _ = write!(
+            status,
+            r#"<a class="browser-chrome-tool" href="{href}" data-browser-resource-action data-browser-resource-status="Loading images...">Images</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+        );
+    }
+    if action_urls.make_visual.is_some() || action_urls.load_images.is_some() {
+        status.push_str(
+            r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
+        );
+    }
     status
 }
 
