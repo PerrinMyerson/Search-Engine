@@ -2199,6 +2199,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
+    assert!(html.contains(r#"aria-label="Primary viewport scroll controls; x 0 of "#));
+    assert!(html.contains(r#"data-scroll-x="0""#));
+    assert!(html.contains(r#"data-scroll-y="0""#));
+    assert!(html.contains(r#"data-can-scroll-left="false""#));
+    assert!(html.contains(r#"data-can-scroll-right="true""#));
+    assert!(html.contains(r#"data-can-scroll-up="false""#));
+    assert!(html.contains(r#"data-can-scroll-down="true""#));
+    assert!(html.contains("Scroll position x 0/"));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
     ));
@@ -11632,7 +11640,9 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"<summary>Visible links</summary>"#));
     assert!(html.contains(r#"class="viewport-link-list""#));
-    assert!(html.contains(r#"<summary>Page and session details</summary>"#));
+    assert!(html.contains(r#"data-browser-page-details"#));
+    assert!(html.contains(r#"<summary>Page details</summary>"#));
+    assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > raster_index);
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
