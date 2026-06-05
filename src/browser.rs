@@ -511,6 +511,9 @@ pub struct BrowserViewportFrame {
     pub raster: BrowserRgbaRaster,
 }
 
+const GLYPH_WIDTH: usize = 5;
+const GLYPH_HEIGHT: usize = 7;
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserLayerMetrics {
     pub layer_count: usize,
@@ -654,8 +657,8 @@ pub struct BrowserRasterOptions {
 impl Default for BrowserRasterOptions {
     fn default() -> Self {
         Self {
-            cell_width: 8,
-            cell_height: 12,
+            cell_width: 12,
+            cell_height: 18,
             padding_x: 4,
             padding_y: 4,
             max_pixels: 32 * 1024 * 1024,
@@ -5192,9 +5195,6 @@ pub fn rasterize_render(
     render: &BrowserRender,
     options: BrowserRasterOptions,
 ) -> Result<BrowserRaster> {
-    const GLYPH_WIDTH: usize = 5;
-    const GLYPH_HEIGHT: usize = 7;
-
     ensure!(
         options.cell_width > GLYPH_WIDTH,
         "cell_width must be at least {}",
@@ -6986,7 +6986,7 @@ fn draw_raster_text_run(
         let glyph_end = cursor_x.saturating_add(options.cell_width);
         if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
-            draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
+            draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
         }
         cursor_x = cursor_x.saturating_add(advance);
     }
@@ -7019,13 +7019,14 @@ fn draw_rgba_text_run(
         let glyph_end = cursor_x.saturating_add(options.cell_width);
         if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
-            draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, ink);
+            draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
         }
         cursor_x = cursor_x.saturating_add(advance);
     }
 }
 
 fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
+    let scale = raster_glyph_scale_for_width(cell_width);
     if ch.is_whitespace() {
         return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
     }
@@ -7033,7 +7034,32 @@ fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
         return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
     };
     let ink_width = right.saturating_sub(left).saturating_add(1);
-    ink_width.saturating_add(2).clamp(3, cell_width.max(3))
+    ink_width
+        .saturating_mul(scale)
+        .saturating_add(2)
+        .clamp(3, cell_width.max(3))
+}
+
+fn raster_glyph_scale(options: BrowserRasterOptions) -> usize {
+    let horizontal = options
+        .cell_width
+        .saturating_sub(2)
+        .checked_div(GLYPH_WIDTH)
+        .unwrap_or(1);
+    let vertical = options
+        .cell_height
+        .saturating_sub(4)
+        .checked_div(GLYPH_HEIGHT)
+        .unwrap_or(1);
+    horizontal.min(vertical).max(1)
+}
+
+fn raster_glyph_scale_for_width(cell_width: usize) -> usize {
+    cell_width
+        .saturating_sub(2)
+        .checked_div(GLYPH_WIDTH)
+        .unwrap_or(1)
+        .max(1)
 }
 
 fn glyph_ink_bounds(ch: char) -> Option<(usize, usize)> {
@@ -7057,6 +7083,7 @@ fn draw_glyph_clipped(
     cell_x: isize,
     cell_y: usize,
     ch: char,
+    options: BrowserRasterOptions,
     ink: u8,
 ) {
     let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
@@ -7064,16 +7091,34 @@ fn draw_glyph_clipped(
     } else {
         ink
     };
+    let scale = raster_glyph_scale(options);
+    let glyph_width = GLYPH_WIDTH.saturating_mul(scale);
+    let glyph_height = GLYPH_HEIGHT.saturating_mul(scale);
+    let offset_x = options.cell_width.saturating_sub(glyph_width) / 2;
+    let offset_y = options.cell_height.saturating_sub(glyph_height) / 2;
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
-        for column in 0..5 {
-            if (mask & (1 << (4 - column))) == 0 {
+        for column in 0usize..GLYPH_WIDTH {
+            if (*mask & (1u8 << (GLYPH_WIDTH - 1 - column))) == 0 {
                 continue;
             }
-            let pixel_x = cell_x + 1 + column as isize;
-            let Ok(pixel_x) = usize::try_from(pixel_x) else {
-                continue;
-            };
-            set_raster_pixel(pixels, width, pixel_x, cell_y.saturating_add(2 + row), ink);
+            let pixel_x = cell_x + offset_x as isize + column.saturating_mul(scale) as isize;
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let Ok(pixel_x) = usize::try_from(pixel_x.saturating_add(dx as isize)) else {
+                        continue;
+                    };
+                    set_raster_pixel(
+                        pixels,
+                        width,
+                        pixel_x,
+                        cell_y
+                            .saturating_add(offset_y)
+                            .saturating_add(row.saturating_mul(scale))
+                            .saturating_add(dy),
+                        ink,
+                    );
+                }
+            }
         }
     }
 }
@@ -7084,6 +7129,7 @@ fn draw_rgba_glyph_clipped(
     cell_x: isize,
     cell_y: usize,
     ch: char,
+    options: BrowserRasterOptions,
     ink: u8,
 ) {
     let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
@@ -7091,22 +7137,34 @@ fn draw_rgba_glyph_clipped(
     } else {
         ink
     };
+    let scale = raster_glyph_scale(options);
+    let glyph_width = GLYPH_WIDTH.saturating_mul(scale);
+    let glyph_height = GLYPH_HEIGHT.saturating_mul(scale);
+    let offset_x = options.cell_width.saturating_sub(glyph_width) / 2;
+    let offset_y = options.cell_height.saturating_sub(glyph_height) / 2;
     for (row, mask) in glyph_rows(ch).iter().enumerate() {
-        for column in 0..5 {
-            if (mask & (1 << (4 - column))) == 0 {
+        for column in 0usize..GLYPH_WIDTH {
+            if (*mask & (1u8 << (GLYPH_WIDTH - 1 - column))) == 0 {
                 continue;
             }
-            let pixel_x = cell_x + 1 + column as isize;
-            let Ok(pixel_x) = usize::try_from(pixel_x) else {
-                continue;
-            };
-            set_rgba_pixel(
-                pixels,
-                width,
-                pixel_x,
-                cell_y.saturating_add(2 + row),
-                [ink, ink, ink, 255],
-            );
+            let pixel_x = cell_x + offset_x as isize + column.saturating_mul(scale) as isize;
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let Ok(pixel_x) = usize::try_from(pixel_x.saturating_add(dx as isize)) else {
+                        continue;
+                    };
+                    set_rgba_pixel(
+                        pixels,
+                        width,
+                        pixel_x,
+                        cell_y
+                            .saturating_add(offset_y)
+                            .saturating_add(row.saturating_mul(scale))
+                            .saturating_add(dy),
+                        [ink, ink, ink, 255],
+                    );
+                }
+            }
         }
     }
 }
