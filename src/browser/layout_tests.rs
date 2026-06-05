@@ -2760,6 +2760,201 @@ fn scrolled_viewport_reports_fixed_layout_and_mixed_image_text_slice() {
 }
 
 #[test]
+fn readable_page_section_keeps_text_form_and_image_in_large_scrolled_viewport() {
+    let image_url = "mem://readable-page-section-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![164],
+        rgb_pixels: Some(vec![80, 160, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let trailing_rows = (0..80)
+        .map(|index| format!("<p>Trailing filler row {index:02}</p>"))
+        .collect::<String>();
+    let html = format!(
+        r#"
+            <html><body>
+              <main>
+                <section>
+                  <h1>Browser Readability</h1>
+                  <p>Readable browser section copy should flow as one continuous sentence instead of a dense terminal fragment.</p>
+                  <form>
+                    <label>Search <input name="q" placeholder="crate name"></label>
+                    <button>Search</button>
+                  </form>
+                  <img src="{image_url}" alt="" width="160" height="480">
+                  <p>Second paragraph remains readable with image content in the same scrolled viewport slice.</p>
+                  <p>Trailing paragraph keeps the document tall enough for a real scroll window.</p>
+                  {trailing_rows}
+                </section>
+              </main>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://readable-page-section-large-scroll",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 120,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render readable page section");
+
+    let heading_rows = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { y, text, .. } | DisplayCommand::StyledText { y, text, .. }
+                if readable_display_text(text).contains("Browser Readability") =>
+            {
+                Some(*y)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        heading_rows.len() >= 2,
+        "default heading scale should produce a taller browser-like line box"
+    );
+
+    assert!(render.text.contains("[crate name]"));
+    let section_copy = "Readable browser section copy should flow as one continuous sentence";
+    let (text_x, text_y, text) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains(section_copy) =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("continuous body paragraph text command");
+    assert!(!text.contains("RReeaaddaabbllee"));
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command in readable section");
+    assert_eq!(image_bounds.2, 20);
+    assert_eq!(image_bounds.3, 24);
+
+    let viewport_y = 4;
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 120,
+            height: 50,
+        },
+        None,
+    );
+    assert!(viewport.max_scroll_y >= viewport_y);
+    assert_eq!(viewport.viewport.y, viewport_y);
+
+    let text_viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            x: 0,
+            y: viewport_y,
+            width: 120,
+            height: 50,
+        },
+    );
+    let text_window = text_viewport.lines.join("\n");
+    assert!(text_window.contains("Readable browser section copy"));
+    assert!(text_window.contains("[crate name]"));
+    assert!(
+        text_window.contains('@'),
+        "large scrolled viewport should include image content as well as readable text"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(120),
+        viewport_height: Some(50),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize large scrolled readable section viewport");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(viewport_y));
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    let image_pixel_x = raster_options
+        .padding_x
+        .saturating_add(image_bounds.0.saturating_mul(raster_options.cell_width));
+    let image_pixel_y = raster_options.padding_y.saturating_add(
+        image_bounds
+            .1
+            .saturating_sub(viewport_y)
+            .saturating_mul(raster_options.cell_height),
+    );
+    assert_eq!(
+        pixel(&rgba, image_pixel_x, image_pixel_y),
+        &[80, 160, 220, 255]
+    );
+
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let text_row_top = raster_options.padding_y.saturating_add(
+        text_y
+            .saturating_sub(viewport_y)
+            .saturating_mul(raster_options.cell_height),
+    );
+    let text_col_end =
+        text_col_start.saturating_add("Readable browser section".len() * raster_options.cell_width);
+    let mut ink_pixels = 0;
+    for y in text_row_top
+        ..text_row_top
+            .saturating_add(raster_options.cell_height)
+            .min(rgba.height)
+    {
+        for x in text_col_start..text_col_end.min(rgba.width) {
+            if pixel(&rgba, x, y) != &[255, 255, 255, 255] {
+                ink_pixels += 1;
+            }
+        }
+    }
+    assert!(ink_pixels >= 24);
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",

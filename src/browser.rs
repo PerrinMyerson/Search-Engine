@@ -16759,8 +16759,8 @@ fn computed_style(
     let mut overflow_wrap = None;
     let mut word_break = None;
     let mut text_indent = None;
-    let mut line_height = None;
-    let mut font_scale = None;
+    let mut line_height = default_line_height(&element.tag);
+    let mut font_scale = default_font_scale(&element.tag);
     let mut row_gap = None;
     let mut column_gap = None;
     let mut box_sizing = BoxSizing::ContentBox;
@@ -17359,6 +17359,16 @@ fn default_margin(tag: &str) -> BoxSpacing {
             bottom: 1,
             ..BoxSpacing::default()
         },
+        "p" => BoxSpacing {
+            top: 1,
+            bottom: 1,
+            ..BoxSpacing::default()
+        },
+        "article" | "aside" | "details" | "figure" | "form" | "main" | "section" => BoxSpacing {
+            top: 1,
+            bottom: 1,
+            ..BoxSpacing::default()
+        },
         "blockquote" => BoxSpacing {
             left: 4,
             right: 4,
@@ -17369,6 +17379,20 @@ fn default_margin(tag: &str) -> BoxSpacing {
             ..BoxSpacing::default()
         },
         _ => BoxSpacing::default(),
+    }
+}
+
+fn default_line_height(tag: &str) -> Option<usize> {
+    match tag {
+        "h1" | "h2" | "h3" => Some(2),
+        _ => None,
+    }
+}
+
+fn default_font_scale(tag: &str) -> Option<usize> {
+    match tag {
+        "h1" | "h2" => Some(2),
+        _ => None,
     }
 }
 
