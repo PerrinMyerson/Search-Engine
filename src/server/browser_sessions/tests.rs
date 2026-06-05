@@ -10392,6 +10392,9 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"data-browser-resource-status="Loading images...""#));
     assert!(html.contains(r#"data-browser-make-visual-status"#));
     assert!(html.contains(r#"target.dataset.browserResourceStatus || "Working...""#));
+    assert!(html.contains(
+        r#"Array.from(document.querySelectorAll("[data-browser-resource-status-output]"))"#
+    ));
     assert!(html.contains(r#"section.dataset.resourcePending = "true""#));
     assert!(html.contains(r#"section.dataset.visualPending = "true""#));
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
@@ -10414,10 +10417,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
     assert!(!topbar_html.contains(r#">Read</a>"#));
-    assert!(topbar_html.contains(r#">Images</a>"#));
+    assert!(!topbar_html.contains(r#">Images</a>"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-images"#));
+    assert!(topbar_html.contains(r#">1 image in Tools</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-make-visual-action"#));
     assert!(!topbar_html.contains(r#"data-browser-resource-status="Making visual...""#));
-    assert!(topbar_html.contains(r#"data-browser-resource-status="Loading images...""#));
     assert!(topbar_html.contains(r#"data-browser-resource-status-output aria-live="polite""#));
     assert!(!topbar_html.contains(r#">Make readable</a>"#));
     assert!(!topbar_html.contains(r#">Make visual</a>"#));
@@ -12031,9 +12035,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
     assert!(html.contains(
-        r#".browser-chrome-row { display: grid; grid-template-columns: auto minmax(420px, 1fr) auto;"#
+        r#".browser-chrome-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;"#
     ));
-    assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 520px; }"#));
+    assert!(html.contains(r#".browser-chrome-status { display: flex; flex-wrap: nowrap;"#));
+    assert!(html.contains(r#".toolbar { display: flex; align-items: center; flex-wrap: nowrap;"#));
+    assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 auto; }"#));
     assert!(html.contains(r#".address-bar button.browser-background-tab { display: none; }"#));
     assert!(topbar_html.contains(r#"name="action" value="open">Go</button>"#));
     assert!(topbar_html.contains(
