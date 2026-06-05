@@ -462,7 +462,9 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut shapes = SvgDecodedShapes::default();
     let mut stored_shapes: HashMap<String, SvgDecodedShapes> = HashMap::new();
     let mut linear_gradients: HashMap<String, SvgLinearGradient> = HashMap::new();
+    let mut radial_gradients: HashMap<String, SvgRadialGradient> = HashMap::new();
     let mut current_linear_gradient = None;
+    let mut current_radial_gradient = None;
     let mut style_rules = SvgStyleRules::default();
     let mut definition_stack: Vec<Option<String>> = Vec::new();
     let mut transform_stack = vec![Some(SvgTransform::identity())];
@@ -670,12 +672,29 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                                     .or_insert_with(|| svg_linear_gradient(&attrs));
                             }
                         }
+                        "radialgradient" => {
+                            current_radial_gradient = attrs.get("id").cloned();
+                            if let Some(id) = current_radial_gradient.as_ref() {
+                                radial_gradients
+                                    .entry(id.clone())
+                                    .or_insert_with(|| svg_radial_gradient(&attrs));
+                            }
+                        }
                         "stop" => {
                             let attrs = svg_attrs_with_style_rules("stop", attrs, &style_rules);
                             if let Some(id) = current_linear_gradient.as_ref()
                                 && let Some(stop) = svg_gradient_stop(&attrs)
                             {
                                 linear_gradients
+                                    .entry(id.clone())
+                                    .or_default()
+                                    .stops
+                                    .push(stop);
+                            }
+                            if let Some(id) = current_radial_gradient.as_ref()
+                                && let Some(stop) = svg_gradient_stop(&attrs)
+                            {
+                                radial_gradients
                                     .entry(id.clone())
                                     .or_default()
                                     .stops
@@ -708,6 +727,8 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         paint_stack.pop();
                     } else if tag.name == "lineargradient" {
                         current_linear_gradient = None;
+                    } else if tag.name == "radialgradient" {
+                        current_radial_gradient = None;
                     }
                 }
             }
@@ -744,6 +765,17 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 .min(height.saturating_sub(y));
             if let Some(gradient) = svg_shape_fill_linear_gradient(rect, &linear_gradients) {
                 fill_decoded_rect_linear_gradient(
+                    &mut pixels,
+                    &mut rgb_pixels,
+                    width,
+                    x,
+                    y,
+                    rect_width,
+                    rect_height,
+                    gradient,
+                );
+            } else if let Some(gradient) = svg_shape_fill_radial_gradient(rect, &radial_gradients) {
+                fill_decoded_rect_radial_gradient(
                     &mut pixels,
                     &mut rgb_pixels,
                     width,
@@ -2739,6 +2771,24 @@ fn svg_shape_fill_linear_gradient(
     Some(gradient)
 }
 
+fn svg_shape_fill_radial_gradient(
+    attrs: &HashMap<String, String>,
+    gradients: &HashMap<String, SvgRadialGradient>,
+) -> Option<SvgRadialGradient> {
+    let value = svg_shape_paint_value(attrs, "fill")?;
+    let id = svg_paint_url_fragment(value)?;
+    let mut gradient = gradients.get(id)?.clone();
+    if gradient.stops.len() < 2 || gradient.r <= f32::EPSILON {
+        return None;
+    }
+    gradient.stops.sort_by(|left, right| {
+        left.offset
+            .partial_cmp(&right.offset)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(gradient)
+}
+
 fn svg_paint_url_fragment(value: &str) -> Option<&str> {
     let value = value.trim();
     let args = value.strip_prefix("url(")?.strip_suffix(')')?.trim();
@@ -2887,6 +2937,24 @@ fn svg_linear_gradient(attrs: &HashMap<String, String>) -> SvgLinearGradient {
             .get("y2")
             .and_then(|value| parse_svg_gradient_coordinate(value, 0.0))
             .unwrap_or(0.0),
+        stops: Vec::new(),
+    }
+}
+
+fn svg_radial_gradient(attrs: &HashMap<String, String>) -> SvgRadialGradient {
+    SvgRadialGradient {
+        cx: attrs
+            .get("cx")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.5))
+            .unwrap_or(0.5),
+        cy: attrs
+            .get("cy")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.5))
+            .unwrap_or(0.5),
+        r: attrs
+            .get("r")
+            .and_then(|value| parse_svg_gradient_coordinate(value, 0.5))
+            .unwrap_or(0.5),
         stops: Vec::new(),
     }
 }
@@ -3685,6 +3753,39 @@ fn fill_decoded_rect_linear_gradient(
     }
 }
 
+fn fill_decoded_rect_radial_gradient(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    image_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    gradient: SvgRadialGradient,
+) {
+    if gradient.r <= f32::EPSILON {
+        return;
+    }
+    let denominator_x = width.saturating_sub(1).max(1) as f32;
+    let denominator_y = height.saturating_sub(1).max(1) as f32;
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            let sample_x = column.saturating_sub(x) as f32 / denominator_x;
+            let sample_y = row.saturating_sub(y) as f32 / denominator_y;
+            let dx = sample_x - gradient.cx;
+            let dy = sample_y - gradient.cy;
+            let offset = dx.hypot(dy) / gradient.r;
+            let paint = sample_svg_gradient(&gradient.stops, offset);
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                row.saturating_mul(image_width).saturating_add(column),
+                paint,
+            );
+        }
+    }
+}
+
 fn sample_svg_gradient(stops: &[SvgGradientStop], offset: f32) -> SvgPaint {
     let offset = offset.clamp(0.0, 1.0);
     let first = stops[0];
@@ -4069,6 +4170,25 @@ impl Default for SvgLinearGradient {
             y1: 0.0,
             x2: 1.0,
             y2: 0.0,
+            stops: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SvgRadialGradient {
+    cx: f32,
+    cy: f32,
+    r: f32,
+    stops: Vec<SvgGradientStop>,
+}
+
+impl Default for SvgRadialGradient {
+    fn default() -> Self {
+        Self {
+            cx: 0.5,
+            cy: 0.5,
+            r: 0.5,
             stops: Vec::new(),
         }
     }
