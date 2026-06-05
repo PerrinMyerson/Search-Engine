@@ -5573,6 +5573,53 @@ async fn browser_session_click_at_prefers_visible_anchor_text_over_later_image_f
     assert_eq!(session.snapshot().current_index, Some(1));
 }
 
+#[tokio::test]
+async fn browser_session_click_viewport_at_hits_fixed_link_after_scroll_over_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.html");
+    let second = dir.path().join("second.html");
+    fs::write(
+        &first,
+        r#"<html><head><title>First</title></head><body><a href="second.html" style="position:fixed; top:0; left:0">Fixed Go</a><img src="missing.png" width="32" height="96" alt=""><p>Scrollable body</p></body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &second,
+        r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session
+        .navigate(&first.display().to_string())
+        .await
+        .unwrap();
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 20,
+        height: 4,
+    };
+    let document_viewport = browser_document_viewport(session.current().unwrap(), viewport, None);
+    assert_eq!(document_viewport.viewport.y, 5);
+    let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
+    assert_eq!(
+        session.link_target_at_viewport(viewport, 0, 0).as_deref(),
+        Some(expected_target.as_str())
+    );
+
+    let render = session
+        .click_viewport_at_with_default_action(viewport, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(render.title, "Second");
+    assert_eq!(render.text, "Arrived");
+    assert_eq!(session.snapshot().current_index, Some(1));
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(
