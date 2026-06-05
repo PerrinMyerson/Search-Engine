@@ -9543,7 +9543,11 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status a {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 8px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
-.browser-tab-strip {{ display: flex; gap: 6px; overflow-x: auto; margin: 0 0 10px; padding: 2px 0 4px; scrollbar-gutter: stable; }}
+.browser-tab-strip {{ margin: 0; }}
+.browser-tab-strip > summary {{ min-height: 28px; display: inline-flex; max-width: 100%; align-items: center; gap: 8px; cursor: pointer; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 9px; background: #fff; color: #20242a; font-size: 12px; font-weight: 800; }}
+.browser-tab-strip > summary span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.browser-tab-strip > summary strong {{ white-space: nowrap; }}
+.browser-tab-list {{ display: flex; gap: 6px; overflow-x: auto; margin: 6px 0 2px; padding: 2px 0 4px; scrollbar-gutter: stable; }}
 .browser-tab-pill {{ flex: 0 0 clamp(150px, 22vw, 230px); min-width: 0; display: grid; gap: 2px; border: 1px solid #c6cbd2; border-radius: 6px; padding: 7px 9px; background: #fff; color: #20242a; text-decoration: none; }}
 .browser-tab-pill:hover {{ text-decoration: none; border-color: #8f98a3; }}
 .browser-tab-pill.current {{ background: #191a1c; color: #fff; border-color: #191a1c; }}
@@ -12658,14 +12662,12 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     };
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height}</span><span class="viewport-state-chip">x {x}/{max_x}</span><span class="viewport-state-chip">y {y}/{max_y}</span><span class="viewport-state-chip">{raster}</span>"#,
+        r#"<span class="viewport-state-chip">session {id}</span><span class="viewport-state-chip">viewport {width}x{height} @ {x},{y}</span><span class="viewport-state-chip">{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
         x = payload.viewport_x,
-        max_x = payload.max_scroll_x,
         y = payload.viewport_y,
-        max_y = payload.max_scroll_y,
         raster = html_escape::encode_text(&raster_label),
     );
     status.push_str(&render_browser_session_chrome_action_feedback(payload));
@@ -13223,6 +13225,12 @@ fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> 
         return String::new();
     }
 
+    let current_title = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .map(|session| session.title.as_str())
+        .unwrap_or(payload.title.as_str());
     let mut tabs = String::new();
     for session in &payload.sessions {
         let class = match (session.current, session.pinned) {
@@ -13250,7 +13258,12 @@ fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> 
         );
     }
 
-    format!(r#"<nav class="browser-tab-strip" aria-label="Open browser tabs">{tabs}</nav>"#)
+    format!(
+        r#"<details class="browser-tab-strip browser-tab-menu" data-browser-tab-menu aria-label="Open browser tabs"><summary data-browser-tab-summary><strong>{count} tabs</strong><span>{current}</span></summary><div class="browser-tab-list">{tabs}</div></details>"#,
+        count = payload.sessions.len(),
+        current = html_escape::encode_text(&browser_session_feedback_excerpt(current_title)),
+        tabs = tabs,
+    )
 }
 
 fn render_browser_session_navigation_state(
