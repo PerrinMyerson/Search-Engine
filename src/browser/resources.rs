@@ -98,6 +98,10 @@ pub struct BrowserResourceFetch {
     pub cache_remaining_bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_pressure_level: Option<String>,
+    #[serde(default)]
+    pub cache_hit_bytes: usize,
+    #[serde(default)]
+    pub cache_miss_bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +272,21 @@ fn cache_pressure_percent(value: usize, max: usize) -> usize {
     }
 }
 
+fn cache_hit_bytes(cache_outcome: Option<&str>, bytes: usize) -> usize {
+    matches!(cache_outcome, Some("hit"))
+        .then_some(bytes)
+        .unwrap_or(0)
+}
+
+fn cache_miss_bytes(cache_outcome: Option<&str>, bytes: usize) -> usize {
+    matches!(
+        cache_outcome,
+        Some("stored" | "replaced" | "skipped_oversize")
+    )
+    .then_some(bytes)
+    .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowserResourceCacheStoreOutcome {
     Stored,
@@ -348,6 +367,8 @@ impl BrowserResourceFetch {
             cache_remaining_entries: args.cache_pressure.remaining_entries(),
             cache_remaining_bytes: args.cache_pressure.remaining_bytes(),
             cache_pressure_level: Some(args.cache_pressure.pressure_level().to_owned()),
+            cache_hit_bytes: cache_hit_bytes(args.cache_outcome.as_deref(), args.bytes),
+            cache_miss_bytes: cache_miss_bytes(args.cache_outcome.as_deref(), args.bytes),
             cache_outcome: args.cache_outcome,
             diagnostic,
             image_decode_status,
@@ -374,6 +395,8 @@ impl BrowserResourceFetch {
 
     fn set_cache_outcome(&mut self, outcome: BrowserResourceCacheStoreOutcome) {
         self.cache_outcome = Some(outcome.as_str().to_owned());
+        self.cache_hit_bytes = cache_hit_bytes(self.cache_outcome.as_deref(), self.bytes);
+        self.cache_miss_bytes = cache_miss_bytes(self.cache_outcome.as_deref(), self.bytes);
         self.diagnostic = resource_fetch_diagnostic(
             &self.status,
             self.error_kind.as_deref(),
@@ -2115,6 +2138,8 @@ mod tests {
         assert_eq!(first_fetch.cache_max_entries, 2);
         assert_eq!(first_fetch.cache_max_bytes, 1024);
         assert_eq!(first_fetch.cache_outcome.as_deref(), Some("stored"));
+        assert_eq!(first_fetch.cache_hit_bytes, 0);
+        assert_eq!(first_fetch.cache_miss_bytes, 3);
         assert_eq!(
             first_fetch.diagnostic.as_deref(),
             Some("resource_fetch_cached")
@@ -2133,6 +2158,8 @@ mod tests {
         assert_eq!(hit.cache_entries, 2);
         assert_eq!(hit.cache_bytes, 6);
         assert_eq!(hit.cache_outcome.as_deref(), Some("hit"));
+        assert_eq!(hit.cache_hit_bytes, 3);
+        assert_eq!(hit.cache_miss_bytes, 0);
         assert_eq!(hit.diagnostic.as_deref(), Some("cache_hit"));
 
         let third_fetch =
@@ -2173,6 +2200,8 @@ mod tests {
         assert_eq!(fetch.cache_max_entries, 8);
         assert_eq!(fetch.cache_max_bytes, 4);
         assert_eq!(fetch.cache_outcome.as_deref(), Some("skipped_oversize"));
+        assert_eq!(fetch.cache_hit_bytes, 0);
+        assert_eq!(fetch.cache_miss_bytes, 5);
         assert_eq!(
             fetch.diagnostic.as_deref(),
             Some("resource_fetch_uncached_oversize")
@@ -2359,6 +2388,8 @@ mod tests {
             cache_remaining_bytes: 32 * 1024 * 1024,
             cache_pressure_level: Some("normal".to_owned()),
             cache_outcome: Some("miss_failed".to_owned()),
+            cache_hit_bytes: 0,
+            cache_miss_bytes: 0,
             diagnostic: Some("network_timeout".to_owned()),
             image_decode_status: None,
             image_decode_error: Some(error.clone()),
