@@ -10117,6 +10117,9 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     if payload.resource_report.is_some() {
         return String::new();
     }
+    if browser_session_has_ready_raster(payload) {
+        return String::new();
+    }
 
     let action_urls = browser_session_state_action_urls(payload);
     if action_urls.make_visual.is_none()
@@ -10293,6 +10296,10 @@ fn browser_json_script_string(value: &str) -> String {
         .replace('&', "\\u0026")
 }
 
+fn browser_session_has_ready_raster(payload: &BrowserSessionPayload) -> bool {
+    payload.viewport_image.is_some()
+}
+
 fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String {
     format!(
         r#"<script data-browser-keyboard-controls>
@@ -10428,10 +10435,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   if (!shell) {
     return;
   }
+  let raster = shell.querySelector(".browser-raster");
+  let clickMarker = shell.querySelector("[data-browser-click-marker]");
   const pendingAutoVisual = document.querySelector("[data-auto-visual-" + "status]");
-  if (pendingAutoVisual) {
+  if (pendingAutoVisual && !raster) {
     shell.dataset.pendingAutoVisual = "true";
     shell.setAttribute("aria-busy", "true");
+  } else if (pendingAutoVisual) {
+    pendingAutoVisual.dataset.visualReadyRaster = "true";
   }
   try {
     if (sessionStorage.getItem("browserViewportAnchor") === "1") {
@@ -10439,8 +10450,6 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       requestAnimationFrame(() => shell.scrollIntoView({ block: "start", inline: "nearest" }));
     }
   } catch (_) {}
-  let raster = shell.querySelector(".browser-raster");
-  let clickMarker = shell.querySelector("[data-browser-click-marker]");
   let lastClickPagePoint = null;
   const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
   const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
@@ -10674,9 +10683,24 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       window.location.href = url.toString();
     });
   };
+  const syncViewportHistory = () => {
+    if (!window.history || typeof window.history.replaceState !== "function") {
+      return;
+    }
+    try {
+      const currentUrl = new URL(shell.dataset.scrollUrl || window.location.href, window.location.href);
+      currentUrl.searchParams.set("action", "current");
+      currentUrl.searchParams.set("viewport_x", String(numberData("viewportX")));
+      currentUrl.searchParams.set("viewport_y", String(numberData("viewportY")));
+      currentUrl.searchParams.delete("dx");
+      currentUrl.searchParams.delete("dy");
+      currentUrl.searchParams.delete("partial");
+      window.history.replaceState(null, "", currentUrl.toString());
+    } catch (_) {}
+  };
   const replaceViewportPartial = (url, message) => {
     setViewportPending(message);
-    if (typeof fetch !== "function" || !window.history || typeof window.history.pushState !== "function") {
+    if (typeof fetch !== "function" || !window.history || typeof window.history.replaceState !== "function") {
       window.location.href = url.toString();
       return;
     }
@@ -10700,7 +10724,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       if (!applyViewportPartial(html)) {
         throw new Error("viewport partial response missing required fragments");
       }
-      window.history.pushState(null, "", url.toString());
+      syncViewportHistory();
       setViewportFeedback("Visual viewport updated.");
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
@@ -12906,6 +12930,7 @@ fn browser_scroll_axis_state(
 fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
     let mut status = String::new();
     let action_urls = browser_session_resource_action_urls(payload);
+    let show_read_action = !browser_session_has_ready_raster(payload);
     let raster_label = if let Some(image) = &payload.viewport_image {
         format!("visual {}x{}", image.width, image.height)
     } else if payload.viewport_image_error.is_some() {
@@ -12923,12 +12948,14 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         y = payload.viewport_y,
         raster = html_escape::encode_text(&raster_label),
     );
-    if let Some(href) = action_urls.make_visual.as_deref() {
-        let _ = write!(
-            status,
-            r#"<a class="browser-chrome-tool primary-action" href="{href}" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...">Read</a>"#,
-            href = html_escape::encode_double_quoted_attribute(href),
-        );
+    if show_read_action {
+        if let Some(href) = action_urls.make_visual.as_deref() {
+            let _ = write!(
+                status,
+                r#"<a class="browser-chrome-tool primary-action" href="{href}" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...">Read</a>"#,
+                href = html_escape::encode_double_quoted_attribute(href),
+            );
+        }
     }
     if let Some(href) = action_urls.load_images.as_deref() {
         let _ = write!(
@@ -12937,7 +12964,8 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
             href = html_escape::encode_double_quoted_attribute(href),
         );
     }
-    if action_urls.make_visual.is_some() || action_urls.load_images.is_some() {
+    if (show_read_action && action_urls.make_visual.is_some()) || action_urls.load_images.is_some()
+    {
         status.push_str(
             r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
         );
