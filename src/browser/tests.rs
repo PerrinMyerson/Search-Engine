@@ -6680,6 +6680,93 @@ async fn image_inline_real_pages_decode_lazyload_alias_sources() {
 }
 
 #[tokio::test]
+async fn image_foreground_sources_decode_real_page_file_aliases_in_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let picture = dir.path().join("picture.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&picture, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before real images</p>
+            <img src="/assets/blank.gif" data-orig-file="hero.webp" alt="Original file hero" width="80" height="24">
+            <picture>
+                <source type="image/webp" data-src-large="picture.webp">
+                <img src="/assets/placeholder.gif" alt="Large source picture" width="80" height="24">
+            </picture>
+            <p>After real images</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.contains("/assets/"))
+    );
+
+    let mut decoded = Vec::new();
+    for (file, url) in [(&hero, "hero.webp"), (&picture, "picture.webp")] {
+        let resolved = file.display().to_string();
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "image");
+        assert_eq!(fetch.resource.initiator, "img");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        decoded.push((
+            resolved,
+            fetch.decoded_hash.clone().unwrap(),
+            fetch.decoded_color_hash.clone().unwrap(),
+        ));
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before real images"));
+    assert!(render.text.contains("After real images"));
+    for (resolved, decoded_hash, color_hash) in decoded {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.pixel_hash == decoded_hash)
+            .unwrap();
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(color_hash.as_str())
+        );
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            )
+        }));
+    }
+}
+
+#[tokio::test]
 async fn fetches_current_resources_and_uses_session_cache() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
