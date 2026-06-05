@@ -8150,6 +8150,31 @@ async fn image_foreground_sources_decode_real_page_file_aliases_in_color() {
             )
         }));
     }
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    for (file, url) in [(&hero, "hero.webp"), (&picture, "picture.webp")] {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == file.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "image");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+        assert!(fetch.decoded_color_hash.is_some());
+    }
 }
 
 #[tokio::test]
