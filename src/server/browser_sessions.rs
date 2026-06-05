@@ -9376,6 +9376,10 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_status = render_browser_session_viewport_status(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let primary_page_state = render_browser_session_primary_page_state(payload);
+    let pending_primary_page_state = browser_session_pending_without_ready_viewport(payload)
+        .then_some(primary_page_state.as_str());
+    let settled_primary_page_state = (!browser_session_pending_without_ready_viewport(payload))
+        .then_some(primary_page_state.as_str());
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
     let viewport_text = render_browser_session_viewport_text(payload, &viewport);
@@ -9809,8 +9813,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </section>
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary" data-browser-primary-surface>
-{primary_page_state}
+{pending_primary_page_state}
 {viewport_image}
+{settled_primary_page_state}
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
@@ -9869,7 +9874,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         forms = payload.form_count,
         viewport_status = viewport_status,
         viewport_scroll_controls = viewport_scroll_controls,
-        primary_page_state = primary_page_state,
+        pending_primary_page_state = pending_primary_page_state.unwrap_or_default(),
+        settled_primary_page_state = settled_primary_page_state.unwrap_or_default(),
         auto_visual_bootstrap = auto_visual_bootstrap,
         browser_chrome_status = render_browser_session_chrome_status(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
@@ -12780,14 +12786,20 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     } else {
         "Wheel / keys scroll"
     };
+    let viewport_feedback = render_browser_session_viewport_feedback(payload);
+    let click_status = browser_session_click_status(payload);
+    let click_hint = browser_session_click_hint(payload);
     format!(
-        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint>{input_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
         y = payload.viewport_y,
         max_y = payload.max_scroll_y,
         horizontal_state = horizontal_state,
         vertical_state = vertical_state,
         scroll_summary = html_escape::encode_text(&scroll_summary),
         input_hint = input_hint,
+        viewport_feedback = viewport_feedback,
+        click_status = click_status,
+        click_hint = click_hint,
         meter_percent = meter_percent,
     )
 }
@@ -12819,13 +12831,11 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
         "Browser view waiting for render".to_owned()
     };
     let retained_pending = render_browser_session_retained_pending_status(payload);
-    let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<div class="browser-surface-state compact" data-browser-primary-state>{retained_pending}<span data-browser-primary-raster>{render_label}</span>{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
+        r#"<div class="browser-surface-state compact" data-browser-primary-state>{retained_pending}<span data-browser-primary-raster>{render_label}</span>{action_feedback}</div>"#,
         retained_pending = retained_pending,
         render_label = html_escape::encode_text(&render_label),
         action_feedback = action_feedback,
-        viewport_feedback = viewport_feedback,
     )
 }
 
@@ -12920,17 +12930,9 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
 }
 
 fn render_browser_session_viewport_interaction_controls(payload: &BrowserSessionPayload) -> String {
-    let click_status = browser_session_click_status(payload);
-    let click_hint = if browser_session_pending_without_ready_viewport(payload) {
-        "Clicks start after render"
-    } else {
-        "Click raster to open links/buttons"
-    };
-    format!(
-        r#"<div class="viewport-interaction-row compact" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">{click_hint}</span></div></div>"#,
-        click_status = click_status,
-        click_hint = click_hint,
-    )
+    let _ = payload;
+    r#"<div class="viewport-interaction-row compact" data-browser-viewport-interactions hidden></div>"#
+        .to_owned()
 }
 
 fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload) -> String {
@@ -13193,6 +13195,14 @@ fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
     browser_session_click_feedback_text(payload)
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
         .unwrap_or_else(|| "Ready for page click.".to_owned())
+}
+
+fn browser_session_click_hint(payload: &BrowserSessionPayload) -> &'static str {
+    if browser_session_pending_without_ready_viewport(payload) {
+        "Clicks start after render"
+    } else {
+        "Click raster to open links/buttons"
+    }
 }
 
 fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {

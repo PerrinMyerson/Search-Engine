@@ -2485,11 +2485,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .unwrap();
     let status_index = primary_surface_index
         + html[primary_surface_index..]
-            .find(r#"data-browser-viewport-status"#)
+            .find(r#"class="viewport-status" data-browser-viewport-status"#)
             .unwrap();
     let interaction_controls_index = primary_surface_index
         + html[primary_surface_index..]
-            .find(r#"data-browser-viewport-interactions"#)
+            .find(r#"class="viewport-interaction-row compact" data-browser-viewport-interactions"#)
             .unwrap();
     let controls_tray_index = primary_surface_index
         + html[primary_surface_index..]
@@ -2505,8 +2505,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .unwrap();
     assert!(chrome_index < raster_index);
     assert!(chrome_status_index < raster_index);
-    assert!(primary_state_index < raster_index);
-    assert!(raster_index < status_index);
+    assert!(raster_index < primary_state_index);
+    assert!(primary_state_index < status_index);
     assert!(status_index < interaction_controls_index);
     assert!(interaction_controls_index < controls_tray_index);
     assert!(raster_index < controls_tray_index);
@@ -8432,8 +8432,11 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
-    assert!(html.contains(r#"data-browser-viewport-click-state"#));
-    assert!(html.contains(r#"<span class="viewport-command-label">Click</span>"#));
+    assert!(html.contains(
+        r#"class="viewport-interaction-row compact" data-browser-viewport-interactions"#
+    ));
+    assert!(!html.contains(r#"data-browser-viewport-click-state"#));
+    assert!(!html.contains(r#"<span class="viewport-command-label">Click</span>"#));
     assert!(html.contains("Click raster to open links/buttons"));
     let primary_start = html.find(r#"data-browser-primary-surface"#).unwrap();
     let tools_start = html.find(r#"data-browser-controls-tray"#).unwrap();
@@ -8446,6 +8449,8 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"name="action" value="click-at""#));
     assert!(html.contains(r#"<summary>Input tools and forms</summary>"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
+    assert!(primary_html.contains(r#"data-browser-click-status aria-live="polite""#));
+    assert!(primary_html.contains(r#"data-browser-click-hint"#));
     assert!(html.contains("Ready for page click."));
     assert!(html.contains("click links and buttons in this image"));
     let links_start = html.find(r#"<summary>Links</summary>"#).unwrap();
