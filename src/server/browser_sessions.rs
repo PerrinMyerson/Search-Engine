@@ -9351,6 +9351,25 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
     let viewport_text = render_browser_session_viewport_text(payload, &viewport);
     let navigation_state = render_browser_session_navigation_state(payload, back_href);
+    let page_summary = format!(
+        r#"<details class="browser-page-summary" data-browser-page-details><summary>Page details</summary><div class="browser-page-summary-content"><div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>{navigation_state}</div></details>"#,
+        id = html_escape::encode_text(&payload.id),
+        history_index = payload.current_history_index.map_or(0, |index| index + 1),
+        history_len = payload.history_len,
+        width = payload.width,
+        height = payload.height,
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        max_scroll_x = payload.max_scroll_x,
+        max_scroll_y = payload.max_scroll_y,
+        doc_width = payload.document_width,
+        doc_height = payload.document_height,
+        nodes = payload.dom_node_count,
+        links = payload.link_count,
+        anchors = payload.anchor_count,
+        forms = payload.form_count,
+        navigation_state = navigation_state,
+    );
     let resource_quick_actions = render_browser_session_resource_quick_actions(payload);
     let viewport_interaction_controls =
         render_browser_session_viewport_interaction_controls(payload);
@@ -9754,7 +9773,6 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </header>
 <section class="browser-page-head">
 <div class="browser-page-title"><h1>{heading}</h1><div class="meta" title="{source_attr}">{source}</div></div>
-<details class="browser-page-summary"><summary>Page and session details</summary><div class="browser-page-summary-content"><div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>{navigation_state}</div></details>
 </section>
 {auto_visual_bootstrap}
 <section class="browser-viewport-primary" data-browser-primary-surface>
@@ -9764,7 +9782,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_scroll_controls}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{page_summary}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
 <details class="debug-stack browser-tools-menu" data-browser-tools-tray>
 <summary>Diagnostics</summary>
@@ -9808,13 +9826,6 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         max_bytes = payload.max_bytes,
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
-        max_scroll_x = payload.max_scroll_x,
-        max_scroll_y = payload.max_scroll_y,
-        doc_width = payload.document_width,
-        doc_height = payload.document_height,
-        nodes = payload.dom_node_count,
-        links = payload.link_count,
-        anchors = payload.anchor_count,
         forms_json_href = html_escape::encode_double_quoted_attribute(&forms_json_href),
         forms_csv_href = html_escape::encode_double_quoted_attribute(&forms_csv_href),
         links_csv_href = html_escape::encode_double_quoted_attribute(&links_csv_href),
@@ -9822,9 +9833,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         links_background_control = links_background_control,
         bookmark_links_control = bookmark_links_control,
         remove_link_bookmarks_control = remove_link_bookmarks_control,
+        links = payload.link_count,
         forms = payload.form_count,
-        history_index = payload.current_history_index.map_or(0, |index| index + 1),
-        history_len = payload.history_len,
         viewport_status = viewport_status,
         viewport_scroll_controls = viewport_scroll_controls,
         primary_page_state = primary_page_state,
@@ -9832,7 +9842,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         browser_chrome_status = render_browser_session_chrome_status(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
-        navigation_state = navigation_state,
+        page_summary = page_summary,
         resource_quick_actions = resource_quick_actions,
         viewport_image = viewport_image,
         viewport_interaction_controls = viewport_interaction_controls,
@@ -12803,7 +12813,15 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Primary viewport scroll controls">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Primary viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        x = payload.viewport_x,
+        y = payload.viewport_y,
+        max_x = payload.max_scroll_x,
+        max_y = payload.max_scroll_y,
+        can_scroll_left = can_scroll_left,
+        can_scroll_right = can_scroll_right,
+        can_scroll_up = can_scroll_up,
+        can_scroll_down = can_scroll_down,
         top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
         left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
         page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
@@ -13117,7 +13135,19 @@ fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Opti
 fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> String {
     browser_session_scroll_feedback_text(payload)
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
-        .unwrap_or_default()
+        .unwrap_or_else(|| {
+            if payload.max_scroll_x == 0 && payload.max_scroll_y == 0 {
+                "Viewport fits; no scroll needed.".to_owned()
+            } else {
+                format!(
+                    "Scroll position x {}/{}, y {}/{}.",
+                    payload.viewport_x,
+                    payload.max_scroll_x,
+                    payload.viewport_y,
+                    payload.max_scroll_y,
+                )
+            }
+        })
 }
 
 fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
