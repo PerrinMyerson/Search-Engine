@@ -2629,6 +2629,137 @@ fn default_raster_density_scales_scrolled_paragraph_text_with_image() {
 }
 
 #[test]
+fn scrolled_viewport_reports_fixed_layout_and_mixed_image_text_slice() {
+    let image_url = "mem://scroll-render-stable-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![140],
+        rgb_pixels: Some(vec![220, 48, 96]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <header style="position:fixed; top:0; background:rgb(20,40,60)">Pinned nav</header>
+              <img src="{image_url}" alt="" width="24" height="36">
+              <p>Readable body content stays aligned after scroll</p>
+              <p>Trailing body row keeps the document scrollable</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://scroll-render-stability",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render scrolled fixed/image/text page");
+
+    let header_box = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 1,
+            width: 24,
+            height: 4,
+        },
+        None,
+    )
+    .visible_layout_boxes
+    .into_iter()
+    .find(|layout_box| layout_box.tag == "header")
+    .expect("fixed header should remain visible after scroll");
+    assert_eq!(header_box.y, 0);
+    assert_eq!(header_box.visible_y, 0);
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image command");
+    assert_eq!(image_bounds, (0, 0, 3, 3));
+
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Readable body content") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("body text after image");
+    assert!(text_y >= 3);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(1),
+        viewport_width: Some(24),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled fixed/image/text viewport");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(1));
+
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    assert_eq!(
+        pixel(&rgba, raster_options.padding_x, raster_options.padding_y),
+        &[220, 48, 96, 255]
+    );
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let text_row = raster_options.padding_y.saturating_add(
+        text_y
+            .saturating_sub(1)
+            .saturating_mul(raster_options.cell_height)
+            .saturating_add(4),
+    );
+    let text_col_end =
+        text_col_start.saturating_add("Readable body".len() * raster_options.cell_width);
+    let ink_pixels = (text_col_start..text_col_end.min(rgba.width))
+        .filter(|x| pixel(&rgba, *x, text_row) != &[255, 255, 255, 255])
+        .count();
+    assert!(ink_pixels >= 12);
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
