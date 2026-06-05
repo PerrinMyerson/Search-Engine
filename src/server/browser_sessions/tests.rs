@@ -2199,14 +2199,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
-    assert!(html.contains(r#"aria-label="Primary viewport scroll controls; x 0 of "#));
+    assert!(html.contains(r#"aria-label="Manual viewport scroll controls; x 0 of "#));
     assert!(html.contains(r#"data-scroll-x="0""#));
     assert!(html.contains(r#"data-scroll-y="0""#));
     assert!(html.contains(r#"data-can-scroll-left="false""#));
     assert!(html.contains(r#"data-can-scroll-right="true""#));
     assert!(html.contains(r#"data-can-scroll-up="false""#));
     assert!(html.contains(r#"data-can-scroll-down="true""#));
-    assert!(html.contains("Scroll position x 0/"));
+    assert!(html.contains("Ready to scroll."));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
     ));
@@ -2217,8 +2217,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
-    assert!(html.contains(r#"<span data-browser-scroll-state="x">x: at left edge</span>"#));
-    assert!(html.contains(r#"<span data-browser-scroll-state="y">y: at top</span>"#));
+    assert!(html.contains(r#"data-browser-scroll-state="summary""#));
+    assert!(html.contains(r#"data-scroll-x-state="at left edge""#));
+    assert!(html.contains(r#"data-scroll-y-state="at top""#));
+    assert!(html.contains("Scroll x 0/"));
     assert!(html.contains(">Page down</a>"));
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -2425,20 +2427,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(!html.contains("Skipped visual raster generation for this scroll response."));
     assert!(html.contains(r#"<details class="viewport-text"><summary>Text viewport</summary>"#));
     assert!(!html.contains(r#"<span class="viewport-state-chip">fast text scroll</span>"#));
-    assert!(html.contains(&format!("<span>x 8/{}</span>", payload.max_scroll_x)));
-    assert!(html.contains(&format!("<span>y 4/{}</span>", payload.max_scroll_y)));
-    assert!(
-        html.contains(
-            r#"<span data-browser-scroll-state="x">x: horizontal scroll available</span>"#
-        )
-    );
-    assert!(
-        html.contains(r#"<span data-browser-scroll-state="y">y: vertical scroll available</span>"#)
-    );
     assert!(html.contains(&format!(
-        "<span>{}%</span>",
+        "Scroll x 8/{} · y 4/{} · {}%",
+        payload.max_scroll_x,
+        payload.max_scroll_y,
         browser_scroll_percent(payload.viewport_y, payload.max_scroll_y)
     )));
+    assert!(html.contains(r#"data-browser-scroll-state="summary""#));
+    assert!(html.contains(r#"data-scroll-x-state="horizontal scroll available""#));
+    assert!(html.contains(r#"data-scroll-y-state="vertical scroll available""#));
+    assert!(html.contains(r#"data-browser-scroll-input-hint>Wheel / keys scroll</span>"#));
     assert!(html.contains(&format!(r#"aria-valuemax="{}""#, payload.max_scroll_y)));
     assert!(html.contains(r#"aria-valuenow="4""#));
     assert!(html.contains(&format!(
@@ -2565,9 +2563,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.addEventListener("mousemove""#));
     assert!(html.contains(r#"shell.addEventListener("mouseleave""#));
     assert!(html.contains(r#"data-browser-click-status"#));
-    assert!(html.contains("Click to activate."));
-    assert!(html.contains("Hover rendered page to inspect click target."));
-    assert!(html.contains("Wheel or use arrow keys to scroll the rendered page."));
+    assert!(html.contains(". Click."));
+    assert!(html.contains("Ready for page click."));
+    assert!(html.contains("Ready to scroll."));
     assert!(html.contains("const replaceViewportPage"));
     assert!(html.contains("const replaceViewportPartial"));
     assert!(html.contains("const applyViewportPartial"));
@@ -2894,7 +2892,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#">Top</a>"#));
     assert!(html.contains(r#">Page up</a>"#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
-    assert!(html.contains(r#"<span data-browser-scroll-state="y">y: at bottom</span>"#));
+    assert!(html.contains(r#"data-scroll-y-state="at bottom""#));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert!(
@@ -8436,7 +8434,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
     assert!(html.contains(r#"data-browser-viewport-click-state"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Click</span>"#));
-    assert!(html.contains("Click the rendered page to activate links and controls"));
+    assert!(html.contains("Click raster to open links/buttons"));
     assert!(
         html.contains(r#"class="viewport-click-details" aria-label="Manual click coordinates""#)
     );
@@ -8447,7 +8445,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"id="browser-viewport-click-y""#));
     assert!(html.contains(r#"<button type="submit">Activate point</button>"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
-    assert!(html.contains("Hover rendered page to inspect click target."));
+    assert!(html.contains("Ready for page click."));
     assert!(html.contains("click links and buttons in this image"));
     assert!(html.contains(r#"aria-label="Quick visible links""#));
     assert!(html.contains(r#">1. Second</a>"#));
@@ -12273,8 +12271,8 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
         "The tab is retained; continue loading to retry without losing the browser controls."
     ));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
-    assert!(html.contains("Page is still loading; clicks start after the first render."));
-    assert!(html.contains("Click controls will activate after the first rendered viewport"));
+    assert!(html.contains("Clicks start after render"));
+    assert!(html.contains("Clicks start after render"));
     assert!(html.contains("action=open"));
     assert!(html.contains("url=http%3A%2F%2F"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
@@ -12335,8 +12333,8 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains("Loading browser viewport"));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
+    assert!(html.contains("Clicks start after render"));
     assert!(html.contains("Page is still loading; clicks start after the first render."));
-    assert!(html.contains("Click controls will activate after the first rendered viewport"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
     assert!(html.contains("width=90"));
     assert!(html.contains("height=32"));
@@ -12441,7 +12439,7 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(html.contains("Loading browser viewport"));
     assert!(html.contains("Page is still loading; scroll starts after the first render."));
     assert!(html.contains("Page is still loading; clicks start after the first render."));
-    assert!(html.contains("Click controls will activate after the first rendered viewport"));
+    assert!(html.contains("Page is still loading; clicks start after the first render."));
     assert!(html.contains("action=open"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dbroken"));
     assert!(html.contains("width=80"));
