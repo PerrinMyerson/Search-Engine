@@ -4261,12 +4261,11 @@ pub(super) fn image_render_source(
     element: &ElementData,
     viewport_width_css_px: usize,
 ) -> Option<String> {
-    let srcset_target_width =
-        srcset_target_width_from_sizes(image_sizes_attr(element), viewport_width_css_px);
+    let srcset_target_width = image_srcset_target_width(element, viewport_width_css_px);
     let selected_source = picture_source_srcset(dom, node_id, viewport_width_css_px)
         .and_then(|source| {
             let source_target_width =
-                srcset_target_width_from_sizes(source.sizes, viewport_width_css_px);
+                source_srcset_target_width(source.sizes, element, viewport_width_css_px);
             choose_srcset_candidate(source.srcset, source_target_width)
         })
         .or_else(|| {
@@ -4675,7 +4674,7 @@ fn lazy_image_render_source(
     picture_source_lazy_srcset(dom, node_id, viewport_width_css_px)
         .and_then(|source| {
             let source_target_width =
-                srcset_target_width_from_sizes(source.sizes, viewport_width_css_px);
+                source_srcset_target_width(source.sizes, element, viewport_width_css_px);
             choose_srcset_candidate(source.srcset, source_target_width)
         })
         .or_else(|| {
@@ -5379,6 +5378,49 @@ fn srcset_target_width_from_sizes(
     sizes
         .and_then(|sizes| parse_sizes_attribute(sizes, viewport_width_css_px))
         .or_else(|| (viewport_width_css_px > 0).then_some(viewport_width_css_px))
+}
+
+fn image_srcset_target_width(element: &ElementData, viewport_width_css_px: usize) -> Option<usize> {
+    image_sizes_attr(element)
+        .and_then(|sizes| parse_sizes_attribute(sizes, viewport_width_css_px))
+        .or_else(|| image_width_attr_target(element))
+        .or_else(|| (viewport_width_css_px > 0).then_some(viewport_width_css_px))
+}
+
+fn source_srcset_target_width(
+    sizes: Option<&str>,
+    fallback_element: &ElementData,
+    viewport_width_css_px: usize,
+) -> Option<usize> {
+    sizes
+        .and_then(|sizes| parse_sizes_attribute(sizes, viewport_width_css_px))
+        .or_else(|| image_width_attr_target(fallback_element))
+        .or_else(|| (viewport_width_css_px > 0).then_some(viewport_width_css_px))
+}
+
+fn image_width_attr_target(element: &ElementData) -> Option<usize> {
+    element
+        .attrs
+        .get("width")
+        .and_then(|width| parse_image_dimension_attr(width))
+}
+
+fn parse_image_dimension_attr(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("auto")
+        || value.ends_with('%')
+        || value.starts_with('-')
+    {
+        return None;
+    }
+    let value = strip_ascii_case_suffix(value, "px").unwrap_or(value).trim();
+    let pixels = value.parse::<f64>().ok()?;
+    if pixels.is_finite() && pixels > 0.0 {
+        Some(pixels.ceil() as usize)
+    } else {
+        None
+    }
 }
 
 fn parse_sizes_attribute(sizes: &str, viewport_width_css_px: usize) -> Option<usize> {
