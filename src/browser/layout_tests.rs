@@ -6489,7 +6489,7 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
     );
     assert_eq!(frame.report.frame.raster_viewport_x, Some(1));
     assert_eq!(frame.report.frame.raster_viewport_y, Some(3));
-    assert_eq!(frame.report.dirty_pixel_regions.len(), 2);
+    assert_eq!(frame.report.dirty_pixel_regions.len(), 3);
 
     let pixel = |x: usize, y: usize| {
         let index = y
@@ -6506,6 +6506,206 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
             options.padding_y
         ),
         &[40, 120, 220, 255]
+    );
+    let fixed_text_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(frame.raster.height))
+        .any(|y| {
+            (options.padding_x..options.padding_x.saturating_add(options.cell_width * 3))
+                .any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        });
+    assert!(fixed_text_has_ink);
+}
+
+#[test]
+fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() {
+    let image_url = "mem://small-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![92],
+        rgb_pixels: Some(vec![32, 144, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://small-scroll-frame".to_owned(),
+        title: String::new(),
+        viewport_width: 16,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 1,
+        layout_boxes: vec![BrowserLayoutBox {
+            id: 0,
+            parent: None,
+            node_id: 99,
+            tag: "section".to_owned(),
+            kind: "block".to_owned(),
+            x: 0,
+            y: 40,
+            width: 16,
+            height: 20,
+            children: Vec::new(),
+            command_indices: Vec::new(),
+        }],
+        paint_command_count: 8,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default().with_viewport_fixed(true),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 0,
+                text: "PIN".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Hero".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 5,
+                y: 2,
+                width: 4,
+                height: 3,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 12,
+                height: 2,
+                shade: 210,
+                red: 240,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Readable section".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 9,
+                text: "Second body line".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 10,
+                text: "Third body line".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 11,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Hero\nReadable section\nSecond body line\nThird body line\nFooter".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 4,
+    };
+    let first = browser_document_viewport_after_scroll(&render, start, 0, 1);
+    assert_eq!(first.viewport.y, 1);
+    assert_eq!(first.max_scroll_y, 8);
+    assert_eq!(first.scroll_delta_y, 1);
+    assert_eq!(
+        first.invalidated_regions,
+        vec![BrowserViewportRect {
+            x: 0,
+            y: 3,
+            width: 10,
+            height: 1,
+        },]
+    );
+
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 2);
+    assert_eq!(second.scroll_delta_y, 1);
+    assert_eq!(second.invalidated_regions, first.invalidated_regions);
+
+    let bottom = browser_document_viewport_after_scroll(&render, second.viewport, 0, 99);
+    assert_eq!(bottom.viewport.y, bottom.max_scroll_y);
+    assert_eq!(bottom.scroll_delta_y, 6);
+    assert!(bottom.full_repaint);
+    let clamped_again = browser_document_viewport_after_scroll(&render, bottom.viewport, 0, 1);
+    assert_eq!(clamped_again.viewport.y, bottom.max_scroll_y);
+    assert_eq!(clamped_again.scroll_delta_y, 0);
+    assert!(clamped_again.invalidated_regions.is_empty());
+    assert_eq!(
+        clamped_again.reused_area,
+        clamped_again.viewport.width * clamped_again.viewport.height
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(99),
+        viewport_width: Some(10),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, second.viewport, Some(first.viewport), options)
+        .expect("render repeated small scroll viewport frame");
+    assert_eq!(frame.report.viewport.viewport.y, 2);
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(2));
+    assert_eq!(
+        frame
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .map(|region| (
+                region.viewport_x,
+                region.viewport_y,
+                region.viewport_width,
+                region.viewport_height
+            ))
+            .collect::<Vec<_>>(),
+        vec![(0, 3, 10, 1), (0, 0, 3, 1)]
+    );
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(5usize.saturating_mul(options.cell_width)),
+            options.padding_y
+        ),
+        &[32, 144, 220, 255]
     );
     let fixed_text_has_ink = (options.padding_y
         ..options

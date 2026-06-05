@@ -4642,12 +4642,7 @@ fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
         max_row = max_row.max(bounds.y.saturating_add(bounds.height));
     }
     for layout_box in &render.layout_boxes {
-        if !layout_box.command_indices.is_empty()
-            && layout_box
-                .command_indices
-                .iter()
-                .all(|command_index| !display_command_affects_scroll_extent(render, *command_index))
-        {
+        if !layout_box_affects_scroll_extent(render, layout_box) {
             continue;
         }
         let bounds = layout_box_bounds(layout_box);
@@ -4655,6 +4650,14 @@ fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
         max_row = max_row.max(bounds.y.saturating_add(bounds.height));
     }
     (max_column, max_row)
+}
+
+fn layout_box_affects_scroll_extent(render: &BrowserRender, layout_box: &BrowserLayoutBox) -> bool {
+    !layout_box.command_indices.is_empty()
+        && layout_box
+            .command_indices
+            .iter()
+            .any(|command_index| display_command_affects_scroll_extent(render, *command_index))
 }
 
 fn display_command_affects_scroll_extent(render: &BrowserRender, command_index: usize) -> bool {
@@ -4965,7 +4968,7 @@ pub fn browser_viewport_frame(
     let raster = rasterize_render_rgba(render, raster_options)?;
     let frame = rgba_raster_report(render, &raster, raster_options);
     let dirty_pixel_regions =
-        browser_viewport_frame_dirty_regions(&viewport, &frame, raster_options);
+        browser_viewport_frame_dirty_regions(render, &viewport, &frame, raster_options);
     let dirty_pixel_area = dirty_pixel_regions
         .iter()
         .map(|region| region.width.saturating_mul(region.height))
@@ -5108,7 +5111,136 @@ fn browser_viewport_invalidated_regions(
     (regions, false)
 }
 
+fn append_viewport_positioned_invalidated_regions(
+    render: &BrowserRender,
+    previous: BrowserViewportState,
+    current: BrowserViewportState,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let previous_viewport = raster_viewport_from_state(previous);
+    let current_viewport = raster_viewport_from_state(current);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        if !viewport_fixed && viewport_sticky_top.is_none() {
+            continue;
+        }
+
+        append_display_command_viewport_dirty_region(
+            command,
+            current_viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+            regions,
+        );
+        append_display_command_viewport_dirty_region(
+            command,
+            previous_viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+            regions,
+        );
+    }
+}
+
+fn append_display_command_viewport_dirty_region(
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+    viewport_fixed: bool,
+    viewport_sticky_top: Option<usize>,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let command_bounds =
+        display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
+    let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+    else {
+        return;
+    };
+    append_non_overlapping_viewport_rect(
+        regions,
+        BrowserViewportRect {
+            x: visible_bounds.x.saturating_sub(viewport.x),
+            y: visible_bounds.y.saturating_sub(viewport.y),
+            width: visible_bounds.width,
+            height: visible_bounds.height,
+        },
+    );
+}
+
+fn append_non_overlapping_viewport_rect(
+    regions: &mut Vec<BrowserViewportRect>,
+    rect: BrowserViewportRect,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let mut fragments = vec![rect];
+    for existing in regions.iter().copied() {
+        fragments = fragments
+            .into_iter()
+            .flat_map(|fragment| subtract_viewport_rect(fragment, existing))
+            .collect();
+        if fragments.is_empty() {
+            return;
+        }
+    }
+    regions.extend(fragments);
+}
+
+fn subtract_viewport_rect(
+    rect: BrowserViewportRect,
+    covered: BrowserViewportRect,
+) -> Vec<BrowserViewportRect> {
+    let rect_end_x = rect.x.saturating_add(rect.width);
+    let rect_end_y = rect.y.saturating_add(rect.height);
+    let covered_end_x = covered.x.saturating_add(covered.width);
+    let covered_end_y = covered.y.saturating_add(covered.height);
+    let overlap_x = rect.x.max(covered.x);
+    let overlap_y = rect.y.max(covered.y);
+    let overlap_end_x = rect_end_x.min(covered_end_x);
+    let overlap_end_y = rect_end_y.min(covered_end_y);
+    if overlap_x >= overlap_end_x || overlap_y >= overlap_end_y {
+        return vec![rect];
+    }
+
+    let mut fragments = Vec::new();
+    if rect.y < overlap_y {
+        fragments.push(BrowserViewportRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: overlap_y.saturating_sub(rect.y),
+        });
+    }
+    if overlap_end_y < rect_end_y {
+        fragments.push(BrowserViewportRect {
+            x: rect.x,
+            y: overlap_end_y,
+            width: rect.width,
+            height: rect_end_y.saturating_sub(overlap_end_y),
+        });
+    }
+    if rect.x < overlap_x {
+        fragments.push(BrowserViewportRect {
+            x: rect.x,
+            y: overlap_y,
+            width: overlap_x.saturating_sub(rect.x),
+            height: overlap_end_y.saturating_sub(overlap_y),
+        });
+    }
+    if overlap_end_x < rect_end_x {
+        fragments.push(BrowserViewportRect {
+            x: overlap_end_x,
+            y: overlap_y,
+            width: rect_end_x.saturating_sub(overlap_end_x),
+            height: overlap_end_y.saturating_sub(overlap_y),
+        });
+    }
+    fragments
+}
+
 fn browser_viewport_frame_dirty_regions(
+    render: &BrowserRender,
     viewport: &BrowserDocumentViewportReport,
     frame: &BrowserRgbaRasterReport,
     options: BrowserRasterOptions,
@@ -5126,8 +5258,19 @@ fn browser_viewport_frame_dirty_regions(
         }];
     }
 
-    viewport
-        .invalidated_regions
+    let mut invalidated_regions = viewport.invalidated_regions.clone();
+    if let Some(previous_state) = viewport.previous
+        && (previous_state.x != viewport.viewport.x || previous_state.y != viewport.viewport.y)
+    {
+        append_viewport_positioned_invalidated_regions(
+            render,
+            previous_state,
+            viewport.viewport,
+            &mut invalidated_regions,
+        );
+    }
+
+    invalidated_regions
         .iter()
         .filter(|region| region.width > 0 && region.height > 0)
         .map(|region| BrowserViewportFrameDirtyRect {
