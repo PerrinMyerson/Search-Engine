@@ -9601,8 +9601,12 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-command-jump label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-command-jump input[type="number"] {{ width: 82px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-command-jump button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
-.viewport-interaction-row {{ display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-interaction-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 10px; }}
+.viewport-click-status-row {{ flex: 1 1 280px; min-width: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
+.viewport-click-details {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
+.viewport-click-details > summary {{ min-height: 28px; display: inline-flex; align-items: center; cursor: pointer; padding: 0 9px; color: #20242a; font-size: 12px; font-weight: 800; }}
 .viewport-click-form {{ display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }}
+.viewport-click-details .viewport-click-form {{ padding: 0 9px 9px; }}
 .viewport-click-form label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-click-form input[type="number"] {{ width: 76px; height: 28px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
 .viewport-click-form button {{ min-height: 28px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
@@ -9721,7 +9725,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 .browser-inspector th, .browser-inspector td {{ border-top: 1px solid #eef0f3; padding: 7px 6px; color: #3a3f45; font-size: 12px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }}
 .browser-inspector th {{ color: #5d636b; font-weight: 700; }}
 .browser-inspector .current-row td {{ background: #eef4ff; }}
-@media (max-width: 720px) {{ .browser-chrome-row {{ grid-template-columns: 1fr; }} .browser-primary-nav, .address-bar {{ overflow-x: auto; }} .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} .viewport-interaction-row {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 720px) {{ .browser-chrome-row {{ grid-template-columns: 1fr; }} .browser-primary-nav, .address-bar {{ overflow-x: auto; }} .browser-actions {{ grid-template-columns: 1fr; }} .browser-action {{ grid-template-columns: 1fr; }} .viewport-input form {{ grid-template-columns: 1fr 1fr; }} .viewport-input input[type="text"] {{ grid-column: 1 / -1; }} }}
 </style>
 </head>
 <body>
@@ -12850,7 +12854,7 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_y = payload.height.saturating_sub(1) / 2;
     let click_status = browser_session_click_status(payload);
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><span class="viewport-command-label">Click target</span><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span></form><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">Click the rendered page to activate links and controls</span></div><details class="viewport-click-details" aria-label="Manual click coordinates"><summary>Manual click</summary><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button></form></details><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
