@@ -4169,15 +4169,27 @@ fn background_image_attr_source(value: &str) -> Option<String> {
     if value.is_empty() || value.eq_ignore_ascii_case("none") {
         return None;
     }
+    split_css_top_level_commas_with_quotes(value)
+        .into_iter()
+        .find_map(background_image_layer_source)
+}
+
+fn background_image_layer_source(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return None;
+    }
     if let Some(url) = background_image_set_attr_source(value) {
         return Some(url);
     }
-    let url = value
-        .strip_prefix("url(")
-        .and_then(|url| url.strip_suffix(')'))
-        .map(|url| url.trim().trim_matches(['"', '\'']))
-        .unwrap_or(value)
-        .trim();
+    if let Some(url) = css_function_args(value, &["url"]).and_then(css_url_token) {
+        let url = url.trim();
+        return (!url.is_empty() && !image_source_clearly_unsupported(url)).then(|| url.to_owned());
+    }
+    if value.contains('(') || value.contains('{') || value.contains('}') {
+        return None;
+    }
+    let url = value.trim().trim_matches(['"', '\'']);
     if url.is_empty() || image_source_clearly_unsupported(url) {
         return None;
     }
