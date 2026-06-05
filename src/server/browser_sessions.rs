@@ -1365,14 +1365,100 @@ async fn browser_session_for_target(
     target: &RequestTarget,
     state: &ServerState,
 ) -> Result<(BrowserSessionPayload, String), BrowserRouteError> {
-    if target.param("id").is_some() {
-        state.browser_sessions.apply_target(target).await
-    } else {
-        state.browser_sessions.create_target(target).await
+    state.browser_sessions.target(target).await
+}
+
+fn browser_target_with_session_id(target: &RequestTarget, id: &str) -> RequestTarget {
+    let mut params = target
+        .params
+        .iter()
+        .filter(|(key, _)| key != "id")
+        .cloned()
+        .collect::<Vec<_>>();
+    params.insert(0, ("id".to_owned(), id.to_owned()));
+    RequestTarget {
+        path: target.path.clone(),
+        params,
     }
 }
 
+fn browser_target_can_apply_action_after_create(
+    target: &RequestTarget,
+) -> Result<bool, BrowserRouteError> {
+    if target.param("url").is_none() || target.param("action").is_none() {
+        return Ok(false);
+    }
+    let action = browser_action(target)?;
+    Ok(browser_action_can_apply_after_fresh_create(&action))
+}
+
+fn browser_action_can_apply_after_fresh_create(action: &BrowserSessionAction) -> bool {
+    matches!(
+        action,
+        BrowserSessionAction::Current
+            | BrowserSessionAction::Reload
+            | BrowserSessionAction::Link(_)
+            | BrowserSessionAction::LinkText(_)
+            | BrowserSessionAction::LinkSelector(_)
+            | BrowserSessionAction::ClickSelector(_)
+            | BrowserSessionAction::ClickAt { .. }
+            | BrowserSessionAction::FocusSelector(_)
+            | BrowserSessionAction::FocusControl { .. }
+            | BrowserSessionAction::ActivateControl { .. }
+            | BrowserSessionAction::FocusNext
+            | BrowserSessionAction::FocusPrevious
+            | BrowserSessionAction::TypeText(_)
+            | BrowserSessionAction::Backspace(_)
+            | BrowserSessionAction::ClearInput
+            | BrowserSessionAction::Enter
+            | BrowserSessionAction::Space
+            | BrowserSessionAction::Choose(_)
+            | BrowserSessionAction::FetchResources
+            | BrowserSessionAction::MakeVisual
+            | BrowserSessionAction::ApplyStylesheets
+            | BrowserSessionAction::RunScripts
+            | BrowserSessionAction::LoadImages
+            | BrowserSessionAction::ClearResourceReport
+            | BrowserSessionAction::Scroll { .. }
+            | BrowserSessionAction::Top
+            | BrowserSessionAction::Bottom
+            | BrowserSessionAction::PageUp
+            | BrowserSessionAction::PageDown
+            | BrowserSessionAction::LineUp
+            | BrowserSessionAction::LineDown
+            | BrowserSessionAction::Fill { .. }
+            | BrowserSessionAction::FillControl { .. }
+            | BrowserSessionAction::TypeControl { .. }
+            | BrowserSessionAction::ClearControl { .. }
+            | BrowserSessionAction::Select { .. }
+            | BrowserSessionAction::Toggle { .. }
+            | BrowserSessionAction::Submit { .. }
+    )
+}
+
+fn browser_target_allows_xy_viewport_alias(target: &RequestTarget) -> bool {
+    browser_action(target)
+        .as_ref()
+        .map(browser_session_action_allows_xy_viewport_alias)
+        .unwrap_or(true)
+}
+
 impl BrowserSessionRegistry {
+    async fn target(
+        &self,
+        target: &RequestTarget,
+    ) -> Result<(BrowserSessionPayload, String), BrowserRouteError> {
+        if target.param("id").is_some() {
+            self.apply_target(target).await
+        } else if browser_target_can_apply_action_after_create(target)? {
+            let (payload, _) = self.create_target(target).await?;
+            let target = browser_target_with_session_id(target, &payload.id);
+            self.apply_target(&target).await
+        } else {
+            self.create_target(target).await
+        }
+    }
+
     async fn create_target(
         &self,
         target: &RequestTarget,
@@ -1397,8 +1483,9 @@ impl BrowserSessionRegistry {
         );
         let navigation_target = browser_session_navigation_target(&target_url, max_bytes)?;
         let back_href = sanitized_search_return_href(target.param("from").as_deref());
-        let has_explicit_viewport_y =
-            target.param("y").is_some() || target.param("viewport_y").is_some();
+        let allow_xy_viewport_alias = browser_target_allows_xy_viewport_alias(target);
+        let has_explicit_viewport_y = target.param("viewport_y").is_some()
+            || (allow_xy_viewport_alias && target.param("y").is_some());
         let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
         let mut pending_source = None;
         let display_source = navigation_target.display_source;
@@ -1451,11 +1538,19 @@ impl BrowserSessionRegistry {
             width,
             height,
             max_bytes,
-            viewport_x: parse_optional_usize_param(target, "x", 0, usize::MAX)
-                .or_else(|| parse_optional_usize_param(target, "viewport_x", 0, usize::MAX))
+            viewport_x: parse_optional_usize_param(target, "viewport_x", 0, usize::MAX)
+                .or_else(|| {
+                    allow_xy_viewport_alias
+                        .then(|| parse_optional_usize_param(target, "x", 0, usize::MAX))
+                        .flatten()
+                })
                 .unwrap_or(0),
-            viewport_y: parse_optional_usize_param(target, "y", 0, usize::MAX)
-                .or_else(|| parse_optional_usize_param(target, "viewport_y", 0, usize::MAX))
+            viewport_y: parse_optional_usize_param(target, "viewport_y", 0, usize::MAX)
+                .or_else(|| {
+                    allow_xy_viewport_alias
+                        .then(|| parse_optional_usize_param(target, "y", 0, usize::MAX))
+                        .flatten()
+                })
                 .unwrap_or(0),
             back_href,
             find_query: String::new(),

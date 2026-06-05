@@ -2147,6 +2147,78 @@ async fn browser_session_registry_find_jumps_to_match_column() {
 }
 
 #[tokio::test]
+async fn browser_session_fresh_scroll_url_canonicalizes_to_session_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("scroll.html");
+    let lines = (0..50)
+        .map(|index| format!("scroll line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &page,
+        format!(r#"<!doctype html><title>Scroll URL</title><pre>{lines}</pre>"#),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let direct_scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "7".to_owned()),
+            ("from".to_owned(), "/search?q=scroll".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+            ("max_bytes".to_owned(), "2097152".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.target(&direct_scroll).await.unwrap();
+    assert_eq!(payload.id, "s1");
+    assert_eq!(payload.viewport_y, 7);
+    assert_eq!(payload.back_href, "/search?q=scroll");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Moved visual viewport to x 0, y 7.")
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"<input type="hidden" name="id" value="s1">"#));
+    assert!(html.contains(r#"data-browser-address type="text""#));
+    assert!(html.contains(r#"data-browser-viewport-status"#));
+    assert!(html.contains(r#"Scroll x 0/"#));
+    assert!(html.contains(r#"y 7/"#));
+    assert!(html.contains("Moved visual viewport to x 0, y 7."));
+    assert!(html.contains(r#"data-scroll-url="/browser?id=s1&amp;action=scroll"#));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Dscroll"));
+    assert!(html.contains("viewport_y=7"));
+
+    let session_scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "3".to_owned()),
+            ("from".to_owned(), payload.back_href.clone()),
+            ("width".to_owned(), payload.width.to_string()),
+            ("height".to_owned(), payload.height.to_string()),
+            ("viewport_x".to_owned(), payload.viewport_x.to_string()),
+            ("viewport_y".to_owned(), payload.viewport_y.to_string()),
+            ("max_bytes".to_owned(), payload.max_bytes.to_string()),
+            ("source".to_owned(), payload.source.clone()),
+        ],
+    };
+    let (payload, _) = registry.target(&session_scroll).await.unwrap();
+    assert_eq!(payload.id, "s1");
+    assert_eq!(payload.viewport_y, 10);
+    assert_eq!(payload.back_href, "/search?q=scroll");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Moved visual viewport to x 0, y 10.")
+    );
+}
+
+#[tokio::test]
 async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("wide.html");
@@ -8678,6 +8750,64 @@ async fn browser_session_registry_click_selector_reports_no_visible_change() {
         payload.action_feedback.as_deref(),
         Some("Clicked selector main; no visible change; viewport preserved")
     );
+}
+
+#[tokio::test]
+async fn browser_session_fresh_click_at_miss_keeps_session_and_viewport() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("plain.html");
+    let wide_suffix = "x".repeat(80);
+    let lines = (0..30)
+        .map(|index| format!("plain line {index:02} {wide_suffix}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &page,
+        format!(r#"<!doctype html><title>Plain</title><pre>{lines}</pre>"#),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), "999".to_owned()),
+            ("y".to_owned(), "999".to_owned()),
+            ("from".to_owned(), "/search?q=plain".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "12".to_owned()),
+            ("viewport_x".to_owned(), "3".to_owned()),
+            ("viewport_y".to_owned(), "2".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.target(&click).await.unwrap();
+    assert_eq!(payload.id, "s1");
+    assert_eq!(payload.title, "Plain");
+    assert_eq!(payload.back_href, "/search?q=plain");
+    assert_eq!(payload.viewport_x, 3);
+    assert_eq!(payload.viewport_y, 2);
+    assert!(!payload.fast_scroll);
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("No click target at x 999, y 999"))
+    );
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"<input type="hidden" name="id" value="s1">"#));
+    assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
+    assert!(html.contains("No click target at x 999, y 999"));
+    assert!(html.contains("viewport preserved"));
+    assert!(html.contains(r#"data-viewport-x="3""#));
+    assert!(html.contains(r#"data-viewport-y="2""#));
+    assert!(html.contains(r#"data-click-url="/browser?id=s1&amp;action=click-at"#));
+    assert!(html.contains(r#"name="viewport_x" value="3""#));
+    assert!(html.contains(r#"name="viewport_y" value="2""#));
 }
 
 #[tokio::test]
