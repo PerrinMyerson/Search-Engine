@@ -9186,6 +9186,104 @@ fn browser_session_action_href_preserves_session_and_viewport() {
     );
 }
 
+#[test]
+fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
+    let payload = BrowserSessionPayload {
+        id: "s9".to_owned(),
+        back_href: "/search?q=iana".to_owned(),
+        title: "Loading https://iana.org/".to_owned(),
+        source: "https://iana.org/".to_owned(),
+        rendered_source: BROWSER_ABOUT_BLANK_TARGET.to_owned(),
+        width: 100,
+        height: 44,
+        max_bytes: 4 * 1024 * 1024,
+        viewport_x: 2,
+        viewport_y: 3,
+        document_width: 160,
+        document_height: 90,
+        max_scroll_x: 60,
+        max_scroll_y: 46,
+        dom_node_count: 1,
+        link_count: 0,
+        anchor_count: 0,
+        can_back: false,
+        can_forward: false,
+        history_len: 1,
+        current_history_index: Some(0),
+        profile_enabled: false,
+        profile_error: None,
+        current_bookmarked: false,
+        bookmarks_clear_url: None,
+        bookmarks_background_url: None,
+        links_background_url: None,
+        closed_sessions_clear_url: None,
+        profile_tabs_clear_url: None,
+        profile_history_clear_url: None,
+        find_query: String::new(),
+        find_match_count: 0,
+        find_current_index: None,
+        find_current_line: None,
+        find_current_column: None,
+        find_matches: Vec::new(),
+        tab_search_query: String::new(),
+        tab_search_results: Vec::new(),
+        sessions: Vec::new(),
+        closed_sessions: Vec::new(),
+        bookmarks: Vec::new(),
+        profile_history: Vec::new(),
+        history: Vec::new(),
+        viewport: String::new(),
+        viewport_image: Some(BrowserSessionViewportImagePayload {
+            data_url: "data:image/png;base64,ZmFrZQ==".to_owned(),
+            width: 1208,
+            height: 800,
+        }),
+        viewport_image_error: None,
+        page_text: "retained raster".to_owned(),
+        focused: None,
+        anchors: Vec::new(),
+        links: Vec::new(),
+        form_count: 0,
+        forms: Vec::new(),
+        cookies: Vec::new(),
+        local_storage: Vec::new(),
+        session_storage: Vec::new(),
+        resource_count: 0,
+        resource_image_count: 0,
+        resource_stylesheet_count: 0,
+        resource_script_count: 0,
+        resources: Vec::new(),
+        resource_report: None,
+        action_feedback: Some(
+            "Still opening https://iana.org/; renderer reported: operation timed out".to_owned(),
+        ),
+        pending_source: Some("https://iana.org/".to_owned()),
+        fast_scroll: false,
+    };
+
+    let html = render_browser_session_page(&payload, "/search?q=iana");
+
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(html.contains(r#"data-viewport-state="settled""#));
+    assert!(html.contains(r#"data-viewport-x="2""#));
+    assert!(html.contains(r#"data-viewport-y="3""#));
+    assert!(html.contains(r#"data-raster-width="1208""#));
+    assert!(html.contains(r#"data-raster-height="800""#));
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains("rendered viewport retained"));
+    assert!(html.contains(">Retry load</a>"));
+    assert!(html.contains("Still opening https://iana.org/"));
+    assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
+    assert!(!html.contains(r#"data-viewport-state="loading""#));
+    assert!(!html.contains("No rendered viewport yet"));
+    assert!(!html.contains("Continue loading"));
+    assert!(!html.contains(r#"data-browser-pending-load-retry"#));
+    assert!(html.contains("Ready to scroll."));
+    assert!(html.contains("Click raster to open links/buttons"));
+}
+
 #[tokio::test]
 async fn browser_session_registry_edits_and_submits_forms() {
     let dir = tempfile::tempdir().unwrap();

@@ -10472,8 +10472,18 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
             &[("url", pending_source.clone())],
             payload,
         );
+        let pending_status =
+            payload
+                .action_feedback
+                .as_deref()
+                .map_or_else(String::new, |feedback| {
+                    format!(
+                        r#"<span data-browser-pending-render-status>Status: {feedback}</span>"#,
+                        feedback = html_escape::encode_text(feedback),
+                    )
+                });
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>No rendered viewport yet</strong><span>Opening {source}. The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable.</span><a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>No rendered viewport yet</strong><span>Opening {source}. The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable.</span>{pending_status}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
             viewport_x = payload.viewport_x,
             viewport_y = payload.viewport_y,
             viewport_width = payload.width,
@@ -10482,6 +10492,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
             max_scroll_y = payload.max_scroll_y,
             source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
             source_attr = html_escape::encode_double_quoted_attribute(pending_source),
+            pending_status = pending_status,
             continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
         );
     }
@@ -13263,9 +13274,7 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
 }
 
 fn browser_session_pending_without_ready_viewport(payload: &BrowserSessionPayload) -> bool {
-    payload.pending_source.is_some()
-        && (payload.viewport_image.is_none()
-            || payload.rendered_source == BROWSER_ABOUT_BLANK_TARGET)
+    payload.pending_source.is_some() && payload.viewport_image.is_none()
 }
 
 fn render_browser_session_retained_pending_status(payload: &BrowserSessionPayload) -> String {
