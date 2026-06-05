@@ -3897,7 +3897,8 @@ pub fn hit_test_render(render: &BrowserRender, x: usize, y: usize) -> BrowserHit
 }
 
 fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
-    hit_test_text_target_node(render, x, y)
+    hit_test_text_target_node_by_text_row(render, x, y)
+        .or_else(|| hit_test_text_target_node(render, x, y))
         .or_else(|| hit_test_nearby_text_target_node(render, x, y))
         .or_else(|| hit_test_visual_target_node(render, x, y))
 }
@@ -3971,6 +3972,39 @@ fn hit_test_nearby_text_target_node(render: &BrowserRender, x: usize, y: usize) 
                 return None;
             }
             let column = clamped_bounds_column(bounds, x);
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_near_column(column, 2))
+        })
+}
+
+fn hit_test_text_target_node_by_text_row(
+    render: &BrowserRender,
+    x: usize,
+    text_row: usize,
+) -> Option<usize> {
+    let line = render.text.lines().nth(text_row)?;
+    if line.trim().is_empty() {
+        return None;
+    }
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            let text = readable_display_text(display_command_text(command)?);
+            if text.trim().is_empty() {
+                return None;
+            }
+            let start = line.find(&text)?;
+            let column_start = line[..start].chars().count();
+            let column_end = column_start.saturating_add(text.chars().count());
+            if x.saturating_add(2) < column_start || x > column_end.saturating_add(2) {
+                return None;
+            }
+            let column = x.saturating_sub(column_start);
             render
                 .hit_targets
                 .get(command_index)
@@ -7055,9 +7089,21 @@ fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
         return cell_width.saturating_div(2).clamp(3, cell_width.max(3));
     };
     let ink_width = right.saturating_sub(left).saturating_add(1);
-    ink_width
+    let proportional_advance = ink_width
         .saturating_mul(scale)
         .saturating_add(2)
+        .clamp(3, cell_width.max(3));
+    proportional_advance
+        .max(readable_raster_glyph_min_advance(cell_width))
+        .min(cell_width.max(3))
+}
+
+fn readable_raster_glyph_min_advance(cell_width: usize) -> usize {
+    cell_width
+        .saturating_mul(3)
+        .saturating_add(3)
+        .checked_div(4)
+        .unwrap_or(cell_width)
         .clamp(3, cell_width.max(3))
 }
 

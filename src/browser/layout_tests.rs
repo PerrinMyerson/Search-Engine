@@ -2955,6 +2955,174 @@ fn readable_page_section_keeps_text_form_and_image_in_large_scrolled_viewport() 
 }
 
 #[test]
+fn large_viewport_raster_text_uses_readable_span_with_form_and_image() {
+    let image_url = "mem://readable-scale-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![128],
+        rgb_pixels: Some(vec![96, 144, 208]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let phrase = "Visible inline link list fills little readable lines";
+    let trailing_body = (0..18)
+        .map(|index| {
+            format!(
+                "<p>Trailing readable body row {index} keeps the document tall enough for viewport scroll.</p>"
+            )
+        })
+        .collect::<String>();
+    let html = format!(
+        r#"
+            <html><body>
+              <main>
+                <section>
+                  <h1>Readable viewport scale</h1>
+                  <p>{phrase} after a scroll slice without collapsing into a miniature strip.</p>
+                  <form>
+                    <label>Search <input name="q" placeholder="browser words"></label>
+                    <button>Go</button>
+                  </form>
+                  <img src="{image_url}" alt="" width="180" height="216">
+                  <p>More body copy keeps text and image content in the same useful viewport.</p>
+                  {trailing_body}
+                </section>
+              </main>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://large-viewport-raster-readable-scale",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 120,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render large viewport readable raster scale");
+
+    assert!(render.text.contains("[browser words]"));
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains(phrase) =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("continuous readable paragraph command");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image in large readable viewport");
+
+    let viewport_y = text_y.saturating_sub(1);
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(120),
+        viewport_height: Some(50),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize large readable viewport text/image section");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(viewport_y));
+    assert_eq!(report.raster_viewport_width, Some(120));
+    assert_eq!(report.raster_viewport_height, Some(50));
+
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let text_col_end = text_col_start
+        .saturating_add(
+            phrase
+                .chars()
+                .count()
+                .saturating_mul(raster_options.cell_width),
+        )
+        .min(rgba.width);
+    let text_row_start = raster_options.padding_y.saturating_add(
+        text_y
+            .saturating_sub(viewport_y)
+            .saturating_mul(raster_options.cell_height),
+    );
+    let text_row_end = text_row_start
+        .saturating_add(raster_options.cell_height)
+        .min(rgba.height);
+    let mut first_ink = None;
+    let mut last_ink = None;
+    for y in text_row_start..text_row_end {
+        for x in text_col_start..text_col_end {
+            if pixel(&rgba, x, y) != &[255, 255, 255, 255] {
+                first_ink.get_or_insert(x);
+                last_ink = Some(x);
+            }
+        }
+    }
+    let first_ink = first_ink.expect("readable paragraph should paint visible ink");
+    let last_ink = last_ink.expect("readable paragraph should paint visible ink");
+    let visible_span = last_ink.saturating_sub(first_ink).saturating_add(1);
+    let layout_span = phrase
+        .chars()
+        .count()
+        .saturating_mul(raster_options.cell_width);
+    assert!(
+        visible_span.saturating_mul(10) >= layout_span.saturating_mul(7),
+        "raster text should occupy the browser line instead of compressing into a tiny mini-page: visible_span={visible_span} layout_span={layout_span}"
+    );
+
+    let image_pixel_x = raster_options
+        .padding_x
+        .saturating_add(image_bounds.0.saturating_mul(raster_options.cell_width));
+    let image_pixel_y = raster_options.padding_y.saturating_add(
+        image_bounds
+            .1
+            .saturating_sub(viewport_y)
+            .saturating_mul(raster_options.cell_height),
+    );
+    assert_eq!(
+        pixel(&rgba, image_pixel_x, image_pixel_y),
+        &[96, 144, 208, 255]
+    );
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
