@@ -16,7 +16,7 @@ use crate::browser::{
     BrowserImageRenderReport, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender,
     BrowserRenderOptions, BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport,
     BrowserScriptRenderReport, BrowserSession, BrowserStylesheetRenderReport,
-    BrowserTextViewportOptions, browser_text_viewport, rasterize_render_rgba,
+    BrowserTextViewportOptions, BrowserViewportState, browser_text_viewport, rasterize_render_rgba,
 };
 
 use super::{
@@ -946,6 +946,8 @@ enum BrowserSessionAction {
     ClickAt {
         x: usize,
         y: usize,
+        raster_width: Option<usize>,
+        raster_height: Option<usize>,
     },
     FocusSelector(String),
     FocusControl {
@@ -6146,6 +6148,57 @@ fn browser_session_action_allows_xy_viewport_alias(action: &BrowserSessionAction
     !matches!(action, BrowserSessionAction::ClickAt { .. })
 }
 
+fn scale_browser_raster_click_coordinate(
+    coordinate: usize,
+    raster_size: usize,
+    viewport_size: usize,
+) -> usize {
+    let viewport_size = viewport_size.max(1);
+    let raster_size = raster_size.max(1);
+    let scaled = ((coordinate as u128) * (viewport_size as u128) / (raster_size as u128)) as usize;
+    scaled.min(viewport_size.saturating_sub(1))
+}
+
+fn browser_session_click_feedback_point(
+    raw_x: usize,
+    raw_y: usize,
+    click_x: usize,
+    click_y: usize,
+    page_x: usize,
+    page_y: usize,
+    raster_size: Option<(usize, usize)>,
+) -> String {
+    if let Some((raster_width, raster_height)) = raster_size {
+        return format!(
+            "raster x {raw_x}, y {raw_y} ({raster_width}x{raster_height}) mapped to DOM point x {click_x}, y {click_y} (page {page_x}, {page_y})"
+        );
+    }
+    format!("DOM point x {click_x}, y {click_y} (page {page_x}, {page_y})")
+}
+
+fn browser_session_click_feedback_label(
+    raw_x: usize,
+    raw_y: usize,
+    click_x: usize,
+    click_y: usize,
+    page_x: usize,
+    page_y: usize,
+    raster_size: Option<(usize, usize)>,
+) -> String {
+    format!(
+        "Clicked {}",
+        browser_session_click_feedback_point(
+            raw_x,
+            raw_y,
+            click_x,
+            click_y,
+            page_x,
+            page_y,
+            raster_size,
+        )
+    )
+}
+
 async fn apply_browser_action(
     action: BrowserSessionAction,
     web_session: &mut BrowserWebSession,
@@ -6340,19 +6393,68 @@ async fn apply_browser_action(
                 before,
             );
         }
-        BrowserSessionAction::ClickAt { x, y } => {
+        BrowserSessionAction::ClickAt {
+            x,
+            y,
+            raster_width,
+            raster_height,
+        } => {
             let before = current_session_interaction_snapshot(web_session);
-            let page_x = web_session.viewport_x.saturating_add(x);
-            let page_y = web_session.viewport_y.saturating_add(y);
-            if let Err(error) = web_session
-                .session
-                .click_at_with_default_action(page_x, page_y)
-                .await
-            {
+            let raster_click = raster_width.zip(raster_height);
+            let (click_x, click_y) = if let Some((raster_width, raster_height)) = raster_click {
+                (
+                    scale_browser_raster_click_coordinate(x, raster_width, web_session.width),
+                    scale_browser_raster_click_coordinate(y, raster_height, web_session.height),
+                )
+            } else {
+                (x, y)
+            };
+            let page_x = web_session.viewport_x.saturating_add(click_x);
+            let page_y = web_session.viewport_y.saturating_add(click_y);
+            let click_result = if raster_click.is_some() {
+                web_session
+                    .session
+                    .click_viewport_at_with_default_action(
+                        BrowserViewportState {
+                            x: web_session.viewport_x,
+                            y: web_session.viewport_y,
+                            width: web_session.width,
+                            height: web_session.height,
+                        },
+                        click_x,
+                        click_y,
+                    )
+                    .await
+            } else {
+                web_session
+                    .session
+                    .click_at_with_default_action(page_x, page_y)
+                    .await
+            };
+            if let Err(error) = click_result {
                 set_browser_click_error_feedback(
                     web_session,
-                    format!("Clicked DOM point x {x}, y {y} (page {page_x}, {page_y})"),
-                    format!("No click target at x {x}, y {y} (page {page_x}, {page_y})"),
+                    browser_session_click_feedback_label(
+                        x,
+                        y,
+                        click_x,
+                        click_y,
+                        page_x,
+                        page_y,
+                        raster_click,
+                    ),
+                    format!(
+                        "No click target at {}",
+                        browser_session_click_feedback_point(
+                            x,
+                            y,
+                            click_x,
+                            click_y,
+                            page_x,
+                            page_y,
+                            raster_click,
+                        )
+                    ),
                     &error.to_string(),
                     "navigation failed",
                 );
@@ -6366,7 +6468,15 @@ async fn apply_browser_action(
             }
             set_browser_click_feedback(
                 web_session,
-                format!("Clicked DOM point x {x}, y {y} (page {page_x}, {page_y})"),
+                browser_session_click_feedback_label(
+                    x,
+                    y,
+                    click_x,
+                    click_y,
+                    page_x,
+                    page_y,
+                    raster_click,
+                ),
                 before,
             );
         }
@@ -7335,6 +7445,8 @@ fn browser_action(target: &RequestTarget) -> Result<BrowserSessionAction, Browse
         "click-at" | "click_at" => Ok(BrowserSessionAction::ClickAt {
             x: browser_action_index(target, "x", "x coordinate")?,
             y: browser_action_index(target, "y", "y coordinate")?,
+            raster_width: parse_optional_usize_param(target, "raster_width", 1, usize::MAX),
+            raster_height: parse_optional_usize_param(target, "raster_height", 1, usize::MAX),
         }),
         "focus-selector" | "focus_selector" | "focus" => {
             let selector = target.param("selector").unwrap_or_default();
@@ -10737,8 +10849,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const submitViewportClick = (point, messagePrefix) => {
     const url = new URL(shell.dataset.clickUrl, window.location.href);
+    const size = rasterSize();
     url.searchParams.set("x", String(point.x));
     url.searchParams.set("y", String(point.y));
+    url.searchParams.set("raster_width", String(size.width));
+    url.searchParams.set("raster_height", String(size.height));
     shell.dataset.lastClickX = String(point.x);
     shell.dataset.lastClickY = String(point.y);
     shell.dataset.lastClickPageX = String(point.pageX);

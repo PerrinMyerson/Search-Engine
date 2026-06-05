@@ -8574,6 +8574,8 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("Math.floor(relativeY / rect.height * size.height)"));
     assert!(html.contains(r#"url.searchParams.set("x""#));
     assert!(html.contains(r#"url.searchParams.set("y""#));
+    assert!(html.contains(r#"url.searchParams.set("raster_width""#));
+    assert!(html.contains(r#"url.searchParams.set("raster_height""#));
     assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
     assert!(html.contains("shell.dataset.deferredClickY = String(point.y)"));
     assert!(html.contains("shell.dataset.deferredClickPageX = String(point.pageX)"));
@@ -8626,7 +8628,7 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     std::fs::write(
         &first,
         format!(
-            r#"<!doctype html><title>First click-at</title><a id="go" href="{}">Go</a><p>start</p>"#,
+            r#"<!doctype html><title>First click-at</title><span>prefix text before </span><a id="go" href="{}">Go</a><p>start</p>"#,
             second.display()
         ),
     )
@@ -8658,14 +8660,45 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains("Number(raster.naturalWidth)"));
     assert!(html.contains("Math.floor(relativeX / rect.width * size.width)"));
     assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
+    assert!(html.contains(r#"url.searchParams.set("raster_width""#));
+    assert!(html.contains(r#"url.searchParams.set("raster_height""#));
+
+    let (link_x, link_y) = {
+        let sessions = registry.sessions.lock().await;
+        let web_session = sessions.get(&payload.id).unwrap();
+        web_session
+            .session
+            .current()
+            .unwrap()
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::browser::DisplayCommand::Text { x, y, text }
+                | crate::browser::DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Go") =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .expect("link text is rendered")
+    };
+    assert!(link_x > 0);
+    let raster = payload.viewport_image.as_ref().unwrap();
+    let raster_width = raster.width;
+    let raster_height = raster.height;
+    let raster_x = link_x * raster_width / payload.width;
+    let raster_y = link_y * raster_height / payload.height;
 
     let click = RequestTarget {
         path: "/browser".to_owned(),
         params: vec![
-            ("id".to_owned(), payload.id),
+            ("id".to_owned(), payload.id.clone()),
             ("action".to_owned(), "click-at".to_owned()),
-            ("x".to_owned(), "0".to_owned()),
-            ("y".to_owned(), "0".to_owned()),
+            ("x".to_owned(), raster_x.to_string()),
+            ("y".to_owned(), raster_y.to_string()),
+            ("raster_width".to_owned(), raster_width.to_string()),
+            ("raster_height".to_owned(), raster_height.to_string()),
             ("width".to_owned(), "48".to_owned()),
             ("height".to_owned(), "14".to_owned()),
         ],
@@ -8677,7 +8710,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("arrived by raster click"));
     let expected_feedback = format!(
-        "Clicked DOM point x 0, y 0 (page 0, 0); opened local page: {}",
+        "Clicked raster x {raster_x}, y {raster_y} ({}x{}) mapped to DOM point x {link_x}, y {link_y} (page {link_x}, {link_y}); opened local page: {}",
+        raster_width,
+        raster_height,
         browser_session_feedback_excerpt(&second.display().to_string())
     );
     assert_eq!(
