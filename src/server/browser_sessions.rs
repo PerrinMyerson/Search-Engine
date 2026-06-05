@@ -159,6 +159,8 @@ struct BrowserSessionPayload {
     back_href: String,
     title: String,
     source: String,
+    #[serde(skip)]
+    rendered_source: String,
     width: usize,
     height: usize,
     max_bytes: usize,
@@ -9159,6 +9161,7 @@ fn browser_session_payload_with_options(
             back_href: web_session.back_href.clone(),
             title: browser_session_title(render),
             source: render.source.clone(),
+            rendered_source: render.source.clone(),
             width: viewport.width,
             height: viewport.height,
             max_bytes: web_session.max_bytes,
@@ -9220,10 +9223,12 @@ fn browser_session_payload_with_options(
             fast_scroll: options.fast_scroll,
         };
         if let Some(pending_source) = web_session.pending_source.as_ref() {
-            payload.title = format!(
-                "Loading {}",
-                browser_session_feedback_excerpt(pending_source)
-            );
+            if payload.viewport_image.is_none() {
+                payload.title = format!(
+                    "Loading {}",
+                    browser_session_feedback_excerpt(pending_source)
+                );
+            }
             payload.source = pending_source.clone();
             payload.viewport_x = web_session.viewport_x;
             payload.viewport_y = web_session.viewport_y;
@@ -10148,7 +10153,9 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
     let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
     let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
-    if let Some(pending_source) = payload.pending_source.as_ref() {
+    if browser_session_pending_without_ready_viewport(payload)
+        && let Some(pending_source) = payload.pending_source.as_ref()
+    {
         let continue_href = browser_session_action_href(
             &payload.id,
             "open",
@@ -12786,7 +12793,9 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
 
 fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) -> String {
     let action_feedback = render_browser_session_surface_action_feedback(payload);
-    if let Some(pending_source) = payload.pending_source.as_ref() {
+    if browser_session_pending_without_ready_viewport(payload)
+        && let Some(pending_source) = payload.pending_source.as_ref()
+    {
         let continue_href = browser_session_action_href(
             &payload.id,
             "open",
@@ -12808,12 +12817,39 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
     } else {
         "Browser view waiting for render".to_owned()
     };
+    let retained_pending = render_browser_session_retained_pending_status(payload);
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<div class="browser-surface-state compact" data-browser-primary-state><span data-browser-primary-raster>{render_label}</span>{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
+        r#"<div class="browser-surface-state compact" data-browser-primary-state>{retained_pending}<span data-browser-primary-raster>{render_label}</span>{action_feedback}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></div>"#,
+        retained_pending = retained_pending,
         render_label = html_escape::encode_text(&render_label),
         action_feedback = action_feedback,
         viewport_feedback = viewport_feedback,
+    )
+}
+
+fn browser_session_pending_without_ready_viewport(payload: &BrowserSessionPayload) -> bool {
+    payload.pending_source.is_some()
+        && (payload.viewport_image.is_none()
+            || payload.rendered_source == BROWSER_ABOUT_BLANK_TARGET)
+}
+
+fn render_browser_session_retained_pending_status(payload: &BrowserSessionPayload) -> String {
+    let Some(pending_source) = payload.pending_source.as_ref() else {
+        return String::new();
+    };
+    if payload.viewport_image.is_none() {
+        return String::new();
+    }
+    let retry_href = browser_session_action_href(
+        &payload.id,
+        "open",
+        &[("url", pending_source.clone())],
+        payload,
+    );
+    format!(
+        r#"<span class="viewport-state-chip report" data-browser-retained-pending-raster>rendered viewport retained</span><a class="primary-action" href="{retry_href}" data-browser-continue-load>Retry load</a>"#,
+        retry_href = html_escape::encode_double_quoted_attribute(&retry_href),
     )
 }
 
@@ -12906,7 +12942,7 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_x = payload.width.saturating_sub(1) / 2;
     let default_click_y = payload.height.saturating_sub(1) / 2;
     let click_status = browser_session_click_status(payload);
-    let click_hint = if payload.pending_source.is_some() {
+    let click_hint = if browser_session_pending_without_ready_viewport(payload) {
         "Clicks start after render"
     } else {
         "Click raster to open links/buttons"
@@ -12973,7 +13009,9 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
 fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
     let action_feedback = render_browser_session_surface_action_feedback(payload);
     let visual_flow_status = render_browser_session_visual_flow_status(payload);
-    if let Some(pending_source) = payload.pending_source.as_ref() {
+    if browser_session_pending_without_ready_viewport(payload)
+        && let Some(pending_source) = payload.pending_source.as_ref()
+    {
         let continue_href = browser_session_action_href(
             &payload.id,
             "open",
@@ -13161,7 +13199,7 @@ fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Opti
 }
 
 fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> String {
-    if payload.pending_source.is_some() {
+    if browser_session_pending_without_ready_viewport(payload) {
         return "Page is still loading; scroll starts after the first render.".to_owned();
     }
     browser_session_scroll_feedback_text(payload)
@@ -13176,7 +13214,7 @@ fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> 
 }
 
 fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
-    if payload.pending_source.is_some() {
+    if browser_session_pending_without_ready_viewport(payload) {
         return "Page is still loading; clicks start after the first render.".to_owned();
     }
     browser_session_click_feedback_text(payload)

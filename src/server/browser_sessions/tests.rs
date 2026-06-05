@@ -8854,6 +8854,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         back_href: "/search?q=cat".to_owned(),
         title: "Example".to_owned(),
         source: "https://example.com".to_owned(),
+        rendered_source: "https://example.com".to_owned(),
         width: 90,
         height: 30,
         max_bytes: 1024 * 1024,
@@ -12071,6 +12072,61 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
         params.get("source").map(String::as_str),
         Some(data_url.as_str())
     );
+
+    {
+        let mut sessions = registry.sessions.lock().await;
+        let web_session = sessions.get_mut(&payload.id).unwrap();
+        web_session.pending_source = Some(data_url.clone());
+        web_session.action_feedback =
+            Some("initial render exceeded timeout; rendered viewport retained".to_owned());
+    }
+    let current = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "current".to_owned()),
+            ("from".to_owned(), "/search?q=data".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "16".to_owned()),
+            ("viewport_x".to_owned(), "3".to_owned()),
+            ("viewport_y".to_owned(), "5".to_owned()),
+            ("max_bytes".to_owned(), "1048576".to_owned()),
+            ("source".to_owned(), data_url.clone()),
+        ],
+    };
+    let (retained_payload, retained_back_href) = registry.apply_target(&current).await.unwrap();
+    assert_eq!(retained_payload.id, payload.id);
+    assert_eq!(retained_payload.title, "Data Fixture");
+    assert_eq!(retained_payload.source, data_url);
+    assert_eq!(
+        retained_payload.pending_source.as_deref(),
+        Some(data_url.as_str())
+    );
+    assert!(retained_payload.viewport_image.is_some());
+    assert_eq!(retained_payload.viewport_x, 3);
+    assert_eq!(retained_payload.viewport_y, 5);
+    let html = render_browser_session_page(&retained_payload, &retained_back_href);
+    assert!(html.contains(r#"<img class="browser-raster""#));
+    assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
+    assert!(!html.contains(r#"data-viewport-state="loading""#));
+    assert!(!html.contains("Loading browser viewport"));
+    assert!(!html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains("rendered viewport retained"));
+    assert!(html.contains(">Retry load</a>"));
+    assert!(!html.contains(">Continue loading</a>"));
+    assert!(html.contains("Click raster to open links/buttons"));
+    assert!(html.contains("Ready to scroll."));
+    assert!(html.contains("action=open"));
+    assert!(html.contains("url=data%3Atext%2Fhtml"));
+    assert!(html.contains("from=%2Fsearch%3Fq%3Ddata"));
+    assert!(html.contains("width=40"));
+    assert!(html.contains("height=16"));
+    assert!(html.contains("viewport_x=3"));
+    assert!(html.contains("viewport_y=5"));
+    assert!(html.contains("max_bytes=1048576"));
 }
 
 #[tokio::test]
