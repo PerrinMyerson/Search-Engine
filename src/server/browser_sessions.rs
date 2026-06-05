@@ -10382,11 +10382,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const point = viewportPointFromPagePoint(lastClickPagePoint);
     if (!point) {
       hideClickMarker();
-      setClickStatus("Hover rendered page to inspect click target.");
+      setClickStatus("Ready for page click.");
       return;
     }
     moveClickMarker(point);
-    setClickStatus(`${pointMessage(point)}. Click to activate.`);
+    setClickStatus(`${pointMessage(point)}. Click.`);
   };
   const scrollMessage = (dx, dy) => {
     if (dx < 0) {
@@ -10643,13 +10643,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     hoverPointTimer = setTimeout(() => {
       hoverPointTimer = null;
     }, 120);
-    setClickStatus(`${pointMessage(point)}. Click to activate.`);
-    setViewportFeedback(`${pointMessage(point)}. Click to activate.`);
+    setClickStatus(`${pointMessage(point)}. Click.`);
+    setViewportFeedback(`${pointMessage(point)}. Click.`);
   });
   shell.addEventListener("mouseleave", () => {
     hideClickMarker();
-    setClickStatus("Hover rendered page to inspect click target.");
-    setViewportFeedback("Wheel or use arrow keys to scroll the rendered page.");
+    setClickStatus("Ready for page click.");
+    setViewportFeedback("Ready to scroll.");
   });
   shell.addEventListener("click", (event) => {
     if (event.button !== 0 || event.defaultPrevented || !raster) {
@@ -12764,11 +12764,6 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     } else {
         vertical_percent
     };
-    let vertical_percent_label = if payload.max_scroll_y == 0 {
-        String::new()
-    } else {
-        format!(r#"<span>{vertical_percent}%</span>"#)
-    };
     let horizontal_state = browser_scroll_axis_state(
         payload.viewport_x,
         payload.max_scroll_x,
@@ -12785,15 +12780,34 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
         "at bottom",
         "no vertical scroll",
     );
+    let scroll_summary = if payload.max_scroll_y == 0 {
+        format!(
+            "Scroll x {}/{} · y {}/{}",
+            payload.viewport_x, payload.max_scroll_x, payload.viewport_y, payload.max_scroll_y
+        )
+    } else {
+        format!(
+            "Scroll x {}/{} · y {}/{} · {}%",
+            payload.viewport_x,
+            payload.max_scroll_x,
+            payload.viewport_y,
+            payload.max_scroll_y,
+            vertical_percent
+        )
+    };
+    let input_hint = if payload.max_scroll_x == 0 && payload.max_scroll_y == 0 {
+        "No page scroll"
+    } else {
+        "Wheel / keys scroll"
+    };
     format!(
-        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span>x {x}/{max_x}</span><span>y {y}/{max_y}</span>{vertical_percent_label}<span data-browser-scroll-state="x">x: {horizontal_state}</span><span data-browser-scroll-state="y">y: {vertical_state}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
-        x = payload.viewport_x,
-        max_x = payload.max_scroll_x,
+        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint>{input_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
         y = payload.viewport_y,
         max_y = payload.max_scroll_y,
-        vertical_percent_label = vertical_percent_label,
         horizontal_state = horizontal_state,
         vertical_state = vertical_state,
+        scroll_summary = html_escape::encode_text(&scroll_summary),
+        input_hint = input_hint,
         meter_percent = meter_percent,
     )
 }
@@ -12867,7 +12881,7 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Primary viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
         max_x = payload.max_scroll_x,
@@ -12928,9 +12942,9 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_y = payload.height.saturating_sub(1) / 2;
     let click_status = browser_session_click_status(payload);
     let click_hint = if payload.pending_source.is_some() {
-        "Click controls will activate after the first rendered viewport"
+        "Clicks start after render"
     } else {
-        "Click the rendered page to activate links and controls"
+        "Click raster to open links/buttons"
     };
     format!(
         r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">{click_hint}</span></div><details class="viewport-click-details" aria-label="Manual click coordinates"><summary>Manual click</summary><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button></form></details><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
@@ -13189,15 +13203,9 @@ fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> 
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
         .unwrap_or_else(|| {
             if payload.max_scroll_x == 0 && payload.max_scroll_y == 0 {
-                "Viewport fits; no scroll needed.".to_owned()
+                "No page scroll.".to_owned()
             } else {
-                format!(
-                    "Scroll position x {}/{}, y {}/{}.",
-                    payload.viewport_x,
-                    payload.max_scroll_x,
-                    payload.viewport_y,
-                    payload.max_scroll_y,
-                )
+                "Ready to scroll.".to_owned()
             }
         })
 }
@@ -13208,7 +13216,7 @@ fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
     }
     browser_session_click_feedback_text(payload)
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
-        .unwrap_or_else(|| "Hover rendered page to inspect click target.".to_owned())
+        .unwrap_or_else(|| "Ready for page click.".to_owned())
 }
 
 fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
