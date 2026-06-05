@@ -4807,37 +4807,37 @@ fn browser_viewport_invalidated_regions(
     }
 
     let mut regions = Vec::new();
-    if dirty_height > 0 {
-        let y = if current.y > previous.y {
-            current.height.saturating_sub(dirty_height)
-        } else {
-            0
-        };
-        regions.push(BrowserViewportRect {
-            x: 0,
-            y,
-            width: current.width,
-            height: dirty_height,
-        });
-    }
     if dirty_width > 0 {
         let x = if current.x > previous.x {
             current.width.saturating_sub(dirty_width)
         } else {
             0
         };
-        let y = if current.y < previous.y {
-            dirty_height
+        regions.push(BrowserViewportRect {
+            x,
+            y: 0,
+            width: dirty_width,
+            height: current.height,
+        });
+    }
+    if dirty_height > 0 {
+        let y = if current.y > previous.y {
+            current.height.saturating_sub(dirty_height)
         } else {
             0
         };
-        let height = current.height.saturating_sub(dirty_height);
-        if height > 0 {
+        let x = if current.x < previous.x {
+            dirty_width
+        } else {
+            0
+        };
+        let width = current.width.saturating_sub(dirty_width);
+        if width > 0 {
             regions.push(BrowserViewportRect {
                 x,
                 y,
-                width: dirty_width,
-                height,
+                width,
+                height: dirty_height,
             });
         }
     }
