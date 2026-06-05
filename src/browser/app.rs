@@ -231,6 +231,7 @@ struct BrowserAppTab {
     session: BrowserSession,
     viewport: BrowserViewportState,
     last_presented_viewport: Option<BrowserViewportState>,
+    last_presented_frame: Option<BrowserViewportFrame>,
     content_dirty: bool,
     find: Option<BrowserAppFindState>,
 }
@@ -268,6 +269,7 @@ impl BrowserApp {
                 session,
                 viewport,
                 last_presented_viewport: None,
+                last_presented_frame: None,
                 content_dirty: true,
                 find: None,
             }],
@@ -407,6 +409,13 @@ impl BrowserApp {
     pub fn present_frame(&mut self) -> Result<BrowserViewportFrame> {
         let raster_options = self.options.raster;
         let tab = self.active_tab_mut()?;
+        if let Some(frame) = tab
+            .last_presented_frame
+            .as_ref()
+            .filter(|frame| !tab.content_dirty && frame.report.viewport.viewport == tab.viewport)
+        {
+            return Ok(frame.clone());
+        }
         let Some(render) = tab.session.current() else {
             bail!("browser app has no current page");
         };
@@ -416,6 +425,7 @@ impl BrowserApp {
         let frame = browser_viewport_frame(render, tab.viewport, previous, raster_options)?;
         tab.viewport = frame.report.viewport.viewport;
         tab.last_presented_viewport = Some(tab.viewport);
+        tab.last_presented_frame = browser_app_frame_is_reusable(&frame).then(|| frame.clone());
         tab.content_dirty = false;
         Ok(frame)
     }
@@ -587,6 +597,7 @@ impl BrowserApp {
             session,
             viewport,
             last_presented_viewport: None,
+            last_presented_frame: None,
             content_dirty: true,
             find: None,
         });
@@ -597,6 +608,7 @@ impl BrowserApp {
     fn duplicate_active_tab(&mut self) -> Result<()> {
         let mut tab = self.active_tab_ref()?.clone();
         tab.last_presented_viewport = None;
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -627,6 +639,7 @@ impl BrowserApp {
         }
         let mut closed_tab = self.tabs.remove(index);
         closed_tab.last_presented_viewport = None;
+        closed_tab.last_presented_frame = None;
         closed_tab.content_dirty = true;
         self.closed_tabs.push(closed_tab);
         if self.closed_tabs.len() > BROWSER_APP_CLOSED_TAB_LIMIT {
@@ -645,6 +658,7 @@ impl BrowserApp {
             bail!("no closed tab to restore");
         };
         tab.last_presented_viewport = None;
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -665,6 +679,7 @@ impl BrowserApp {
         let tab = self.active_tab_mut()?;
         let default_prevented = tab.session.dispatch_wheel_event(delta_x, delta_y)?;
         if default_prevented {
+            tab.last_presented_frame = None;
             tab.content_dirty = true;
             return Ok(());
         }
@@ -677,6 +692,7 @@ impl BrowserApp {
         let tab = self.active_tab_mut()?;
         tab.viewport.width = width.max(1);
         tab.viewport.height = height.max(1);
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         self.clamp_active_viewport()
     }
@@ -819,6 +835,7 @@ impl BrowserApp {
 
         tab.viewport = initial_app_viewport(&tab.session, self.options);
         tab.last_presented_viewport = None;
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         tab.find = None;
         let insert_index = active_index.saturating_add(1);
@@ -893,6 +910,7 @@ impl BrowserApp {
         let tab = self.active_tab_mut()?;
         tab.viewport = initial_app_viewport(&tab.session, options);
         tab.last_presented_viewport = None;
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         tab.find = None;
         Ok(())
@@ -901,6 +919,7 @@ impl BrowserApp {
     fn mark_active_page_dirty_for_full_repaint(&mut self) -> Result<()> {
         let tab = self.active_tab_mut()?;
         tab.last_presented_viewport = None;
+        tab.last_presented_frame = None;
         tab.content_dirty = true;
         Ok(())
     }
@@ -910,13 +929,19 @@ impl BrowserApp {
         let Some(render) = tab.session.current() else {
             bail!("browser app has no current page");
         };
+        let previous_viewport = tab.viewport;
         let report = browser_document_viewport(render, tab.viewport, tab.last_presented_viewport);
         tab.viewport = report.viewport;
+        if tab.viewport != previous_viewport {
+            tab.last_presented_frame = None;
+        }
         Ok(())
     }
 
     fn mark_active_content_dirty(&mut self) -> Result<()> {
-        self.active_tab_mut()?.content_dirty = true;
+        let tab = self.active_tab_mut()?;
+        tab.last_presented_frame = None;
+        tab.content_dirty = true;
         Ok(())
     }
 
@@ -990,6 +1015,10 @@ fn browser_viewport_frame_pixel_bytes(frame: &BrowserViewportFrameReport) -> usi
         .frame_width
         .saturating_mul(frame.frame_height)
         .saturating_mul(frame.bytes_per_pixel)
+}
+
+fn browser_app_frame_is_reusable(frame: &BrowserViewportFrame) -> bool {
+    !frame.report.viewport.full_repaint && frame.report.dirty_pixel_area == 0
 }
 
 fn serialize_browser_app_report_text<S>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -1544,6 +1573,37 @@ mod tests {
         assert_eq!(scrolled.report.dirty_pixel_regions[0].y, 16);
         assert_eq!(scrolled.report.dirty_pixel_regions[0].width, 320);
         assert_eq!(scrolled.report.dirty_pixel_regions[0].height, 12);
+    }
+
+    #[tokio::test]
+    async fn browser_app_reuses_stable_presented_viewport_frames() {
+        let mut app = BrowserApp::open(
+            "bench/browser-fixtures/max-width-layout.html",
+            app_options(),
+        )
+        .await
+        .unwrap();
+
+        let initial = app.present_frame().unwrap();
+        assert!(initial.report.viewport.full_repaint);
+        assert!(app.tabs[0].last_presented_frame.is_none());
+
+        let stable = app.present_frame().unwrap();
+        assert!(!stable.report.viewport.full_repaint);
+        assert_eq!(stable.report.dirty_pixel_area, 0);
+        assert!(app.tabs[0].last_presented_frame.is_some());
+
+        let reused = app.present_frame().unwrap();
+        assert_eq!(reused.report, stable.report);
+        assert_eq!(reused.raster.pixels, stable.raster.pixels);
+
+        app.apply_action(BrowserAppAction::Scroll {
+            delta_x: 0,
+            delta_y: 99,
+        })
+        .await
+        .unwrap();
+        assert!(app.tabs[0].last_presented_frame.is_none());
     }
 
     #[tokio::test]
