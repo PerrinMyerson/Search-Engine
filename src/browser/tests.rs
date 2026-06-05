@@ -6922,6 +6922,79 @@ async fn image_background_fidelity_skips_unsupported_typed_imageset_candidate_fo
 }
 
 #[tokio::test]
+async fn image_background_sources_use_background_sizes_for_visible_color_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small = dir.path().join("small-bg.webp");
+    fs::write(&small, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before background</p>
+            <section data-bgset="small-bg.webp 160w, missing-bg.webp 640w" data-bgset-sizes="160px">Color background</section>
+            <p>After background</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "missing-bg.webp")
+    );
+
+    let small_url = small.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == small_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "background_image");
+    assert_eq!(fetch.resource.initiator, "section");
+    assert_eq!(fetch.resource.url, "small-bg.webp");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before background"));
+    assert!(render.text.contains("After background"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &small_url && hash == &decoded_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn external_stylesheets_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

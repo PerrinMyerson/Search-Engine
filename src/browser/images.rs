@@ -2820,7 +2820,32 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
 }
 
 fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
-    image_sizes_attr(element).and_then(|sizes| parse_sizes_attribute(sizes, 0))
+    background_image_sizes_attr(element).and_then(|sizes| parse_sizes_attribute(sizes, 0))
+}
+
+pub(super) fn background_image_sizes_attr(element: &ElementData) -> Option<&str> {
+    first_non_empty_attr(
+        element,
+        &[
+            "data-bg-sizes",
+            "data-bgsizes",
+            "data-bgset-sizes",
+            "data-bgsetsizes",
+            "data-background-sizes",
+            "data-backgroundsizes",
+            "data-background-srcset-sizes",
+            "data-backgroundsrcsetsizes",
+            "data-lazy-bg-sizes",
+            "data-lazybgsizes",
+            "data-lazy-bgset-sizes",
+            "data-lazybgsetsizes",
+            "data-lazy-background-sizes",
+            "data-lazybackgroundsizes",
+            "data-lazy-background-srcset-sizes",
+            "data-lazybackgroundsrcsetsizes",
+        ],
+    )
+    .or_else(|| image_sizes_attr(element))
 }
 
 fn background_image_attr_source(value: &str) -> Option<String> {
