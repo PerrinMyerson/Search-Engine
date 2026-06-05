@@ -2776,6 +2776,97 @@ async fn image_png_depth_rgb16_decodes_and_rasters_color() {
 }
 
 #[tokio::test]
+async fn image_color_fidelity_sub_byte_palette_png_decodes_and_renders_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let png = dir.path().join("palette4-color.png");
+    let png_bytes = tiny_test_png_palette4();
+    fs::write(&png, &png_bytes).unwrap();
+
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [230, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 180, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 220]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    fs::write(
+        &page,
+        r#"<html><body><p>Before packed png</p><img src="palette4-color.png" alt="Palette PNG" width="24" height="12"><p>After packed png</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 56,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.url, "palette4-color.png");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(4));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before packed png"));
+    assert!(render.text.contains("After packed png"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &png.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_color_pipeline_preserves_rgb_pixels_in_decoded_resource_report() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
@@ -5487,6 +5578,21 @@ fn tiny_test_png_rgb16() -> Vec<u8> {
     encode_test_png_with_bit_depth(2, 2, 16, 2, &filtered_scanlines)
 }
 
+fn tiny_test_png_palette4() -> Vec<u8> {
+    let filtered_scanlines = [
+        0, 0x12, 0x30, // red, green, blue, transparent
+        0, 0x31, 0x20, // blue, red, green, transparent
+    ];
+    let palette = [
+        255, 255, 255, // transparent index composited over white
+        230, 0, 0, // red
+        0, 180, 0, // green
+        0, 0, 220, // blue
+    ];
+    let transparency = [0, 255, 255, 255];
+    encode_test_indexed_png_with_bit_depth(4, 2, 4, &filtered_scanlines, &palette, &transparency)
+}
+
 fn tiny_test_indexed_png_with_transparency() -> Vec<u8> {
     let filtered_scanlines = [0, 0, 1, 0, 2, 3];
     let palette = [0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 255];
@@ -5653,6 +5759,24 @@ fn encode_test_indexed_png(
     palette: &[u8],
     transparency: &[u8],
 ) -> Vec<u8> {
+    encode_test_indexed_png_with_bit_depth(
+        width,
+        height,
+        8,
+        filtered_scanlines,
+        palette,
+        transparency,
+    )
+}
+
+fn encode_test_indexed_png_with_bit_depth(
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    filtered_scanlines: &[u8],
+    palette: &[u8],
+    transparency: &[u8],
+) -> Vec<u8> {
     use std::io::Write as _;
 
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -5662,7 +5786,7 @@ fn encode_test_indexed_png(
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&height.to_be_bytes());
-    ihdr.push(8);
+    ihdr.push(bit_depth);
     ihdr.push(3);
     ihdr.push(0);
     ihdr.push(0);
