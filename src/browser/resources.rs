@@ -1620,10 +1620,16 @@ fn push_image_alias_resources(
 
 const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-src",
+    "data-lazy",
     "data-lazy-src",
     "data-lazysrc",
+    "data-lazy-url",
     "data-lazyload",
     "data-lazyload-src",
+    "data-defer-src",
+    "data-echo",
+    "data-actualsrc",
+    "data-src-retina",
     "data-original-url",
     "data-original",
     "data-original-src",
