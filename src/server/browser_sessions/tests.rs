@@ -10156,7 +10156,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"section.dataset.visualPending = "true""#));
     assert!(html.contains(r#"section.setAttribute("aria-busy", "true")"#));
     assert!(html.contains("Making visual..."));
-    assert!(html.contains("Making page readable..."));
+    assert!(!html.contains("Making page readable..."));
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains(r#"data-browser-navigation-state"#));
     assert!(html.contains(
@@ -10168,12 +10168,26 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"data-browser-viewport-page-state"#));
     assert!(html.contains(r#"data-browser-render-status"#));
     assert!(html.contains(r#"data-browser-chrome-status"#));
-    assert!(html.contains(r#"<a class="browser-chrome-tool primary-action" href="/browser?"#));
-    assert!(html.contains(r#">Make readable</a>"#));
-    assert!(html.contains(r#"<a class="browser-chrome-tool" href="/browser?"#));
-    assert!(html.contains(r#">Load 1 image</a>"#));
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(r#"data-browser-shell-session"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(!topbar_html.contains(r#">Make readable</a>"#));
+    assert!(!topbar_html.contains(r#">Load 1 image</a>"#));
+    let tools_start = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let tools_end = html.find(r#"data-browser-tools-tray"#).unwrap();
+    let tools_html = &html[tools_start..tools_end];
+    assert!(tools_html.contains(r#">Make visual</a>"#));
+    assert!(tools_html.contains(r#"data-browser-make-visual-action"#));
+    assert!(tools_html.contains(r#"<strong>Resource actions</strong>"#));
+    assert!(tools_html.contains(r#">Load 1 image</a>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Render</span>"#));
     let viewport_image = payload.viewport_image.as_ref().unwrap();
+    assert!(html.contains(&format!(
+        r#"<span data-browser-primary-raster>Browser view ready: {}x{}</span>"#,
+        viewport_image.width, viewport_image.height
+    )));
     assert!(html.contains(&format!(
         r#"<span class="viewport-state-chip">raster ready {}x{}</span>"#,
         viewport_image.width, viewport_image.height
@@ -11726,9 +11740,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
-    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">session "#));
-    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">viewport "#));
-    assert!(topbar_html.contains(r#"<span class="viewport-state-chip">raster "#));
+    assert!(topbar_html.contains(r#"data-browser-shell-session"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(!topbar_html.contains(">Make readable</a>"));
+    assert!(!topbar_html.contains(">Load "));
     assert!(
         topbar_html.contains(
             r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
@@ -12094,6 +12110,7 @@ async fn browser_page_displays_original_data_source_when_materialized_page_is_un
     assert!(html.contains("data:text/html"));
     assert!(!html.contains("brutal-browser-data-url"));
     assert!(html.contains(r#"data-browser-primary-raster"#));
+    assert!(html.contains("Browser view ready:"));
     assert!(html.contains(
         r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#
     ));
