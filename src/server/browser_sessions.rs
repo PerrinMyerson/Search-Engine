@@ -10122,9 +10122,6 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     if payload.resource_report.is_some() {
         return String::new();
     }
-    if browser_session_has_ready_raster(payload) {
-        return String::new();
-    }
 
     let action_urls = browser_session_state_action_urls(payload);
     if action_urls.make_visual.is_none()
@@ -10138,13 +10135,19 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     let apply_stylesheets = action_urls.apply_stylesheets.unwrap_or_default();
     let load_images = action_urls.load_images.unwrap_or_default();
     let refresh_url = browser_session_action_href(&payload.id, "current", &[], payload);
+    let block_browser_controls = !browser_session_has_ready_raster(payload);
+    let status_label = if block_browser_controls {
+        "Preparing visual render..."
+    } else {
+        "Loading visual resources..."
+    };
     let state_key = format!(
         "brutal:auto-visual:{}:{}:{}:{}",
         payload.id, payload.source, payload.viewport_x, payload.viewport_y
     );
 
     format!(
-        r#"<div class="auto-visual-status" data-auto-visual-status>Preparing visual render...</div>
+        r#"<div class="auto-visual-status" data-auto-visual-status>{status_label}</div>
 <script>
 (() => {{
   const makeVisualUrl = {make_visual};
@@ -10152,6 +10155,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const loadImagesUrl = {load_images};
   const refreshUrl = {refresh_url};
   const stateKey = {state_key};
+  const blockBrowserControls = {block_browser_controls};
   const runningRefreshDelayMs = 5000;
   const runningStaleAfterMs = 45000;
   const requestTimeoutMs = 90000;
@@ -10163,7 +10167,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }}
   }};
   const autoVisualControls = () => Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"));
-  let autoVisualControlsBlocked = true;
+  let autoVisualControlsBlocked = blockBrowserControls;
   const setAutoVisualControlsBusy = (busy) => {{
     autoVisualControlsBlocked = busy;
     for (const control of autoVisualControls()) {{
@@ -10174,6 +10178,28 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         delete control.dataset.autoVisualPending;
         control.removeAttribute("aria-busy");
       }}
+    }}
+  }};
+  const refreshUrlForCurrentViewport = () => {{
+    if (!refreshUrl) {{
+      return "";
+    }}
+    try {{
+      const url = new URL(refreshUrl, window.location.href);
+      const shell = document.querySelector("[data-browser-viewport-scroll]");
+      if (shell) {{
+        const viewportX = Number(shell.dataset.viewportX);
+        const viewportY = Number(shell.dataset.viewportY);
+        if (Number.isFinite(viewportX)) {{
+          url.searchParams.set("viewport_x", String(viewportX));
+        }}
+        if (Number.isFinite(viewportY)) {{
+          url.searchParams.set("viewport_y", String(viewportY));
+        }}
+      }}
+      return url.toString();
+    }} catch (_) {{
+      return refreshUrl;
     }}
   }};
   const isBrowserActionLink = (target) => {{
@@ -10192,7 +10218,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   }};
   const showAutoVisualControlStatus = () => setStatus("Visual render is still running. Please wait...");
   const guardAutoVisualControls = () => {{
-    setAutoVisualControlsBusy(true);
+    setAutoVisualControlsBusy(blockBrowserControls);
     document.addEventListener("click", (event) => {{
       if (!autoVisualControlsBlocked) {{
         return;
@@ -10221,7 +10247,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const scheduleRefresh = (message, delayMs) => {{
     setStatus(message);
     if (refreshUrl) {{
-      window.setTimeout(() => window.location.replace(refreshUrl), delayMs);
+      window.setTimeout(() => window.location.replace(refreshUrlForCurrentViewport()), delayMs);
     }}
   }};
   const currentState = sessionStorage.getItem(stateKey) || "";
@@ -10277,7 +10303,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     sessionStorage.setItem(stateKey, "done");
     if (refreshUrl) {{
       setStatus("Visual render complete. Opening page...");
-      window.location.replace(refreshUrl);
+      window.location.replace(refreshUrlForCurrentViewport());
     }}
   }})().catch((error) => {{
     sessionStorage.setItem(stateKey, `failed:${{Date.now()}}`);
@@ -10291,6 +10317,12 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         load_images = browser_json_script_string(&load_images),
         refresh_url = browser_json_script_string(&refresh_url),
         state_key = browser_json_script_string(&state_key),
+        status_label = html_escape::encode_text(status_label),
+        block_browser_controls = if block_browser_controls {
+            "true"
+        } else {
+            "false"
+        },
     )
 }
 
@@ -10531,19 +10563,29 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.textContent = message;
     }
   };
+  const viewportStatus = () => document.querySelector("[data-browser-viewport-status]");
+  const setPendingViewportTarget = (target) => {
+    if (!target) {
+      return;
+    }
+    shell.dataset.pendingViewportX = String(target.x);
+    shell.dataset.pendingViewportY = String(target.y);
+    const status = viewportStatus();
+    if (status) {
+      status.dataset.pendingViewportX = String(target.x);
+      status.dataset.pendingViewportY = String(target.y);
+    }
+  };
   const setViewportPending = (message, target) => {
     shell.dataset.viewportPending = "true";
     shell.dataset.viewportState = "pending";
     shell.setAttribute("aria-busy", "true");
-    if (target) {
-      shell.dataset.pendingViewportX = String(target.x);
-      shell.dataset.pendingViewportY = String(target.y);
-    }
+    setPendingViewportTarget(target);
     for (const control of viewportControls()) {
       control.dataset.scrollPending = "true";
       control.setAttribute("aria-busy", "true");
     }
-    const status = document.querySelector("[data-browser-viewport-status]");
+    const status = viewportStatus();
     if (status) {
       status.dataset.viewportPending = "true";
       status.setAttribute("aria-busy", "true");
@@ -10567,9 +10609,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       control.removeAttribute("data-scroll-pending");
       control.removeAttribute("aria-busy");
     }
-    const status = document.querySelector("[data-browser-viewport-status]");
+    const status = viewportStatus();
     if (status) {
       status.removeAttribute("data-viewport-pending");
+      status.removeAttribute("data-pending-viewport-x");
+      status.removeAttribute("data-pending-viewport-y");
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
@@ -10674,6 +10718,40 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     moveClickMarker(point);
     setClickStatus(`${pointMessage(point)}. Click.`);
   };
+  const clearDeferredClick = () => {
+    shell.removeAttribute("data-deferred-click-x");
+    shell.removeAttribute("data-deferred-click-y");
+    shell.removeAttribute("data-deferred-click-page-x");
+    shell.removeAttribute("data-deferred-click-page-y");
+  };
+  const submitViewportClick = (point, messagePrefix) => {
+    const url = new URL(shell.dataset.clickUrl, window.location.href);
+    url.searchParams.set("x", String(point.x));
+    url.searchParams.set("y", String(point.y));
+    shell.dataset.lastClickX = String(point.x);
+    shell.dataset.lastClickY = String(point.y);
+    shell.dataset.lastClickPageX = String(point.pageX);
+    shell.dataset.lastClickPageY = String(point.pageY);
+    const message = `${messagePrefix} ${pointMessage(point)}...`;
+    setClickStatus(message);
+    replaceViewportPage(url, message);
+  };
+  const replayDeferredClickAfterPartial = () => {
+    const pageX = Number(shell.dataset.deferredClickPageX);
+    const pageY = Number(shell.dataset.deferredClickPageY);
+    if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) {
+      return false;
+    }
+    const point = viewportPointFromPagePoint({ pageX, pageY });
+    clearDeferredClick();
+    if (!point) {
+      setClickStatus("Saved click is outside the settled viewport.");
+      return false;
+    }
+    moveClickMarker(point);
+    submitViewportClick(point, "Clicking saved");
+    return true;
+  };
   const scrollMessage = (dx, dy) => {
     if (dx < 0) {
       return "Moving visual viewport left...";
@@ -10734,6 +10812,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.focus({ preventScroll: true });
     }
     restoreClickMarkerAfterPartial();
+    replayDeferredClickAfterPartial();
     return true;
   };
   const replaceViewportPage = (url, message) => {
@@ -10804,7 +10883,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         throw new Error("viewport partial response missing required fragments");
       }
       syncViewportHistory();
-      setViewportFeedback("Visual viewport updated.");
+      setViewportFeedback("Viewport settled.");
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
@@ -10821,6 +10900,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         pendingScrollTimer = setTimeout(flushPendingScroll, 0);
       } else {
         pendingScrollAfterRequest = false;
+        pendingScrollDx = 0;
+        pendingScrollDy = 0;
       }
     });
   };
@@ -10830,6 +10911,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   let pendingScrollDx = 0;
   let pendingScrollDy = 0;
   let pendingScrollTimer = null;
+  const scrollFlushDelayMs = 24;
   const buildScrollUrl = (dx, dy) => {
     const x = numberData("viewportX");
     const y = numberData("viewportY");
@@ -10875,6 +10957,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.pendingViewportY = String(scroll.y);
     shell.dataset.queuedScrollDx = String(scroll.dx);
     shell.dataset.queuedScrollDy = String(scroll.dy);
+    setPendingViewportTarget(scroll);
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
@@ -10902,11 +10985,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.pendingViewportY = String(pending.y);
     shell.dataset.queuedScrollDx = String(pending.dx);
     shell.dataset.queuedScrollDy = String(pending.dy);
+    setPendingViewportTarget(pending);
     setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`, pending);
     if (pendingScrollTimer) {
       clearTimeout(pendingScrollTimer);
     }
-    pendingScrollTimer = setTimeout(flushPendingScroll, 80);
+    pendingScrollTimer = setTimeout(flushPendingScroll, scrollFlushDelayMs);
     return true;
   };
   const wheelCells = (delta, deltaMode, viewportSize) => {
@@ -10967,19 +11051,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.dataset.deferredClickY = String(point.y);
       shell.dataset.deferredClickPageX = String(point.pageX);
       shell.dataset.deferredClickPageY = String(point.pageY);
-      setClickStatus(`Viewport is updating; saved ${pointMessage(point)}. Click again after it settles.`);
-      setViewportFeedback(`Viewport is updating; saved ${pointMessage(point)}.`);
+      setClickStatus(`Saved ${pointMessage(point)} while viewport updates; clicking after it settles.`);
+      setViewportFeedback(`Saved click target while viewport updates.`);
       return;
     }
-    const url = new URL(shell.dataset.clickUrl, window.location.href);
-    url.searchParams.set("x", String(point.x));
-    url.searchParams.set("y", String(point.y));
-    shell.dataset.lastClickX = String(point.x);
-    shell.dataset.lastClickY = String(point.y);
-    shell.dataset.lastClickPageX = String(point.pageX);
-    shell.dataset.lastClickPageY = String(point.pageY);
-    setClickStatus(`Clicking ${pointMessage(point)}...`);
-    replaceViewportPage(url, `Clicking ${pointMessage(point)}...`);
+    submitViewportClick(point, "Clicking");
   });
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
