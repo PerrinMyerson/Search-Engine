@@ -5774,7 +5774,10 @@ fn css_clear_keeps_section_flow_below_float_in_scrolled_viewport() {
                 width,
                 height,
                 shade,
-            } if *shade == 232 && *x == body_text.0 && *y > body_text.1 => {
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE
+                && *x == body_text.0
+                && *y > body_text.1 =>
+            {
                 Some((*x, *y, *width, *height))
             }
             _ => None,
@@ -7524,7 +7527,7 @@ fn css_logical_spacing_keeps_mixed_card_readable_after_scroll() {
                 width,
                 height,
                 shade,
-            } if *shade == 232
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE
                 && *x >= card_background.0
                 && *x < card_background.0 + card_background.2 =>
             {
@@ -7918,7 +7921,7 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
                 width,
                 height,
                 shade,
-            } if *shade == 232 => Some((*x, *y, *width, *height)),
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE => Some((*x, *y, *width, *height)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -7928,7 +7931,7 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
     );
     let first_widget = widget_boxes[0];
     assert_eq!(first_widget.0, 0);
-    assert_eq!(first_widget.1, 0);
+    assert!(first_widget.1 <= 1);
     assert!(
         first_widget.2 > "[rust browser]".len(),
         "input visual box should include padding around rendered text"
@@ -7949,8 +7952,71 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
             _ => None,
         })
         .expect("form widget text should still render");
+    assert_eq!(text_command.0, first_widget.0);
     assert!(
-        text_command.0 > first_widget.0,
-        "widget text should sit inside the padded visual box"
+        text_command.2.starts_with(' '),
+        "widget text should keep leading padding inside the visual box"
     );
+}
+
+#[test]
+fn inline_widgets_paint_light_fill_and_border_without_losing_hit_box() {
+    let render = render_html(
+        "mem://form-control-paint",
+        br#"
+            <html><body>
+              <button>Search</button>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let fill = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("button should paint a light control interior");
+    assert_eq!(fill.0, 0);
+    assert_eq!(fill.1, 0);
+    assert!(fill.2 > "[Search]".len());
+    assert!(fill.3 >= 2);
+
+    let border_segments = render
+        .display_list
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rect {
+                    shade: INLINE_WIDGET_BORDER_SHADE,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(
+        border_segments >= 4,
+        "button should paint a border instead of one heavy gray slab"
+    );
+    assert!(
+        render
+            .display_list
+            .iter()
+            .all(|command| !matches!(command, DisplayCommand::Rect { shade: 232, .. })),
+        "inline controls should not use the old dark solid fill"
+    );
+    assert!(hit_test_target_node(&render, fill.0, fill.1).is_some());
+    assert!(hit_test_target_node(&render, fill.0, fill.1 + 1).is_some());
 }

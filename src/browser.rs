@@ -513,6 +513,8 @@ pub struct BrowserViewportFrame {
 
 const GLYPH_WIDTH: usize = 5;
 const GLYPH_HEIGHT: usize = 7;
+const INLINE_WIDGET_BACKGROUND_SHADE: u8 = 250;
+const INLINE_WIDGET_BORDER_SHADE: u8 = 176;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserLayerMetrics {
@@ -18902,22 +18904,49 @@ impl FlowRenderer {
             self.push_pending_text_indent();
         }
         let widget_height = self.line_height.max(self.font_scale).max(2);
-        if self.paint_visible()
-            && let Some(command) = self.clipped_rect_command(
-                self.box_x().saturating_add(self.current_width),
-                self.next_y,
-                width,
-                widget_height,
-                232,
-            )
-        {
+        if self.paint_visible() {
+            let x = self.box_x().saturating_add(self.current_width);
             let target = self.node_hit_target(target_node);
-            self.push_underlay_command(command, target);
+            self.push_inline_widget_box(x, self.next_y, width, widget_height, target);
         }
         self.push_fixed_space_width(padding, target_node);
         self.push_text_run_piece(text, target_node);
         self.push_fixed_space_width(padding, target_node);
         self.inline_replaced_height = self.inline_replaced_height.max(widget_height);
+    }
+
+    fn push_inline_widget_box(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        target: DisplayHitTarget,
+    ) {
+        if let Some(command) =
+            self.clipped_rect_command(x, y, width, height, INLINE_WIDGET_BACKGROUND_SHADE)
+        {
+            self.push_underlay_command(command, target.clone());
+        }
+        if width == 0 || height == 0 {
+            return;
+        }
+        for (border_x, border_y, border_width, border_height) in [
+            (x, y, width, 1),
+            (x, y.saturating_add(height.saturating_sub(1)), width, 1),
+            (x, y, 1, height),
+            (x.saturating_add(width.saturating_sub(1)), y, 1, height),
+        ] {
+            if let Some(command) = self.clipped_rect_command(
+                border_x,
+                border_y,
+                border_width,
+                border_height,
+                INLINE_WIDGET_BORDER_SHADE,
+            ) {
+                self.push_underlay_command(command, target.clone());
+            }
+        }
     }
 
     fn break_line(&mut self) {
