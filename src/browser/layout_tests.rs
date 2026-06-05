@@ -2352,6 +2352,81 @@ fn css_subcell_word_spacing_keeps_scrolled_paragraph_text_continuous() {
 }
 
 #[test]
+fn css_body_text_scale_keeps_scrolled_sentence_continuous_after_image() {
+    let render = render_html(
+        "mem://body-text-scale-scroll",
+        br#"
+            <html><body>
+              <img alt="" width="16" height="24">
+              <p style="font-size:16px; line-height:normal">Readable body text flows after scroll</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let scaled_sentence =
+        "RReeaaddaabbllee  bbooddyy  tteexxtt  fflloowwss  aafftteerr  ssccrroollll";
+    assert!(render.text.contains(scaled_sentence));
+    let paragraph_rows: Vec<(usize, usize, &str)> = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == scaled_sentence =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paragraph_rows.len(),
+        2,
+        "16px paragraph should paint as one continuous scaled command on each raster row"
+    );
+    assert_eq!(paragraph_rows[0].0, 0);
+    assert_eq!(paragraph_rows[1].0, 0);
+    assert_eq!(paragraph_rows[1].1, paragraph_rows[0].1.saturating_add(1));
+    assert_eq!(
+        collapse_repeated_glyph_runs(paragraph_rows[0].2).as_deref(),
+        Some("Readable body text flows after scroll")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(paragraph_rows[0].1),
+        viewport_width: Some(56),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled body-sized paragraph");
+    let report = rgba_raster_report(&render, &raster, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(paragraph_rows[0].1));
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    let text_row = raster_options.padding_y.saturating_add(4);
+    let text_start = raster_options.padding_x.saturating_add(
+        paragraph_rows[0]
+            .0
+            .saturating_mul(raster_options.cell_width),
+    );
+    let text_end =
+        text_start.saturating_add("Readable body text flows".len() * raster_options.cell_width);
+    let ink_pixels = (text_start..text_end.min(raster.width))
+        .filter(|x| pixel(&raster, *x, text_row) != &[255, 255, 255, 255])
+        .count();
+    assert!(ink_pixels >= 24);
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
