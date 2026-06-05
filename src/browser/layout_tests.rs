@@ -5669,6 +5669,136 @@ fn css_floating_images_wrap_following_text_rows() {
 }
 
 #[test]
+fn css_clear_keeps_section_flow_below_float_in_scrolled_viewport() {
+    let render = render_html(
+        "mem://clear-float-section-flow",
+        br#"
+            <html><head><style>
+              .portrait { float: left; }
+              .intro { margin: 0; }
+              .panel {
+                clear: both;
+                padding: 12px 16px;
+                background-color: rgb(238, 238, 238);
+              }
+              .panel p { margin: 0; }
+            </style></head><body>
+              <img class="portrait" alt="portrait" width="32" height="72">
+              <p class="intro">Intro text can sit beside the floated media without forcing a jagged section.</p>
+              <section class="panel">
+                <p>Cleared body text starts below the media and stays readable.</p>
+                <button>Read more</button>
+              </section>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let portrait = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("portrait") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("floated image should render");
+    assert_eq!(portrait.0, 0);
+    assert_eq!(portrait.3, 6);
+
+    let intro = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Intro text") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("intro text should flow beside the float");
+    assert!(intro.0 >= portrait.2);
+    assert!(intro.1 < portrait.1 + portrait.3);
+
+    let panel_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 238 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("cleared panel should paint a full section background");
+    assert_eq!(panel_background.0, 0);
+    assert!(panel_background.1 >= portrait.1 + portrait.3);
+    assert_eq!(panel_background.2, 24);
+
+    let body_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Cleared body text") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("cleared section text should be visible");
+    assert_eq!(body_text.0, 2);
+    assert!(body_text.1 > panel_background.1);
+    assert!(body_text.1 < panel_background.1 + panel_background.3);
+
+    let button_box = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232 && *x == body_text.0 && *y > body_text.1 => {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("button should keep a visual hit box inside the cleared panel");
+    assert!(button_box.3 >= 2);
+    assert!(hit_test_target_node(&render, button_box.0, button_box.1 + 1).is_some());
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: panel_background.1,
+            width: 24,
+            height: 6,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, panel_background.1);
+    assert!(viewport.max_scroll_y > 0);
+    assert!(viewport.visible_command_count >= 3);
+}
+
+#[test]
 fn css_background_image_paints_block_underlay() {
     let render = render_html(
         "mem://background-image",
