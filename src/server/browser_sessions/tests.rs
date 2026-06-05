@@ -2489,10 +2489,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         + html[primary_surface_index..]
             .find(r#"data-browser-viewport-status"#)
             .unwrap();
-    let visible_scroll_controls_index = primary_surface_index
-        + html[primary_surface_index..]
-            .find(r#"data-browser-viewport-page-controls"#)
-            .unwrap();
     let interaction_controls_index = primary_surface_index
         + html[primary_surface_index..]
             .find(r#"data-browser-viewport-interactions"#)
@@ -2500,6 +2496,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let controls_tray_index = primary_surface_index
         + html[primary_surface_index..]
             .find(r#"data-browser-controls-tray"#)
+            .unwrap();
+    let manual_scroll_controls_index = controls_tray_index
+        + html[controls_tray_index..]
+            .find(r#"data-browser-viewport-page-controls"#)
             .unwrap();
     let command_strip_index = controls_tray_index
         + html[controls_tray_index..]
@@ -2509,11 +2509,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(chrome_status_index < raster_index);
     assert!(primary_state_index < raster_index);
     assert!(raster_index < status_index);
-    assert!(status_index < visible_scroll_controls_index);
     assert!(status_index < interaction_controls_index);
-    assert!(visible_scroll_controls_index < controls_tray_index);
     assert!(interaction_controls_index < controls_tray_index);
     assert!(raster_index < controls_tray_index);
+    assert!(controls_tray_index < manual_scroll_controls_index);
+    assert!(manual_scroll_controls_index < command_strip_index);
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
