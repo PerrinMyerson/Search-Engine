@@ -24,6 +24,7 @@ const DOCUMENT_HTTP_TIMEOUT: Duration = Duration::from_secs(6);
 const RESOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const DATA_URL_SOURCE_METADATA_MAX_CHARS: usize = 80;
 const DATA_URL_REPORT_LABEL_MAX_CHARS: usize = 120;
+const REPORT_PAGE_SOURCE_MAX_CHARS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -41,6 +42,7 @@ pub struct BrowserResource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserResourceFetchReport {
+    #[serde(serialize_with = "serialize_report_page_source")]
     pub page_source: String,
     pub total: usize,
     pub fetched: usize,
@@ -102,6 +104,7 @@ pub struct BrowserResourceFetch {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserStylesheetRenderReport {
+    #[serde(serialize_with = "serialize_report_page_source")]
     pub page_source: String,
     pub stylesheet_count: usize,
     pub applied: usize,
@@ -115,6 +118,7 @@ pub struct BrowserStylesheetRenderReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserScriptRenderReport {
+    #[serde(serialize_with = "serialize_report_page_source")]
     pub page_source: String,
     pub script_count: usize,
     pub applied: usize,
@@ -128,6 +132,7 @@ pub struct BrowserScriptRenderReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserImageRenderReport {
+    #[serde(serialize_with = "serialize_report_page_source")]
     pub page_source: String,
     pub image_count: usize,
     pub decoded: usize,
@@ -713,6 +718,13 @@ where
     serializer.serialize_str(&resource_url_report_label(target))
 }
 
+fn serialize_report_page_source<S>(source: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&report_page_source_label(source))
+}
+
 fn resource_url_report_label(target: &str) -> String {
     if !target.starts_with("data:") || target.chars().count() <= DATA_URL_REPORT_LABEL_MAX_CHARS {
         return target.to_owned();
@@ -733,6 +745,18 @@ fn resource_url_report_label(target: &str) -> String {
         metadata.to_owned()
     };
     format!("data:{metadata},... source_chars={}", target.len())
+}
+
+fn report_page_source_label(source: &str) -> String {
+    let source_chars = source.chars().count();
+    if source_chars <= REPORT_PAGE_SOURCE_MAX_CHARS {
+        return source.to_owned();
+    }
+
+    let preview: String = source.chars().take(REPORT_PAGE_SOURCE_MAX_CHARS).collect();
+    format!(
+        "{preview}\n<!-- brutal-report-page-source-truncated source_chars={source_chars} retained_chars={REPORT_PAGE_SOURCE_MAX_CHARS} -->"
+    )
 }
 
 fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
@@ -2097,6 +2121,35 @@ mod tests {
             format!("data:image/svg+xml,... source_chars={}", resource.url.len())
         );
         assert!(!url.contains(&payload));
+    }
+
+    #[test]
+    fn resource_report_serialization_bounds_large_page_source() {
+        let body = "x".repeat(REPORT_PAGE_SOURCE_MAX_CHARS + 32);
+        let page_source = format!("<html><body>{body}</body></html>");
+        let report = BrowserResourceFetchReport {
+            page_source: page_source.clone(),
+            total: 0,
+            fetched: 0,
+            cached: 0,
+            failed: 0,
+            skipped: 0,
+            cached_resource_count: 0,
+            cached_resource_bytes: 0,
+            resources: Vec::new(),
+        };
+
+        let serialized = serde_json::to_value(&report).unwrap();
+        let serialized_source = serialized["page_source"].as_str().unwrap();
+
+        assert_eq!(report.page_source, page_source);
+        assert_ne!(serialized_source, page_source);
+        assert!(serialized_source.starts_with("<html><body>"));
+        assert!(serialized_source.contains("brutal-report-page-source-truncated"));
+        assert!(
+            serialized_source.contains(&format!("source_chars={}", page_source.chars().count()))
+        );
+        assert!(serialized_source.chars().count() <= REPORT_PAGE_SOURCE_MAX_CHARS + 128);
     }
 
     #[test]
