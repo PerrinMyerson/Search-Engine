@@ -1209,7 +1209,7 @@ a:hover {{ text-decoration: underline; }}
 .toolbar a, .toolbar span, .toolbar button {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 800; }}
 .toolbar span {{ color: #8a929d; background: #eef0f3; }}
 .toolbar form {{ display: flex; flex: 1 1 360px; min-width: 0; gap: 8px; }}
-.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; }}
+.toolbar input[name="url"] {{ flex: 1; min-width: 0; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 9px; font-size: 13px; background: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .toolbar button, .primary-action {{ background: #2457d6 !important; border-color: #2457d6 !important; color: #fff !important; }}
 .browser-chrome-status {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; color: #5d636b; font-size: 12px; font-weight: 800; }}
 .viewport-state-chip {{ min-height: 24px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 8px; background: #fff; color: #3a3f45; font-size: 12px; font-weight: 800; }}
@@ -9741,7 +9741,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_x" value="{viewport_x}">
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
-<input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" aria-label="Address">
+<input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button type="submit" name="action" value="open-new-session">New tab</button><button type="submit" name="action" value="open-background-session">Background</button>
 </form>
 </div>
@@ -9749,7 +9749,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {primary_tab_strip}
 </header>
 <section class="browser-page-head">
-<div class="browser-page-title"><h1>{heading}</h1><div class="meta">{source}</div></div>
+<div class="browser-page-title"><h1>{heading}</h1><div class="meta" title="{source_attr}">{source}</div></div>
 <details class="browser-page-summary"><summary>Page and session details</summary><div class="browser-page-summary-content"><div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>{navigation_state}</div></details>
 </section>
 {auto_visual_bootstrap}
@@ -9776,7 +9776,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </html>"#,
         title = html_escape::encode_text(&payload.title),
         heading = html_escape::encode_text(&payload.title),
-        source = html_escape::encode_text(&payload.source),
+        source = html_escape::encode_text(&browser_session_feedback_excerpt(&payload.source)),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
@@ -10936,12 +10936,12 @@ fn browser_session_resources_export_payload(
 fn browser_session_resource_action_urls(
     payload: &BrowserSessionPayload,
 ) -> BrowserSessionResourceActionUrls {
-    let can_load_images =
-        payload.resource_image_count > 0 && !browser_session_image_load_action_exhausted(payload);
+    let can_load_images = browser_session_should_offer_load_images(payload);
+    let can_make_visual = payload.resource_stylesheet_count > 0 || can_load_images;
     BrowserSessionResourceActionUrls {
         fetch_resources: (payload.resource_count > 0)
             .then(|| browser_session_action_href(&payload.id, "fetch-resources", &[], payload)),
-        make_visual: (payload.resource_stylesheet_count > 0 || payload.resource_image_count > 0)
+        make_visual: can_make_visual
             .then(|| browser_session_action_href(&payload.id, "make-visual", &[], payload)),
         apply_stylesheets: (payload.resource_stylesheet_count > 0)
             .then(|| browser_session_action_href(&payload.id, "apply-styles", &[], payload)),
@@ -10955,10 +10955,18 @@ fn browser_session_resource_action_urls(
     }
 }
 
-fn browser_session_image_load_action_exhausted(payload: &BrowserSessionPayload) -> bool {
-    payload.resource_report.as_ref().is_some_and(|report| {
-        report.action == "Load images" && report.total > 0 && report.decoded == Some(0)
-    })
+fn browser_session_should_offer_load_images(payload: &BrowserSessionPayload) -> bool {
+    if payload.resource_image_count == 0 {
+        return false;
+    }
+    let Some(report) = payload.resource_report.as_ref() else {
+        return true;
+    };
+    match report.decoded {
+        Some(0) => false,
+        Some(decoded) => decoded < payload.resource_image_count,
+        None => true,
+    }
 }
 
 fn browser_session_forms_export_payload(
@@ -12860,14 +12868,6 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
 fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload) -> String {
     let action_urls = browser_session_resource_action_urls(payload);
     let mut visual_actions = String::new();
-    visual_actions.push_str(
-        &browser_session_resource_action_link_with_class_and_attributes(
-            action_urls.make_visual.as_deref(),
-            "Make page readable",
-            "clear-link primary-action",
-            r#" data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#,
-        ),
-    );
     visual_actions.push_str(&browser_session_resource_action_link_with_status(
         action_urls.apply_stylesheets.as_deref(),
         "Apply styles",
@@ -12878,16 +12878,6 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
         "Run scripts",
         "Running scripts...",
     ));
-    let load_images_label = format!(
-        "Load {}",
-        browser_resource_count_label(payload.resource_image_count, "image", "images")
-    );
-    visual_actions.push_str(&browser_session_resource_action_link_with_status(
-        action_urls.load_images.as_deref(),
-        &load_images_label,
-        "Loading images...",
-    ));
-
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
@@ -12912,7 +12902,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
     let visual_status = if visual_actions.is_empty() {
-        r#"<span class="resource-action-status">No visual resources</span>"#.to_owned()
+        render_browser_session_visual_flow_status(payload)
     } else {
         r#"<span class="resource-visual-status resource-action-status" data-browser-visual-status data-browser-resource-status-output aria-live="polite"></span>"#.to_owned()
     };

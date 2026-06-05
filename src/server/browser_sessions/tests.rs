@@ -2327,6 +2327,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"<span class="viewport-command-label">Session</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Scroll</span>"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Jump</span>"#));
+    assert!(!html.contains(r#">Make page readable</a><a class="clear-link""#));
     assert!(html.contains(r#">Refresh viewport</a>"#));
     assert!(html.contains(r#">Reload page</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
@@ -9994,12 +9995,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(">Make visual</a>"));
-    assert!(html.contains(">Make page readable</a>"));
+    assert!(!html.contains(">Make page readable</a>"));
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"class="clear-link primary-action""#));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
     assert!(html.contains(r#"data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making visual...""#));
-    assert!(html.contains(r#"data-browser-resource-action data-browser-make-visual-action data-browser-resource-status="Making page readable...""#));
     assert!(html.contains(r#"data-browser-resource-actions"#));
     assert!(html.contains(
         r#"data-browser-visual-status data-browser-resource-status-output aria-live="polite""#
@@ -10206,6 +10206,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(
         r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
     ));
+    assert!(!html.contains(">Load 1 image</a>"));
     assert!(html.contains("Report JSON"));
     assert!(html.contains("format=resource-report-json"));
     assert!(html.contains("Clear report"));
@@ -10226,6 +10227,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert_eq!(exported["resource_report"]["applied"], 1);
     assert_eq!(exported["resource_report"]["decoded"], 1);
     assert_eq!(exported["resource_report"]["resources"], 2);
+    assert!(exported["action_urls"]["load_images"].is_null());
     assert_eq!(
         exported["resource_report"]["fetches"]
             .as_array()
@@ -10691,6 +10693,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(
         r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
     ));
+    assert!(!html.contains(">Load 1 image</a>"));
     assert!(html.contains("<th>Source</th>"));
     assert!(html.contains("<th>Content Type</th>"));
     assert!(html.contains("<th>Error</th>"));
@@ -10806,12 +10809,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
         exported["resource_report"]["fetches"][0]["content_type"],
         "image/svg+xml"
     );
-    assert!(
-        exported["action_urls"]["load_images"]
-            .as_str()
-            .unwrap()
-            .contains("action=load-images")
-    );
+    assert!(exported["action_urls"]["load_images"].is_null());
 }
 
 #[tokio::test]
@@ -12011,6 +12009,17 @@ async fn browser_page_preserves_data_source_display_and_visual_actions_for_mater
     assert!(html.contains(
         r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: 1 stylesheet · 1 image</span>"#
     ));
+    assert!(html.contains(&format!(
+        r#"value="{}""#,
+        html_escape::encode_double_quoted_attribute(&data_url)
+    )));
+    assert!(html.contains(&format!(
+        r#"title="{}""#,
+        html_escape::encode_double_quoted_attribute(&data_url)
+    )));
+    let data_url_excerpt =
+        html_escape::encode_text(&browser_session_feedback_excerpt(&data_url)).into_owned();
+    assert!(html.contains(&data_url_excerpt));
     assert!(html.contains("data:text/html"));
     assert!(!html.contains("brutal-browser-data-url"));
 
