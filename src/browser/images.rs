@@ -6056,6 +6056,10 @@ fn parse_css_pixel_dimension(value: &str) -> Option<f64> {
     }
     let pixels = if let Some(px) = strip_ascii_case_suffix(value, "px") {
         px.trim().parse::<f64>().ok()?
+    } else if let Some(em) = strip_ascii_case_suffix(value, "em") {
+        em.trim().parse::<f64>().ok()? * 16.0
+    } else if let Some(rem) = strip_ascii_case_suffix(value, "rem") {
+        rem.trim().parse::<f64>().ok()? * 16.0
     } else {
         let zero = value.parse::<f64>().ok()?;
         if zero != 0.0 {
