@@ -23,12 +23,15 @@ const DEFAULT_RESOURCE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const DOCUMENT_HTTP_TIMEOUT: Duration = Duration::from_secs(6);
 const RESOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const DATA_URL_SOURCE_METADATA_MAX_CHARS: usize = 80;
+const DATA_URL_REPORT_LABEL_MAX_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
     pub kind: String,
     pub initiator: String,
+    #[serde(serialize_with = "serialize_resource_url")]
     pub url: String,
+    #[serde(serialize_with = "serialize_resource_url")]
     pub resolved: String,
     pub rel: Option<String>,
     pub media: Option<String>,
@@ -701,6 +704,35 @@ fn data_url_source_label(target: &str, metadata: &str, decoded_bytes: usize) -> 
         "data:{metadata},... decoded_bytes={decoded_bytes} source_chars={}",
         target.len()
     )
+}
+
+fn serialize_resource_url<S>(target: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&resource_url_report_label(target))
+}
+
+fn resource_url_report_label(target: &str) -> String {
+    if !target.starts_with("data:") || target.chars().count() <= DATA_URL_REPORT_LABEL_MAX_CHARS {
+        return target.to_owned();
+    }
+
+    let payload = target.strip_prefix("data:").unwrap_or_default();
+    let metadata = payload
+        .split_once(',')
+        .map(|(metadata, _)| metadata)
+        .unwrap_or("");
+    let metadata = if metadata.chars().count() > DATA_URL_SOURCE_METADATA_MAX_CHARS {
+        let preview: String = metadata
+            .chars()
+            .take(DATA_URL_SOURCE_METADATA_MAX_CHARS)
+            .collect();
+        format!("{preview}...")
+    } else {
+        metadata.to_owned()
+    };
+    format!("data:{metadata},... source_chars={}", target.len())
 }
 
 fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
@@ -2035,6 +2067,36 @@ mod tests {
 
         assert_eq!(cached.cache_outcome.as_deref(), Some("hit"));
         assert_eq!(cached.source.as_deref(), Some(source));
+    }
+
+    #[test]
+    fn resource_report_serialization_bounds_large_data_urls() {
+        let payload = "A".repeat(DATA_URL_REPORT_LABEL_MAX_CHARS + 16);
+        let data_url = format!("data:image/svg+xml,{payload}");
+        let resource = BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: data_url.clone(),
+            resolved: data_url.clone(),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        };
+
+        let serialized = serde_json::to_value(&resource).unwrap();
+        let url = serialized["url"].as_str().unwrap();
+        let resolved = serialized["resolved"].as_str().unwrap();
+
+        assert_eq!(resource.url, data_url);
+        assert_eq!(resource.resolved, data_url);
+        assert_ne!(url, data_url);
+        assert_eq!(url, resolved);
+        assert_eq!(
+            url,
+            format!("data:image/svg+xml,... source_chars={}", resource.url.len())
+        );
+        assert!(!url.contains(&payload));
     }
 
     #[test]
