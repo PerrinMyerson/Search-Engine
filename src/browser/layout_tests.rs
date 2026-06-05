@@ -1852,6 +1852,10 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     let cell_width = BrowserRasterOptions::default().cell_width;
     assert!(raster_glyph_advance('i', cell_width) < raster_glyph_advance('m', cell_width));
     assert!(raster_glyph_advance(' ', cell_width) < cell_width);
+    assert!(
+        raster_glyph_advance('i', cell_width) >= cell_width.saturating_mul(5) / 6,
+        "narrow glyphs should keep enough advance to avoid cramped raster text"
+    );
 
     let render = BrowserRender {
         source: "mem://raster-typography".to_owned(),
@@ -1883,18 +1887,20 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         .saturating_add(2)
         .saturating_mul(raster.width)
         .saturating_add(raster_options.padding_x.saturating_add(2));
-    let uppercase_top_pixel = raster_options
-        .padding_y
-        .saturating_add(2)
-        .saturating_mul(raster.width)
-        .saturating_add(
-            raster_options
-                .padding_x
-                .saturating_add(raster_options.cell_width)
-                .saturating_add(2),
-        );
+    let uppercase_top_y = raster_options.padding_y.saturating_add(2);
+    let uppercase_top_start_x = raster_options
+        .padding_x
+        .saturating_add(raster_glyph_advance('a', raster_options.cell_width));
+    let uppercase_top_has_ink = (uppercase_top_start_x
+        ..uppercase_top_start_x.saturating_add(raster_options.cell_width))
+        .any(|x| {
+            let index = uppercase_top_y
+                .saturating_mul(raster.width)
+                .saturating_add(x);
+            raster.pixels.get(index).copied() == Some(0)
+        });
     assert_eq!(raster.pixels[lowercase_top_pixel], 255);
-    assert_eq!(raster.pixels[uppercase_top_pixel], 0);
+    assert!(uppercase_top_has_ink);
     assert_eq!(
         display_command_bounds(&render.display_list[0]),
         DisplayCommandBounds {
@@ -1929,17 +1935,33 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     };
     let density_raster =
         rasterize_render(&density_render, raster_options).expect("rasterize density glyphs");
-    let early_m_pixel = raster_options
+    let old_cramped_m_pixel = raster_options
         .padding_y
         .saturating_add(4)
         .saturating_mul(density_raster.width)
         .saturating_add(raster_options.padding_x.saturating_add(6));
+    let readable_m_start_x = raster_options
+        .padding_x
+        .saturating_add(raster_glyph_advance('i', raster_options.cell_width));
+    let readable_m_has_ink = (raster_options.padding_y
+        ..raster_options
+            .padding_y
+            .saturating_add(raster_options.cell_height))
+        .any(|y| {
+            (readable_m_start_x..readable_m_start_x.saturating_add(raster_options.cell_width)).any(
+                |x| {
+                    let index = y.saturating_mul(density_raster.width).saturating_add(x);
+                    density_raster.pixels.get(index).copied() == Some(0)
+                },
+            )
+        });
     let monospace_m_left = raster_options
         .padding_x
         .saturating_add(raster_options.cell_width)
         .saturating_add(1);
     assert!(raster_options.padding_x.saturating_add(6) < monospace_m_left);
-    assert_eq!(density_raster.pixels[early_m_pixel], 0);
+    assert_eq!(density_raster.pixels[old_cramped_m_pixel], 255);
+    assert!(readable_m_has_ink);
     assert_eq!(
         display_command_bounds(&density_render.display_list[0]),
         DisplayCommandBounds {
