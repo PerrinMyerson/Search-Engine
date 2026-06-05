@@ -2298,10 +2298,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
 
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
-    assert!(html.contains(
-        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback>Moved visual viewport to x 8, y 4.</span>"#
-    ));
+    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
     ));
@@ -3007,8 +3004,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some("Viewport is already at that position.")
     );
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Viewport is already at that position."));
+    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(html.contains(
+        r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Viewport is already at that position.</span>"#
+    ));
 
     let line_down_noop = RequestTarget {
         path: "/browser".to_owned(),
@@ -3025,8 +3024,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some("Already at bottom.")
     );
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains("Already at bottom."));
+    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(html.contains(
+        r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Already at bottom.</span>"#
+    ));
 }
 
 #[tokio::test]
@@ -8496,9 +8497,10 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
         Some(expected_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(html.contains(&expected_feedback));
+    assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
 }
 
 #[tokio::test]
@@ -8589,8 +8591,8 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
         Some("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(html.contains("data-browser-action-feedback"));
-    assert!(html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(
         html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
@@ -8807,8 +8809,9 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
         Some(expected_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(html.contains("data-browser-action-feedback"));
+    assert!(!html.contains("data-browser-action-feedback"));
     assert!(html.contains(&expected_feedback));
+    assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-browser-dom-click"#));
     assert!(!html.contains("data-browser-fast-scroll"));
 }

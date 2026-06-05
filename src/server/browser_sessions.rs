@@ -12725,8 +12725,6 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         y = payload.viewport_y,
         raster = html_escape::encode_text(&raster_label),
     );
-    status.push_str(&render_browser_session_chrome_action_feedback(payload));
-
     let action_urls = browser_session_resource_action_urls(payload);
     if action_urls.make_visual.is_some() {
         status.push_str(
@@ -12802,7 +12800,7 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
 }
 
 fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) -> String {
-    let action_feedback = render_browser_session_action_feedback(payload);
+    let action_feedback = render_browser_session_surface_action_feedback(payload);
     if let Some(pending_source) = payload.pending_source.as_ref() {
         let continue_href = browser_session_action_href(
             &payload.id,
@@ -12839,6 +12837,18 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
         action_feedback = action_feedback,
         viewport_feedback = viewport_feedback,
     )
+}
+
+fn render_browser_session_surface_action_feedback(payload: &BrowserSessionPayload) -> String {
+    if browser_session_action_feedback_text(payload).is_none() {
+        return String::new();
+    }
+    if browser_session_scroll_feedback_text(payload).is_some()
+        || browser_session_click_feedback_text(payload).is_some()
+    {
+        return String::new();
+    }
+    render_browser_session_action_feedback(payload)
 }
 
 fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
@@ -12983,7 +12993,7 @@ fn render_browser_session_viewport_command_strip(payload: &BrowserSessionPayload
 }
 
 fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -> String {
-    let action_feedback = render_browser_session_action_feedback(payload);
+    let action_feedback = render_browser_session_surface_action_feedback(payload);
     let visual_flow_status = render_browser_session_visual_flow_status(payload);
     if let Some(pending_source) = payload.pending_source.as_ref() {
         let continue_href = browser_session_action_href(
@@ -13163,17 +13173,6 @@ fn browser_session_action_feedback_text(payload: &BrowserSessionPayload) -> Opti
         .filter(|feedback| !feedback.is_empty())
 }
 
-fn render_browser_session_chrome_action_feedback(payload: &BrowserSessionPayload) -> String {
-    browser_session_action_feedback_text(payload)
-        .map(|feedback| {
-            format!(
-                r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback>{}</span>"#,
-                html_escape::encode_text(feedback),
-            )
-        })
-        .unwrap_or_default()
-}
-
 fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
     browser_session_action_feedback_text(payload).filter(|feedback| {
         feedback.starts_with("Moved visual viewport")
@@ -13208,14 +13207,17 @@ fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
     if payload.pending_source.is_some() {
         return "Page is still loading; clicks start after the first render.".to_owned();
     }
-    browser_session_action_feedback_text(payload)
-        .filter(|feedback| {
-            feedback.starts_with("Clicked ")
-                || feedback.starts_with("Click ")
-                || feedback.starts_with("No click")
-        })
+    browser_session_click_feedback_text(payload)
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
         .unwrap_or_else(|| "Hover rendered page to inspect click target.".to_owned())
+}
+
+fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    browser_session_action_feedback_text(payload).filter(|feedback| {
+        feedback.starts_with("Clicked ")
+            || feedback.starts_with("Click ")
+            || feedback.starts_with("No click")
+    })
 }
 
 fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> String {
