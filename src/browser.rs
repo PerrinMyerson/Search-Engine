@@ -4768,8 +4768,8 @@ fn layout_box_visibility(
         .layout_boxes
         .iter()
         .filter_map(|layout_box| {
-            let visible_bounds =
-                intersect_display_bounds_with_viewport(layout_box_bounds(layout_box), viewport)?;
+            let viewport_bounds = layout_box_viewport_bounds(render, layout_box, viewport);
+            let visible_bounds = intersect_display_bounds_with_viewport(viewport_bounds, viewport)?;
             Some(BrowserVisibleLayoutBox {
                 id: layout_box.id,
                 parent: layout_box.parent,
@@ -4795,6 +4795,27 @@ fn layout_box_visibility(
             .saturating_sub(visible_layout_boxes.len()),
         visible_layout_boxes,
     )
+}
+
+fn layout_box_viewport_bounds(
+    render: &BrowserRender,
+    layout_box: &BrowserLayoutBox,
+    viewport: RasterViewport,
+) -> DisplayCommandBounds {
+    layout_box
+        .command_indices
+        .iter()
+        .filter_map(|command_index| {
+            let command = render.display_list.get(*command_index)?;
+            Some(display_command_bounds_for_viewport(
+                command,
+                viewport,
+                display_command_viewport_fixed(render, *command_index),
+                display_command_viewport_sticky_top(render, *command_index),
+            ))
+        })
+        .reduce(|current, next| union_display_bounds(Some(current), next))
+        .unwrap_or_else(|| layout_box_bounds(layout_box))
 }
 
 pub fn browser_document_viewport(
