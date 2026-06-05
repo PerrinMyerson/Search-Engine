@@ -2287,6 +2287,71 @@ fn css_word_spacing_expands_inter_word_gaps_and_wrap_width() {
 }
 
 #[test]
+fn css_subcell_word_spacing_keeps_scrolled_paragraph_text_continuous() {
+    let render = render_html(
+        "mem://subcell-word-spacing-scroll",
+        br#"
+            <html><body>
+              <img alt="" width="16" height="24">
+              <p style="word-spacing: 1px">Readable paragraph text flows together after scroll</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 56,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(
+        render
+            .text
+            .contains("Readable paragraph text flows together after scroll")
+    );
+    assert!(!render.text.contains("Readable  paragraph"));
+    let (text_x, text_y, text) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Readable paragraph text") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("continuous paragraph text command after image");
+    assert_eq!(text, "Readable paragraph text flows together after scroll");
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(text_y),
+        viewport_width: Some(40),
+        viewport_height: Some(1),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled subcell word-spacing paragraph");
+    let report = rgba_raster_report(&render, &raster, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(text_y));
+    let text_start = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let text_end =
+        text_start.saturating_add("Readable paragraph".len() * raster_options.cell_width);
+    let text_row = raster_options.padding_y.saturating_add(4);
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    let ink_pixels = (text_start..text_end.min(raster.width))
+        .filter(|x| pixel(&raster, *x, text_row) != &[255, 255, 255, 255])
+        .count();
+    assert!(ink_pixels >= 8);
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
