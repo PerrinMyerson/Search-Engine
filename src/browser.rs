@@ -7111,9 +7111,9 @@ fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
 
 fn readable_raster_glyph_min_advance(cell_width: usize) -> usize {
     cell_width
-        .saturating_mul(3)
-        .saturating_add(3)
-        .checked_div(4)
+        .saturating_mul(5)
+        .saturating_add(5)
+        .checked_div(6)
         .unwrap_or(cell_width)
         .clamp(3, cell_width.max(3))
 }
