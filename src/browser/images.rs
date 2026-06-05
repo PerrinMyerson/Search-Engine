@@ -460,6 +460,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut polygons = Vec::new();
     let mut polylines = Vec::new();
     let mut paths = Vec::new();
+    let mut embedded_images = Vec::new();
     let mut transform_stack = vec![Some(SvgTransform::identity())];
     let mut paint_stack = vec![HashMap::new()];
 
@@ -569,6 +570,11 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                                     ),
                                     transform,
                                 });
+                            }
+                        }
+                        "image" => {
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                embedded_images.push(SvgShapeAttrs { attrs, transform });
                             }
                         }
                         _ => {}
@@ -746,6 +752,16 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 stroke_width,
             );
         }
+    }
+    for embedded in embedded_images {
+        draw_decoded_svg_embedded_image(
+            &mut pixels,
+            &mut rgb_pixels,
+            width,
+            height,
+            &embedded.attrs,
+            embedded.transform,
+        );
     }
 
     Some(DecodedImage {
@@ -1515,6 +1531,38 @@ impl SvgTransform {
         let x_scale = self.a.hypot(self.b);
         let y_scale = self.c.hypot(self.d);
         x_scale.max(y_scale).max(1.0)
+    }
+
+    fn axis_aligned_rect(
+        self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<(usize, usize, usize, usize)> {
+        const EPSILON: f32 = 0.0001;
+        if self.b.abs() > EPSILON || self.c.abs() > EPSILON || self.a <= 0.0 || self.d <= 0.0 {
+            return None;
+        }
+        let left = self.a.mul_add(x, self.e);
+        let top = self.d.mul_add(y, self.f);
+        let scaled_width = width * self.a;
+        let scaled_height = height * self.d;
+        if !left.is_finite()
+            || !top.is_finite()
+            || !scaled_width.is_finite()
+            || !scaled_height.is_finite()
+            || scaled_width <= 0.0
+            || scaled_height <= 0.0
+        {
+            return None;
+        }
+        Some((
+            left.round().max(0.0) as usize,
+            top.round().max(0.0) as usize,
+            scaled_width.round().max(1.0) as usize,
+            scaled_height.round().max(1.0) as usize,
+        ))
     }
 }
 
@@ -2692,6 +2740,118 @@ fn set_decoded_pixel(
     };
     for (channel, paint_channel) in pixel_rgb.iter_mut().zip(paint.rgb) {
         *channel = blend_channel_over_background(paint_channel, paint.alpha, *channel);
+    }
+}
+
+fn draw_decoded_svg_embedded_image(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    attrs: &HashMap<String, String>,
+    transform: SvgTransform,
+) -> Option<()> {
+    let href = attrs
+        .get("href")
+        .or_else(|| attrs.get("xlink:href"))?
+        .trim();
+    if !href
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        return None;
+    }
+    let embedded = decode_image_reference("mem://svg-embedded-image", href)?;
+    let x = attrs
+        .get("x")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let y = attrs
+        .get("y")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let width = attrs
+        .get("width")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(embedded.width as f32);
+    let height = attrs
+        .get("height")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(embedded.height as f32);
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let (dest_x, dest_y, dest_width, dest_height) =
+        transform.axis_aligned_rect(x, y, width, height)?;
+    draw_decoded_image_pixels(
+        pixels,
+        rgb_pixels,
+        image_width,
+        image_height,
+        dest_x,
+        dest_y,
+        dest_width,
+        dest_height,
+        &embedded,
+    );
+    Some(())
+}
+
+fn draw_decoded_image_pixels(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    dest_x: usize,
+    dest_y: usize,
+    dest_width: usize,
+    dest_height: usize,
+    embedded: &DecodedImage,
+) {
+    if dest_width == 0 || dest_height == 0 || embedded.width == 0 || embedded.height == 0 {
+        return;
+    }
+    let end_x = dest_x.saturating_add(dest_width).min(image_width);
+    let end_y = dest_y.saturating_add(dest_height).min(image_height);
+    for y in dest_y..end_y {
+        let source_y = (y.saturating_sub(dest_y))
+            .saturating_mul(embedded.height)
+            .checked_div(dest_height)
+            .unwrap_or(0)
+            .min(embedded.height.saturating_sub(1));
+        for x in dest_x..end_x {
+            let source_x = (x.saturating_sub(dest_x))
+                .saturating_mul(embedded.width)
+                .checked_div(dest_width)
+                .unwrap_or(0)
+                .min(embedded.width.saturating_sub(1));
+            let source_index = source_y
+                .saturating_mul(embedded.width)
+                .saturating_add(source_x);
+            let dest_index = y.saturating_mul(image_width).saturating_add(x);
+            let Some(source_gray) = embedded.pixels.get(source_index).copied() else {
+                continue;
+            };
+            if let Some(pixel) = pixels.get_mut(dest_index) {
+                *pixel = source_gray;
+            }
+            let Some(dest_rgb_offset) = dest_index.checked_mul(3) else {
+                continue;
+            };
+            let Some(dest_rgb) = rgb_pixels.get_mut(dest_rgb_offset..dest_rgb_offset + 3) else {
+                continue;
+            };
+            let fallback_rgb = [source_gray, source_gray, source_gray];
+            let source_rgb = embedded
+                .rgb_pixels
+                .as_ref()
+                .and_then(|rgb| {
+                    let offset = source_index.checked_mul(3)?;
+                    rgb.get(offset..offset + 3)
+                })
+                .unwrap_or(&fallback_rgb);
+            dest_rgb.copy_from_slice(source_rgb);
+        }
     }
 }
 
