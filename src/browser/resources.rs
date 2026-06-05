@@ -1976,7 +1976,7 @@ fn background_image_candidate_clearly_unsupported(url: &str) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
+                "avif" | "avifs" | "heic" | "heif" | "bmp" | "ico" | "tif" | "tiff"
             )
         })
 }
