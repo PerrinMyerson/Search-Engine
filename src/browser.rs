@@ -1213,6 +1213,13 @@ enum FloatSide {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClearSide {
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexDirection {
     Row,
     Column,
@@ -1404,6 +1411,7 @@ pub(super) enum CssListStyleType {
 struct ComputedStyle {
     display: Display,
     float: Option<FloatSide>,
+    clear: Option<ClearSide>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
     background_image_size: BackgroundImageSize,
@@ -1602,6 +1610,7 @@ struct CssRule {
 struct CssDeclarations {
     display: Option<Display>,
     float: Option<Option<FloatSide>>,
+    clear: Option<Option<ClearSide>>,
     flex_direction: Option<FlexDirection>,
     flex_wrap: Option<bool>,
     flex_basis: Option<CssDimension>,
@@ -13095,6 +13104,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "float" => {
                 declarations.float = parse_css_float(value).or(declarations.float);
             }
+            "clear" => {
+                declarations.clear = parse_css_clear(value).or(declarations.clear);
+            }
             "background" | "background-color" => {
                 declarations.background_shade =
                     parse_css_color_shade(value).or(declarations.background_shade);
@@ -14259,6 +14271,21 @@ fn parse_css_float(value: &str) -> Option<Option<FloatSide>> {
         "none" => Some(None),
         "left" | "inline-start" => Some(Some(FloatSide::Left)),
         "right" | "inline-end" => Some(Some(FloatSide::Right)),
+        _ => None,
+    }
+}
+
+fn parse_css_clear(value: &str) -> Option<Option<ClearSide>> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => Some(None),
+        "left" | "inline-start" => Some(Some(ClearSide::Left)),
+        "right" | "inline-end" => Some(Some(ClearSide::Right)),
+        "both" | "inline" => Some(Some(ClearSide::Both)),
         _ => None,
     }
 }
@@ -15746,6 +15773,9 @@ fn render_node(
             };
             if block_flow {
                 renderer.break_line();
+                if let Some(clear) = style.clear {
+                    renderer.clear_floats(clear);
+                }
                 if margin.top > 0 {
                     renderer.push_vertical_space(margin.top);
                 }
@@ -16842,6 +16872,7 @@ fn computed_style(
         return ComputedStyle {
             display: Display::None,
             float: None,
+            clear: None,
             background_shade: None,
             background_image_url: None,
             background_image_size: BackgroundImageSize::default(),
@@ -16893,6 +16924,7 @@ fn computed_style(
     }
     let mut display = default_display(&element.tag);
     let mut float = None;
+    let mut clear = None;
     let mut background_shade = None;
     let mut background_image_url = None;
     let mut background_image_size = BackgroundImageSize::default();
@@ -16942,6 +16974,7 @@ fn computed_style(
     let mut min_height = CssDimension::zero();
     let mut display_specificity = 0u32;
     let mut float_specificity = 0u32;
+    let mut clear_specificity = 0u32;
     let mut background_specificity = 0u32;
     let mut background_image_specificity = 0u32;
     let mut background_image_size_specificity = 0u32;
@@ -17005,6 +17038,12 @@ fn computed_style(
             {
                 float = rule_float;
                 float_specificity = rule_specificity;
+            }
+            if let Some(rule_clear) = rule.declarations.clear
+                && rule_specificity >= clear_specificity
+            {
+                clear = rule_clear;
+                clear_specificity = rule_specificity;
             }
             if let Some(rule_background) = rule.declarations.background_shade
                 && rule_specificity >= background_specificity
@@ -17297,6 +17336,9 @@ fn computed_style(
         if let Some(inline_float) = inline.float {
             float = inline_float;
         }
+        if let Some(inline_clear) = inline.clear {
+            clear = inline_clear;
+        }
         if let Some(inline_background) = inline.background_shade {
             background_shade = Some(inline_background);
         }
@@ -17445,6 +17487,7 @@ fn computed_style(
     ComputedStyle {
         display,
         float,
+        clear,
         background_shade,
         background_image_url,
         background_image_size,
@@ -19904,6 +19947,12 @@ impl FlowRenderer {
         self.next_y = clear_y.max(self.next_y);
     }
 
+    fn clear_floats(&mut self, clear: ClearSide) {
+        if let Some(clear_y) = self.next_active_float_bottom_y_for_clear(clear) {
+            self.next_y = clear_y.max(self.next_y);
+        }
+    }
+
     fn minimum_readable_float_text_width(&self) -> usize {
         self.width.saturating_div(4).clamp(8, 16)
     }
@@ -19933,6 +19982,19 @@ impl FlowRenderer {
             .filter(|active_float| self.next_y < active_float.bottom_y)
             .map(|active_float| active_float.bottom_y)
             .min()
+    }
+
+    fn next_active_float_bottom_y_for_clear(&self, clear: ClearSide) -> Option<usize> {
+        self.active_floats
+            .iter()
+            .filter(|active_float| self.next_y < active_float.bottom_y)
+            .filter(|active_float| match clear {
+                ClearSide::Left => active_float.side == FloatSide::Left,
+                ClearSide::Right => active_float.side == FloatSide::Right,
+                ClearSide::Both => true,
+            })
+            .map(|active_float| active_float.bottom_y)
+            .max()
     }
 
     fn enter_inset(&mut self, border_width: usize) {
