@@ -6554,11 +6554,19 @@ async fn apply_browser_action(
         } => {
             let before = current_session_source(web_session);
             focus_browser_form_control(web_session, form_index, control_index)?;
-            web_session
-                .session
-                .submit_focused_form()
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            let form_target = browser_session_form_target(web_session, form_index);
+            if let Err(error) = web_session.session.submit_focused_form().await {
+                if let Some(target_url) = form_target.as_deref() {
+                    set_browser_form_pending_navigation_feedback(
+                        web_session,
+                        format!("Activated form {form_index} control {control_index}"),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             let navigated = current_session_source(web_session) != before;
             if navigated {
                 reset_viewport_after_navigation(web_session);
@@ -6614,11 +6622,22 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::Enter => {
             let before = current_session_source(web_session);
-            web_session
+            let form_target = web_session
                 .session
-                .submit_focused_form()
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+                .focused_control()
+                .and_then(|focused| browser_session_form_target(web_session, focused.form_index));
+            if let Err(error) = web_session.session.submit_focused_form().await {
+                if let Some(target_url) = form_target.as_deref() {
+                    set_browser_form_pending_navigation_feedback(
+                        web_session,
+                        "Submitted focused form".to_owned(),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             let navigated = current_session_source(web_session) != before;
             if navigated {
                 reset_viewport_after_navigation(web_session);
@@ -6965,11 +6984,19 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::Submit { form_index } => {
             let before = current_session_source(web_session);
-            web_session
-                .session
-                .submit_form(form_index, &[])
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            let form_target = browser_session_form_target(web_session, form_index);
+            if let Err(error) = web_session.session.submit_form(form_index, &[]).await {
+                if let Some(target_url) = form_target.as_deref() {
+                    set_browser_form_pending_navigation_feedback(
+                        web_session,
+                        format!("Submitted form {form_index}"),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             let navigated = current_session_source(web_session) != before;
             if navigated {
                 reset_viewport_after_navigation(web_session);
@@ -9581,12 +9608,10 @@ fn browser_session_payload_with_options(
             fast_scroll: options.fast_scroll,
         };
         if let Some(pending_source) = web_session.pending_source.as_ref() {
-            if payload.viewport_image.is_none() {
-                payload.title = format!(
-                    "Loading {}",
-                    browser_session_feedback_excerpt(pending_source)
-                );
-            }
+            payload.title = format!(
+                "Loading {}",
+                browser_session_feedback_excerpt(pending_source)
+            );
             payload.source = pending_source.clone();
             payload.viewport_x = web_session.viewport_x;
             payload.viewport_y = web_session.viewport_y;
@@ -13455,7 +13480,8 @@ fn render_browser_session_retained_pending_status(payload: &BrowserSessionPayloa
         payload,
     );
     format!(
-        r#"<span class="viewport-state-chip report" data-browser-retained-pending-raster>rendered viewport retained</span><a class="primary-action" href="{retry_href}" data-browser-continue-load>Retry load</a>"#,
+        r#"<span class="viewport-state-chip warning" data-browser-retained-pending-target>Opening {target}</span><span class="viewport-state-chip report" data-browser-retained-pending-raster>current raster retained</span><a class="primary-action" href="{retry_href}" data-browser-continue-load>Retry load</a>"#,
+        target = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
         retry_href = html_escape::encode_double_quoted_attribute(&retry_href),
     )
 }
@@ -15923,6 +15949,36 @@ fn set_browser_form_navigation_feedback(
         "; no navigation"
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
+}
+
+fn browser_session_form_target(
+    web_session: &BrowserWebSession,
+    form_index: usize,
+) -> Option<String> {
+    web_session
+        .session
+        .current_forms()
+        .into_iter()
+        .find(|form| form.index == form_index)
+        .map(|form| form.resolved_action.trim().to_owned())
+        .filter(|target| !target.is_empty())
+}
+
+fn set_browser_form_pending_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    label: String,
+    target_url: &str,
+    error: &str,
+) {
+    web_session.pending_source = Some(target_url.to_owned());
+    web_session.display_source = None;
+    web_session.resource_report = None;
+    clear_browser_find_active_line(web_session);
+    web_session.action_feedback = Some(format!(
+        "{label}; opening {} is pending after form navigation failed: {}; viewport preserved",
+        browser_session_feedback_excerpt(target_url),
+        browser_session_feedback_excerpt(error)
+    ));
 }
 
 fn set_browser_focused_control_feedback(web_session: &mut BrowserWebSession, label: &str) {
