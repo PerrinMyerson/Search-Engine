@@ -7648,19 +7648,56 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
         },
     );
 
-    assert_eq!(
-        render.text,
-        "[rust browser] [x] ( ) [******] [News] [ship it] [Go]"
+    assert!(render.text.contains("[rust browser]"));
+    assert!(render.text.contains("[x]"));
+    assert!(render.text.contains("( )"));
+    assert!(render.text.contains("[******]"));
+    assert!(render.text.contains("[News]"));
+    assert!(render.text.contains("[ship it]"));
+    assert!(render.text.contains("[Go]"));
+    let widget_boxes = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        widget_boxes.len() >= 7,
+        "form controls should expose visual hit boxes, not only text glyph runs"
     );
-    assert_eq!(
-        render.display_list,
-        vec![DisplayCommand::Text {
-            x: 0,
-            y: 0,
-            text: "[rust browser] [x] ( ) [******] [News] [ship it] [Go]".to_owned(),
-        }]
+    let first_widget = widget_boxes[0];
+    assert_eq!(first_widget.0, 0);
+    assert_eq!(first_widget.1, 0);
+    assert!(
+        first_widget.2 > "[rust browser]".len(),
+        "input visual box should include padding around rendered text"
     );
-    assert!(hit_test_target_node(&render, 1, 0).is_some());
-    assert_eq!(hit_test_target_node(&render, 14, 0), None);
-    assert!(hit_test_target_node(&render, 15, 0).is_some());
+    assert!(
+        first_widget.3 >= 2,
+        "input visual box should be taller than a single text row"
+    );
+    assert!(hit_test_target_node(&render, first_widget.0, first_widget.1).is_some());
+    assert!(hit_test_target_node(&render, first_widget.0, first_widget.1 + 1).is_some());
+    let text_command = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("[rust browser]") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("form widget text should still render");
+    assert!(
+        text_command.0 > first_widget.0,
+        "widget text should sit inside the padded visual box"
+    );
 }

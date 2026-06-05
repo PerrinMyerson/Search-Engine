@@ -7360,6 +7360,86 @@ async fn browser_session_page_scroll_steps_change_raster_and_keep_click_targets_
     assert_eq!(render.text, "Arrived");
 }
 
+#[tokio::test]
+async fn browser_session_click_viewport_at_hits_button_visual_box_after_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("button.html");
+    fs::write(
+        &page,
+        r#"
+            <html><head><title>Button</title></head><body>
+              <p>Intro copy</p>
+              <img src="missing.png" width="24" height="36" alt="">
+              <button onclick="document.querySelector('#out').innerText = 'Clicked'">Run action now</button>
+              <p id="out">Waiting</p>
+            </body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 14,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+    let render = session.current().unwrap();
+    let (button_x, button_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("action") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("wrapped button action text should be visible in display rows");
+    assert!(button_y > 0);
+    let button_box = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232
+                && *y <= button_y
+                && button_y < y.saturating_add(*height)
+                && *x <= button_x
+                && button_x < x.saturating_add(*width) =>
+            {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("button should expose a visual hit box around the text");
+    assert!(button_box.3 >= 2);
+    let visual_click_x = button_box.0;
+    let visual_click_y = button_box.1.saturating_add(1);
+    let viewport_y = visual_click_y.saturating_sub(1);
+    let local_y = visual_click_y.saturating_sub(viewport_y);
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: viewport_y,
+        width: 14,
+        height: 4,
+    };
+    let document_viewport = browser_document_viewport(render, viewport, None);
+    assert_eq!(document_viewport.viewport.y, viewport_y);
+
+    let render = session
+        .click_viewport_at_with_default_action(viewport, visual_click_x, local_y)
+        .await
+        .unwrap();
+    assert_eq!(render.title, "Button");
+    assert!(render.text.contains("Clicked"));
+    assert_eq!(session.snapshot().entries.len(), 1);
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(
