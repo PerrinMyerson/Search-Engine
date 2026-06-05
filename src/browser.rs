@@ -12999,23 +12999,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         let value = css_declaration_value(value);
         match name.trim().to_ascii_lowercase().as_str() {
             "display" => {
-                declarations.display = match value.trim().to_ascii_lowercase().as_str() {
-                    "none" => Some(Display::None),
-                    "block" => Some(Display::Block),
-                    "flex" => Some(Display::Flex),
-                    "flow-root" => Some(Display::FlowRoot),
-                    "grid" => Some(Display::Grid),
-                    "inline" => Some(Display::Inline),
-                    "inline-block" => Some(Display::InlineBlock),
-                    "inline-flex" => Some(Display::InlineFlex),
-                    "inline-grid" => Some(Display::InlineGrid),
-                    "list-item" => Some(Display::ListItem),
-                    "table" | "inline-table" => Some(Display::Table),
-                    "table-row" => Some(Display::TableRow),
-                    "table-cell" => Some(Display::TableCell),
-                    "contents" => Some(Display::Contents),
-                    _ => declarations.display,
-                };
+                declarations.display = parse_css_display(value).or(declarations.display);
             }
             "flex-direction" => {
                 declarations.flex_direction =
@@ -14390,6 +14374,70 @@ fn parse_css_box_sizing(value: &str) -> Option<BoxSizing> {
     }
 }
 
+fn parse_css_display(value: &str) -> Option<Display> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    match value.as_str() {
+        "none" => return Some(Display::None),
+        "block" => return Some(Display::Block),
+        "flex" => return Some(Display::Flex),
+        "flow-root" => return Some(Display::FlowRoot),
+        "grid" => return Some(Display::Grid),
+        "inline" => return Some(Display::Inline),
+        "inline-block" => return Some(Display::InlineBlock),
+        "inline-flex" => return Some(Display::InlineFlex),
+        "inline-grid" => return Some(Display::InlineGrid),
+        "list-item" => return Some(Display::ListItem),
+        "table" | "inline-table" => return Some(Display::Table),
+        "table-row" => return Some(Display::TableRow),
+        "table-cell" => return Some(Display::TableCell),
+        "contents" => return Some(Display::Contents),
+        _ => {}
+    }
+
+    let tokens: Vec<&str> = value.split_ascii_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let inline = tokens.contains(&"inline");
+    if tokens.contains(&"none") {
+        return Some(Display::None);
+    }
+    if tokens.contains(&"contents") {
+        return Some(Display::Contents);
+    }
+    if tokens.contains(&"flex") {
+        return Some(if inline {
+            Display::InlineFlex
+        } else {
+            Display::Flex
+        });
+    }
+    if tokens.contains(&"grid") {
+        return Some(if inline {
+            Display::InlineGrid
+        } else {
+            Display::Grid
+        });
+    }
+    if tokens.contains(&"flow-root") {
+        return Some(if inline {
+            Display::InlineBlock
+        } else {
+            Display::FlowRoot
+        });
+    }
+    if tokens.contains(&"table") {
+        return Some(Display::Table);
+    }
+    if tokens.contains(&"list-item") {
+        return Some(Display::ListItem);
+    }
+    if tokens.contains(&"block") {
+        return Some(Display::Block);
+    }
+    inline.then_some(Display::Inline)
+}
+
 fn parse_css_white_space(value: &str) -> Option<WhiteSpace> {
     match value
         .trim()
@@ -15170,6 +15218,7 @@ fn render_children(
             }
         }
         let item_start_width = renderer.current_inline_width();
+        let item_start_row = renderer.current_row();
         render_node(
             dom,
             child,
@@ -15179,7 +15228,10 @@ fn render_children(
             layout_box_count,
             child_layout.row_items,
         );
-        if let Some(width_hint) = child_width_hint {
+        let item_spanned_rows = child_layout.row_items && renderer.current_row() > item_start_row;
+        if let Some(width_hint) = child_width_hint
+            && !item_spanned_rows
+        {
             let item_width = renderer
                 .current_inline_width()
                 .saturating_sub(item_start_width);
@@ -15190,6 +15242,13 @@ fn render_children(
         child_seen = true;
         if child_layout.row_items {
             row_item_count = row_item_count.saturating_add(1);
+            if item_spanned_rows {
+                renderer.break_line();
+                if let Some(row_gap) = child_layout.row_gap {
+                    renderer.push_vertical_space(row_gap);
+                }
+                row_item_count = 0;
+            }
         }
     }
 }

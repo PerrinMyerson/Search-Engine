@@ -1011,6 +1011,129 @@ fn css_flex_wrap_basis_keeps_mixed_cards_stable_in_scrolled_viewport() {
 }
 
 #[test]
+fn css_multi_keyword_display_flex_keeps_mixed_cards_readable_after_scroll() {
+    let image_url = "mem://multi-display-flex-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![48, 132, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <section style="display:block flex; flex-wrap:wrap; gap:12px 8px">
+                <div style="flex:0 0 80px">First card</div>
+                <img src="{image_url}" alt="" width="16" height="12" style="flex-basis:80px">
+                <div style="flex:0 0 80px">Second</div>
+                <img src="{image_url}" alt="" width="16" height="12" style="flex-basis:80px">
+              </section>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://multi-keyword-display-flex-flow",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render multi-keyword display flex flow");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(image_bounds.len(), 2);
+    assert!(image_bounds[1].1 > image_bounds[0].1);
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Second") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("second row text from multi-keyword flex display");
+    assert!(
+        image_bounds[1].1 >= text_y && image_bounds[1].1 <= text_y.saturating_add(3),
+        "expected multi-keyword flex display to keep second-row text and image in the same scrolled slice, text=({text_x},{text_y}) image={:?}",
+        image_bounds[1]
+    );
+    assert!(
+        image_bounds[1].0 >= text_x.saturating_add(8),
+        "expected multi-keyword flex display to reserve a card-width image slot next to text, text=({text_x},{text_y}) image={:?}",
+        image_bounds[1]
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(text_y),
+        viewport_width: Some(24),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled multi-keyword flex row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let image_pixel_x = raster_options
+        .padding_x
+        .saturating_add(image_bounds[1].0.saturating_mul(raster_options.cell_width));
+    let image_pixel_y = raster_options.padding_y.saturating_add(
+        image_bounds[1]
+            .1
+            .saturating_sub(text_y)
+            .saturating_mul(raster_options.cell_height),
+    );
+    assert_eq!(pixel(image_pixel_x, image_pixel_y), &[48, 132, 220, 255]);
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let text_col_end = text_col_start.saturating_add("Second".len() * raster_options.cell_width);
+    let glyph_pixels = (raster_options.padding_y
+        ..raster_options.padding_y.saturating_add(7).min(rgba.height))
+        .flat_map(|y| (text_col_start..text_col_end.min(rgba.width)).map(move |x| (x, y)))
+        .filter(|(x, y)| pixel(*x, *y) == &[0, 0, 0, 255])
+        .count();
+    assert!(glyph_pixels >= 8);
+}
+
+#[test]
 fn css_inline_block_menu_items_keep_block_links_on_row() {
     let render = render_html(
         "mem://css-inline-block-menu-links",
