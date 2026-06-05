@@ -4864,6 +4864,23 @@ pub fn browser_document_viewport_after_scroll(
     browser_document_viewport(render, requested, Some(current))
 }
 
+pub fn browser_document_viewport_after_page_scroll(
+    render: &BrowserRender,
+    current: BrowserViewportState,
+    pages_x: isize,
+    pages_y: isize,
+) -> BrowserDocumentViewportReport {
+    let current = browser_document_viewport(render, current, None).viewport;
+    let delta_x = signed_scroll_unit_delta(pages_x, viewport_page_scroll_increment(current.width));
+    let delta_y = signed_scroll_unit_delta(pages_y, viewport_page_scroll_increment(current.height));
+    let requested = BrowserViewportState {
+        x: apply_signed_scroll_delta(current.x, delta_x),
+        y: apply_signed_scroll_delta(current.y, delta_y),
+        ..current
+    };
+    browser_document_viewport(render, requested, Some(current))
+}
+
 pub fn browser_viewport_frame(
     render: &BrowserRender,
     requested: BrowserViewportState,
@@ -4944,6 +4961,17 @@ fn apply_signed_scroll_delta(value: usize, delta: isize) -> usize {
     } else {
         value.saturating_sub(delta.saturating_abs() as usize)
     }
+}
+
+fn viewport_page_scroll_increment(size: usize) -> usize {
+    size.saturating_sub(1).max(1)
+}
+
+fn signed_scroll_unit_delta(units: isize, increment: usize) -> isize {
+    let magnitude = (units.saturating_abs() as usize)
+        .saturating_mul(increment)
+        .min(isize::MAX as usize) as isize;
+    if units < 0 { -magnitude } else { magnitude }
 }
 
 fn browser_viewport_invalidated_regions(

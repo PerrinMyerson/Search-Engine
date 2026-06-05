@@ -5984,6 +5984,120 @@ async fn browser_session_repeated_scroll_steps_keep_raster_and_click_targets_ali
     assert_eq!(session.snapshot().current_index, Some(1));
 }
 
+#[tokio::test]
+async fn browser_session_page_scroll_steps_change_raster_and_keep_click_targets_aligned() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.html");
+    let second = dir.path().join("second.html");
+    fs::write(
+        &first,
+        r#"<html><head><title>First</title></head><body><div style="position:fixed; top:0">Pinned</div><img src="missing.png" width="32" height="96" alt=""><p>Alpha scroll section</p><p>Beta scroll section</p><p>Gamma scroll section</p><a href="second.html">Open page scroll target</a><p>Delta after target</p><p>Epsilon after target</p></body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &second,
+        r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session
+        .navigate(&first.display().to_string())
+        .await
+        .unwrap();
+
+    let (link_x, link_y, viewport, previous, hashes) = {
+        let render = session.current().unwrap();
+        let (link_x, link_y) = render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Open page scroll target") =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .expect("page-scroll target link is rendered");
+
+        let raster_options = BrowserRasterOptions {
+            viewport_width: Some(32),
+            viewport_height: Some(4),
+            ..BrowserRasterOptions::default()
+        };
+        let mut report = browser_document_viewport(
+            render,
+            BrowserViewportState {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 4,
+            },
+            None,
+        );
+        let first_frame = browser_viewport_frame(render, report.viewport, None, raster_options)
+            .expect("render initial long-page viewport frame");
+        let mut hashes = vec![first_frame.report.frame.pixel_hash.clone()];
+        let mut previous = report.viewport;
+        while !(link_y >= report.viewport.y && link_y < report.viewport.y + report.viewport.height)
+        {
+            assert!(report.viewport.y < report.max_scroll_y);
+            previous = report.viewport;
+            report = browser_document_viewport_after_page_scroll(render, report.viewport, 0, 1);
+            assert_eq!(report.previous, Some(previous));
+            assert!(report.scroll_delta_y > 0);
+            assert!(report.scroll_delta_y <= 3);
+            assert!(!report.full_repaint);
+            let frame =
+                browser_viewport_frame(render, report.viewport, Some(previous), raster_options)
+                    .expect("render page-scrolled viewport frame");
+            assert_eq!(
+                frame.report.frame.raster_viewport_y,
+                Some(report.viewport.y)
+            );
+            assert!(frame.report.frame.non_background_pixels > 0);
+            hashes.push(frame.report.frame.pixel_hash.clone());
+        }
+        assert!(hashes.windows(2).all(|pair| pair[0] != pair[1]));
+        (link_x, link_y, report.viewport, Some(previous), hashes)
+    };
+    assert!(hashes.len() >= 2);
+
+    let local_y = link_y.saturating_sub(viewport.y);
+    let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
+    assert_eq!(
+        session
+            .link_target_at_viewport(viewport, link_x, local_y)
+            .as_deref(),
+        Some(expected_target.as_str())
+    );
+    let final_frame = browser_viewport_frame(
+        session.current().unwrap(),
+        viewport,
+        previous,
+        BrowserRasterOptions {
+            viewport_width: Some(viewport.width),
+            viewport_height: Some(viewport.height),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("render final page-scrolled viewport frame");
+    assert_eq!(final_frame.report.viewport.viewport, viewport);
+    assert_eq!(final_frame.report.frame.raster_viewport_y, Some(viewport.y));
+
+    let render = session
+        .click_viewport_at_with_default_action(viewport, link_x, local_y)
+        .await
+        .unwrap();
+    assert_eq!(render.title, "Second");
+    assert_eq!(render.text, "Arrived");
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(
