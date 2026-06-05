@@ -14383,7 +14383,7 @@ fn parse_css_word_spacing(value: &str) -> Option<usize> {
     {
         return Some(0);
     }
-    parse_css_dimension_length(value, CssAxis::Horizontal)
+    css_length_cell_units(value, CssAxis::Horizontal, 512).map(|units| units / CSS_TEXT_CELL_UNITS)
 }
 
 fn parse_css_overflow_wrap(value: &str) -> Option<OverflowWrap> {
