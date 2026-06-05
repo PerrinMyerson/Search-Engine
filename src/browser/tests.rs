@@ -1531,6 +1531,108 @@ async fn image_svg_gradient_decodes_linear_gradient_color_for_rendered_resource(
 }
 
 #[tokio::test]
+async fn image_svg_radial_usefulness_decodes_and_rasters_logo_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("radial-logo.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 5 5" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <radialGradient id="logoGlow" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stop-color="#ff0000"/>
+                        <stop offset="100%" stop-color="#0000ff"/>
+                    </radialGradient>
+                </defs>
+                <rect width="5" height="5" fill="url(#logoGlow)"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before radial logo</p><img src="radial-logo.svg" alt="Radial logo" width="20" height="20"><p>After radial logo</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "radial-logo.svg").unwrap();
+    assert_eq!(decoded.width, 5);
+    assert_eq!(decoded.height, 5);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    let center_offset = ((2 * decoded.width) + 2) * 3;
+    let center = &rgb_pixels[center_offset..center_offset + 3];
+    assert!(center[0] > 220 && center[1] < 40 && center[2] < 40);
+    let corner = &rgb_pixels[0..3];
+    assert!(corner[0] < 40 && corner[1] < 40 && corner[2] > 220);
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "radial-logo.svg");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(5));
+    assert_eq!(fetch.decoded_height, Some(5));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before radial logo"));
+    assert!(render.text.contains("After radial logo"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(5),
+                decoded_height: Some(5),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 220 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_color_detail_svg_vertical_gradient_rasters_visible_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
