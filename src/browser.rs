@@ -14566,7 +14566,7 @@ fn css_font_scale_from_pixels(pixels: f32) -> Option<usize> {
     Some(match pixels {
         pixels if pixels >= 64.0 => 4,
         pixels if pixels >= 40.0 => 3,
-        pixels if pixels >= 15.0 => 2,
+        pixels if pixels >= 22.0 => 2,
         _ => 1,
     })
 }

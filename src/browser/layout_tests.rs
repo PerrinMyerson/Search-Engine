@@ -2352,13 +2352,13 @@ fn css_subcell_word_spacing_keeps_scrolled_paragraph_text_continuous() {
 }
 
 #[test]
-fn css_body_text_scale_keeps_scrolled_sentence_continuous_after_image() {
+fn css_body_text_keeps_normal_line_width_and_readable_raster_after_image() {
     let render = render_html(
-        "mem://body-text-scale-scroll",
+        "mem://body-text-readable-flow-scroll",
         br#"
             <html><body>
               <img alt="" width="16" height="24">
-              <p style="font-size:16px; line-height:normal">Readable body text flows after scroll</p>
+              <p style="font-size:16px; line-height:normal">Readable body text flows across a normal browser line after scroll</p>
             </body></html>
             "#,
         BrowserRenderOptions {
@@ -2367,15 +2367,15 @@ fn css_body_text_scale_keeps_scrolled_sentence_continuous_after_image() {
         },
     );
 
-    let scaled_sentence =
-        "RReeaaddaabbllee  bbooddyy  tteexxtt  fflloowwss  aafftteerr  ssccrroollll";
-    assert!(render.text.contains(scaled_sentence));
+    let sentence = "Readable body text flows across a normal browser line after scroll";
+    assert!(render.text.contains(sentence));
+    assert!(!render.text.contains("RReeaaddaabbllee"));
     let paragraph_rows: Vec<(usize, usize, &str)> = render
         .display_list
         .iter()
         .filter_map(|command| match command {
             DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
-                if text == scaled_sentence =>
+                if text == sentence =>
             {
                 Some((*x, *y, text.as_str()))
             }
@@ -2384,23 +2384,18 @@ fn css_body_text_scale_keeps_scrolled_sentence_continuous_after_image() {
         .collect();
     assert_eq!(
         paragraph_rows.len(),
-        2,
-        "16px paragraph should paint as one continuous scaled command on each raster row"
+        1,
+        "16px paragraph should keep one normal-width layout row and rely on raster density for readability"
     );
     assert_eq!(paragraph_rows[0].0, 0);
-    assert_eq!(paragraph_rows[1].0, 0);
-    assert_eq!(paragraph_rows[1].1, paragraph_rows[0].1.saturating_add(1));
-    assert_eq!(
-        collapse_repeated_glyph_runs(paragraph_rows[0].2).as_deref(),
-        Some("Readable body text flows after scroll")
-    );
 
     let raster_options = BrowserRasterOptions {
         viewport_y: Some(paragraph_rows[0].1),
         viewport_width: Some(56),
-        viewport_height: Some(2),
+        viewport_height: Some(1),
         ..BrowserRasterOptions::default()
     };
+    assert_eq!(raster_glyph_scale(raster_options), 2);
     let raster = rasterize_render_rgba(&render, raster_options)
         .expect("rasterize scrolled body-sized paragraph");
     let report = rgba_raster_report(&render, &raster, raster_options);
@@ -2447,9 +2442,7 @@ fn default_raster_density_scales_scrolled_paragraph_text_with_image() {
         .iter()
         .find_map(|command| match command {
             DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
-                if collapse_repeated_glyph_runs(text)
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Readable browser text")) =>
+                if text.contains("Readable browser text") =>
             {
                 Some((*x, *y))
             }
