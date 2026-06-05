@@ -1724,6 +1724,103 @@ async fn image_svg_class_paint_decodes_style_class_color_for_rendered_resource()
 }
 
 #[tokio::test]
+async fn image_svg_style_selectors_decode_tag_id_and_inline_precedence_for_rendered_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("style-selectors.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 6 2" xmlns="http://www.w3.org/2000/svg">
+                <style>
+                    rect { fill: #ff0000; }
+                    path { fill: #00aa00; }
+                    #brand { fill: rgb(0,0,255); }
+                </style>
+                <rect width="2" height="2"/>
+                <rect id="brand" x="2" width="2" height="2"/>
+                <path style="fill: #ff00ff" d="M4 0 H6 V2 H4 Z"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before selector svg</p><img src="style-selectors.svg" alt="Selector paint SVG" width="18" height="6"><p>After selector svg</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded =
+        decode_image_reference(&page.display().to_string(), "style-selectors.svg").unwrap();
+    assert_eq!(decoded.width, 6);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel == [255, 0, 255]),
+        "inline style should override the path element selector"
+    );
+    assert!(
+        !rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 170, 0]),
+        "the path element rule should not override inline fill"
+    );
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "style-selectors.svg");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(6));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before selector svg"));
+    assert!(render.text.contains("After selector svg"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(6),
+                decoded_height: Some(2),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+}
+
+#[tokio::test]
 async fn image_raster_detail_svg_symbol_use_decodes_and_rasters_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
