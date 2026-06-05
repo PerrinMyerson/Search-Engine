@@ -8435,21 +8435,25 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-viewport-click-state"#));
     assert!(html.contains(r#"<span class="viewport-command-label">Click</span>"#));
     assert!(html.contains("Click raster to open links/buttons"));
-    assert!(
-        html.contains(r#"class="viewport-click-details" aria-label="Manual click coordinates""#)
-    );
-    assert!(html.contains(r#"<summary>Manual click</summary>"#));
-    assert!(html.contains(r#"class="viewport-click-form""#));
+    let primary_start = html.find(r#"data-browser-primary-surface"#).unwrap();
+    let tools_start = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let primary_html = &html[primary_start..tools_start];
+    assert!(!primary_html.contains(r#"class="viewport-click-details""#));
+    assert!(!primary_html.contains(r#"<summary>Manual click</summary>"#));
+    assert!(!primary_html.contains(r#"class="viewport-click-form""#));
+    assert!(!primary_html.contains(r#"class="viewport-link-strip""#));
+    assert!(!primary_html.contains(r#"aria-label="Quick visible links""#));
     assert!(html.contains(r#"name="action" value="click-at""#));
-    assert!(html.contains(r#"id="browser-viewport-click-x""#));
-    assert!(html.contains(r#"id="browser-viewport-click-y""#));
-    assert!(html.contains(r#"<button type="submit">Activate point</button>"#));
+    assert!(html.contains(r#"<summary>Input tools and forms</summary>"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains("Ready for page click."));
     assert!(html.contains("click links and buttons in this image"));
-    assert!(html.contains(r#"aria-label="Quick visible links""#));
-    assert!(html.contains(r#">1. Second</a>"#));
-    assert!(html.contains("action=link"));
+    let links_start = html.find(r#"<summary>Links</summary>"#).unwrap();
+    assert!(links_start > tools_start);
+    let links_html = &html[links_start..];
+    assert!(links_html.contains(r#">Second</a>"#));
+    assert!(links_html.contains(r#"name="action" value="link-text""#));
+    assert!(links_html.contains(r#"name="action" value="link-selector""#));
     assert!(html.contains(r#"name="viewport_x" value="0""#));
     assert!(html.contains(r#"name="viewport_y" value="0""#));
     assert!(html.contains(&format!(
@@ -11760,8 +11764,9 @@ async fn browser_session_page_renders_form_controls() {
     assert!(controls_tray_index < debug_index);
     assert!(viewport_index < debug_index);
     assert!(html.contains(r#"data-browser-primary-surface"#));
-    assert!(html.contains(r#"<summary>Visible links</summary>"#));
-    assert!(html.contains(r#"class="viewport-link-list""#));
+    let primary_html = &html[viewport_index..controls_tray_index];
+    assert!(!primary_html.contains(r#"<summary>Visible links</summary>"#));
+    assert!(!primary_html.contains(r#"class="viewport-link-list""#));
     assert!(html.contains(r#"data-browser-page-details"#));
     assert!(html.contains(r#"<summary>Page details</summary>"#));
     assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > raster_index);
