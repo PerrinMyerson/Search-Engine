@@ -2537,6 +2537,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-y="4""#));
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
+    assert!(html.contains(r#"data-raster-width=""#));
+    assert!(html.contains(r#"data-raster-height=""#));
     assert!(html.contains(r#"data-viewport-state="settled""#));
     assert!(html.contains(r#"data-settled-viewport-x="8""#));
     assert!(html.contains(r#"data-settled-viewport-y="4""#));
@@ -2616,6 +2618,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Ignored stale visual viewport update; newer scroll is pending."));
     assert!(html.contains("Ignored stale visual viewport error; newer scroll is pending."));
     assert!(html.contains("const viewportPointFromEvent"));
+    assert!(html.contains("const rasterSize = () =>"));
+    assert!(html.contains("Number(raster.naturalWidth)"));
+    assert!(html.contains(r#"numberData("rasterWidth")"#));
+    assert!(html.contains("Math.floor(relativeX / rect.width * size.width)"));
+    assert!(html.contains("Math.floor(relativeY / rect.height * size.height)"));
     assert!(html.contains("const pointMessage"));
     assert!(html.contains("let clickMarker"));
     assert!(html.contains("let lastClickPagePoint = null"));
@@ -2625,6 +2632,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const updateClickInputs"));
     assert!(html.contains("const hideClickMarker"));
     assert!(html.contains("const moveClickMarker"));
+    assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
+    assert!(html.contains("((point.y + 0.5) / size.height) * rasterRect.height"));
     assert!(html.contains("const restoreClickMarkerAfterPartial"));
     assert!(html.contains("clickMarker.hidden = true"));
     assert!(html.contains("clickMarker.hidden = false"));
@@ -2737,6 +2746,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(partial.contains(r#"data-browser-partial-command-strip"#));
     assert!(partial.contains(r#"data-viewport-x="8""#));
     assert!(partial.contains(r#"data-viewport-y="4""#));
+    assert!(partial.contains(r#"data-raster-width=""#));
+    assert!(partial.contains(r#"data-raster-height=""#));
     assert!(partial.contains(r#"class="browser-raster-shell""#));
     assert!(partial.contains(r#"data-browser-click-marker"#));
     assert!(partial.contains(r#"data-browser-viewport-status"#));
@@ -8545,6 +8556,10 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("action=click-at"));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains("getBoundingClientRect"));
+    assert!(html.contains("const rasterSize = () =>"));
+    assert!(html.contains("Number(raster.naturalWidth)"));
+    assert!(html.contains("Math.floor(relativeX / rect.width * size.width)"));
+    assert!(html.contains("Math.floor(relativeY / rect.height * size.height)"));
     assert!(html.contains(r#"url.searchParams.set("x""#));
     assert!(html.contains(r#"url.searchParams.set("y""#));
     assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));

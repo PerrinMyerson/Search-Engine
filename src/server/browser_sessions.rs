@@ -10453,7 +10453,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             viewport_accessibility_label =
@@ -10582,6 +10582,19 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return Number.isFinite(value) ? value : 0;
   };
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const rasterSize = () => {
+    const fallbackWidth = Math.max(1, numberData("viewportWidth"));
+    const fallbackHeight = Math.max(1, numberData("viewportHeight"));
+    if (!raster) {
+      return { width: fallbackWidth, height: fallbackHeight };
+    }
+    const width = Number(raster.naturalWidth) || Number(raster.getAttribute("width")) || numberData("rasterWidth") || fallbackWidth;
+    const height = Number(raster.naturalHeight) || Number(raster.getAttribute("height")) || numberData("rasterHeight") || fallbackHeight;
+    return {
+      width: Math.max(1, Math.round(width)),
+      height: Math.max(1, Math.round(height))
+    };
+  };
   const viewportPointFromEvent = (event) => {
     if (!raster) {
       return null;
@@ -10595,10 +10608,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (relativeX < 0 || relativeY < 0 || relativeX > rect.width || relativeY > rect.height) {
       return null;
     }
-    const viewportWidth = Math.max(1, numberData("viewportWidth"));
-    const viewportHeight = Math.max(1, numberData("viewportHeight"));
-    const x = clamp(Math.floor(relativeX / rect.width * viewportWidth), 0, viewportWidth - 1);
-    const y = clamp(Math.floor(relativeY / rect.height * viewportHeight), 0, viewportHeight - 1);
+    const size = rasterSize();
+    const x = clamp(Math.floor(relativeX / rect.width * size.width), 0, size.width - 1);
+    const y = clamp(Math.floor(relativeY / rect.height * size.height), 0, size.height - 1);
     return {
       x,
       y,
@@ -10608,11 +10620,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const pointMessage = (point) => `DOM point x ${point.x}, y ${point.y} (page ${point.pageX}, ${point.pageY})`;
   const viewportPointFromPagePoint = (pagePoint) => {
-    const viewportWidth = Math.max(1, numberData("viewportWidth"));
-    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const size = rasterSize();
     const x = pagePoint.pageX - numberData("viewportX");
     const y = pagePoint.pageY - numberData("viewportY");
-    if (x < 0 || y < 0 || x >= viewportWidth || y >= viewportHeight) {
+    if (x < 0 || y < 0 || x >= size.width || y >= size.height) {
       return null;
     }
     return { x, y, pageX: pagePoint.pageX, pageY: pagePoint.pageY };
@@ -10639,8 +10650,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     const rasterRect = raster.getBoundingClientRect();
     const shellRect = shell.getBoundingClientRect();
-    const left = rasterRect.left - shellRect.left + (point.x / Math.max(1, numberData("viewportWidth") - 1)) * rasterRect.width;
-    const top = rasterRect.top - shellRect.top + (point.y / Math.max(1, numberData("viewportHeight") - 1)) * rasterRect.height;
+    const size = rasterSize();
+    const left = rasterRect.left - shellRect.left + ((point.x + 0.5) / size.width) * rasterRect.width;
+    const top = rasterRect.top - shellRect.top + ((point.y + 0.5) / size.height) * rasterRect.height;
     clickMarker.style.left = `${left}px`;
     clickMarker.style.top = `${top}px`;
     clickMarker.hidden = false;
