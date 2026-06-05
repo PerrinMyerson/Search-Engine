@@ -1800,34 +1800,42 @@ fn push_background_alias_resources(
 }
 
 fn background_image_urls_from_attr_value(value: &str) -> Vec<&str> {
+    let value = value.trim().trim_end_matches(';').trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    let urls = split_css_top_level_commas(value)
+        .into_iter()
+        .flat_map(background_image_urls_from_attr_layer)
+        .collect::<Vec<_>>();
+    if urls
+        .iter()
+        .any(|url| !background_image_candidate_clearly_unsupported(url))
+    {
+        return urls
+            .into_iter()
+            .filter(|url| !background_image_candidate_clearly_unsupported(url))
+            .collect();
+    }
+    urls
+}
+
+fn background_image_urls_from_attr_layer(value: &str) -> Vec<&str> {
     let value = value.trim();
-    if value.is_empty() {
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
         return Vec::new();
     }
     if let Some(args) = css_function_args(value, &["image-set", "-webkit-image-set"]) {
-        let urls = split_css_top_level_commas(args)
+        return split_css_top_level_commas(args)
             .into_iter()
             .filter_map(background_image_set_candidate_url)
-            .collect::<Vec<_>>();
-        if urls
-            .iter()
-            .any(|url| !background_image_candidate_clearly_unsupported(url))
-        {
-            return urls
-                .into_iter()
-                .filter(|url| !background_image_candidate_clearly_unsupported(url))
-                .collect();
-        }
-        return urls;
+            .collect();
     }
-    if let Some(inner) = value
-        .strip_prefix("url(")
-        .and_then(|value| value.strip_suffix(')'))
-    {
-        let url = inner.trim().trim_matches(['"', '\'']);
+    if let Some(url) = css_function_args(value, &["url"]).and_then(css_url_token) {
+        let url = url.trim();
         return (!url.is_empty()).then_some(url).into_iter().collect();
     }
-    if value.contains(';') || value.contains('{') || value.contains('}') {
+    if value.contains('(') || value.contains('{') || value.contains('}') {
         return Vec::new();
     }
     vec![value]
