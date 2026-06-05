@@ -3105,13 +3105,17 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(payload.sessions[1].current);
     let html = render_browser_session_page(&payload, &back_href);
     let tab_strip_index = html
-        .find(r#"class="browser-tab-strip""#)
-        .expect("primary tab strip should render for multiple tabs");
+        .find(r#"data-browser-tab-menu"#)
+        .expect("compact tab menu should render for multiple tabs");
     let page_head_index = html
         .find(r#"class="browser-page-head""#)
         .expect("page heading should render");
     assert!(tab_strip_index < page_head_index);
     assert!(html.contains(r#"aria-label="Open browser tabs""#));
+    assert!(html.contains(
+        r#"<summary data-browser-tab-summary><strong>2 tabs</strong><span>Two</span></summary>"#
+    ));
+    assert!(html.contains(r#"class="browser-tab-list""#));
     assert!(html.contains(r#"class="browser-tab-pill""#));
     assert!(html.contains(r#"class="browser-tab-pill current""#));
     assert!(html.contains(r#"aria-current="page""#));
@@ -3185,6 +3189,9 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
             .contains("action=clear-tab-label")
     );
     let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(
+        r#"<summary data-browser-tab-summary><strong>2 tabs</strong><span>Two</span></summary>"#
+    ));
     assert!(html.contains(">1 · Pinned · Research one</strong>"));
     assert!(html.contains("Pinned · Research one"));
     assert!(html.contains(">Clear label</a>"));
