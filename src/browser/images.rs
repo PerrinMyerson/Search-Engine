@@ -244,14 +244,12 @@ fn image_extension_from_url(url: &str) -> Option<String> {
 fn unsupported_image_extension(extension: &str) -> bool {
     matches!(
         extension,
-        "avif" | "avifs" | "heic" | "heif" | "gif" | "bmp" | "ico" | "tif" | "tiff"
+        "avif" | "avifs" | "heic" | "heif" | "bmp" | "ico" | "tif" | "tiff"
     )
 }
 
 fn unsupported_image_signature(bytes: &[u8]) -> Option<&'static str> {
-    if matches!(bytes, [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..]) {
-        Some("image/gif")
-    } else if matches!(bytes, [b'B', b'M', ..]) {
+    if matches!(bytes, [b'B', b'M', ..]) {
         Some("image/bmp")
     } else if matches!(bytes, [0, 0, 1, 0, ..]) {
         Some("image/x-icon")
@@ -300,6 +298,7 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
         | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
         "webp" | "image/webp" | "image/x-webp" => decode_webp(bytes),
+        "gif" | "image/gif" => decode_gif(bytes),
         _ => None,
     }
 }
@@ -311,6 +310,8 @@ fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
         decode_simple_png(bytes)
     } else if is_webp_bytes(bytes) {
         decode_webp(bytes)
+    } else if is_gif_bytes(bytes) {
+        decode_gif(bytes)
     } else if is_svg_bytes(bytes) {
         decode_simple_svg(bytes)
     } else {
@@ -328,6 +329,10 @@ fn is_png_bytes(bytes: &[u8]) -> bool {
 
 fn is_webp_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+}
+
+fn is_gif_bytes(bytes: &[u8]) -> bool {
+    matches!(bytes, [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..])
 }
 
 fn is_svg_bytes(bytes: &[u8]) -> bool {
@@ -1488,6 +1493,273 @@ fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
         pixels,
         rgb_pixels: Some(rgb_pixels),
     })
+}
+
+fn decode_gif(bytes: &[u8]) -> Option<DecodedImage> {
+    if !is_gif_bytes(bytes) || bytes.len() < 13 {
+        return None;
+    }
+    let canvas_width = usize::from(read_le_u16(bytes.get(6..8)?)?);
+    let canvas_height = usize::from(read_le_u16(bytes.get(8..10)?)?);
+    if canvas_width == 0
+        || canvas_height == 0
+        || canvas_width > MAX_DECODED_IMAGE_SIDE
+        || canvas_height > MAX_DECODED_IMAGE_SIDE
+    {
+        return None;
+    }
+    let packed = bytes[10];
+    let global_palette = if packed & 0x80 != 0 {
+        let color_count = 1usize.checked_shl(u32::from((packed & 0x07) + 1))?;
+        let palette_start = 13usize;
+        let palette_len = color_count.checked_mul(3)?;
+        bytes.get(palette_start..palette_start.checked_add(palette_len)?)?
+    } else {
+        &[][..]
+    };
+    let mut cursor = 13usize.checked_add(global_palette.len())?;
+    let mut transparent_index = None;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            0x21 => {
+                cursor = cursor.checked_add(1)?;
+                let label = *bytes.get(cursor)?;
+                cursor = cursor.checked_add(1)?;
+                if label == 0xf9 {
+                    let block_size = usize::from(*bytes.get(cursor)?);
+                    cursor = cursor.checked_add(1)?;
+                    let block = bytes.get(cursor..cursor.checked_add(block_size)?)?;
+                    if block_size >= 4 && block[0] & 0x01 != 0 {
+                        transparent_index = Some(block[3]);
+                    }
+                    cursor = cursor.checked_add(block_size)?;
+                    if *bytes.get(cursor)? != 0 {
+                        return None;
+                    }
+                    cursor = cursor.checked_add(1)?;
+                } else {
+                    cursor = skip_gif_sub_blocks(bytes, cursor)?;
+                }
+            }
+            0x2c => {
+                return decode_gif_image_frame(
+                    bytes,
+                    cursor,
+                    canvas_width,
+                    canvas_height,
+                    global_palette,
+                    transparent_index,
+                );
+            }
+            0x3b => return None,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn decode_gif_image_frame(
+    bytes: &[u8],
+    image_separator: usize,
+    canvas_width: usize,
+    canvas_height: usize,
+    global_palette: &[u8],
+    transparent_index: Option<u8>,
+) -> Option<DecodedImage> {
+    let descriptor =
+        bytes.get(image_separator.checked_add(1)?..image_separator.checked_add(10)?)?;
+    let left = usize::from(read_le_u16(descriptor.get(0..2)?)?);
+    let top = usize::from(read_le_u16(descriptor.get(2..4)?)?);
+    let width = usize::from(read_le_u16(descriptor.get(4..6)?)?);
+    let height = usize::from(read_le_u16(descriptor.get(6..8)?)?);
+    if width == 0 || height == 0 || left >= canvas_width || top >= canvas_height {
+        return None;
+    }
+    let packed = descriptor[8];
+    let local_palette_len = if packed & 0x80 != 0 {
+        let color_count = 1usize.checked_shl(u32::from((packed & 0x07) + 1))?;
+        color_count.checked_mul(3)?
+    } else {
+        0
+    };
+    let palette_start = image_separator.checked_add(10)?;
+    let palette_end = palette_start.checked_add(local_palette_len)?;
+    let palette = if local_palette_len > 0 {
+        bytes.get(palette_start..palette_end)?
+    } else {
+        global_palette
+    };
+    if palette.is_empty() || palette.len() % 3 != 0 {
+        return None;
+    }
+    let min_code_size = *bytes.get(palette_end)?;
+    let data_start = palette_end.checked_add(1)?;
+    let (compressed, _) = gif_sub_block_bytes(bytes, data_start)?;
+    let pixel_count = width.checked_mul(height)?;
+    let mut indices = decode_gif_lzw_indices(&compressed, min_code_size, pixel_count)?;
+    if packed & 0x40 != 0 {
+        indices = deinterlace_gif_indices(indices, width, height)?;
+    }
+
+    let canvas_pixels = canvas_width.checked_mul(canvas_height)?;
+    let mut pixels = vec![255u8; canvas_pixels];
+    let mut rgb_pixels = vec![255u8; canvas_pixels.checked_mul(3)?];
+    for row in 0..height {
+        let dest_y = top.checked_add(row)?;
+        if dest_y >= canvas_height {
+            continue;
+        }
+        for column in 0..width {
+            let dest_x = left.checked_add(column)?;
+            if dest_x >= canvas_width {
+                continue;
+            }
+            let source_index = row.checked_mul(width)?.checked_add(column)?;
+            let index = *indices.get(source_index)?;
+            if transparent_index == Some(index) {
+                continue;
+            }
+            let palette_offset = usize::from(index).checked_mul(3)?;
+            let rgb = palette.get(palette_offset..palette_offset.checked_add(3)?)?;
+            let dest_index = dest_y.checked_mul(canvas_width)?.checked_add(dest_x)?;
+            pixels[dest_index] = rgb_to_gray(rgb[0], rgb[1], rgb[2]);
+            let dest_rgb = dest_index.checked_mul(3)?;
+            rgb_pixels[dest_rgb..dest_rgb + 3].copy_from_slice(rgb);
+        }
+    }
+    Some(DecodedImage {
+        width: canvas_width,
+        height: canvas_height,
+        pixels,
+        rgb_pixels: Some(rgb_pixels),
+    })
+}
+
+fn decode_gif_lzw_indices(data: &[u8], min_code_size: u8, expected_len: usize) -> Option<Vec<u8>> {
+    if !(2..=8).contains(&min_code_size) {
+        return None;
+    }
+    let clear_code = 1usize.checked_shl(u32::from(min_code_size))?;
+    let end_code = clear_code.checked_add(1)?;
+    let mut table = gif_lzw_initial_table(clear_code);
+    let mut code_size = usize::from(min_code_size).checked_add(1)?;
+    let mut next_code = end_code.checked_add(1)?;
+    let mut previous = None::<Vec<u8>>;
+    let mut output = Vec::with_capacity(expected_len);
+    let mut bit_cursor = 0usize;
+
+    while output.len() < expected_len {
+        let code = read_gif_lzw_code(data, &mut bit_cursor, code_size)?;
+        if code == clear_code {
+            table = gif_lzw_initial_table(clear_code);
+            code_size = usize::from(min_code_size).checked_add(1)?;
+            next_code = end_code.checked_add(1)?;
+            previous = None;
+            continue;
+        }
+        if code == end_code {
+            break;
+        }
+
+        let entry = if code < table.len() && !table[code].is_empty() {
+            table[code].clone()
+        } else if code == next_code {
+            let mut entry = previous.clone()?;
+            let first = *entry.first()?;
+            entry.push(first);
+            entry
+        } else {
+            return None;
+        };
+        output.extend_from_slice(&entry);
+        if let Some(previous_entry) = previous.as_ref()
+            && table.len() < 4096
+        {
+            let mut new_entry = previous_entry.clone();
+            new_entry.push(*entry.first()?);
+            table.push(new_entry);
+            next_code = next_code.checked_add(1)?;
+            if next_code == (1usize.checked_shl(code_size as u32)?) && code_size < 12 {
+                code_size += 1;
+            }
+        }
+        previous = Some(entry);
+    }
+
+    if output.len() < expected_len {
+        return None;
+    }
+    output.truncate(expected_len);
+    Some(output)
+}
+
+fn gif_lzw_initial_table(clear_code: usize) -> Vec<Vec<u8>> {
+    let mut table = Vec::with_capacity(clear_code + 2);
+    for index in 0..clear_code {
+        table.push(vec![index as u8]);
+    }
+    table.push(Vec::new());
+    table.push(Vec::new());
+    table
+}
+
+fn read_gif_lzw_code(data: &[u8], bit_cursor: &mut usize, code_size: usize) -> Option<usize> {
+    if code_size == 0 || code_size > 12 {
+        return None;
+    }
+    let mut code = 0usize;
+    for bit_index in 0..code_size {
+        let cursor = bit_cursor.checked_add(bit_index)?;
+        let byte = *data.get(cursor / 8)?;
+        let bit = (byte >> (cursor % 8)) & 1;
+        code |= usize::from(bit) << bit_index;
+    }
+    *bit_cursor = bit_cursor.checked_add(code_size)?;
+    Some(code)
+}
+
+fn deinterlace_gif_indices(indices: Vec<u8>, width: usize, height: usize) -> Option<Vec<u8>> {
+    if indices.len() != width.checked_mul(height)? {
+        return None;
+    }
+    let mut output = vec![0u8; indices.len()];
+    let mut source_row = 0usize;
+    for (start, step) in [(0usize, 8usize), (4, 8), (2, 4), (1, 2)] {
+        let mut row = start;
+        while row < height {
+            let source_offset = source_row.checked_mul(width)?;
+            let dest_offset = row.checked_mul(width)?;
+            output[dest_offset..dest_offset + width]
+                .copy_from_slice(indices.get(source_offset..source_offset + width)?);
+            source_row = source_row.checked_add(1)?;
+            row = row.checked_add(step)?;
+        }
+    }
+    Some(output)
+}
+
+fn skip_gif_sub_blocks(bytes: &[u8], cursor: usize) -> Option<usize> {
+    let (_, cursor) = gif_sub_block_bytes(bytes, cursor)?;
+    Some(cursor)
+}
+
+fn gif_sub_block_bytes(bytes: &[u8], mut cursor: usize) -> Option<(Vec<u8>, usize)> {
+    let mut data = Vec::new();
+    loop {
+        let len = usize::from(*bytes.get(cursor)?);
+        cursor = cursor.checked_add(1)?;
+        if len == 0 {
+            return Some((data, cursor));
+        }
+        data.extend_from_slice(bytes.get(cursor..cursor.checked_add(len)?)?);
+        cursor = cursor.checked_add(len)?;
+    }
+}
+
+fn read_le_u16(bytes: &[u8]) -> Option<u16> {
+    let bytes: [u8; 2] = bytes.try_into().ok()?;
+    Some(u16::from_le_bytes(bytes))
 }
 
 fn image_pixels_to_grayscale(
@@ -5174,6 +5446,7 @@ pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
             | "image/x-jpeg"
             | "image/webp"
             | "image/x-webp"
+            | "image/gif"
     )
 }
 
