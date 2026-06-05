@@ -6152,9 +6152,22 @@ fn scale_browser_raster_click_coordinate(
     coordinate: usize,
     raster_size: usize,
     viewport_size: usize,
+    padding: usize,
+    cell_size: usize,
 ) -> usize {
     let viewport_size = viewport_size.max(1);
     let raster_size = raster_size.max(1);
+    if cell_size > 0 {
+        let expected = viewport_size
+            .saturating_mul(cell_size)
+            .saturating_add(padding.saturating_mul(2));
+        if expected == raster_size {
+            return coordinate
+                .saturating_sub(padding)
+                .saturating_div(cell_size)
+                .min(viewport_size.saturating_sub(1));
+        }
+    }
     let scaled = ((coordinate as u128) * (viewport_size as u128) / (raster_size as u128)) as usize;
     scaled.min(viewport_size.saturating_sub(1))
 }
@@ -6401,29 +6414,46 @@ async fn apply_browser_action(
         } => {
             let before = current_session_interaction_snapshot(web_session);
             let raster_click = raster_width.zip(raster_height);
+            let raster_options = BrowserRasterOptions::default();
             let (click_x, click_y) = if let Some((raster_width, raster_height)) = raster_click {
                 (
-                    scale_browser_raster_click_coordinate(x, raster_width, web_session.width),
-                    scale_browser_raster_click_coordinate(y, raster_height, web_session.height),
+                    scale_browser_raster_click_coordinate(
+                        x,
+                        raster_width,
+                        web_session.width,
+                        raster_options.padding_x,
+                        raster_options.cell_width,
+                    ),
+                    scale_browser_raster_click_coordinate(
+                        y,
+                        raster_height,
+                        web_session.height,
+                        raster_options.padding_y,
+                        raster_options.cell_height,
+                    ),
                 )
             } else {
                 (x, y)
             };
             let page_x = web_session.viewport_x.saturating_add(click_x);
             let page_y = web_session.viewport_y.saturating_add(click_y);
+            let viewport = BrowserViewportState {
+                x: web_session.viewport_x,
+                y: web_session.viewport_y,
+                width: web_session.width,
+                height: web_session.height,
+            };
+            let click_navigation_target = if raster_click.is_some() {
+                web_session
+                    .session
+                    .link_target_at_viewport(viewport, click_x, click_y)
+            } else {
+                web_session.session.link_target_at(page_x, page_y)
+            };
             let click_result = if raster_click.is_some() {
                 web_session
                     .session
-                    .click_viewport_at_with_default_action(
-                        BrowserViewportState {
-                            x: web_session.viewport_x,
-                            y: web_session.viewport_y,
-                            width: web_session.width,
-                            height: web_session.height,
-                        },
-                        click_x,
-                        click_y,
-                    )
+                    .click_viewport_at_with_default_action(viewport, click_x, click_y)
                     .await
             } else {
                 web_session
@@ -6432,6 +6462,25 @@ async fn apply_browser_action(
                     .await
             };
             if let Err(error) = click_result {
+                if let Some(target_url) = click_navigation_target.as_deref()
+                    && !browser_click_error_is_target_miss(&error.to_string())
+                {
+                    set_browser_click_pending_navigation_feedback(
+                        web_session,
+                        browser_session_click_feedback_label(
+                            x,
+                            y,
+                            click_x,
+                            click_y,
+                            page_x,
+                            page_y,
+                            raster_click,
+                        ),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
                 set_browser_click_error_feedback(
                     web_session,
                     browser_session_click_feedback_label(
@@ -15802,6 +15851,23 @@ fn set_browser_click_error_feedback(
         format!("{click_label}; {failure_label}")
     };
     web_session.action_feedback = Some(format!("{label}: {error_excerpt}; viewport preserved"));
+}
+
+fn set_browser_click_pending_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    click_label: String,
+    target_url: &str,
+    error: &str,
+) {
+    web_session.pending_source = Some(target_url.to_owned());
+    web_session.display_source = None;
+    web_session.resource_report = None;
+    clear_browser_find_active_line(web_session);
+    web_session.action_feedback = Some(format!(
+        "{click_label}; opening {} is pending after navigation failed: {}; viewport preserved",
+        browser_session_feedback_excerpt(target_url),
+        browser_session_feedback_excerpt(error)
+    ));
 }
 
 fn browser_click_error_is_target_miss(error: &str) -> bool {

@@ -8687,8 +8687,13 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     let raster = payload.viewport_image.as_ref().unwrap();
     let raster_width = raster.width;
     let raster_height = raster.height;
-    let raster_x = link_x * raster_width / payload.width;
-    let raster_y = link_y * raster_height / payload.height;
+    let raster_options = BrowserRasterOptions::default();
+    let raster_x = link_x
+        .saturating_mul(raster_options.cell_width)
+        .saturating_add(raster_options.padding_x);
+    let raster_y = link_y
+        .saturating_mul(raster_options.cell_height)
+        .saturating_add(raster_options.padding_y);
 
     let click = RequestTarget {
         path: "/browser".to_owned(),
@@ -8724,6 +8729,97 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
+}
+
+#[tokio::test]
+async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster_contract() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unreachable = listener.local_addr().unwrap();
+    drop(listener);
+
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first-click-at-pending.html");
+    let target_url = format!("http://{unreachable}/next");
+    std::fs::write(
+        &first,
+        format!(
+            r#"<!doctype html><title>First pending click</title><span>prefix text before </span><a id="go" href="{target_url}">Go</a><p>start</p>"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), first.display().to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "First pending click");
+    assert!(payload.viewport_image.is_some());
+
+    let (link_x, link_y) = {
+        let sessions = registry.sessions.lock().await;
+        let web_session = sessions.get(&payload.id).unwrap();
+        web_session
+            .session
+            .current()
+            .unwrap()
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::browser::DisplayCommand::Text { x, y, text }
+                | crate::browser::DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Go") =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .expect("link text is rendered")
+    };
+    assert!(link_x > 0);
+    let raster = payload.viewport_image.as_ref().unwrap();
+    let raster_options = BrowserRasterOptions::default();
+    let raster_x = link_x
+        .saturating_mul(raster_options.cell_width)
+        .saturating_add(raster_options.padding_x);
+    let raster_y = link_y
+        .saturating_mul(raster_options.cell_height)
+        .saturating_add(raster_options.padding_y);
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), raster_x.to_string()),
+            ("y".to_owned(), raster_y.to_string()),
+            ("raster_width".to_owned(), raster.width.to_string()),
+            ("raster_height".to_owned(), raster.height.to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.history_len, 1);
+    assert!(!payload.can_back);
+    assert_eq!(payload.pending_source.as_deref(), Some(target_url.as_str()));
+    assert_eq!(payload.source, target_url);
+    assert!(payload.viewport.contains("Go"));
+    assert!(payload.viewport_image.is_some());
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains("Clicked raster x"));
+    assert!(feedback.contains("opening http://127.0.0.1:"));
+    assert!(feedback.contains("is pending after navigation failed"));
+    assert!(feedback.contains("viewport preserved"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
 }
 
 #[tokio::test]
@@ -8937,7 +9033,7 @@ async fn browser_session_fresh_click_at_miss_keeps_session_and_viewport() {
         payload
             .action_feedback
             .as_deref()
-            .is_some_and(|feedback| feedback.contains("No click target at x 999, y 999"))
+            .is_some_and(|feedback| feedback.contains("No click target at DOM point x 999, y 999"))
     );
 
     let html = render_browser_session_page(&payload, &back_href);
@@ -8945,7 +9041,7 @@ async fn browser_session_fresh_click_at_miss_keeps_session_and_viewport() {
     assert!(html.contains(r#"<input type="hidden" name="id" value="s1">"#));
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
-    assert!(html.contains("No click target at x 999, y 999"));
+    assert!(html.contains("No click target at DOM point x 999, y 999"));
     assert!(html.contains("viewport preserved"));
     assert!(html.contains(r#"data-viewport-x="3""#));
     assert!(html.contains(r#"data-viewport-y="2""#));
@@ -8998,13 +9094,13 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
         payload
             .action_feedback
             .as_deref()
-            .is_some_and(|feedback| feedback.contains("No click target at x 999, y 999"))
+            .is_some_and(|feedback| feedback.contains("No click target at DOM point x 999, y 999"))
     );
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
-    assert!(html.contains("No click target at x 999, y 999"));
+    assert!(html.contains("No click target at DOM point x 999, y 999"));
     assert!(html.contains("viewport preserved"));
     assert!(html.contains(&format!(r#"data-viewport-x="{expected_viewport_x}""#)));
     assert!(html.contains(&format!(r#"data-viewport-y="{expected_viewport_y}""#)));
