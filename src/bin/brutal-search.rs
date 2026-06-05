@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::env;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -816,6 +816,9 @@ struct IndexStorageStats {
     total_bytes: u64,
     artifacts: Vec<IndexStorageArtifact>,
     web_artifacts: Vec<WebStorageArtifactStats>,
+    crawl_frontier_bytes: u64,
+    crawl_snapshot_bytes: u64,
+    crawl_snapshot_entries: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -847,6 +850,9 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         total_bytes: 0,
         artifacts: Vec::new(),
         web_artifacts: Vec::new(),
+        crawl_frontier_bytes: 0,
+        crawl_snapshot_bytes: 0,
+        crawl_snapshot_entries: 0,
     };
 
     for name in INDEX_STORAGE_ARTIFACTS {
@@ -865,6 +871,16 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         let bytes = metadata.len();
         stats.total_bytes = stats.total_bytes.saturating_add(bytes);
         stats.artifacts.push(IndexStorageArtifact { name, bytes });
+        match *name {
+            "frontier.bin" => {
+                stats.crawl_frontier_bytes = bytes;
+            }
+            "crawl-docs.jsonl" => {
+                stats.crawl_snapshot_bytes = bytes;
+                stats.crawl_snapshot_entries = count_jsonl_entries(&path)?;
+            }
+            _ => {}
+        }
         if matches!(*name, "web-cache.jsonl" | "brave-results.jsonl") {
             stats
                 .web_artifacts
@@ -878,11 +894,14 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
 fn print_index_storage_stats(index: &Path) -> Result<()> {
     let stats = collect_index_storage_stats(index)?;
     println!("index_storage_bytes: {}", stats.total_bytes);
-    for artifact in stats.artifacts {
+    for artifact in &stats.artifacts {
         println!(
             "index_storage_artifact_bytes: {} {}",
             artifact.name, artifact.bytes
         );
+    }
+    for line in crawl_storage_pressure_summary_lines(&stats) {
+        println!("{line}");
     }
     let now = unix_now();
     let stale_secs = web_storage_stale_threshold_secs();
@@ -936,6 +955,53 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String> {
+    let retained_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    if retained_bytes == 0 && stats.crawl_snapshot_entries == 0 {
+        return Vec::new();
+    }
+
+    vec![
+        format!(
+            "crawl_storage_pressure_summary: retained_bytes={} frontier_bytes={} snapshot_bytes={} snapshot_entries={}",
+            retained_bytes,
+            stats.crawl_frontier_bytes,
+            stats.crawl_snapshot_bytes,
+            stats.crawl_snapshot_entries
+        ),
+        format!("crawl_storage_retained_bytes: {retained_bytes}"),
+        format!(
+            "crawl_storage_frontier_bytes: {}",
+            stats.crawl_frontier_bytes
+        ),
+        format!(
+            "crawl_storage_snapshot_bytes: {}",
+            stats.crawl_snapshot_bytes
+        ),
+        format!(
+            "crawl_storage_snapshot_entries: {}",
+            stats.crawl_snapshot_entries
+        ),
+    ]
+}
+
+fn count_jsonl_entries(path: &Path) -> Result<usize> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open index storage jsonl artifact {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut entries = 0usize;
+    for line in reader.lines() {
+        let line =
+            line.with_context(|| format!("read index storage jsonl artifact {}", path.display()))?;
+        if !line.trim().is_empty() {
+            entries = entries.saturating_add(1);
+        }
+    }
+    Ok(entries)
 }
 
 fn web_storage_pressure_summary_lines(
@@ -1333,6 +1399,12 @@ mod tests {
             b"{\"fetched_at_unix\":100}\n{\"fetched_at_unix\":120}\n",
         )
         .unwrap();
+        std::fs::write(dir.path().join("frontier.bin"), b"abcd").unwrap();
+        std::fs::write(
+            dir.path().join("crawl-docs.jsonl"),
+            b"{\"url\":\"https://example.com/1\"}\n\n{\"url\":\"https://example.com/2\"}\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join("brave-results.jsonl"),
             b"{\"fetched_at_unix\":130}\n",
@@ -1342,13 +1414,21 @@ mod tests {
 
         let stats = collect_index_storage_stats(dir.path()).unwrap();
 
-        assert_eq!(stats.total_bytes, 77);
+        assert_eq!(stats.total_bytes, 146);
         assert_eq!(
             stats.artifacts,
             vec![
                 IndexStorageArtifact {
                     name: "manifest.json",
                     bytes: 5
+                },
+                IndexStorageArtifact {
+                    name: "frontier.bin",
+                    bytes: 4
+                },
+                IndexStorageArtifact {
+                    name: "crawl-docs.jsonl",
+                    bytes: 65
                 },
                 IndexStorageArtifact {
                     name: "web-cache.jsonl",
@@ -1360,6 +1440,9 @@ mod tests {
                 }
             ]
         );
+        assert_eq!(stats.crawl_frontier_bytes, 4);
+        assert_eq!(stats.crawl_snapshot_bytes, 65);
+        assert_eq!(stats.crawl_snapshot_entries, 2);
         assert_eq!(
             stats.web_artifacts,
             vec![
@@ -1398,6 +1481,31 @@ mod tests {
         assert_eq!(stats.total_bytes, 0);
         assert!(stats.artifacts.is_empty());
         assert!(stats.web_artifacts.is_empty());
+        assert_eq!(stats.crawl_frontier_bytes, 0);
+        assert_eq!(stats.crawl_snapshot_bytes, 0);
+        assert_eq!(stats.crawl_snapshot_entries, 0);
+    }
+
+    #[test]
+    fn crawl_storage_pressure_summary_reports_frontier_and_snapshots() {
+        let stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            crawl_frontier_bytes: 50,
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 3,
+        };
+
+        let lines = crawl_storage_pressure_summary_lines(&stats);
+
+        assert!(lines.contains(
+            &"crawl_storage_pressure_summary: retained_bytes=170 frontier_bytes=50 snapshot_bytes=120 snapshot_entries=3".to_owned()
+        ));
+        assert!(lines.contains(&"crawl_storage_retained_bytes: 170".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_bytes: 50".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_entries: 3".to_owned()));
     }
 
     #[test]
