@@ -8624,6 +8624,62 @@ async fn browser_session_registry_click_selector_reports_no_visible_change() {
 }
 
 #[tokio::test]
+async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("plain.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Plain</title><main><p>Static page</p></main>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "12".to_owned()),
+            ("viewport_x".to_owned(), "3".to_owned()),
+            ("viewport_y".to_owned(), "2".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let expected_viewport_x = payload.viewport_x;
+    let expected_viewport_y = payload.viewport_y;
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), "999".to_owned()),
+            ("y".to_owned(), "999".to_owned()),
+            ("viewport_x".to_owned(), "3".to_owned()),
+            ("viewport_y".to_owned(), "2".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.title, "Plain");
+    assert_eq!(payload.viewport_x, expected_viewport_x);
+    assert_eq!(payload.viewport_y, expected_viewport_y);
+    assert!(!payload.fast_scroll);
+    assert!(
+        payload
+            .action_feedback
+            .as_deref()
+            .is_some_and(|feedback| feedback.contains("No click target at x 999, y 999"))
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
+    assert!(html.contains("No click target at x 999, y 999"));
+    assert!(html.contains("viewport preserved"));
+    assert!(html.contains(&format!(r#"data-viewport-x="{expected_viewport_x}""#)));
+    assert!(html.contains(&format!(r#"data-viewport-y="{expected_viewport_y}""#)));
+}
+
+#[tokio::test]
 async fn browser_session_registry_click_at_keeps_point_coords_separate_from_viewport_state() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("scrolled-button.html");
@@ -12159,6 +12215,15 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("same tab retained"));
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(html.contains(r#"data-browser-pending-viewport="true""#));
+    assert!(html.contains(r#"data-viewport-state="loading""#));
+    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains(
+        "The tab is retained; continue loading to retry without losing the browser controls."
+    ));
+    assert!(html.contains("Page is still loading; scroll starts after the first render."));
+    assert!(html.contains("Page is still loading; clicks start after the first render."));
+    assert!(html.contains("Click controls will activate after the first rendered viewport"));
     assert!(html.contains("action=open"));
     assert!(html.contains("url=http%3A%2F%2F"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
@@ -12216,6 +12281,11 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("same tab retained"));
     assert!(html.contains("retry stayed in this tab"));
     assert!(html.contains("Continue loading"));
+    assert!(html.contains(r#"data-browser-pending-viewport="true""#));
+    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains("Page is still loading; scroll starts after the first render."));
+    assert!(html.contains("Page is still loading; clicks start after the first render."));
+    assert!(html.contains("Click controls will activate after the first rendered viewport"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dfixture"));
     assert!(html.contains("width=90"));
     assert!(html.contains("height=32"));
@@ -12316,6 +12386,11 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
     assert!(html.contains("Continue loading"));
     assert!(html.contains("Opening http://"));
     assert!(html.contains("Loading http://"));
+    assert!(html.contains(r#"data-browser-pending-viewport="true""#));
+    assert!(html.contains("Loading browser viewport"));
+    assert!(html.contains("Page is still loading; scroll starts after the first render."));
+    assert!(html.contains("Page is still loading; clicks start after the first render."));
+    assert!(html.contains("Click controls will activate after the first rendered viewport"));
     assert!(html.contains("action=open"));
     assert!(html.contains("from=%2Fsearch%3Fq%3Dbroken"));
     assert!(html.contains("width=80"));

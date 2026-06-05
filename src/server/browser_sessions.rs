@@ -6119,11 +6119,18 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::ClickSelector(selector) => {
             let before = current_session_interaction_snapshot(web_session);
-            web_session
+            if let Err(error) = web_session
                 .session
                 .click_selector_with_default_action(&selector)
                 .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            {
+                web_session.action_feedback = Some(format!(
+                    "No click target for selector {}; {}; viewport preserved",
+                    browser_session_feedback_excerpt(&selector),
+                    browser_session_feedback_excerpt(&error.to_string())
+                ));
+                return Ok(());
+            }
             if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
@@ -6143,11 +6150,17 @@ async fn apply_browser_action(
             let before = current_session_interaction_snapshot(web_session);
             let page_x = web_session.viewport_x.saturating_add(x);
             let page_y = web_session.viewport_y.saturating_add(y);
-            web_session
+            if let Err(error) = web_session
                 .session
                 .click_at_with_default_action(page_x, page_y)
                 .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            {
+                web_session.action_feedback = Some(format!(
+                    "No click target at x {x}, y {y} (page {page_x}, {page_y}); {}; viewport preserved",
+                    browser_session_feedback_excerpt(&error.to_string())
+                ));
+                return Ok(());
+            }
             if browser_interaction_snapshot_navigated(&before, web_session) {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
@@ -9680,6 +9693,7 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-raster-shell {{ position: relative; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster-shell[data-viewport-pending="true"] {{ cursor: wait; }}
+.browser-raster-shell[data-browser-pending-viewport="true"] {{ cursor: wait; }}
 .browser-raster {{ display: block; max-width: 100%; height: auto; }}
 .browser-click-marker {{ position: absolute; z-index: 2; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid #2457d6; border-radius: 999px; background: rgba(36, 87, 214, 0.12); box-shadow: 0 0 0 2px rgba(255,255,255,0.88); pointer-events: none; }}
 .browser-click-marker::after {{ content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #2457d6; }}
@@ -10122,6 +10136,26 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     let scroll_url = browser_session_action_href(&payload.id, "scroll", &[], payload);
     let click_url = browser_session_action_href(&payload.id, "click-at", &[], payload);
     let viewport_accessibility_label = "Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll";
+    if let Some(pending_source) = payload.pending_source.as_ref() {
+        let continue_href = browser_session_action_href(
+            &payload.id,
+            "open",
+            &[("url", pending_source.clone())],
+            payload,
+        );
+        return format!(
+            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>Loading browser viewport</strong><span>Opening {source}. The tab is retained; continue loading to retry without losing the browser controls.</span><a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
+            viewport_x = payload.viewport_x,
+            viewport_y = payload.viewport_y,
+            viewport_width = payload.width,
+            viewport_height = payload.height,
+            max_scroll_x = payload.max_scroll_x,
+            max_scroll_y = payload.max_scroll_y,
+            source = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
+            source_attr = html_escape::encode_double_quoted_attribute(pending_source),
+            continue_href = html_escape::encode_double_quoted_attribute(&continue_href),
+        );
+    }
     if let Some(image) = &payload.viewport_image {
         return format!(
             r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
@@ -12873,14 +12907,20 @@ fn render_browser_session_viewport_interaction_controls(payload: &BrowserSession
     let default_click_x = payload.width.saturating_sub(1) / 2;
     let default_click_y = payload.height.saturating_sub(1) / 2;
     let click_status = browser_session_click_status(payload);
+    let click_hint = if payload.pending_source.is_some() {
+        "Click controls will activate after the first rendered viewport"
+    } else {
+        "Click the rendered page to activate links and controls"
+    };
     format!(
-        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">Click the rendered page to activate links and controls</span></div><details class="viewport-click-details" aria-label="Manual click coordinates"><summary>Manual click</summary><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button></form></details><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
+        r#"<div class="viewport-interaction-row" data-browser-viewport-interactions><div class="viewport-click-status-row" data-browser-viewport-click-state><span class="viewport-command-label">Click</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span class="viewport-state-chip">{click_hint}</span></div><details class="viewport-click-details" aria-label="Manual click coordinates"><summary>Manual click</summary><form class="viewport-click-form" action="/browser" method="get">{common}<input type="hidden" name="action" value="click-at"><label for="browser-viewport-click-x">x</label><input id="browser-viewport-click-x" type="number" min="0" max="{max_x}" name="x" value="{default_click_x}" aria-label="Click x inside rendered viewport"><label for="browser-viewport-click-y">y</label><input id="browser-viewport-click-y" type="number" min="0" max="{max_y}" name="y" value="{default_click_y}" aria-label="Click y inside rendered viewport"><button type="submit">Activate point</button></form></details><details class="viewport-link-strip" aria-label="Quick visible links"><summary>Visible links</summary><div class="viewport-link-list">{quick_links}</div></details></div>"#,
         common = browser_session_common_hidden_inputs(payload),
         max_x = payload.width.saturating_sub(1),
         max_y = payload.height.saturating_sub(1),
         default_click_x = default_click_x,
         default_click_y = default_click_y,
         click_status = click_status,
+        click_hint = click_hint,
         quick_links = quick_links,
     )
 }
@@ -13133,6 +13173,9 @@ fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Opti
 }
 
 fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> String {
+    if payload.pending_source.is_some() {
+        return "Page is still loading; scroll starts after the first render.".to_owned();
+    }
     browser_session_scroll_feedback_text(payload)
         .map(|feedback| html_escape::encode_text(feedback).into_owned())
         .unwrap_or_else(|| {
@@ -13151,6 +13194,9 @@ fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> 
 }
 
 fn browser_session_click_status(payload: &BrowserSessionPayload) -> String {
+    if payload.pending_source.is_some() {
+        return "Page is still loading; clicks start after the first render.".to_owned();
+    }
     browser_session_action_feedback_text(payload)
         .filter(|feedback| {
             feedback.starts_with("Clicked ")
