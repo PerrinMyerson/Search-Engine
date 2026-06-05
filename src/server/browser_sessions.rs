@@ -10330,21 +10330,6 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   if (pendingAutoVisual) {
     shell.dataset.pendingAutoVisual = "true";
     shell.setAttribute("aria-busy", "true");
-    const showPendingAutoVisualStatus = () => {
-      pendingAutoVisual.textContent = "Visual render is still running. Please wait...";
-    };
-    shell.addEventListener("wheel", (event) => {
-      event.preventDefault();
-      showPendingAutoVisualStatus();
-    }, { passive: false });
-    shell.addEventListener("keydown", (event) => {
-      if (!["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "End", "Home", "PageDown", "PageUp", " "].includes(event.key)) {
-        return;
-      }
-      event.preventDefault();
-      showPendingAutoVisualStatus();
-    });
-    return;
   }
   try {
     if (sessionStorage.getItem("browserViewportAnchor") === "1") {
