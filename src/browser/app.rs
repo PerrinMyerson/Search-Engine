@@ -12,6 +12,7 @@ use super::{
 
 const BROWSER_APP_CLOSED_TAB_LIMIT: usize = 10;
 const BROWSER_APP_REPORT_TEXT_MAX_CHARS: usize = 16 * 1024;
+const BROWSER_APP_CACHED_FRAME_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserAppOptions {
@@ -121,6 +122,12 @@ pub struct BrowserAppReport {
     pub frame_reused_viewport_area: usize,
     #[serde(default)]
     pub frame_full_repaint: bool,
+    #[serde(default)]
+    pub cached_frame_pixel_bytes: usize,
+    #[serde(default)]
+    pub cached_frame_limit_bytes: usize,
+    #[serde(default)]
+    pub frame_cache_reusable: bool,
     pub focused: Option<BrowserFocusedControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find: Option<BrowserAppFindState>,
@@ -514,6 +521,11 @@ impl BrowserApp {
         let text = current_render.map_or_else(String::new, |render| render.text.clone());
         let text_chars = text.chars().count();
         let visible_text_chars = visible_text.iter().map(|line| line.chars().count()).sum();
+        let cached_frame_pixel_bytes = tab
+            .last_presented_frame
+            .as_ref()
+            .map(|frame| browser_viewport_frame_pixel_bytes(&frame.report))
+            .unwrap_or(0);
 
         Ok(BrowserAppReport {
             active_tab: self.active_tab,
@@ -525,6 +537,9 @@ impl BrowserApp {
             frame_dirty_pixel_area: frame.dirty_pixel_area,
             frame_reused_viewport_area: frame.viewport.reused_area,
             frame_full_repaint: frame.viewport.full_repaint,
+            cached_frame_pixel_bytes,
+            cached_frame_limit_bytes: BROWSER_APP_CACHED_FRAME_MAX_BYTES,
+            frame_cache_reusable: cached_frame_pixel_bytes > 0,
             frame,
             focused: tab.session.focused_control(),
             find: tab.find.clone(),
@@ -1018,7 +1033,9 @@ fn browser_viewport_frame_pixel_bytes(frame: &BrowserViewportFrameReport) -> usi
 }
 
 fn browser_app_frame_is_reusable(frame: &BrowserViewportFrame) -> bool {
-    !frame.report.viewport.full_repaint && frame.report.dirty_pixel_area == 0
+    !frame.report.viewport.full_repaint
+        && frame.report.dirty_pixel_area == 0
+        && browser_viewport_frame_pixel_bytes(&frame.report) <= BROWSER_APP_CACHED_FRAME_MAX_BYTES
 }
 
 fn serialize_browser_app_report_text<S>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -1592,10 +1609,28 @@ mod tests {
         assert!(!stable.report.viewport.full_repaint);
         assert_eq!(stable.report.dirty_pixel_area, 0);
         assert!(app.tabs[0].last_presented_frame.is_some());
+        assert!(browser_app_frame_is_reusable(&stable));
 
         let reused = app.present_frame().unwrap();
         assert_eq!(reused.report, stable.report);
         assert_eq!(reused.raster.pixels, stable.raster.pixels);
+
+        let report = app.report_for_frame(reused.report.clone()).unwrap();
+        assert!(report.frame_cache_reusable);
+        assert_eq!(
+            report.cached_frame_pixel_bytes,
+            browser_viewport_frame_pixel_bytes(&reused.report)
+        );
+        assert_eq!(
+            report.cached_frame_limit_bytes,
+            BROWSER_APP_CACHED_FRAME_MAX_BYTES
+        );
+
+        let mut oversized = stable.clone();
+        oversized.report.frame_width = BROWSER_APP_CACHED_FRAME_MAX_BYTES;
+        oversized.report.frame_height = 2;
+        oversized.report.bytes_per_pixel = 4;
+        assert!(!browser_app_frame_is_reusable(&oversized));
 
         app.apply_action(BrowserAppAction::Scroll {
             delta_x: 0,
