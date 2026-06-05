@@ -5865,6 +5865,125 @@ async fn browser_session_click_viewport_at_after_scroll_rejects_outside_visible_
     assert_eq!(session.snapshot().current_index, Some(1));
 }
 
+#[tokio::test]
+async fn browser_session_repeated_scroll_steps_keep_raster_and_click_targets_aligned() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.html");
+    let second = dir.path().join("second.html");
+    fs::write(
+        &first,
+        r#"<html><head><title>First</title></head><body><div style="position:fixed; top:0">Pinned</div><img src="missing.png" width="32" height="48" alt=""><p>Body before target</p><a href="second.html">Open repeated scroll target</a><p>Body after target</p><p>More scrollable body</p></body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &second,
+        r#"<html><head><title>Second</title></head><body>Arrived</body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session
+        .navigate(&first.display().to_string())
+        .await
+        .unwrap();
+
+    let (link_x, link_y, link_width, viewport, previous) = {
+        let render = session.current().unwrap();
+        let (link_x, link_y, link_width) = render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Open repeated scroll target") =>
+                {
+                    Some((*x, *y, text.chars().count()))
+                }
+                _ => None,
+            })
+            .expect("link text is rendered after mixed visual content");
+        assert!(link_y > 1);
+
+        let mut report = browser_document_viewport(
+            render,
+            BrowserViewportState {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 4,
+            },
+            None,
+        );
+        let mut previous = report.viewport;
+        while report.viewport.y + 1 < link_y {
+            assert!(report.viewport.y < report.max_scroll_y);
+            previous = report.viewport;
+            report = browser_document_viewport_after_scroll(render, report.viewport, 0, 1);
+            assert_eq!(report.previous, Some(previous));
+            assert_eq!(report.scroll_delta_y, 1);
+            assert_eq!(report.scroll_delta_x, 0);
+            assert!(!report.full_repaint);
+            assert_eq!(
+                report.invalidated_regions,
+                vec![BrowserViewportRect {
+                    x: 0,
+                    y: 3,
+                    width: 32,
+                    height: 1,
+                }]
+            );
+        }
+        assert_eq!(report.viewport.y + 1, link_y);
+        (link_x, link_y, link_width, report.viewport, Some(previous))
+    };
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(viewport.width),
+        viewport_height: Some(viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(
+        session.current().unwrap(),
+        viewport,
+        previous,
+        raster_options,
+    )
+    .expect("render repeated-scroll viewport frame");
+    assert_eq!(frame.report.viewport.viewport, viewport);
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(viewport.y));
+    assert!(frame.report.frame.non_background_pixels > 0);
+    assert_eq!(frame.report.dirty_pixel_regions.len(), 1);
+
+    let local_y = link_y.saturating_sub(viewport.y);
+    let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
+    assert_eq!(
+        session
+            .link_target_at_viewport(viewport, link_x, local_y)
+            .as_deref(),
+        Some(expected_target.as_str())
+    );
+    let drifted_x = link_x
+        .saturating_add(link_width)
+        .min(viewport.width.saturating_sub(1));
+    assert_eq!(
+        session
+            .link_target_at_viewport(viewport, drifted_x, local_y)
+            .as_deref(),
+        Some(expected_target.as_str())
+    );
+
+    let render = session
+        .click_viewport_at_with_default_action(viewport, drifted_x, local_y)
+        .await
+        .unwrap();
+    assert_eq!(render.title, "Second");
+    assert_eq!(render.text, "Arrived");
+    assert_eq!(session.snapshot().current_index, Some(1));
+}
+
 #[test]
 fn coordinate_hit_targets_track_multiline_anchor_text() {
     let render = render_html(

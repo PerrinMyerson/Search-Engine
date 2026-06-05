@@ -282,6 +282,28 @@ impl DisplayHitTarget {
         self.target_node
     }
 
+    fn target_near_column(&self, column: usize, tolerance: usize) -> Option<usize> {
+        self.target_at_column(column).or_else(|| {
+            self.text_runs
+                .iter()
+                .filter_map(|run| {
+                    let end = run.start.saturating_add(run.width);
+                    let distance = if column < run.start {
+                        run.start.saturating_sub(column)
+                    } else if column >= end {
+                        column.saturating_sub(end.saturating_sub(1))
+                    } else {
+                        0
+                    };
+                    (distance <= tolerance)
+                        .then_some((distance, run.target_node))
+                        .and_then(|(distance, node)| node.map(|node| (distance, node)))
+                })
+                .min_by_key(|(distance, _)| *distance)
+                .map(|(_, node)| node)
+        })
+    }
+
     fn with_viewport_fixed(mut self, viewport_fixed: bool) -> Self {
         self.viewport_fixed = viewport_fixed;
         self
@@ -3872,7 +3894,9 @@ pub fn hit_test_render(render: &BrowserRender, x: usize, y: usize) -> BrowserHit
 }
 
 fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
-    hit_test_text_target_node(render, x, y).or_else(|| hit_test_visual_target_node(render, x, y))
+    hit_test_text_target_node(render, x, y)
+        .or_else(|| hit_test_nearby_text_target_node(render, x, y))
+        .or_else(|| hit_test_visual_target_node(render, x, y))
 }
 
 fn hit_test_target_node_in_viewport(
@@ -3883,6 +3907,7 @@ fn hit_test_target_node_in_viewport(
 ) -> Option<usize> {
     let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
     hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
+        .or_else(|| hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y))
         .or_else(|| hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y))
 }
 
@@ -3925,6 +3950,31 @@ fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Opti
         })
 }
 
+fn hit_test_nearby_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
+            let bounds = display_command_bounds(command);
+            if !bounds_contains_with_tolerance(bounds, x, y, 2, 1) {
+                return None;
+            }
+            let column = clamped_bounds_column(bounds, x);
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_near_column(column, 2))
+        })
+}
+
 fn hit_test_text_target_node_for_viewport(
     render: &BrowserRender,
     viewport: RasterViewport,
@@ -3956,6 +4006,41 @@ fn hit_test_text_target_node_for_viewport(
                 .hit_targets
                 .get(command_index)
                 .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+        })
+}
+
+fn hit_test_nearby_text_target_node_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                display_command_viewport_fixed(render, command_index),
+                display_command_viewport_sticky_top(render, command_index),
+            );
+            if !bounds_contains_with_tolerance(bounds, x, y, 2, 1) {
+                return None;
+            }
+            let column = clamped_bounds_column(bounds, x);
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_near_column(column, 2))
         })
 }
 
@@ -4149,6 +4234,35 @@ impl DisplayCommandBounds {
             && x < self.x.saturating_add(self.width)
             && y < self.y.saturating_add(self.height)
     }
+}
+
+fn bounds_contains_with_tolerance(
+    bounds: DisplayCommandBounds,
+    x: usize,
+    y: usize,
+    x_tolerance: usize,
+    y_tolerance: usize,
+) -> bool {
+    bounds.width > 0
+        && bounds.height > 0
+        && x.saturating_add(x_tolerance) >= bounds.x
+        && y.saturating_add(y_tolerance) >= bounds.y
+        && x < bounds
+            .x
+            .saturating_add(bounds.width)
+            .saturating_add(x_tolerance)
+        && y < bounds
+            .y
+            .saturating_add(bounds.height)
+            .saturating_add(y_tolerance)
+}
+
+fn clamped_bounds_column(bounds: DisplayCommandBounds, x: usize) -> usize {
+    if x <= bounds.x {
+        return 0;
+    }
+    let column = x.saturating_sub(bounds.x);
+    column.min(bounds.width.saturating_sub(1))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4735,6 +4849,21 @@ pub fn browser_document_viewport(
     }
 }
 
+pub fn browser_document_viewport_after_scroll(
+    render: &BrowserRender,
+    current: BrowserViewportState,
+    delta_x: isize,
+    delta_y: isize,
+) -> BrowserDocumentViewportReport {
+    let current = browser_document_viewport(render, current, None).viewport;
+    let requested = BrowserViewportState {
+        x: apply_signed_scroll_delta(current.x, delta_x),
+        y: apply_signed_scroll_delta(current.y, delta_y),
+        ..current
+    };
+    browser_document_viewport(render, requested, Some(current))
+}
+
 pub fn browser_viewport_frame(
     render: &BrowserRender,
     requested: BrowserViewportState,
@@ -4806,6 +4935,14 @@ fn raster_viewport_from_state(state: BrowserViewportState) -> RasterViewport {
         width: state.width,
         height: state.height,
         active: true,
+    }
+}
+
+fn apply_signed_scroll_delta(value: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        value.saturating_add(delta as usize)
+    } else {
+        value.saturating_sub(delta.saturating_abs() as usize)
     }
 }
 
