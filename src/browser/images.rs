@@ -4363,7 +4363,8 @@ fn background_image_attr_source(value: &str) -> Option<String> {
     }
     split_css_top_level_commas_with_quotes(value)
         .into_iter()
-        .find_map(background_image_layer_source)
+        .filter_map(background_image_layer_source)
+        .last()
 }
 
 fn background_image_layer_source(value: &str) -> Option<String> {
