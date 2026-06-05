@@ -8519,6 +8519,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
     assert!(html.contains(
         r#"class="viewport-interaction-row compact" data-browser-viewport-interactions"#
@@ -8600,6 +8601,79 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
     assert!(html.contains(&expected_feedback));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
+}
+
+#[tokio::test]
+async fn browser_session_registry_click_at_link_navigates_from_raster_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first-click-at.html");
+    let second = dir.path().join("second-click-at.html");
+    std::fs::write(
+        &first,
+        format!(
+            r#"<!doctype html><title>First click-at</title><a id="go" href="{}">Go</a><p>start</p>"#,
+            second.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &second,
+        r#"<!doctype html><title>Second click-at</title><p>arrived by raster click</p>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), first.display().to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "First click-at");
+    assert!(payload.viewport_image.is_some());
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-dom-click"#));
+    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
+    assert!(html.contains(r#"data-raster-width=""#));
+    assert!(html.contains(r#"data-raster-height=""#));
+    assert!(html.contains("Number(raster.naturalWidth)"));
+    assert!(html.contains("Math.floor(relativeX / rect.width * size.width)"));
+    assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), "0".to_owned()),
+            ("y".to_owned(), "0".to_owned()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.title, "Second click-at");
+    assert_eq!(payload.history_len, 2);
+    assert!(payload.can_back);
+    assert!(!payload.fast_scroll);
+    assert!(payload.viewport.contains("arrived by raster click"));
+    let expected_feedback = format!(
+        "Clicked DOM point x 0, y 0 (page 0, 0); opened local page: {}",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_feedback.as_str())
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(&expected_feedback));
+    assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
+    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
+    assert!(html.contains(r#"data-browser-controls-tray"#));
 }
 
 #[tokio::test]
