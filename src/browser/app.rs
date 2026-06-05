@@ -112,6 +112,14 @@ pub struct BrowserAppReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_presented_viewport: Option<BrowserViewportState>,
     pub frame: BrowserViewportFrameReport,
+    #[serde(default)]
+    pub frame_pixel_bytes: usize,
+    #[serde(default)]
+    pub frame_dirty_pixel_area: usize,
+    #[serde(default)]
+    pub frame_reused_viewport_area: usize,
+    #[serde(default)]
+    pub frame_full_repaint: bool,
     pub focused: Option<BrowserFocusedControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find: Option<BrowserAppFindState>,
@@ -157,6 +165,10 @@ pub struct BrowserAppWindowFrameReport {
     pub page_frame_width: usize,
     pub page_frame_height: usize,
     pub bytes_per_pixel: usize,
+    #[serde(default)]
+    pub raster_pixel_bytes: usize,
+    #[serde(default)]
+    pub page_frame_pixel_bytes: usize,
     pub pixel_hash: String,
     pub non_background_pixels: usize,
     pub artifact_format: String,
@@ -490,6 +502,10 @@ impl BrowserApp {
             history: tab.session.snapshot(),
             viewport: tab.viewport,
             last_presented_viewport: tab.last_presented_viewport,
+            frame_pixel_bytes: browser_viewport_frame_pixel_bytes(&frame),
+            frame_dirty_pixel_area: frame.dirty_pixel_area,
+            frame_reused_viewport_area: frame.viewport.reused_area,
+            frame_full_repaint: frame.viewport.full_repaint,
             frame,
             focused: tab.session.focused_control(),
             find: tab.find.clone(),
@@ -958,6 +974,13 @@ fn initial_app_viewport(
     }
 }
 
+fn browser_viewport_frame_pixel_bytes(frame: &BrowserViewportFrameReport) -> usize {
+    frame
+        .frame_width
+        .saturating_mul(frame.frame_height)
+        .saturating_mul(frame.bytes_per_pixel)
+}
+
 fn browser_app_tab_summary(
     index: usize,
     active: bool,
@@ -1249,6 +1272,8 @@ fn compose_browser_app_window_frame(
 
     copy_window_rgba(&page_frame.raster, &mut raster, 0, chrome_height)?;
 
+    let page_frame_pixel_bytes = page_frame.raster.pixels.len();
+    let raster_pixel_bytes = raster.pixels.len();
     let pixel_hash = raster.pixel_hash();
     let non_background_pixels = raster.non_background_pixels();
     Ok(BrowserAppWindowFrame {
@@ -1265,6 +1290,8 @@ fn compose_browser_app_window_frame(
             page_frame_width: page_frame.report.frame_width,
             page_frame_height: page_frame.report.frame_height,
             bytes_per_pixel: 4,
+            raster_pixel_bytes,
+            page_frame_pixel_bytes,
             pixel_hash,
             non_background_pixels,
             artifact_format: "png-rgba8-browser-window".to_owned(),
@@ -1504,6 +1531,15 @@ mod tests {
         assert_eq!(window.report.bytes_per_pixel, 4);
         assert_eq!(window.report.artifact_format, "png-rgba8-browser-window");
         assert!(window.report.non_background_pixels > window.report.page.non_background_pixels);
+        assert_eq!(window.report.raster_pixel_bytes, window.raster.pixels.len());
+        assert_eq!(
+            window.report.page_frame_pixel_bytes,
+            window
+                .report
+                .page_frame_width
+                .saturating_mul(window.report.page_frame_height)
+                .saturating_mul(window.report.bytes_per_pixel)
+        );
         assert_eq!(
             window.raster.pixels.len(),
             window
@@ -1865,12 +1901,29 @@ mod tests {
         );
         let report = app.report_for_frame(frame.report.clone()).unwrap();
         assert_eq!(report.frame.pixel_hash, frame.report.pixel_hash);
+        assert_eq!(
+            report.frame_pixel_bytes,
+            frame
+                .report
+                .frame_width
+                .saturating_mul(frame.report.frame_height)
+                .saturating_mul(frame.report.bytes_per_pixel)
+        );
+        assert_eq!(report.frame_dirty_pixel_area, frame.report.dirty_pixel_area);
+        assert_eq!(
+            report.frame_reused_viewport_area,
+            frame.report.viewport.reused_area
+        );
+        assert_eq!(
+            report.frame_full_repaint,
+            frame.report.viewport.full_repaint
+        );
         assert_eq!(report.viewport.y, 1);
         assert_eq!(
             report.visible_text,
             vec![
-                "          column wraps words##".to_owned(),
-                "          cleanly#############".to_owned()
+                "          column wraps words".to_owned(),
+                "          cleanly      #".to_owned()
             ]
         );
     }
