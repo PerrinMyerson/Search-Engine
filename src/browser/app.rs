@@ -202,6 +202,8 @@ pub struct BrowserAppWindowFrameReport {
     #[serde(default)]
     pub window_frame_cache_hit: bool,
     #[serde(default)]
+    pub window_frame_cache_miss_reason: String,
+    #[serde(default)]
     pub visual_frame_ready: bool,
     #[serde(default)]
     pub visual_frame_waiting: bool,
@@ -478,16 +480,20 @@ impl BrowserApp {
         &mut self,
         options: BrowserAppWindowFrameOptions,
     ) -> Result<BrowserAppWindowFrame> {
-        let cached_window_frame = {
+        let (cached_window_frame, cache_miss_reason) = {
             let tab = self.active_tab_ref()?;
-            tab.last_presented_window_frame
+            let miss_reason = browser_app_window_frame_cache_miss_reason(tab, &options);
+            let frame = tab
+                .last_presented_window_frame
                 .as_ref()
                 .filter(|cached| !tab.content_dirty && cached.options == options)
                 .filter(|cached| cached.frame.report.page.viewport.viewport == tab.viewport)
-                .map(|cached| cached.frame.clone())
+                .map(|cached| cached.frame.clone());
+            (frame, miss_reason)
         };
         if let Some(mut frame) = cached_window_frame {
             frame.report.window_frame_cache_hit = true;
+            frame.report.window_frame_cache_miss_reason.clear();
             frame.report.visual_frame_ready = true;
             frame.report.visual_frame_waiting = false;
             frame.report.visual_frame_status = "ready-cached".to_owned();
@@ -495,8 +501,9 @@ impl BrowserApp {
         }
 
         let page_frame = self.present_frame()?;
-        let window_frame =
+        let mut window_frame =
             self.window_frame_for_presented_frame_with_options(page_frame, options.clone())?;
+        window_frame.report.window_frame_cache_miss_reason = cache_miss_reason.to_owned();
         let tab = self.active_tab_mut()?;
         tab.last_presented_window_frame =
             browser_app_window_frame_is_reusable(&window_frame).then(|| {
@@ -1147,6 +1154,25 @@ fn browser_app_window_frame_is_reusable(frame: &BrowserAppWindowFrame) -> bool {
         && frame.raster.pixels.len() <= BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES
 }
 
+fn browser_app_window_frame_cache_miss_reason(
+    tab: &BrowserAppTab,
+    options: &BrowserAppWindowFrameOptions,
+) -> &'static str {
+    let Some(cached) = tab.last_presented_window_frame.as_ref() else {
+        return "empty";
+    };
+    if tab.content_dirty {
+        return "content-dirty";
+    }
+    if cached.frame.report.page.viewport.viewport != tab.viewport {
+        return "viewport-changed";
+    }
+    if cached.options != *options {
+        return "options-changed";
+    }
+    "unknown"
+}
+
 fn browser_app_tab_clear_frame_caches(tab: &mut BrowserAppTab) {
     tab.last_presented_frame = None;
     tab.last_presented_window_frame = None;
@@ -1495,6 +1521,7 @@ fn compose_browser_app_window_frame(
             cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
             window_frame_cache_reusable,
             window_frame_cache_hit: false,
+            window_frame_cache_miss_reason: String::new(),
             visual_frame_ready: true,
             visual_frame_waiting: false,
             visual_frame_status: "ready-rendered".to_owned(),
@@ -1790,6 +1817,7 @@ mod tests {
         assert!(initial.report.page.viewport.full_repaint);
         assert!(!initial.report.window_frame_cache_reusable);
         assert!(!initial.report.window_frame_cache_hit);
+        assert_eq!(initial.report.window_frame_cache_miss_reason, "empty");
         assert!(initial.report.visual_frame_ready);
         assert!(!initial.report.visual_frame_waiting);
         assert_eq!(initial.report.visual_frame_status, "ready-rendered");
@@ -1800,6 +1828,7 @@ mod tests {
         assert_eq!(stable.report.page.dirty_pixel_area, 0);
         assert!(stable.report.window_frame_cache_reusable);
         assert!(!stable.report.window_frame_cache_hit);
+        assert_eq!(stable.report.window_frame_cache_miss_reason, "empty");
         assert!(stable.report.visual_frame_ready);
         assert!(!stable.report.visual_frame_waiting);
         assert_eq!(stable.report.visual_frame_status, "ready-rendered");
@@ -1816,14 +1845,27 @@ mod tests {
 
         let reused = app.present_window_frame().unwrap();
         assert!(reused.report.window_frame_cache_hit);
+        assert!(reused.report.window_frame_cache_miss_reason.is_empty());
         assert!(reused.report.visual_frame_ready);
         assert!(!reused.report.visual_frame_waiting);
         assert_eq!(reused.report.visual_frame_status, "ready-cached");
         let mut expected_report = stable.report.clone();
         expected_report.window_frame_cache_hit = true;
+        expected_report.window_frame_cache_miss_reason.clear();
         expected_report.visual_frame_status = "ready-cached".to_owned();
         assert_eq!(reused.report, expected_report);
         assert_eq!(reused.raster.pixels, stable.raster.pixels);
+        let changed_options = app
+            .present_window_frame_with_options(BrowserAppWindowFrameOptions {
+                location_text: None,
+                status_text: Some("Making visual... 14s elapsed".to_owned()),
+            })
+            .unwrap();
+        assert!(!changed_options.report.window_frame_cache_hit);
+        assert_eq!(
+            changed_options.report.window_frame_cache_miss_reason,
+            "options-changed"
+        );
         let report = app.report_for_frame(reused.report.page.clone()).unwrap();
         assert_eq!(
             report.cached_frame_total_pixel_bytes,
