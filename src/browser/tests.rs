@@ -8003,6 +8003,43 @@ async fn browser_session_tracks_back_forward_and_truncates_forward_history() {
 }
 
 #[tokio::test]
+async fn browser_session_history_retains_recent_entries_with_visible_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+
+    for index in 0..(BROWSER_SESSION_HISTORY_MAX_ENTRIES + 3) {
+        let page = dir.path().join(format!("page-{index}.html"));
+        fs::write(
+            &page,
+            format!("<title>Page {index}</title><body>{index}</body>"),
+        )
+        .unwrap();
+        session.navigate(&page.display().to_string()).await.unwrap();
+    }
+
+    let snapshot = session.snapshot();
+    assert_eq!(
+        snapshot.retained_entry_limit,
+        BROWSER_SESSION_HISTORY_MAX_ENTRIES
+    );
+    assert_eq!(
+        snapshot.retained_entry_count,
+        BROWSER_SESSION_HISTORY_MAX_ENTRIES
+    );
+    assert_eq!(snapshot.entries.len(), BROWSER_SESSION_HISTORY_MAX_ENTRIES);
+    assert_eq!(
+        snapshot.current_index,
+        Some(BROWSER_SESSION_HISTORY_MAX_ENTRIES - 1)
+    );
+    assert_eq!(snapshot.entries[0].title, "Page 3");
+    assert_eq!(
+        snapshot.entries[BROWSER_SESSION_HISTORY_MAX_ENTRIES - 1].title,
+        format!("Page {}", BROWSER_SESSION_HISTORY_MAX_ENTRIES + 2)
+    );
+    assert!(session.back().is_ok());
+}
+
+#[tokio::test]
 async fn browser_session_reload_replaces_current_history_entry() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("first.html");
