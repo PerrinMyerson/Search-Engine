@@ -2634,6 +2634,19 @@ impl BrowserSession {
         Some(resolve_browser_href(&entry.render.source, &href))
     }
 
+    pub fn link_target_at_viewport(
+        &self,
+        viewport: BrowserViewportState,
+        x: usize,
+        y: usize,
+    ) -> Option<String> {
+        let current_index = self.current_index?;
+        let entry = self.entries.get(current_index)?;
+        let node_id = hit_test_target_node_in_viewport(&entry.render, viewport, x, y)?;
+        let href = anchor_href_for_node(&entry.page_state.dom, node_id)?;
+        Some(resolve_browser_href(&entry.render.source, &href))
+    }
+
     pub fn current_forms(&self) -> &[BrowserForm] {
         self.current().map_or(&[], |render| render.forms.as_slice())
     }
@@ -2734,6 +2747,57 @@ impl BrowserSession {
                 node_id: target_node,
                 x,
                 y,
+            },
+        )?;
+        let default_action = profiled
+            .click_default_action
+            .clone()
+            .filter(|action| !action.default_prevented());
+        let focused_control = self.focusable_control_for_node(current_index, target_node);
+        self.set_entry_render(current_index, profiled.render);
+        if let Some(focused_control) = focused_control {
+            self.set_focused_control(current_index, focused_control)?;
+        } else {
+            self.blur_focused_control()?;
+        }
+        if let Some(action) = default_action {
+            let render = self.entries[current_index].render.clone();
+            return self
+                .apply_click_default_action(current_index, render, action)
+                .await;
+        }
+        Ok(&self.entries[current_index].render)
+    }
+
+    pub async fn click_viewport_at_with_default_action(
+        &mut self,
+        viewport: BrowserViewportState,
+        x: usize,
+        y: usize,
+    ) -> Result<&BrowserRender> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot click viewport coordinates: session has no current page");
+        };
+        let (target_node, page_x, page_y) = {
+            let current = &self.entries[current_index].render;
+            let viewport = browser_document_viewport(current, viewport, None).viewport;
+            let page_x = viewport.x.saturating_add(x);
+            let page_y = viewport.y.saturating_add(y);
+            let target_node =
+                hit_test_target_node_in_viewport(current, viewport, x, y).with_context(|| {
+                    format!(
+                        "click viewport coordinates {x},{y} at viewport {},{} did not hit a DOM target",
+                        viewport.x, viewport.y
+                    )
+                })?;
+            (target_node, page_x, page_y)
+        };
+        let profiled = self.click_current_page_state(
+            current_index,
+            RenderClickTarget::Point {
+                node_id: target_node,
+                x: page_x,
+                y: page_y,
             },
         )?;
         let default_action = profiled
@@ -3794,6 +3858,20 @@ fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<us
     hit_test_text_target_node(render, x, y).or_else(|| hit_test_visual_target_node(render, x, y))
 }
 
+fn hit_test_target_node_in_viewport(
+    render: &BrowserRender,
+    viewport: BrowserViewportState,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    let viewport = browser_document_viewport(render, viewport, None).viewport;
+    let viewport = raster_viewport_from_state(viewport);
+    let page_x = viewport.x.saturating_add(x);
+    let page_y = viewport.y.saturating_add(y);
+    hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
+        .or_else(|| hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y))
+}
+
 fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
     render
         .display_list
@@ -3818,6 +3896,40 @@ fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Opti
         })
 }
 
+fn hit_test_text_target_node_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                display_command_viewport_fixed(render, command_index),
+                display_command_viewport_sticky_top(render, command_index),
+            );
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+        })
+}
+
 fn hit_test_visual_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
     render
         .display_list
@@ -3826,6 +3938,34 @@ fn hit_test_visual_target_node(render: &BrowserRender, x: usize, y: usize) -> Op
         .rev()
         .find_map(|(command_index, command)| {
             let bounds = display_command_bounds(command);
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+        })
+}
+
+fn hit_test_visual_target_node_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                display_command_viewport_fixed(render, command_index),
+                display_command_viewport_sticky_top(render, command_index),
+            );
             if !bounds.contains(x, y) {
                 return None;
             }
