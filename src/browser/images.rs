@@ -463,6 +463,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut embedded_images = Vec::new();
     let mut linear_gradients: HashMap<String, Vec<SvgGradientStop>> = HashMap::new();
     let mut current_linear_gradient = None;
+    let mut class_styles: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut transform_stack = vec![Some(SvgTransform::identity())];
     let mut paint_stack = vec![HashMap::new()];
 
@@ -482,6 +483,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                     let attrs = parse_attributes(raw_tag);
                     match tag.name.as_str() {
                         "svg" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             width = attrs
                                 .get("width")
                                 .and_then(|value| parse_svg_pixel_dimension(value))
@@ -503,12 +505,14 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "g" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if !tag.self_closing {
                                 transform_stack.push(svg_child_transform(&transform_stack, &attrs));
                                 paint_stack.push(svg_child_paint_attrs(&paint_stack, &attrs));
                             }
                         }
                         "rect" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 rects.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -520,6 +524,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "circle" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 circles.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -531,6 +536,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "ellipse" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 ellipses.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -542,6 +548,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "polygon" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 polygons.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -553,6 +560,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "polyline" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 polylines.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -564,6 +572,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "path" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 paths.push(SvgShapeAttrs {
                                     attrs: svg_shape_attrs_with_inherited_paint(
@@ -575,6 +584,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "image" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
                                 embedded_images.push(SvgShapeAttrs { attrs, transform });
                             }
@@ -586,10 +596,16 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                             }
                         }
                         "stop" => {
+                            let attrs = svg_attrs_with_class_styles(attrs, &class_styles);
                             if let Some(id) = current_linear_gradient.as_ref()
                                 && let Some(stop) = svg_gradient_stop(&attrs)
                             {
                                 linear_gradients.entry(id.clone()).or_default().push(stop);
+                            }
+                        }
+                        "style" => {
+                            if let Some(style_text) = svg_style_text_after_tag(bytes, tag_end) {
+                                svg_merge_class_styles(&mut class_styles, style_text);
                             }
                         }
                         _ => {}
@@ -1660,6 +1676,91 @@ fn svg_merge_shape_attrs(inherited: &mut HashMap<String, String>, attrs: HashMap
             inherited.insert(key, value);
         }
     }
+}
+
+fn svg_attrs_with_class_styles(
+    mut attrs: HashMap<String, String>,
+    class_styles: &HashMap<String, HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let Some(class_attr) = attrs.get("class").cloned() else {
+        return attrs;
+    };
+    let inline_style = attrs.get("style").cloned().unwrap_or_default();
+    for class_name in class_attr.split_ascii_whitespace() {
+        let Some(style_attrs) = class_styles.get(class_name) else {
+            continue;
+        };
+        for (property, value) in style_attrs {
+            if svg_style_declares_property(&inline_style, property) {
+                continue;
+            }
+            attrs.insert(property.clone(), value.clone());
+        }
+    }
+    attrs
+}
+
+fn svg_style_text_after_tag(bytes: &[u8], tag_end: usize) -> Option<&str> {
+    let rest = std::str::from_utf8(bytes.get(tag_end.checked_add(1)?..)?).ok()?;
+    let lower = rest.to_ascii_lowercase();
+    let close = lower.find("</style")?;
+    Some(&rest[..close])
+}
+
+fn svg_merge_class_styles(
+    class_styles: &mut HashMap<String, HashMap<String, String>>,
+    style: &str,
+) {
+    let mut cursor = 0usize;
+    while let Some(dot_offset) = style[cursor..].find('.') {
+        let class_start = cursor + dot_offset + 1;
+        let class_end = style[class_start..]
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+            .map(|offset| class_start + offset)
+            .unwrap_or(style.len());
+        if class_end == class_start {
+            cursor = class_start;
+            continue;
+        }
+        let after_class = skip_ascii_whitespace(style, class_end);
+        if style.as_bytes().get(after_class) != Some(&b'{') {
+            cursor = class_end;
+            continue;
+        }
+        let Some(close_offset) = style[after_class + 1..].find('}') else {
+            break;
+        };
+        let body_start = after_class + 1;
+        let body_end = body_start + close_offset;
+        let declarations = svg_class_style_declarations(&style[body_start..body_end]);
+        if !declarations.is_empty() {
+            class_styles
+                .entry(style[class_start..class_end].to_owned())
+                .or_default()
+                .extend(declarations);
+        }
+        cursor = body_end + 1;
+    }
+}
+
+fn svg_class_style_declarations(style: &str) -> HashMap<String, String> {
+    style
+        .split(';')
+        .filter_map(|declaration| {
+            let (name, value) = declaration.split_once(':')?;
+            let name = name.trim().to_ascii_lowercase();
+            if !svg_class_style_property_supported(&name) {
+                return None;
+            }
+            let value = value.trim();
+            (!value.is_empty()).then(|| (name, value.to_owned()))
+        })
+        .collect()
+}
+
+fn svg_class_style_property_supported(property: &str) -> bool {
+    SVG_INHERITED_PAINT_ATTRS.contains(&property)
+        || matches!(property, "stop-color" | "stop-opacity")
 }
 
 fn svg_remove_style_overridden_paint_attrs(attrs: &mut HashMap<String, String>, style: &str) {
