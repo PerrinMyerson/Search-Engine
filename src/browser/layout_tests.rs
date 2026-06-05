@@ -2427,6 +2427,92 @@ fn css_body_text_scale_keeps_scrolled_sentence_continuous_after_image() {
 }
 
 #[test]
+fn default_raster_density_scales_scrolled_paragraph_text_with_image() {
+    let render = render_html(
+        "mem://raster-density-scroll",
+        br#"
+            <html><body>
+              <img alt="" width="24" height="36">
+              <p style="font-size:16px">Readable browser text shares the viewport with images</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if collapse_repeated_glyph_runs(text)
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Readable browser text")) =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("body paragraph text should render after image");
+    assert!(text_y > 0);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(text_y),
+        viewport_width: Some(48),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    assert_eq!(raster_options.cell_width, 12);
+    assert_eq!(raster_options.cell_height, 18);
+    assert_eq!(raster_glyph_scale(raster_options), 2);
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize default-density scrolled paragraph");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(text_y));
+    assert_eq!(
+        report.width,
+        raster_options
+            .viewport_width
+            .unwrap()
+            .saturating_mul(raster_options.cell_width)
+            .saturating_add(raster_options.padding_x.saturating_mul(2))
+    );
+    assert_eq!(
+        report.height,
+        raster_options
+            .viewport_height
+            .unwrap()
+            .saturating_mul(raster_options.cell_height)
+            .saturating_add(raster_options.padding_y.saturating_mul(2))
+    );
+
+    fn pixel(raster: &BrowserRgbaRaster, x: usize, y: usize) -> &[u8] {
+        let index = y
+            .saturating_mul(raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &raster.pixels[index..index.saturating_add(4)]
+    }
+    let first_cell_x = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
+    let first_cell_y = raster_options.padding_y;
+    let first_cell_ink = (first_cell_y..first_cell_y.saturating_add(raster_options.cell_height))
+        .flat_map(|y| {
+            (first_cell_x..first_cell_x.saturating_add(raster_options.cell_width))
+                .map(move |x| (x, y))
+        })
+        .filter(|(x, y)| pixel(&rgba, *x, *y) != &[255, 255, 255, 255])
+        .count();
+    assert!(
+        first_cell_ink >= 24,
+        "default raster density should draw body glyphs larger than a miniature 5x7 cell"
+    );
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
