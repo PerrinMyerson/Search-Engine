@@ -11,6 +11,7 @@ use super::{
 };
 
 const BROWSER_APP_CLOSED_TAB_LIMIT: usize = 10;
+const BROWSER_APP_REPORT_TEXT_MAX_CHARS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserAppOptions {
@@ -125,6 +126,11 @@ pub struct BrowserAppReport {
     pub find: Option<BrowserAppFindState>,
     pub links: Vec<BrowserLink>,
     pub forms: Vec<BrowserForm>,
+    #[serde(default)]
+    pub text_chars: usize,
+    #[serde(default)]
+    pub visible_text_chars: usize,
+    #[serde(serialize_with = "serialize_browser_app_report_text")]
     pub text: String,
     pub visible_text: Vec<String>,
     pub cookies: Vec<BrowserCookie>,
@@ -495,6 +501,9 @@ impl BrowserApp {
                 .lines
             })
             .unwrap_or_default();
+        let text = current_render.map_or_else(String::new, |render| render.text.clone());
+        let text_chars = text.chars().count();
+        let visible_text_chars = visible_text.iter().map(|line| line.chars().count()).sum();
 
         Ok(BrowserAppReport {
             active_tab: self.active_tab,
@@ -511,7 +520,9 @@ impl BrowserApp {
             find: tab.find.clone(),
             links: tab.session.current_links().to_vec(),
             forms: tab.session.current_forms().to_vec(),
-            text: current_render.map_or_else(String::new, |render| render.text.clone()),
+            text_chars,
+            visible_text_chars,
+            text,
             visible_text,
             cookies: tab.session.cookies_snapshot(),
             local_storage: tab.session.local_storage_entries(),
@@ -979,6 +990,28 @@ fn browser_viewport_frame_pixel_bytes(frame: &BrowserViewportFrameReport) -> usi
         .frame_width
         .saturating_mul(frame.frame_height)
         .saturating_mul(frame.bytes_per_pixel)
+}
+
+fn serialize_browser_app_report_text<S>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&browser_app_report_text_label(text))
+}
+
+fn browser_app_report_text_label(text: &str) -> String {
+    let text_chars = text.chars().count();
+    if text_chars <= BROWSER_APP_REPORT_TEXT_MAX_CHARS {
+        return text.to_owned();
+    }
+
+    let preview: String = text
+        .chars()
+        .take(BROWSER_APP_REPORT_TEXT_MAX_CHARS)
+        .collect();
+    format!(
+        "{preview}\n[brutal-app-report-text-truncated text_chars={text_chars} retained_chars={BROWSER_APP_REPORT_TEXT_MAX_CHARS}]"
+    )
 }
 
 fn browser_app_tab_summary(
@@ -1926,6 +1959,33 @@ mod tests {
                 "          cleanly      #".to_owned()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn browser_app_report_serialization_bounds_large_text() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("large-report-text.html");
+        let repeated = "rust browser ".repeat(BROWSER_APP_REPORT_TEXT_MAX_CHARS / 13 + 32);
+        fs::write(
+            &page,
+            format!("<html><head><title>Large</title></head><body>{repeated}</body></html>"),
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&page.display().to_string(), app_options())
+            .await
+            .unwrap();
+        let report = app.report().unwrap();
+        let serialized = serde_json::to_value(&report).unwrap();
+        let serialized_text = serialized["text"].as_str().unwrap();
+
+        assert_eq!(report.text_chars, report.text.chars().count());
+        assert!(report.text_chars > BROWSER_APP_REPORT_TEXT_MAX_CHARS);
+        assert!(report.visible_text_chars <= report.text_chars);
+        assert_ne!(serialized_text, report.text);
+        assert!(serialized_text.contains("brutal-app-report-text-truncated"));
+        assert!(serialized_text.contains(&format!("text_chars={}", report.text_chars)));
+        assert!(serialized_text.chars().count() <= BROWSER_APP_REPORT_TEXT_MAX_CHARS + 128);
     }
 
     #[tokio::test]
