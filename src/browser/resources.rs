@@ -1753,7 +1753,7 @@ fn push_selected_background_alias_resource(
         if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
             && let Some(url) = background_image_urls_from_attr_value(value)
                 .into_iter()
-                .next()
+                .last()
         {
             push_resource(
                 resources,
