@@ -68,6 +68,14 @@ pub struct BrowserResourceFetch {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_host: Option<String>,
+    #[serde(default)]
+    pub timed_out: bool,
+    #[serde(default)]
+    pub retryable: bool,
     #[serde(default)]
     pub elapsed_ms: u128,
     #[serde(default)]
@@ -163,6 +171,14 @@ pub struct BrowserDocumentLoadReport {
     #[serde(serialize_with = "serialize_optional_report_error")]
     pub error: Option<String>,
     pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_scheme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_host: Option<String>,
+    #[serde(default)]
+    pub timed_out: bool,
+    #[serde(default)]
+    pub retryable: bool,
     pub elapsed_ms: u128,
     pub request_timeout_ms: u128,
     pub diagnostic: Option<String>,
@@ -230,6 +246,8 @@ impl BrowserResourceCacheStoreOutcome {
 
 impl BrowserResourceFetch {
     fn from_args(args: BrowserResourceFetchArgs, image_bytes: Option<&[u8]>) -> Self {
+        let target_diagnostics =
+            resource_target_diagnostics(&args.resource.resolved, args.error_kind.as_deref());
         let image_report = image_resource_fetch_decode_report(
             &args.resource,
             &args.status,
@@ -272,6 +290,10 @@ impl BrowserResourceFetch {
             content_type: args.content_type,
             error: args.error,
             error_kind: args.error_kind,
+            target_scheme: target_diagnostics.scheme,
+            target_host: target_diagnostics.host,
+            timed_out: target_diagnostics.timed_out,
+            retryable: target_diagnostics.retryable,
             elapsed_ms: args.elapsed_ms,
             request_timeout_ms: args.request_timeout_ms,
             cache_entries: args.cache_pressure.entries,
@@ -489,20 +511,28 @@ pub(super) async fn load_target_with_cookie_jar_report(
 ) -> BrowserDocumentLoadReport {
     let started = Instant::now();
     match load_target_with_cookie_jar_inner(target, max_bytes, cookie_jar).await {
-        Ok((source, bytes, content_type)) => BrowserDocumentLoadReport {
-            target: target.to_owned(),
-            status: "loaded".to_owned(),
-            source: Some(source),
-            bytes: bytes.len(),
-            content_type,
-            error: None,
-            error_kind: None,
-            elapsed_ms: started.elapsed().as_millis(),
-            request_timeout_ms: request_timeout_ms_for_target(target, true),
-            diagnostic: Some("document_loaded".to_owned()),
-        },
+        Ok((source, bytes, content_type)) => {
+            let target_diagnostics = resource_target_diagnostics(target, None);
+            BrowserDocumentLoadReport {
+                target: target.to_owned(),
+                status: "loaded".to_owned(),
+                source: Some(source),
+                bytes: bytes.len(),
+                content_type,
+                error: None,
+                error_kind: None,
+                target_scheme: target_diagnostics.scheme,
+                target_host: target_diagnostics.host,
+                timed_out: target_diagnostics.timed_out,
+                retryable: target_diagnostics.retryable,
+                elapsed_ms: started.elapsed().as_millis(),
+                request_timeout_ms: request_timeout_ms_for_target(target, true),
+                diagnostic: Some("document_loaded".to_owned()),
+            }
+        }
         Err(error) => {
             let error_kind = classify_load_error(&error);
+            let target_diagnostics = resource_target_diagnostics(target, Some(&error_kind));
             BrowserDocumentLoadReport {
                 target: target.to_owned(),
                 status: "failed".to_owned(),
@@ -511,6 +541,10 @@ pub(super) async fn load_target_with_cookie_jar_report(
                 content_type: None,
                 error: Some(error.to_string()),
                 error_kind: Some(error_kind.clone()),
+                target_scheme: target_diagnostics.scheme,
+                target_host: target_diagnostics.host,
+                timed_out: target_diagnostics.timed_out,
+                retryable: target_diagnostics.retryable,
                 elapsed_ms: started.elapsed().as_millis(),
                 request_timeout_ms: request_timeout_ms_for_target(target, true),
                 diagnostic: Some(document_load_failure_diagnostic(&error_kind)),
@@ -789,6 +823,37 @@ fn report_error_label(error: &str) -> String {
     format!(
         "{preview}\n[brutal-report-error-truncated error_chars={error_chars} retained_chars={REPORT_ERROR_MAX_CHARS}]"
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserResourceTargetDiagnostics {
+    scheme: Option<String>,
+    host: Option<String>,
+    timed_out: bool,
+    retryable: bool,
+}
+
+fn resource_target_diagnostics(
+    target: &str,
+    error_kind: Option<&str>,
+) -> BrowserResourceTargetDiagnostics {
+    let parsed = Url::parse(target).ok();
+    let scheme = parsed
+        .as_ref()
+        .map(|url| url.scheme().to_owned())
+        .or_else(|| target.split_once(':').map(|(scheme, _)| scheme.to_owned()));
+    let host = parsed
+        .as_ref()
+        .and_then(|url| url.host_str().map(str::to_owned));
+    let timed_out = error_kind == Some("timeout");
+    let retryable = matches!(error_kind, Some("timeout" | "dns" | "connect"));
+
+    BrowserResourceTargetDiagnostics {
+        scheme,
+        host,
+        timed_out,
+        retryable,
+    }
 }
 
 fn decode_base64_data_url_payload(input: &str) -> Result<Vec<u8>> {
@@ -2196,6 +2261,10 @@ mod tests {
             content_type: None,
             error: Some(error.clone()),
             error_kind: Some("timeout".to_owned()),
+            target_scheme: Some("https".to_owned()),
+            target_host: Some("example.test".to_owned()),
+            timed_out: true,
+            retryable: true,
             elapsed_ms: 6000,
             request_timeout_ms: 6000,
             cache_entries: 0,
@@ -2347,6 +2416,38 @@ mod tests {
         );
 
         assert_eq!(classify_load_error(&error), "timeout");
+    }
+
+    #[test]
+    fn resource_timeout_diagnostics_include_host_and_retry_visibility() {
+        let fetch = BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource: test_resource("https://www.truveta.com/"),
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some("operation timed out".to_owned()),
+                error_kind: Some("timeout".to_owned()),
+                elapsed_ms: 6001,
+                request_timeout_ms: 6000,
+                cache_pressure: BrowserResourceCachePressure::default(),
+                cache_outcome: Some("miss_failed".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(fetch.target_scheme.as_deref(), Some("https"));
+        assert_eq!(fetch.target_host.as_deref(), Some("www.truveta.com"));
+        assert!(fetch.timed_out);
+        assert!(fetch.retryable);
+        assert_eq!(fetch.diagnostic.as_deref(), Some("network_timeout"));
+
+        let byte_cap = resource_target_diagnostics("data:text/plain,hello", Some("byte_cap"));
+        assert_eq!(byte_cap.scheme.as_deref(), Some("data"));
+        assert_eq!(byte_cap.host, None);
+        assert!(!byte_cap.timed_out);
+        assert!(!byte_cap.retryable);
     }
 
     #[tokio::test]
