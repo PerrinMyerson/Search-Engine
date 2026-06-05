@@ -197,6 +197,12 @@ pub struct BrowserAppWindowFrameReport {
     pub window_frame_cache_reusable: bool,
     #[serde(default)]
     pub window_frame_cache_hit: bool,
+    #[serde(default)]
+    pub visual_frame_ready: bool,
+    #[serde(default)]
+    pub visual_frame_waiting: bool,
+    #[serde(default)]
+    pub visual_frame_status: String,
     pub pixel_hash: String,
     pub non_background_pixels: usize,
     pub artifact_format: String,
@@ -478,6 +484,9 @@ impl BrowserApp {
         };
         if let Some(mut frame) = cached_window_frame {
             frame.report.window_frame_cache_hit = true;
+            frame.report.visual_frame_ready = true;
+            frame.report.visual_frame_waiting = false;
+            frame.report.visual_frame_status = "ready-cached".to_owned();
             return Ok(frame);
         }
 
@@ -1476,6 +1485,9 @@ fn compose_browser_app_window_frame(
             cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
             window_frame_cache_reusable,
             window_frame_cache_hit: false,
+            visual_frame_ready: true,
+            visual_frame_waiting: false,
+            visual_frame_status: "ready-rendered".to_owned(),
             pixel_hash,
             non_background_pixels,
             artifact_format: "png-rgba8-browser-window".to_owned(),
@@ -1759,6 +1771,9 @@ mod tests {
         assert!(initial.report.page.viewport.full_repaint);
         assert!(!initial.report.window_frame_cache_reusable);
         assert!(!initial.report.window_frame_cache_hit);
+        assert!(initial.report.visual_frame_ready);
+        assert!(!initial.report.visual_frame_waiting);
+        assert_eq!(initial.report.visual_frame_status, "ready-rendered");
         assert!(app.tabs[0].last_presented_window_frame.is_none());
 
         let stable = app.present_window_frame().unwrap();
@@ -1766,6 +1781,9 @@ mod tests {
         assert_eq!(stable.report.page.dirty_pixel_area, 0);
         assert!(stable.report.window_frame_cache_reusable);
         assert!(!stable.report.window_frame_cache_hit);
+        assert!(stable.report.visual_frame_ready);
+        assert!(!stable.report.visual_frame_waiting);
+        assert_eq!(stable.report.visual_frame_status, "ready-rendered");
         assert_eq!(
             stable.report.cached_window_frame_pixel_bytes,
             stable.raster.pixels.len()
@@ -1779,8 +1797,12 @@ mod tests {
 
         let reused = app.present_window_frame().unwrap();
         assert!(reused.report.window_frame_cache_hit);
+        assert!(reused.report.visual_frame_ready);
+        assert!(!reused.report.visual_frame_waiting);
+        assert_eq!(reused.report.visual_frame_status, "ready-cached");
         let mut expected_report = stable.report.clone();
         expected_report.window_frame_cache_hit = true;
+        expected_report.visual_frame_status = "ready-cached".to_owned();
         assert_eq!(reused.report, expected_report);
         assert_eq!(reused.raster.pixels, stable.raster.pixels);
 
