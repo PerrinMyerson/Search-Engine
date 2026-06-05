@@ -195,6 +195,8 @@ pub struct BrowserAppWindowFrameReport {
     pub cached_window_frame_limit_bytes: usize,
     #[serde(default)]
     pub window_frame_cache_reusable: bool,
+    #[serde(default)]
+    pub window_frame_cache_hit: bool,
     pub pixel_hash: String,
     pub non_background_pixels: usize,
     pub artifact_format: String,
@@ -474,7 +476,8 @@ impl BrowserApp {
                 .filter(|cached| cached.frame.report.page.viewport.viewport == tab.viewport)
                 .map(|cached| cached.frame.clone())
         };
-        if let Some(frame) = cached_window_frame {
+        if let Some(mut frame) = cached_window_frame {
+            frame.report.window_frame_cache_hit = true;
             return Ok(frame);
         }
 
@@ -1472,6 +1475,7 @@ fn compose_browser_app_window_frame(
             cached_window_frame_pixel_bytes,
             cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
             window_frame_cache_reusable,
+            window_frame_cache_hit: false,
             pixel_hash,
             non_background_pixels,
             artifact_format: "png-rgba8-browser-window".to_owned(),
@@ -1754,12 +1758,14 @@ mod tests {
         let initial = app.present_window_frame().unwrap();
         assert!(initial.report.page.viewport.full_repaint);
         assert!(!initial.report.window_frame_cache_reusable);
+        assert!(!initial.report.window_frame_cache_hit);
         assert!(app.tabs[0].last_presented_window_frame.is_none());
 
         let stable = app.present_window_frame().unwrap();
         assert!(!stable.report.page.viewport.full_repaint);
         assert_eq!(stable.report.page.dirty_pixel_area, 0);
         assert!(stable.report.window_frame_cache_reusable);
+        assert!(!stable.report.window_frame_cache_hit);
         assert_eq!(
             stable.report.cached_window_frame_pixel_bytes,
             stable.raster.pixels.len()
@@ -1772,7 +1778,10 @@ mod tests {
         assert!(browser_app_window_frame_is_reusable(&stable));
 
         let reused = app.present_window_frame().unwrap();
-        assert_eq!(reused.report, stable.report);
+        assert!(reused.report.window_frame_cache_hit);
+        let mut expected_report = stable.report.clone();
+        expected_report.window_frame_cache_hit = true;
+        assert_eq!(reused.report, expected_report);
         assert_eq!(reused.raster.pixels, stable.raster.pixels);
 
         let mut oversized = stable.clone();
