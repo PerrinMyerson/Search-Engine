@@ -967,7 +967,11 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
     {
         return None;
     }
-    if bit_depth? != 8 || compression_method? != 0 || filter_method? != 0 || interlace_method? != 0
+    let interlace_method = interlace_method?;
+    if bit_depth? != 8
+        || compression_method? != 0
+        || filter_method? != 0
+        || !matches!(interlace_method, 0 | 1)
     {
         return None;
     }
@@ -985,16 +989,53 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
         6 => 4,
         _ => return None,
     };
+    let mut decoder = ZlibDecoder::new(idat.as_slice());
+    let mut raw = Vec::new();
+    decoder.read_to_end(&mut raw).ok()?;
+    let (pixels, rgb_pixels) = match interlace_method {
+        0 => decode_png_scanlines(
+            width,
+            height,
+            channels,
+            color_type,
+            &palette,
+            &transparency,
+            &raw,
+        )?,
+        1 => decode_adam7_png_scanlines(
+            width,
+            height,
+            channels,
+            color_type,
+            &palette,
+            &transparency,
+            &raw,
+        )?,
+        _ => return None,
+    };
+
+    Some(DecodedImage {
+        width,
+        height,
+        pixels,
+        rgb_pixels: Some(rgb_pixels),
+    })
+}
+
+fn decode_png_scanlines(
+    width: usize,
+    height: usize,
+    channels: usize,
+    color_type: u8,
+    palette: &[u8],
+    transparency: &[u8],
+    raw: &[u8],
+) -> Option<(Vec<u8>, Vec<u8>)> {
     let row_bytes = width.checked_mul(channels)?;
     let expected_len = row_bytes.checked_add(1)?.checked_mul(height)?;
-
-    let mut decoder = ZlibDecoder::new(idat.as_slice());
-    let mut raw = Vec::with_capacity(expected_len);
-    decoder.read_to_end(&mut raw).ok()?;
     if raw.len() != expected_len {
         return None;
     }
-
     let pixel_count = width.checked_mul(height)?;
     let mut pixels = Vec::with_capacity(pixel_count);
     let mut rgb_pixels = Vec::with_capacity(pixel_count.checked_mul(3)?);
@@ -1005,30 +1046,127 @@ pub(super) fn decode_simple_png(bytes: &[u8]) -> Option<DecodedImage> {
     for _ in 0..height {
         let filter = raw[offset];
         offset += 1;
-        current.copy_from_slice(&raw[offset..offset + row_bytes]);
-        offset += row_bytes;
+        current.copy_from_slice(raw.get(offset..offset.checked_add(row_bytes)?)?);
+        offset = offset.checked_add(row_bytes)?;
         reconstruct_png_scanline(filter, channels, &previous, &mut current)?;
-        push_png_grayscale_pixels(&current, color_type, &palette, &transparency, &mut pixels)?;
-        push_png_rgb_pixels(
+        push_png_decoded_row(
             &current,
             color_type,
-            &palette,
-            &transparency,
+            palette,
+            transparency,
+            &mut pixels,
             &mut rgb_pixels,
         )?;
         previous.copy_from_slice(&current);
     }
 
-    if pixels.len() != pixel_count || rgb_pixels.len() != pixel_count.checked_mul(3)? {
+    png_decoded_pixels_complete(pixel_count, pixels, rgb_pixels)
+}
+
+fn decode_adam7_png_scanlines(
+    width: usize,
+    height: usize,
+    channels: usize,
+    color_type: u8,
+    palette: &[u8],
+    transparency: &[u8],
+    raw: &[u8],
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    const ADAM7_PASSES: [(usize, usize, usize, usize); 7] = [
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ];
+
+    let full_row_bytes = width.checked_mul(channels)?;
+    let mut full_rows = vec![0u8; full_row_bytes.checked_mul(height)?];
+    let mut offset = 0usize;
+
+    for (start_x, start_y, step_x, step_y) in ADAM7_PASSES {
+        let pass_width = adam7_pass_size(width, start_x, step_x);
+        let pass_height = adam7_pass_size(height, start_y, step_y);
+        if pass_width == 0 || pass_height == 0 {
+            continue;
+        }
+        let row_bytes = pass_width.checked_mul(channels)?;
+        let mut previous = vec![0u8; row_bytes];
+        let mut current = vec![0u8; row_bytes];
+        for pass_y in 0..pass_height {
+            let filter = *raw.get(offset)?;
+            offset = offset.checked_add(1)?;
+            current.copy_from_slice(raw.get(offset..offset.checked_add(row_bytes)?)?);
+            offset = offset.checked_add(row_bytes)?;
+            reconstruct_png_scanline(filter, channels, &previous, &mut current)?;
+            for pass_x in 0..pass_width {
+                let dest_x = start_x.checked_add(pass_x.checked_mul(step_x)?)?;
+                let dest_y = start_y.checked_add(pass_y.checked_mul(step_y)?)?;
+                if dest_x >= width || dest_y >= height {
+                    continue;
+                }
+                let source_offset = pass_x.checked_mul(channels)?;
+                let dest_offset = dest_y
+                    .checked_mul(full_row_bytes)?
+                    .checked_add(dest_x.checked_mul(channels)?)?;
+                full_rows
+                    .get_mut(dest_offset..dest_offset.checked_add(channels)?)?
+                    .copy_from_slice(current.get(source_offset..source_offset + channels)?);
+            }
+            previous.copy_from_slice(&current);
+        }
+    }
+    if offset != raw.len() {
         return None;
     }
 
-    Some(DecodedImage {
-        width,
-        height,
-        pixels,
-        rgb_pixels: Some(rgb_pixels),
-    })
+    let pixel_count = width.checked_mul(height)?;
+    let mut pixels = Vec::with_capacity(pixel_count);
+    let mut rgb_pixels = Vec::with_capacity(pixel_count.checked_mul(3)?);
+    for row in full_rows.chunks_exact(full_row_bytes) {
+        push_png_decoded_row(
+            row,
+            color_type,
+            palette,
+            transparency,
+            &mut pixels,
+            &mut rgb_pixels,
+        )?;
+    }
+    png_decoded_pixels_complete(pixel_count, pixels, rgb_pixels)
+}
+
+fn adam7_pass_size(size: usize, start: usize, step: usize) -> usize {
+    if start >= size {
+        0
+    } else {
+        size.saturating_sub(start).saturating_add(step - 1) / step
+    }
+}
+
+fn push_png_decoded_row(
+    row: &[u8],
+    color_type: u8,
+    palette: &[u8],
+    transparency: &[u8],
+    pixels: &mut Vec<u8>,
+    rgb_pixels: &mut Vec<u8>,
+) -> Option<()> {
+    push_png_grayscale_pixels(row, color_type, palette, transparency, pixels)?;
+    push_png_rgb_pixels(row, color_type, palette, transparency, rgb_pixels)
+}
+
+fn png_decoded_pixels_complete(
+    pixel_count: usize,
+    pixels: Vec<u8>,
+    rgb_pixels: Vec<u8>,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    if pixels.len() != pixel_count || rgb_pixels.len() != pixel_count.checked_mul(3)? {
+        return None;
+    }
+    Some((pixels, rgb_pixels))
 }
 
 fn read_png_u32(bytes: &[u8]) -> Option<u32> {
