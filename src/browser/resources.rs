@@ -25,6 +25,7 @@ const RESOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 const DATA_URL_SOURCE_METADATA_MAX_CHARS: usize = 80;
 const DATA_URL_REPORT_LABEL_MAX_CHARS: usize = 120;
 const REPORT_PAGE_SOURCE_MAX_CHARS: usize = 16 * 1024;
+const REPORT_ERROR_MAX_CHARS: usize = 2 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -63,6 +64,7 @@ pub struct BrowserResourceFetch {
     pub source: Option<String>,
     pub bytes: usize,
     pub content_type: Option<String>,
+    #[serde(serialize_with = "serialize_optional_report_error")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
@@ -88,7 +90,11 @@ pub struct BrowserResourceFetch {
     pub diagnostic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_decode_status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_report_error"
+    )]
     pub image_decode_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_width: Option<usize>,
@@ -154,6 +160,7 @@ pub struct BrowserDocumentLoadReport {
     pub source: Option<String>,
     pub bytes: usize,
     pub content_type: Option<String>,
+    #[serde(serialize_with = "serialize_optional_report_error")]
     pub error: Option<String>,
     pub error_kind: Option<String>,
     pub elapsed_ms: u128,
@@ -725,6 +732,19 @@ where
     serializer.serialize_str(&report_page_source_label(source))
 }
 
+fn serialize_optional_report_error<S>(
+    error: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match error.as_deref() {
+        Some(error) => serializer.serialize_some(&report_error_label(error)),
+        None => serializer.serialize_none(),
+    }
+}
+
 fn resource_url_report_label(target: &str) -> String {
     if !target.starts_with("data:") || target.chars().count() <= DATA_URL_REPORT_LABEL_MAX_CHARS {
         return target.to_owned();
@@ -756,6 +776,18 @@ fn report_page_source_label(source: &str) -> String {
     let preview: String = source.chars().take(REPORT_PAGE_SOURCE_MAX_CHARS).collect();
     format!(
         "{preview}\n<!-- brutal-report-page-source-truncated source_chars={source_chars} retained_chars={REPORT_PAGE_SOURCE_MAX_CHARS} -->"
+    )
+}
+
+fn report_error_label(error: &str) -> String {
+    let error_chars = error.chars().count();
+    if error_chars <= REPORT_ERROR_MAX_CHARS {
+        return error.to_owned();
+    }
+
+    let preview: String = error.chars().take(REPORT_ERROR_MAX_CHARS).collect();
+    format!(
+        "{preview}\n[brutal-report-error-truncated error_chars={error_chars} retained_chars={REPORT_ERROR_MAX_CHARS}]"
     )
 }
 
@@ -2150,6 +2182,51 @@ mod tests {
             serialized_source.contains(&format!("source_chars={}", page_source.chars().count()))
         );
         assert!(serialized_source.chars().count() <= REPORT_PAGE_SOURCE_MAX_CHARS + 128);
+    }
+
+    #[test]
+    fn resource_report_serialization_bounds_large_errors() {
+        let detail = " request timed out while loading a repeated diagnostic URL".repeat(64);
+        let error = format!("operation timed out:{detail}");
+        let fetch = BrowserResourceFetch {
+            resource: test_resource("https://example.test/slow.png"),
+            status: "failed".to_owned(),
+            source: None,
+            bytes: 0,
+            content_type: None,
+            error: Some(error.clone()),
+            error_kind: Some("timeout".to_owned()),
+            elapsed_ms: 6000,
+            request_timeout_ms: 6000,
+            cache_entries: 0,
+            cache_bytes: 0,
+            cache_evicted_entries: 0,
+            cache_evicted_bytes: 0,
+            cache_max_entries: 256,
+            cache_max_bytes: 32 * 1024 * 1024,
+            cache_outcome: Some("miss_failed".to_owned()),
+            diagnostic: Some("network_timeout".to_owned()),
+            image_decode_status: None,
+            image_decode_error: Some(error.clone()),
+            decoded_width: None,
+            decoded_height: None,
+            decoded_hash: None,
+            decoded_color_hash: None,
+            decoded_color_bytes: None,
+        };
+
+        let serialized = serde_json::to_value(&fetch).unwrap();
+        let serialized_error = serialized["error"].as_str().unwrap();
+        let serialized_decode_error = serialized["image_decode_error"].as_str().unwrap();
+
+        assert_eq!(fetch.error.as_deref(), Some(error.as_str()));
+        assert_eq!(fetch.image_decode_error.as_deref(), Some(error.as_str()));
+        assert_ne!(serialized_error, error);
+        assert_eq!(serialized_error, serialized_decode_error);
+        assert!(serialized_error.starts_with("operation timed out:"));
+        assert!(serialized_error.contains("brutal-report-error-truncated"));
+        assert!(serialized_error.contains(&format!("error_chars={}", error.chars().count())));
+        assert!(serialized_error.chars().count() <= REPORT_ERROR_MAX_CHARS + 128);
     }
 
     #[test]
