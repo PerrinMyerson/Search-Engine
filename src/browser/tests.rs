@@ -2589,6 +2589,102 @@ async fn image_bitmap_color_truecolor_png_trns_composites_and_rasters_color() {
 }
 
 #[tokio::test]
+async fn image_png_interlace_adam7_decodes_and_rasters_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let png = dir.path().join("adam7-color.png");
+    let png_bytes = tiny_test_adam7_png_rgb();
+    fs::write(&png, &png_bytes).unwrap();
+
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    assert_eq!(decoded.width, 5);
+    assert_eq!(decoded.height, 5);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [230, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 180, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 220]));
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel == [220, 0, 220])
+    );
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    fs::write(
+        &page,
+        r#"<html><body><p>Before Adam7 png</p><img src="adam7-color.png" alt="Adam7 PNG" width="20" height="20"><p>After Adam7 png</p></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.url, "adam7-color.png");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(5));
+    assert_eq!(fetch.decoded_height, Some(5));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before Adam7 png"));
+    assert!(render.text.contains("After Adam7 png"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &png.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 180 && pixel[1] < 50 && pixel[2] < 50 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 50 && pixel[1] > 140 && pixel[2] < 50 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 50 && pixel[1] < 50 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_color_pipeline_preserves_rgb_pixels_in_decoded_resource_report() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
@@ -5270,6 +5366,23 @@ fn tiny_test_png_rgb_with_trns_key() -> Vec<u8> {
     encode_test_png_with_trns(2, 2, 2, &filtered_scanlines, &transparency)
 }
 
+fn tiny_test_adam7_png_rgb() -> Vec<u8> {
+    let width = 5usize;
+    let height = 5usize;
+    let mut pixels = vec![245u8; width * height * 3];
+    for (x, y, rgb) in [
+        (0usize, 0usize, [230, 0, 0]),
+        (4, 0, [0, 180, 0]),
+        (0, 4, [0, 0, 220]),
+        (4, 4, [220, 0, 220]),
+        (2, 2, [255, 180, 0]),
+    ] {
+        let offset = (y * width + x) * 3;
+        pixels[offset..offset + 3].copy_from_slice(&rgb);
+    }
+    encode_test_adam7_png(width as u32, height as u32, 2, &pixels)
+}
+
 fn tiny_test_indexed_png_with_transparency() -> Vec<u8> {
     let filtered_scanlines = [0, 0, 1, 0, 2, 3];
     let palette = [0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 255];
@@ -5328,6 +5441,76 @@ fn encode_test_png_with_trns(
     push_test_png_chunk(&mut png, b"IDAT", &idat);
     push_test_png_chunk(&mut png, b"IEND", &[]);
     png
+}
+
+fn encode_test_adam7_png(width: u32, height: u32, color_type: u8, pixels: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    const ADAM7_PASSES: [(usize, usize, usize, usize); 7] = [
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ];
+
+    let width = width as usize;
+    let height = height as usize;
+    let channels = match color_type {
+        0 | 3 => 1,
+        2 => 3,
+        4 => 2,
+        6 => 4,
+        _ => panic!("unsupported test PNG color type"),
+    };
+    assert_eq!(pixels.len(), width * height * channels);
+    let mut filtered_scanlines = Vec::new();
+    for (start_x, start_y, step_x, step_y) in ADAM7_PASSES {
+        let pass_width = adam7_test_pass_size(width, start_x, step_x);
+        let pass_height = adam7_test_pass_size(height, start_y, step_y);
+        if pass_width == 0 || pass_height == 0 {
+            continue;
+        }
+        for pass_y in 0..pass_height {
+            filtered_scanlines.push(0);
+            let source_y = start_y + pass_y * step_y;
+            for pass_x in 0..pass_width {
+                let source_x = start_x + pass_x * step_x;
+                let source_offset = (source_y * width + source_x) * channels;
+                filtered_scanlines
+                    .extend_from_slice(&pixels[source_offset..source_offset + channels]);
+            }
+        }
+    }
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&filtered_scanlines).unwrap();
+    let idat = encoder.finish().unwrap();
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
+    ihdr.push(8);
+    ihdr.push(color_type);
+    ihdr.push(0);
+    ihdr.push(0);
+    ihdr.push(1);
+
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    push_test_png_chunk(&mut png, b"IHDR", &ihdr);
+    push_test_png_chunk(&mut png, b"IDAT", &idat);
+    push_test_png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn adam7_test_pass_size(size: usize, start: usize, step: usize) -> usize {
+    if start >= size {
+        0
+    } else {
+        size.saturating_sub(start).saturating_add(step - 1) / step
+    }
 }
 
 fn encode_test_indexed_png(
