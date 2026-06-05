@@ -461,6 +461,8 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut polylines = Vec::new();
     let mut paths = Vec::new();
     let mut embedded_images = Vec::new();
+    let mut linear_gradients: HashMap<String, Vec<SvgGradientStop>> = HashMap::new();
+    let mut current_linear_gradient = None;
     let mut transform_stack = vec![Some(SvgTransform::identity())];
     let mut paint_stack = vec![HashMap::new()];
 
@@ -577,6 +579,19 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                                 embedded_images.push(SvgShapeAttrs { attrs, transform });
                             }
                         }
+                        "lineargradient" => {
+                            current_linear_gradient = attrs.get("id").cloned();
+                            if let Some(id) = current_linear_gradient.as_ref() {
+                                linear_gradients.entry(id.clone()).or_default();
+                            }
+                        }
+                        "stop" => {
+                            if let Some(id) = current_linear_gradient.as_ref()
+                                && let Some(stop) = svg_gradient_stop(&attrs)
+                            {
+                                linear_gradients.entry(id.clone()).or_default().push(stop);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -586,6 +601,8 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                         paint_stack.pop();
                     } else if tag.name == "svg" && paint_stack.len() > 1 {
                         paint_stack.pop();
+                    } else if tag.name == "lineargradient" {
+                        current_linear_gradient = None;
                     }
                 }
             }
@@ -599,9 +616,6 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
     let mut rgb_pixels = vec![255u8; width.checked_mul(height)?.checked_mul(3)?];
     for rect_shape in rects {
         let rect = &rect_shape.attrs;
-        let Some(fill) = svg_shape_fill_paint(&rect) else {
-            continue;
-        };
         if rect_shape.transform.is_identity() {
             let x = rect
                 .get("x")
@@ -623,17 +637,33 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                 .and_then(|value| parse_svg_pixel_dimension(value))
                 .unwrap_or(height.saturating_sub(y))
                 .min(height.saturating_sub(y));
-            fill_decoded_rect(
-                &mut pixels,
-                &mut rgb_pixels,
-                width,
-                x,
-                y,
-                rect_width,
-                rect_height,
-                fill,
-            );
+            if let Some(gradient) = svg_shape_fill_linear_gradient(rect, &linear_gradients) {
+                fill_decoded_rect_horizontal_gradient(
+                    &mut pixels,
+                    &mut rgb_pixels,
+                    width,
+                    x,
+                    y,
+                    rect_width,
+                    rect_height,
+                    gradient,
+                );
+            } else if let Some(fill) = svg_shape_fill_paint(rect) {
+                fill_decoded_rect(
+                    &mut pixels,
+                    &mut rgb_pixels,
+                    width,
+                    x,
+                    y,
+                    rect_width,
+                    rect_height,
+                    fill,
+                );
+            }
         } else if let Some(points) = svg_rect_points(rect, width, height) {
+            let Some(fill) = svg_shape_fill_paint(rect) else {
+                continue;
+            };
             let points = transform_svg_points(&points, rect_shape.transform);
             fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
         }
@@ -1723,6 +1753,31 @@ fn svg_shape_fill_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
     svg_shape_paint(attrs, "fill")
 }
 
+fn svg_shape_fill_linear_gradient(
+    attrs: &HashMap<String, String>,
+    gradients: &HashMap<String, Vec<SvgGradientStop>>,
+) -> Option<Vec<SvgGradientStop>> {
+    let value = svg_shape_paint_value(attrs, "fill")?;
+    let id = svg_paint_url_fragment(value)?;
+    let mut stops = gradients.get(id)?.clone();
+    if stops.len() < 2 {
+        return None;
+    }
+    stops.sort_by(|left, right| {
+        left.offset
+            .partial_cmp(&right.offset)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(stops)
+}
+
+fn svg_paint_url_fragment(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let args = value.strip_prefix("url(")?.strip_suffix(')')?.trim();
+    let args = args.trim_matches(['"', '\'']);
+    args.strip_prefix('#').filter(|id| !id.is_empty())
+}
+
 fn svg_shape_stroke_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
     svg_shape_paint(attrs, "stroke")
 }
@@ -1807,6 +1862,59 @@ fn svg_shape_number_attr(attrs: &HashMap<String, String>, property: &str) -> Opt
         .get(property)
         .and_then(|value| parse_svg_number(value))
         .or_else(|| svg_style_number(attrs.get("style")?, property))
+}
+
+fn svg_gradient_stop(attrs: &HashMap<String, String>) -> Option<SvgGradientStop> {
+    let offset = attrs
+        .get("offset")
+        .and_then(|value| parse_svg_gradient_offset(value))
+        .unwrap_or(0.0);
+    let value = attrs
+        .get("stop-color")
+        .map(String::as_str)
+        .or_else(|| svg_style_property_value(attrs.get("style")?, "stop-color"))?;
+    if value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("transparent") {
+        return None;
+    }
+    let rgb = parse_svg_css_color_rgb(value).or_else(|| {
+        let shade = parse_css_color_shade(value)?;
+        Some([shade, shade, shade])
+    })?;
+    let opacity = attrs
+        .get("stop-opacity")
+        .and_then(|value| parse_svg_unit_alpha(value))
+        .or_else(|| svg_style_alpha(attrs.get("style")?, "stop-opacity"))
+        .unwrap_or(1.0);
+    let shape_opacity = attrs
+        .get("opacity")
+        .and_then(|value| parse_svg_unit_alpha(value))
+        .or_else(|| svg_style_alpha(attrs.get("style")?, "opacity"))
+        .unwrap_or(1.0);
+    let alpha = ((opacity * shape_opacity).clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(SvgGradientStop {
+        offset,
+        paint: SvgPaint {
+            shade: svg_rgb_to_luma(rgb),
+            rgb,
+            alpha,
+        },
+    })
+}
+
+fn parse_svg_gradient_offset(value: &str) -> Option<f32> {
+    let value = value.trim();
+    if let Some(percent) = value.strip_suffix('%') {
+        return Some((percent.trim().parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0));
+    }
+    Some(value.parse::<f32>().ok()?.clamp(0.0, 1.0))
+}
+
+fn parse_svg_unit_alpha(value: &str) -> Option<f32> {
+    let value = value.trim();
+    if let Some(percent) = value.strip_suffix('%') {
+        return Some((percent.trim().parse::<f32>().ok()? / 100.0).clamp(0.0, 1.0));
+    }
+    Some(value.parse::<f32>().ok()?.clamp(0.0, 1.0))
 }
 
 fn parse_svg_css_color_rgb(value: &str) -> Option<[u8; 3]> {
@@ -1986,6 +2094,19 @@ fn svg_style_number(style: &str, property: &str) -> Option<f32> {
             .eq_ignore_ascii_case(property)
             .then(|| parse_svg_number(value))
             .flatten()
+    })
+}
+
+fn svg_style_alpha(style: &str, property: &str) -> Option<f32> {
+    svg_style_property_value(style, property).and_then(parse_svg_unit_alpha)
+}
+
+fn svg_style_property_value<'a>(style: &'a str, property: &str) -> Option<&'a str> {
+    style.split(';').rev().find_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(property)
+            .then(|| value.trim())
     })
 }
 
@@ -2527,6 +2648,64 @@ fn fill_decoded_rect(
     }
 }
 
+fn fill_decoded_rect_horizontal_gradient(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    image_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    stops: Vec<SvgGradientStop>,
+) {
+    let denominator = width.saturating_sub(1).max(1) as f32;
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            let offset = column.saturating_sub(x) as f32 / denominator;
+            let paint = sample_svg_gradient(&stops, offset);
+            set_decoded_pixel(
+                pixels,
+                rgb_pixels,
+                row.saturating_mul(image_width).saturating_add(column),
+                paint,
+            );
+        }
+    }
+}
+
+fn sample_svg_gradient(stops: &[SvgGradientStop], offset: f32) -> SvgPaint {
+    let offset = offset.clamp(0.0, 1.0);
+    let first = stops[0];
+    if offset <= first.offset {
+        return first.paint;
+    }
+    for pair in stops.windows(2) {
+        let left = pair[0];
+        let right = pair[1];
+        if offset > right.offset {
+            continue;
+        }
+        let span = (right.offset - left.offset).max(0.0001);
+        let t = ((offset - left.offset) / span).clamp(0.0, 1.0);
+        return SvgPaint {
+            shade: interpolate_svg_channel(left.paint.shade, right.paint.shade, t),
+            rgb: [
+                interpolate_svg_channel(left.paint.rgb[0], right.paint.rgb[0], t),
+                interpolate_svg_channel(left.paint.rgb[1], right.paint.rgb[1], t),
+                interpolate_svg_channel(left.paint.rgb[2], right.paint.rgb[2], t),
+            ],
+            alpha: interpolate_svg_channel(left.paint.alpha, right.paint.alpha, t),
+        };
+    }
+    stops.last().map(|stop| stop.paint).unwrap_or(first.paint)
+}
+
+fn interpolate_svg_channel(left: u8, right: u8, t: f32) -> u8 {
+    (left as f32 + (right as f32 - left as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
 fn svg_rect_points(
     rect: &HashMap<String, String>,
     image_width: usize,
@@ -2860,6 +3039,12 @@ struct SvgPaint {
     shade: u8,
     rgb: [u8; 3],
     alpha: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SvgGradientStop {
+    offset: f32,
+    paint: SvgPaint,
 }
 
 #[derive(Debug, Clone, Copy)]
