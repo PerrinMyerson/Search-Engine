@@ -9779,7 +9779,7 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
 <style>
 :root {{ color-scheme: light; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
 body {{ margin: 0; background: #f7f7f5; color: #191a1c; }}
-main {{ max-width: 1120px; margin: 0 auto; padding: 18px 18px 56px; }}
+main {{ max-width: none; margin: 0; padding: 18px 18px 56px; }}
 a {{ color: #123fae; text-decoration: none; font-weight: 700; overflow-wrap: anywhere; }}
 a:hover {{ text-decoration: underline; }}
 h1 {{ margin: 14px 0 6px; font-size: 24px; letter-spacing: 0; }}
@@ -9911,11 +9911,11 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
 .resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
 .resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
-.browser-raster-shell {{ position: relative; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
+.browser-raster-shell {{ position: relative; width: 100%; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster-shell[data-viewport-pending="true"] {{ cursor: wait; }}
 .browser-raster-shell[data-browser-pending-viewport="true"] {{ cursor: wait; }}
-.browser-raster {{ display: block; max-width: 100%; height: auto; }}
+.browser-raster {{ display: block; max-width: none; width: auto; height: auto; }}
 .browser-click-marker {{ position: absolute; z-index: 2; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid #2457d6; border-radius: 999px; background: rgba(36, 87, 214, 0.12); box-shadow: 0 0 0 2px rgba(255,255,255,0.88); pointer-events: none; }}
 .browser-click-marker::after {{ content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #2457d6; }}
 .browser-raster-placeholder {{ min-height: 96px; display: grid; align-content: center; gap: 6px; padding: 14px; background: #f6f8fb; color: #3a3f45; font-size: 13px; cursor: default; }}
@@ -10439,7 +10439,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
             payload,
         );
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>Loading browser viewport</strong><span>Opening {source}. The tab is retained; continue loading to retry without losing the browser controls.</span><a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>No rendered viewport yet</strong><span>Opening {source}. The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable.</span><a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
             viewport_x = payload.viewport_x,
             viewport_y = payload.viewport_y,
             viewport_width = payload.width,
