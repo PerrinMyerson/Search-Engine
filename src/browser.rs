@@ -3881,12 +3881,24 @@ fn hit_test_target_node_in_viewport(
     x: usize,
     y: usize,
 ) -> Option<usize> {
-    let viewport = browser_document_viewport(render, viewport, None).viewport;
-    let viewport = raster_viewport_from_state(viewport);
-    let page_x = viewport.x.saturating_add(x);
-    let page_y = viewport.y.saturating_add(y);
+    let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
     hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
         .or_else(|| hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y))
+}
+
+fn viewport_local_point_to_page(
+    render: &BrowserRender,
+    viewport: BrowserViewportState,
+    x: usize,
+    y: usize,
+) -> Option<(RasterViewport, usize, usize)> {
+    let viewport = browser_document_viewport(render, viewport, None).viewport;
+    if x >= viewport.width || y >= viewport.height {
+        return None;
+    }
+    let page_x = viewport.x.saturating_add(x);
+    let page_y = viewport.y.saturating_add(y);
+    Some((raster_viewport_from_state(viewport), page_x, page_y))
 }
 
 fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
