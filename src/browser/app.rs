@@ -135,6 +135,10 @@ pub struct BrowserAppReport {
     pub cached_window_frame_limit_bytes: usize,
     #[serde(default)]
     pub cached_frame_tab_count: usize,
+    #[serde(default)]
+    pub cached_frame_total_pixel_bytes: usize,
+    #[serde(default)]
+    pub cached_frame_total_limit_bytes: usize,
     pub focused: Option<BrowserFocusedControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find: Option<BrowserAppFindState>,
@@ -586,6 +590,10 @@ impl BrowserApp {
             .as_ref()
             .map(|cached| cached.frame.raster.pixels.len())
             .unwrap_or(0);
+        let cached_frame_total_pixel_bytes =
+            cached_frame_pixel_bytes.saturating_add(cached_window_frame_pixel_bytes);
+        let cached_frame_total_limit_bytes = BROWSER_APP_CACHED_FRAME_MAX_BYTES
+            .saturating_add(BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES);
         let cached_frame_tab_count = self
             .tabs
             .iter()
@@ -610,6 +618,8 @@ impl BrowserApp {
             cached_window_frame_pixel_bytes,
             cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
             cached_frame_tab_count,
+            cached_frame_total_pixel_bytes,
+            cached_frame_total_limit_bytes,
             frame,
             focused: tab.session.focused_control(),
             find: tab.find.clone(),
@@ -1739,8 +1749,17 @@ mod tests {
             browser_viewport_frame_pixel_bytes(&reused.report)
         );
         assert_eq!(
+            report.cached_frame_total_pixel_bytes,
+            report.cached_frame_pixel_bytes
+        );
+        assert_eq!(
             report.cached_frame_limit_bytes,
             BROWSER_APP_CACHED_FRAME_MAX_BYTES
+        );
+        assert_eq!(
+            report.cached_frame_total_limit_bytes,
+            BROWSER_APP_CACHED_FRAME_MAX_BYTES
+                .saturating_add(BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES)
         );
 
         let mut oversized = stable.clone();
@@ -1805,6 +1824,18 @@ mod tests {
         expected_report.visual_frame_status = "ready-cached".to_owned();
         assert_eq!(reused.report, expected_report);
         assert_eq!(reused.raster.pixels, stable.raster.pixels);
+        let report = app.report_for_frame(reused.report.page.clone()).unwrap();
+        assert_eq!(
+            report.cached_frame_total_pixel_bytes,
+            report
+                .cached_frame_pixel_bytes
+                .saturating_add(report.cached_window_frame_pixel_bytes)
+        );
+        assert_eq!(
+            report.cached_frame_total_limit_bytes,
+            BROWSER_APP_CACHED_FRAME_MAX_BYTES
+                .saturating_add(BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES)
+        );
 
         let mut oversized = stable.clone();
         oversized.report.window_frame_cache_reusable = true;
