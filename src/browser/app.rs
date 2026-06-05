@@ -129,6 +129,12 @@ pub struct BrowserAppReport {
     pub cached_frame_limit_bytes: usize,
     #[serde(default)]
     pub frame_cache_reusable: bool,
+    #[serde(default)]
+    pub cached_window_frame_pixel_bytes: usize,
+    #[serde(default)]
+    pub cached_window_frame_limit_bytes: usize,
+    #[serde(default)]
+    pub cached_frame_tab_count: usize,
     pub focused: Option<BrowserFocusedControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find: Option<BrowserAppFindState>,
@@ -563,6 +569,18 @@ impl BrowserApp {
             .as_ref()
             .map(|frame| browser_viewport_frame_pixel_bytes(&frame.report))
             .unwrap_or(0);
+        let cached_window_frame_pixel_bytes = tab
+            .last_presented_window_frame
+            .as_ref()
+            .map(|cached| cached.frame.raster.pixels.len())
+            .unwrap_or(0);
+        let cached_frame_tab_count = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.last_presented_frame.is_some() || tab.last_presented_window_frame.is_some()
+            })
+            .count();
 
         Ok(BrowserAppReport {
             active_tab: self.active_tab,
@@ -577,6 +595,9 @@ impl BrowserApp {
             cached_frame_pixel_bytes,
             cached_frame_limit_bytes: BROWSER_APP_CACHED_FRAME_MAX_BYTES,
             frame_cache_reusable: cached_frame_pixel_bytes > 0,
+            cached_window_frame_pixel_bytes,
+            cached_window_frame_limit_bytes: BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES,
+            cached_frame_tab_count,
             frame,
             focused: tab.session.focused_control(),
             find: tab.find.clone(),
@@ -655,6 +676,7 @@ impl BrowserApp {
             find: None,
         });
         self.active_tab = self.tabs.len() - 1;
+        self.clear_inactive_frame_caches();
         Ok(())
     }
 
@@ -666,6 +688,7 @@ impl BrowserApp {
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+        self.clear_inactive_frame_caches();
         Ok(())
     }
 
@@ -677,6 +700,7 @@ impl BrowserApp {
             );
         }
         self.active_tab = index;
+        self.clear_inactive_frame_caches();
         Ok(())
     }
 
@@ -705,6 +729,7 @@ impl BrowserApp {
         } else if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len().saturating_sub(1);
         }
+        self.clear_inactive_frame_caches();
         Ok(())
     }
 
@@ -718,6 +743,7 @@ impl BrowserApp {
         tab.content_dirty = true;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+        self.clear_inactive_frame_caches();
         Ok(())
     }
 
@@ -1056,6 +1082,14 @@ impl BrowserApp {
             .get_mut(self.active_tab)
             .ok_or_else(|| anyhow!("active tab {} is not open", self.active_tab))
     }
+
+    fn clear_inactive_frame_caches(&mut self) {
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            if index != self.active_tab {
+                browser_app_tab_clear_frame_caches(tab);
+            }
+        }
+    }
 }
 
 fn initial_app_viewport(
@@ -1089,6 +1123,11 @@ fn browser_app_frame_is_reusable(frame: &BrowserViewportFrame) -> bool {
 fn browser_app_window_frame_is_reusable(frame: &BrowserAppWindowFrame) -> bool {
     frame.report.window_frame_cache_reusable
         && frame.raster.pixels.len() <= BROWSER_APP_CACHED_WINDOW_FRAME_MAX_BYTES
+}
+
+fn browser_app_tab_clear_frame_caches(tab: &mut BrowserAppTab) {
+    tab.last_presented_frame = None;
+    tab.last_presented_window_frame = None;
 }
 
 fn serialize_browser_app_report_text<S>(text: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -1748,6 +1787,52 @@ mod tests {
         .await
         .unwrap();
         assert!(app.tabs[0].last_presented_window_frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn browser_app_clears_inactive_window_frame_caches_on_tab_churn() {
+        let mut app = BrowserApp::open("bench/browser-fixtures/static-text.html", app_options())
+            .await
+            .unwrap();
+
+        app.present_window_frame().unwrap();
+        app.present_window_frame().unwrap();
+        assert!(app.tabs[0].last_presented_frame.is_some());
+        assert!(app.tabs[0].last_presented_window_frame.is_some());
+        let initial_report = app.report().unwrap();
+        assert_eq!(initial_report.cached_frame_tab_count, 1);
+        assert!(initial_report.cached_window_frame_pixel_bytes > 0);
+
+        app.apply_action(BrowserAppAction::NewTab("max-width-layout.html".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(app.active_tab(), 1);
+        assert!(app.tabs[0].last_presented_frame.is_none());
+        assert!(app.tabs[0].last_presented_window_frame.is_none());
+
+        app.present_window_frame().unwrap();
+        app.present_window_frame().unwrap();
+        assert!(app.tabs[1].last_presented_frame.is_some());
+        assert!(app.tabs[1].last_presented_window_frame.is_some());
+        let active_report = app.report().unwrap();
+        assert_eq!(active_report.cached_frame_tab_count, 1);
+        assert!(active_report.cached_window_frame_pixel_bytes > 0);
+
+        app.apply_action(BrowserAppAction::SwitchTab(0))
+            .await
+            .unwrap();
+        assert_eq!(app.active_tab(), 0);
+        assert!(app.tabs[1].last_presented_frame.is_none());
+        assert!(app.tabs[1].last_presented_window_frame.is_none());
+        assert_eq!(
+            app.tabs
+                .iter()
+                .filter(|tab| {
+                    tab.last_presented_frame.is_some() || tab.last_presented_window_frame.is_some()
+                })
+                .count(),
+            0
+        );
     }
 
     #[tokio::test]
