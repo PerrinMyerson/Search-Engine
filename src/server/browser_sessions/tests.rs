@@ -8808,9 +8808,17 @@ async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster
     assert_eq!(payload.history_len, 1);
     assert!(!payload.can_back);
     assert_eq!(payload.pending_source.as_deref(), Some(target_url.as_str()));
+    assert!(payload.title.starts_with("Loading http://127.0.0.1:"));
     assert_eq!(payload.source, target_url);
     assert!(payload.viewport.contains("Go"));
     assert!(payload.viewport_image.is_some());
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert!(current_tab.title.starts_with("Loading http://127.0.0.1:"));
+    assert_eq!(current_tab.source, target_url);
     let feedback = payload.action_feedback.as_deref().unwrap_or_default();
     assert!(feedback.contains("Clicked raster x"));
     assert!(feedback.contains("opening http://127.0.0.1:"));
@@ -8819,6 +8827,80 @@ async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains(&format!("Opening {target_url}")));
+    assert!(html.contains("current raster retained"));
+    assert!(html.contains(">Retry load</a>"));
+    assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
+}
+
+#[tokio::test]
+async fn browser_session_registry_form_submit_failure_becomes_retained_pending_target() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unreachable = listener.local_addr().unwrap();
+    drop(listener);
+
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("form-pending.html");
+    let target_url = format!("http://{unreachable}/submit");
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><title>Form pending</title><form action="{target_url}" method="get"><input name="q" value="rust"><button>Go</button></form>"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Form pending");
+    assert_eq!(payload.form_count, 1);
+    assert!(payload.viewport_image.is_some());
+
+    let submit = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "submit".to_owned()),
+            ("form".to_owned(), "0".to_owned()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&submit).await.unwrap();
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(payload.pending_source.as_deref(), Some(target_url.as_str()));
+    assert!(payload.title.starts_with("Loading http://127.0.0.1:"));
+    assert_eq!(payload.source, target_url);
+    assert!(payload.viewport.contains("Go"));
+    assert!(payload.viewport_image.is_some());
+    let current_tab = payload
+        .sessions
+        .iter()
+        .find(|session| session.current)
+        .unwrap();
+    assert!(current_tab.title.starts_with("Loading http://127.0.0.1:"));
+    assert_eq!(current_tab.source, target_url);
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains("Submitted form 0; opening http://127.0.0.1:"));
+    assert!(feedback.contains("is pending after form navigation failed"));
+    assert!(feedback.contains("viewport preserved"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains(&format!("Opening {target_url}")));
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains("current raster retained"));
+    assert!(html.contains(">Retry load</a>"));
+    assert!(html.contains(r#"<img class="browser-raster""#));
     assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
 }
 
@@ -9402,8 +9484,10 @@ fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
     assert!(html.contains(r#"data-viewport-y="3""#));
     assert!(html.contains(r#"data-raster-width="1208""#));
     assert!(html.contains(r#"data-raster-height="800""#));
+    assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains("Opening https://iana.org/"));
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
-    assert!(html.contains("rendered viewport retained"));
+    assert!(html.contains("current raster retained"));
     assert!(html.contains(">Retry load</a>"));
     assert!(html.contains("Still opening https://iana.org/"));
     assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
@@ -12673,8 +12757,10 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(!html.contains(r#"data-viewport-state="loading""#));
     assert!(!html.contains("Loading browser viewport"));
     assert!(!html.contains(r#"data-browser-primary-state data-browser-pending-load="true""#));
+    assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains("Opening data:text/html"));
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
-    assert!(html.contains("rendered viewport retained"));
+    assert!(html.contains("current raster retained"));
     assert!(html.contains(">Retry load</a>"));
     assert!(!html.contains(">Continue loading</a>"));
     assert!(!html.contains(r#"data-browser-pending-load-retry"#));
