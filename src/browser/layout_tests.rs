@@ -5379,6 +5379,156 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
 }
 
 #[test]
+fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
+    let image_url = "mem://diagonal-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![40, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://diagonal-scroll-frame".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default().with_viewport_fixed(true),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "PIN".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Header".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 2,
+                shade: 160,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 5,
+                width: 8,
+                height: 2,
+                shade: 232,
+            },
+            DisplayCommand::Text {
+                x: 2,
+                y: 7,
+                text: "Body".to_owned(),
+            },
+        ],
+        text: "Header\nBody".to_owned(),
+    };
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: 1,
+        width: 4,
+        height: 3,
+    };
+    let requested = BrowserViewportState {
+        x: 1,
+        y: 3,
+        width: 4,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_x: Some(99),
+        viewport_y: Some(99),
+        viewport_width: Some(99),
+        viewport_height: Some(99),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, requested, Some(previous), options)
+        .expect("render diagonal scroll viewport frame");
+
+    assert_eq!(frame.report.viewport.viewport, requested);
+    assert_eq!(frame.report.viewport.scroll_delta_x, 1);
+    assert_eq!(frame.report.viewport.scroll_delta_y, 2);
+    assert!(!frame.report.viewport.full_repaint);
+    assert_eq!(
+        frame.report.viewport.invalidated_regions,
+        vec![
+            BrowserViewportRect {
+                x: 3,
+                y: 0,
+                width: 1,
+                height: 3,
+            },
+            BrowserViewportRect {
+                x: 0,
+                y: 1,
+                width: 3,
+                height: 2,
+            },
+        ]
+    );
+    assert_eq!(frame.report.frame.raster_viewport_x, Some(1));
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(3));
+    assert_eq!(frame.report.dirty_pixel_regions.len(), 2);
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(1usize.saturating_mul(options.cell_width)),
+            options.padding_y
+        ),
+        &[40, 120, 220, 255]
+    );
+    let fixed_text_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(frame.raster.height))
+        .any(|y| {
+            (options.padding_x..options.padding_x.saturating_add(options.cell_width * 3))
+                .any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        });
+    assert!(fixed_text_has_ink);
+}
+
+#[test]
 fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
     let image_url = "mem://inline-svg-context-image".to_owned();
     let decoded = DecodedImage {
