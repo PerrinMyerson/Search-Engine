@@ -7398,6 +7398,7 @@ fn draw_glyph_clipped(
                     let Ok(pixel_x) = usize::try_from(pixel_x.saturating_add(dx as isize)) else {
                         continue;
                     };
+                    let pixel_ink = raster_glyph_pixel_ink(ink, scale, dx, dy);
                     set_raster_pixel(
                         pixels,
                         width,
@@ -7406,7 +7407,7 @@ fn draw_glyph_clipped(
                             .saturating_add(offset_y)
                             .saturating_add(row.saturating_mul(scale))
                             .saturating_add(dy),
-                        ink,
+                        pixel_ink,
                     );
                 }
             }
@@ -7444,6 +7445,7 @@ fn draw_rgba_glyph_clipped(
                     let Ok(pixel_x) = usize::try_from(pixel_x.saturating_add(dx as isize)) else {
                         continue;
                     };
+                    let pixel_ink = raster_glyph_pixel_ink(ink, scale, dx, dy);
                     set_rgba_pixel(
                         pixels,
                         width,
@@ -7452,11 +7454,22 @@ fn draw_rgba_glyph_clipped(
                             .saturating_add(offset_y)
                             .saturating_add(row.saturating_mul(scale))
                             .saturating_add(dy),
-                        [ink, ink, ink, 255],
+                        [pixel_ink, pixel_ink, pixel_ink, 255],
                     );
                 }
             }
         }
+    }
+}
+
+fn raster_glyph_pixel_ink(ink: u8, scale: usize, dx: usize, dy: usize) -> u8 {
+    if scale <= 1 || (dx == 0 && dy == 0) {
+        return ink;
+    }
+    if ink < 128 {
+        ink.saturating_add(72)
+    } else {
+        ink.saturating_sub(72)
     }
 }
 

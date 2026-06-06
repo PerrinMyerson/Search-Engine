@@ -1974,6 +1974,90 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
 }
 
 #[test]
+fn scaled_raster_glyphs_soften_edges_without_moving_text_geometry() {
+    let render = render_html(
+        "mem://scaled-glyph-edge-readability",
+        br##"
+            <html><body>
+              <p><a href="/next" style="font-size:16px; color:#000">HH readable text</a></p>
+            </body></html>
+            "##,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (text_x, text_y, text) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("HH readable text") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("scaled paragraph text should keep a stable display command");
+    assert_eq!(text_x, 0);
+    assert_eq!(text, "HH readable text");
+    assert_eq!(
+        display_command_bounds(
+            render
+                .display_list
+                .iter()
+                .find(|command| matches!(command, DisplayCommand::Text { text, .. } if text == "HH readable text"))
+                .expect("text command bounds")
+        ),
+        DisplayCommandBounds {
+            x: 0,
+            y: text_y,
+            width: "HH readable text".chars().count(),
+            height: 1,
+        }
+    );
+
+    assert!(
+        hit_test_target_node(&render, text_x, text_y).is_some(),
+        "link text hit box should remain aligned with the visible glyphs"
+    );
+
+    let raster_options = BrowserRasterOptions::default();
+    assert_eq!(raster_glyph_scale(raster_options), 2);
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize softened scaled glyph text");
+    let glyph_x = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width))
+        .saturating_add(1);
+    let glyph_y = raster_options
+        .padding_y
+        .saturating_add(text_y.saturating_mul(raster_options.cell_height))
+        .saturating_add(2);
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(pixel(glyph_x, glyph_y), &[0, 0, 0, 255]);
+    assert_eq!(pixel(glyph_x + 1, glyph_y), &[72, 72, 72, 255]);
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: text_y,
+            width: 40,
+            height: 1,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, text_y);
+    assert_eq!(viewport.document_width, render.viewport_width);
+}
+
+#[test]
 fn css_text_indent_offsets_first_line_and_affects_wrap_width() {
     let render = render_html(
         "mem://text-indent",
