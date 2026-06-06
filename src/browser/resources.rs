@@ -1466,8 +1466,7 @@ fn collect_resources_at(
             {
                 if picture_source_resource_media_may_match_screen(element) {
                     push_src_resource(resources, source, element, "image");
-                    push_image_srcset_resources(resources, source, element, "image_candidate");
-                    push_image_alias_resources(resources, source, element);
+                    push_picture_source_image_resources(resources, source, dom, node_id, element);
                 }
             }
             "source" if parent_element_tag_is(dom, node_id, "picture") => {}
@@ -1620,6 +1619,127 @@ fn push_image_srcset_resources(
     for url in supported_srcset_candidate_urls(srcset) {
         push_resource(resources, source, element, kind, &element.tag, &url);
     }
+}
+
+fn push_picture_source_image_resources(
+    resources: &mut Vec<BrowserResource>,
+    source: &str,
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+) {
+    if let Some(srcset) = element.srcset.as_deref() {
+        if let Some(url) = selected_picture_source_srcset_candidate(dom, node_id, element, srcset) {
+            push_resource(
+                resources,
+                source,
+                element,
+                "image_candidate",
+                &element.tag,
+                &url,
+            );
+        } else {
+            for url in supported_srcset_candidate_urls(srcset) {
+                push_resource(
+                    resources,
+                    source,
+                    element,
+                    "image_candidate",
+                    &element.tag,
+                    &url,
+                );
+            }
+        }
+    }
+
+    for attr_name in IMAGE_SRC_ALIAS_ATTRS {
+        if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
+            && !url.trim().is_empty()
+        {
+            push_resource(resources, source, element, "image", &element.tag, url);
+        }
+    }
+
+    for attr_name in IMAGE_SRCSET_ALIAS_ATTRS {
+        let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
+            continue;
+        };
+        if let Some(url) = selected_picture_source_srcset_candidate(dom, node_id, element, srcset) {
+            push_resource(
+                resources,
+                source,
+                element,
+                "image_candidate",
+                &element.tag,
+                &url,
+            );
+            return;
+        }
+    }
+}
+
+fn selected_picture_source_srcset_candidate(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    srcset: &str,
+) -> Option<String> {
+    if let Some(sizes) = image_sizes_attr(element)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    {
+        return Some(url);
+    }
+    let fallback = picture_source_fallback_img(dom, node_id)?;
+    if let Some(sizes) = image_sizes_attr(fallback)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    {
+        return Some(url);
+    }
+    let width = fallback
+        .attrs
+        .get("width")
+        .and_then(|width| parse_image_resource_dimension_attr(width))?;
+    let fallback_size = format!("{width}px");
+    selected_supported_srcset_candidate(srcset, Some(fallback_size.as_str()), usize::MAX)
+}
+
+fn picture_source_fallback_img(dom: &Dom, node_id: usize) -> Option<&ElementData> {
+    let parent = dom.nodes.get(node_id)?.parent?;
+    let parent_node = dom.nodes.get(parent)?;
+    let mut saw_source = false;
+    for &child in &parent_node.children {
+        if child == node_id {
+            saw_source = true;
+            continue;
+        }
+        if !saw_source {
+            continue;
+        }
+        if let Some(NodeKind::Element(element)) = dom.nodes.get(child).map(|node| &node.kind)
+            && element.tag == "img"
+        {
+            return Some(element);
+        }
+    }
+    None
+}
+
+fn parse_image_resource_dimension_attr(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.eq_ignore_ascii_case("auto")
+        || value.ends_with('%')
+        || value.starts_with('-')
+    {
+        return None;
+    }
+    let value = value
+        .strip_suffix("px")
+        .or_else(|| value.strip_suffix("PX"))
+        .unwrap_or(value)
+        .trim();
+    let pixels = value.parse::<f64>().ok()?;
+    (pixels.is_finite() && pixels > 0.0).then(|| pixels.ceil() as usize)
 }
 
 fn push_image_alias_resources(
