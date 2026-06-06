@@ -13528,6 +13528,16 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.position_top = parse_css_position_offset(value, CssAxis::Vertical)
                     .or(declarations.position_top);
             }
+            "inset-block" => {
+                let (start, end) = parse_css_inset_axis_offsets(value, CssAxis::Vertical);
+                declarations.position_top = start.or(declarations.position_top);
+                declarations.position_bottom = end.or(declarations.position_bottom);
+            }
+            "inset-inline" => {
+                let (start, end) = parse_css_inset_axis_offsets(value, CssAxis::Horizontal);
+                declarations.position_left = start.or(declarations.position_left);
+                declarations.position_right = end.or(declarations.position_right);
+            }
             "inset" => {
                 let inset = parse_css_inset_offsets(value);
                 declarations.position_top = inset.top.or(declarations.position_top);
@@ -14894,6 +14904,23 @@ fn parse_css_inset_offsets(value: &str) -> ParsedPositionOffsets {
             .and_then(|bottom| parse_css_position_offset(bottom, CssAxis::Vertical)),
         left: left_token.and_then(|left| parse_css_position_offset(left, CssAxis::Horizontal)),
     }
+}
+
+fn parse_css_inset_axis_offsets(
+    value: &str,
+    axis: CssAxis,
+) -> (Option<CssPositionOffset>, Option<CssPositionOffset>) {
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    let start = parts
+        .first()
+        .and_then(|start| parse_css_position_offset(start, axis));
+    let end = match parts.len() {
+        0 => None,
+        1 => parts.first(),
+        _ => parts.get(1),
+    }
+    .and_then(|end| parse_css_position_offset(end, axis));
+    (start, end)
 }
 
 fn parse_css_transform_translate(value: &str) -> Option<CssTranslate> {
@@ -16263,13 +16290,13 @@ fn render_node(
                 .is_out_of_flow()
                 .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
             let mut horizontal_projection_entered = (style.position.is_out_of_flow()
-                || style.position == Position::Relative)
-                .then(|| {
-                    renderer.enter_horizontal_projection(
-                        style.horizontal_projection_offset(renderer.available_width()),
-                    )
-                })
-                .flatten();
+                || matches!(style.position, Position::Relative | Position::Sticky))
+            .then(|| {
+                renderer.enter_horizontal_projection(
+                    style.horizontal_projection_offset(renderer.available_width()),
+                )
+            })
+            .flatten();
             let viewport_fixed_entered = style.position == Position::Fixed;
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
