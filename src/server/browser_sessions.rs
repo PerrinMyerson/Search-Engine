@@ -10880,6 +10880,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
     shell.removeAttribute("data-queued-scroll-dy");
+    shell.removeAttribute("data-scroll-queued-during-request");
     shell.removeAttribute("data-stale-viewport-response");
     shell.dataset.viewportState = "settled";
     shell.dataset.settledViewportX = String(numberData("viewportX"));
@@ -11134,6 +11135,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     clearViewportPending();
     shell.dataset.viewportPartialError = "true";
     setViewportFeedback(message);
+    replayDeferredClickAfterPartial();
   };
   const syncViewportHistory = () => {
     if (!window.history || typeof window.history.replaceState !== "function") {
@@ -11161,7 +11163,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const requestSeq = ++viewportRequestSeq;
     partialRequestInFlight = true;
     shell.dataset.viewportRequest = "partial";
-    const partialRequestTimeoutMs = 8000;
+    const partialRequestTimeoutMs = 2500;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     const fetchOptions = {
       headers: { "X-Requested-With": "browser-viewport-partial" }
@@ -11255,6 +11257,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
+      shell.dataset.scrollQueuedDuringRequest = "true";
       setViewportPending("Scroll queued; updating visual viewport after current frame...");
       return true;
     }
@@ -11277,6 +11280,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollDy += dy;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
+      shell.dataset.scrollQueuedDuringRequest = "true";
       shell.dataset.queuedScrollDx = String(pendingScrollDx);
       shell.dataset.queuedScrollDy = String(pendingScrollDy);
       setViewportPending("Scroll queued; updating visual viewport after current frame...");
