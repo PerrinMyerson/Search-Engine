@@ -13,8 +13,8 @@ use tokio::sync::Mutex;
 const BRAVE_WEB_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_MAX_COUNT: usize = 20;
 const DEFAULT_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
-const DEFAULT_CACHE_MAX_ENTRIES: usize = 4096;
-const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
+pub const DEFAULT_CACHE_MAX_ENTRIES: usize = 4096;
+pub const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
 const DEFAULT_MAX_WEB_RESULTS: usize = 20;
 const DEFAULT_MIN_LOCAL_RESULTS: usize = 20;
 
