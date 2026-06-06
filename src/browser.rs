@@ -17006,13 +17006,11 @@ fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) ->
     match element.tag.as_str() {
         "input" => input_render_text(element),
         "select" => Some(select_render_text(dom, node_id)),
-        "textarea" => Some(format!(
-            "[{}]",
-            element
-                .value
-                .clone()
-                .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)))
-        )),
+        "textarea" => {
+            Some(control_label_text(&element.value.clone().unwrap_or_else(
+                || collapse_ascii_whitespace(&text_content(dom, node_id)),
+            )))
+        }
         "button" => Some(button_render_text(dom, node_id, element)),
         _ => None,
     }
@@ -17027,9 +17025,9 @@ fn button_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Strin
         .map(str::to_owned)
         .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)));
     if label.is_empty() {
-        "[Button]".to_owned()
+        "Button".to_owned()
     } else {
-        format!("[{label}]")
+        label
     }
 }
 
@@ -17041,38 +17039,42 @@ fn input_render_text(element: &ElementData) -> Option<String> {
         .to_ascii_lowercase();
     match kind.as_str() {
         "hidden" => Some(String::new()),
-        "checkbox" => Some(if element.checked { "[x]" } else { "[ ]" }.to_owned()),
-        "radio" => Some(if element.checked { "(x)" } else { "( )" }.to_owned()),
-        "submit" => Some(format!(
-            "[{}]",
-            element.value.as_deref().unwrap_or("Submit").trim()
+        "checkbox" => Some(if element.checked { "x" } else { " " }.to_owned()),
+        "radio" => Some(if element.checked { "x" } else { " " }.to_owned()),
+        "submit" => Some(control_label_text(
+            element.value.as_deref().unwrap_or("Submit"),
         )),
-        "reset" => Some(format!(
-            "[{}]",
-            element.value.as_deref().unwrap_or("Reset").trim()
+        "reset" => Some(control_label_text(
+            element.value.as_deref().unwrap_or("Reset"),
         )),
-        "button" => Some(format!(
-            "[{}]",
-            element.value.as_deref().unwrap_or("Button").trim()
+        "button" => Some(control_label_text(
+            element.value.as_deref().unwrap_or("Button"),
         )),
         "image" => element
             .alt
             .as_deref()
             .or(element.value.as_deref())
-            .map(|label| format!("[{}]", label.trim()))
-            .or_else(|| Some("[image]".to_owned())),
-        "password" => Some(format!(
-            "[{}]",
-            "*".repeat(element.value.as_deref().unwrap_or_default().chars().count())
+            .map(control_label_text)
+            .or_else(|| Some("image".to_owned())),
+        "password" => Some(control_label_text(
+            &"*".repeat(element.value.as_deref().unwrap_or_default().chars().count()),
         )),
-        _ => Some(format!(
-            "[{}]",
+        _ => Some(control_label_text(
             element
                 .value
                 .as_deref()
                 .or_else(|| element.attrs.get("placeholder").map(String::as_str))
-                .unwrap_or_default()
+                .unwrap_or_default(),
         )),
+    }
+}
+
+fn control_label_text(value: &str) -> String {
+    let label = value.trim();
+    if label.is_empty() {
+        " ".to_owned()
+    } else {
+        label.to_owned()
     }
 }
 
@@ -17085,7 +17087,7 @@ fn select_render_text(dom: &Dom, node_id: usize) -> String {
         .map(|option| option.label.as_str())
         .or_else(|| options.first().map(|option| option.label.as_str()))
         .unwrap_or_default();
-    format!("[{label}]")
+    control_label_text(label)
 }
 
 fn computed_style(
