@@ -939,6 +939,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in storage_pressure_rollup_lines(&stats, &web_summary) {
         println!("{line}");
     }
+    for line in storage_snapshot_readiness_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
     for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
         println!("{line}");
     }
@@ -1089,6 +1092,51 @@ fn storage_pressure_rollup_lines(
     ]
 }
 
+fn storage_snapshot_readiness_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let frontier_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.total)
+        .unwrap_or(0);
+    let status = if web_summary.suggested_dry_runs > 0 {
+        "needs-web-compaction"
+    } else {
+        "ready"
+    };
+    let mut lines = vec![
+        format!(
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_duplicates={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            status,
+            stats.total_bytes,
+            web_summary.bytes,
+            crawl_bytes,
+            web_summary.duplicate_entries,
+            web_summary.suggested_dry_runs,
+            stats.crawl_snapshot_entries,
+            frontier_records
+        ),
+        format!("storage_snapshot_status: {status}"),
+        format!(
+            "storage_snapshot_web_suggested_dry_runs: {}",
+            web_summary.suggested_dry_runs
+        ),
+        format!("storage_snapshot_frontier_records: {}", frontier_records),
+    ];
+    if web_summary.suggested_dry_runs > 0 {
+        lines.push(format!(
+            "storage_snapshot_cleanup_hint: brutal-search compact-web-cache --dry-run --min-entries {}",
+            web_summary.entries.max(1)
+        ));
+    }
+    lines
+}
+
 fn count_jsonl_entries(path: &Path) -> Result<usize> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("open index storage jsonl artifact {}", path.display()))?;
@@ -1134,6 +1182,10 @@ fn web_storage_pressure_summary_lines(
         format!(
             "web_storage_pressure_stale_artifacts: {}",
             summary.stale_artifacts
+        ),
+        format!(
+            "web_storage_pressure_suggested_dry_runs: {}",
+            summary.suggested_dry_runs
         ),
     ];
     if summary.suggested_dry_runs > 0 {
@@ -1943,6 +1995,78 @@ mod tests {
         assert!(lines.contains(&"storage_pressure_web_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=400 web_bytes=300 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_web_compaction_pressure() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 5,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            duplicate_entries: 4,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_duplicates=4 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
+        assert!(lines.contains(
+            &"storage_snapshot_cleanup_hint: brutal-search compact-web-cache --dry-run --min-entries 30".to_owned()
+        ));
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_ready_when_web_pressure_is_clean() {
+        let stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            duplicate_entries: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_duplicates=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("storage_snapshot_cleanup_hint:"))
+        );
     }
 
     #[test]
