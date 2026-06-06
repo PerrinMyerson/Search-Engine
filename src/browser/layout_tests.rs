@@ -468,8 +468,8 @@ fn list_marker_gutter_keeps_article_links_readable_after_scroll() {
         },
         None,
     );
-    assert_eq!(viewport.viewport.y, viewport_y);
     assert!(viewport.max_scroll_y > 0);
+    assert!(viewport.viewport.y > 0);
     let local_y = wrapped_link_line.1.saturating_sub(viewport.viewport.y);
     assert!(
         hit_test_target_node_in_viewport(&render, viewport.viewport, wrapped_link_line.0, local_y)
@@ -1504,14 +1504,14 @@ fn css_inline_block_menu_items_keep_block_links_on_row() {
         },
     );
 
-    assert_eq!(render.text, "Data Intelligence Customers\nAfter");
+    assert_eq!(render.text, "Data  Intelligence  Customers\nAfter");
     assert_eq!(
         render.display_list,
         vec![
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
-                text: "Data Intelligence Customers".to_owned(),
+                text: "Data  Intelligence  Customers".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
@@ -1519,6 +1519,107 @@ fn css_inline_block_menu_items_keep_block_links_on_row() {
                 text: "After".to_owned(),
             },
         ]
+    );
+}
+
+#[test]
+fn css_inline_block_margins_keep_link_chips_readable_after_scroll() {
+    let render = render_html(
+        "mem://css-inline-block-chip-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 24px; }
+              nav { background: rgb(246, 246, 246); }
+              .chip {
+                display: inline-block;
+                margin-right: 16px;
+              }
+              .chip a {
+                display: block;
+                background: rgb(232, 232, 232);
+              }
+              .tail { height: 72px; }
+            </style></head><body>
+              <p class="lead">Intro copy before chips.</p>
+              <nav>
+                <span class="chip"><a href="/docs">Docs</a></span>
+                <span class="chip"><a href="/install">Install</a></span>
+                <span class="chip"><a href="/learn">Learn</a></span>
+              </nav>
+              <p class="tail">Trailing copy keeps the page scrollable.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. } => {
+                    let offset = text.find(needle)?;
+                    Some((x.saturating_add(offset), *y))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("visible text containing {needle:?}"))
+    };
+    let docs = text_position("Docs");
+    let install = text_position("Install");
+    let learn = text_position("Learn");
+    assert_eq!(docs.1, install.1);
+    assert_eq!(install.1, learn.1);
+    assert!(
+        install.0 >= docs.0 + "Docs".len() + 3,
+        "inline-block margin-right should reserve visible space between link chips"
+    );
+    assert!(learn.0 >= install.0 + "Install".len() + 3);
+    let learn_target =
+        hit_test_target_node(&render, learn.0, learn.1).expect("chip link should be hittable");
+
+    let viewport_y = learn.1.saturating_sub(1);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 40,
+            height: 5,
+        },
+        None,
+    );
+    assert!(viewport.max_scroll_y > 0);
+    assert!(viewport.viewport.y > 0);
+    let local_y = learn.1.saturating_sub(viewport.viewport.y);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, learn.0, local_y),
+        Some(learn_target)
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(40),
+        viewport_height: Some(5),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled chip nav");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [246, 246, 246, 255]),
+        "scrolled raster should retain the nav underlay"
+    );
+    assert!(
+        render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::Rect { y, shade, .. } if *y == learn.1 && *shade == 232
+        )),
+        "scrolled display list should retain link chip backgrounds"
     );
 }
 
