@@ -2141,7 +2141,7 @@ fn url_likely_supported_image(url: &str) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "svg" | "png" | "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "webp"
+                "svg" | "png" | "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "webp" | "gif"
             )
         })
 }
