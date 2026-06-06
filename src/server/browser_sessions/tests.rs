@@ -2689,6 +2689,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-y")"#));
     assert!(html.contains(r#"shell.addEventListener("mousemove""#));
     assert!(html.contains(r#"shell.addEventListener("mouseleave""#));
+    assert!(html.contains("if (!viewportWorkPending())"));
     assert!(html.contains(r#"data-browser-click-status"#));
     assert!(html.contains(". Click."));
     assert!(html.contains("Ready for page click."));

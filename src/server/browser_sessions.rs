@@ -11583,7 +11583,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   shell.addEventListener("mouseleave", () => {
     hideClickMarker();
     setClickStatus("Ready for page click.");
-    setViewportFeedback("Ready to scroll.");
+    if (!viewportWorkPending()) {
+      setViewportFeedback("Ready to scroll.");
+    }
   });
   shell.addEventListener("click", (event) => {
     if (event.button !== 0 || event.defaultPrevented || !raster) {
