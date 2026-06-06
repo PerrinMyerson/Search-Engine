@@ -2249,19 +2249,29 @@ fn background_image_candidate_clearly_unsupported(url: &str) -> bool {
 
 const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-bg",
+    "data-bg-image",
+    "data-bg-image-url",
     "data-bg-src",
     "data-bgsrc",
     "data-background",
+    "data-background-url",
     "data-background-image",
+    "data-background-image-url",
     "data-backgroundimage",
+    "data-backgroundimageurl",
     "data-background-src",
     "data-backgroundsrc",
     "data-lazy-bg",
+    "data-lazy-bg-image",
+    "data-lazy-bg-image-url",
     "data-lazybg",
     "data-lazy-background",
+    "data-lazy-background-url",
     "data-lazybackground",
     "data-lazy-background-image",
+    "data-lazy-background-image-url",
     "data-lazybackgroundimage",
+    "data-lazybackgroundimageurl",
 ];
 
 const BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[

@@ -11074,6 +11074,104 @@ async fn image_style_background_fetches_lazy_background_alias_resources() {
 }
 
 #[tokio::test]
+async fn image_background_aliases_attach_image_url_backgrounds_in_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let promo = dir.path().join("promo.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&promo, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before background aliases</p>
+            <section data-bg-image-url="url('hero.webp')">Hero background</section>
+            <section data-lazy-background-url="promo.webp">Promo background</section>
+            <p>After background aliases</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+
+    let mut decoded = Vec::new();
+    for (file, url) in [(&hero, "hero.webp"), (&promo, "promo.webp")] {
+        let resolved = file.display().to_string();
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "background_image");
+        assert_eq!(fetch.resource.initiator, "section");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        decoded.push((resolved, fetch.decoded_hash.clone().unwrap()));
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before background aliases"));
+    assert!(render.text.contains("After background aliases"));
+    for (resolved, decoded_hash) in decoded {
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::BackgroundImage {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            )
+        }));
+    }
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 245 && pixel[1] < 245 && pixel[2] < 245 && pixel[3] == 255 })
+    );
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    for (file, url) in [(&hero, "hero.webp"), (&promo, "promo.webp")] {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == file.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "background_image");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+        assert!(fetch.decoded_color_hash.is_some());
+    }
+}
+
+#[tokio::test]
 async fn image_background_fidelity_skips_unsupported_typed_imageset_candidate_for_rendering() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
