@@ -14,8 +14,9 @@ use url::Url;
 use super::images::{
     ImageDecodeDiagnostic, background_image_sizes_attr, background_width_template_render_source,
     image_decode_diagnostic, image_mime_type_supported, image_render_source, image_sizes_attr,
-    lazy_width_template_render_source, selected_supported_srcset_candidate, srcset_candidate_urls,
-    supported_srcset_candidate_urls,
+    is_lazy_image_placeholder_src, lazy_width_template_render_source,
+    selected_supported_srcset_candidate, srcset_candidate_clearly_unsupported,
+    srcset_candidate_urls, supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -1585,6 +1586,9 @@ fn push_img_primary_resource(
     if selected.as_deref().is_some_and(|selected| selected != src) {
         return;
     }
+    if is_lazy_image_placeholder_src(src) {
+        return;
+    }
     push_resource(resources, source, element, "image", &element.tag, src);
 }
 
@@ -1672,8 +1676,10 @@ fn push_picture_source_image_resources(
     for attr_name in IMAGE_SRC_ALIAS_ATTRS {
         if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
             && !url.trim().is_empty()
+            && !picture_source_alias_url_should_skip(element, url)
         {
             push_resource(resources, source, element, "image", &element.tag, url);
+            return;
         }
     }
 
@@ -1693,6 +1699,25 @@ fn push_picture_source_image_resources(
             return;
         }
     }
+}
+
+fn picture_source_alias_url_should_skip(element: &ElementData, url: &str) -> bool {
+    if srcset_candidate_clearly_unsupported(url) {
+        return true;
+    }
+    if !is_lazy_image_placeholder_src(url) {
+        return false;
+    }
+    IMAGE_SRC_ALIAS_ATTRS.iter().any(|attr_name| {
+        let Some(other) = element.attrs.get(*attr_name).map(String::as_str) else {
+            return false;
+        };
+        let other = other.trim();
+        !other.is_empty()
+            && other != url
+            && !is_lazy_image_placeholder_src(other)
+            && !srcset_candidate_clearly_unsupported(other)
+    })
 }
 
 fn selected_picture_source_srcset_candidate(

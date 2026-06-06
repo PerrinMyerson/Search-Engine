@@ -4971,14 +4971,8 @@ fn picture_source_attr<'a>(
             && element.tag == "source"
             && picture_source_media_matches(element.media.as_deref(), viewport_width_css_px)
             && picture_source_type_supported(element)
-            && let Some(srcset) = first_non_empty_attr(element, attr_names)
+            && let Some(srcset) = picture_source_first_renderable_attr(element, attr_names)
         {
-            if is_empty_picture_placeholder_source(element, srcset) {
-                continue;
-            }
-            if srcset_all_candidates_clearly_unsupported(srcset) {
-                continue;
-            }
             return Some(PictureSourceSet {
                 srcset,
                 sizes: image_sizes_attr(element),
@@ -4986,6 +4980,30 @@ fn picture_source_attr<'a>(
         }
     }
     None
+}
+
+fn picture_source_first_renderable_attr<'a>(
+    element: &'a ElementData,
+    attr_names: &[&str],
+) -> Option<&'a str> {
+    attr_names.iter().find_map(|attr_name| {
+        let Some(srcset) = element
+            .attrs
+            .get(*attr_name)
+            .map(String::as_str)
+            .map(str::trim)
+        else {
+            return None;
+        };
+        if srcset.is_empty()
+            || is_empty_picture_placeholder_source(element, srcset)
+            || is_lazy_image_placeholder_src(srcset)
+            || srcset_all_candidates_clearly_unsupported(srcset)
+        {
+            return None;
+        }
+        Some(srcset)
+    })
 }
 
 fn lazy_image_render_source(
@@ -5248,7 +5266,7 @@ pub(super) fn image_sizes_attr(element: &ElementData) -> Option<&str> {
     )
 }
 
-fn is_lazy_image_placeholder_src(src: &str) -> bool {
+pub(super) fn is_lazy_image_placeholder_src(src: &str) -> bool {
     let src = src.trim_start().to_ascii_lowercase();
     if src.starts_with("data:image/svg+xml")
         || src.starts_with("data:image/svg")
@@ -6283,7 +6301,7 @@ fn srcset_all_candidates_clearly_unsupported(srcset: &str) -> bool {
             .all(|candidate| srcset_candidate_clearly_unsupported(&candidate.url))
 }
 
-fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
+pub(super) fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
     let url = url.trim();
     if let Some(metadata) = url
         .strip_prefix("data:")
