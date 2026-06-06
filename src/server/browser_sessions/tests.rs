@@ -2677,6 +2677,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const viewportPointFromPagePoint"));
     assert!(html.contains("const updateClickInputs"));
     assert!(html.contains("const hideClickMarker"));
+    assert!(html.contains("const clearClickMarkerPoint"));
+    assert!(html.contains("lastClickPagePoint = null"));
     assert!(html.contains("const moveClickMarker"));
     assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
     assert!(html.contains("((point.y + 0.5) / size.height) * rasterRect.height"));
@@ -2830,6 +2832,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const replayDeferredClickAfterPartial"));
     assert!(html.contains("submitViewportClick(point, \"Clicking saved\")"));
     assert!(html.contains("Saved click is outside the settled viewport."));
+    assert!(html.contains("clearClickMarkerPoint();"));
     assert!(html.contains("Saved click target moved outside the settled viewport; click again."));
     assert!(html.contains("replayDeferredClickAfterPartial();"));
     assert!(html.contains("shell.dataset.pendingViewportX = String(pending.x)"));
