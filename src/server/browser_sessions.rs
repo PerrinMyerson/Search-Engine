@@ -11437,7 +11437,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   let pendingScrollDx = 0;
   let pendingScrollDy = 0;
   let pendingScrollTimer = null;
-  const scrollFlushDelayMs = 24;
+  const scrollFlushDelayMs = 18;
   const buildScrollUrl = (dx, dy) => {
     const x = numberData("viewportX");
     const y = numberData("viewportY");
@@ -11573,13 +11573,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!delta) {
       return 0;
     }
-    let units = delta / 24;
+    let units = delta / 16;
     if (deltaMode === WheelEvent.DOM_DELTA_LINE) {
       units = delta;
     } else if (deltaMode === WheelEvent.DOM_DELTA_PAGE) {
       units = delta * Math.max(1, viewportSize);
     }
-    const limit = Math.max(1, Math.ceil(Math.max(1, viewportSize) / 2));
+    const limit = Math.max(1, Math.max(1, viewportSize));
     const magnitude = clamp(Math.round(Math.abs(units)) || 1, 1, limit);
     return Math.sign(delta) * magnitude;
   };
@@ -11668,17 +11668,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (event.altKey || event.ctrlKey || event.metaKey) {
       return null;
     }
+    const lineStep = Math.max(1, Math.floor(numberData("viewportHeight") / 6));
     const pageY = Math.max(1, Math.floor(numberData("viewportHeight") / 2));
     let dx = 0;
     let dy = 0;
     if (event.key === "ArrowDown") {
-      dy = 1;
+      dy = lineStep;
     } else if (event.key === "ArrowUp") {
-      dy = -1;
+      dy = -lineStep;
     } else if (event.key === "ArrowRight") {
-      dx = 1;
+      dx = lineStep;
     } else if (event.key === "ArrowLeft") {
-      dx = -1;
+      dx = -lineStep;
     } else if (event.key === "PageDown" || event.key === " ") {
       dy = event.key === " " && event.shiftKey ? -pageY : pageY;
     } else if (event.key === "PageUp") {
