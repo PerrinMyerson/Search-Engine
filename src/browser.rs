@@ -16297,6 +16297,13 @@ fn render_node(
                 )
             })
             .flatten();
+            let mut vertical_projection_entered = (style.position == Position::Relative)
+                .then(|| {
+                    style
+                        .vertical_projection_offset(None)
+                        .and_then(|offset| renderer.enter_vertical_projection(offset))
+                })
+                .flatten();
             let viewport_fixed_entered = style.position == Position::Fixed;
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
@@ -16328,9 +16335,15 @@ fn render_node(
                                        out_of_flow_entered: &mut Option<FlowOutOfFlowSnapshot>,
                                        horizontal_projection_entered: &mut Option<
                 FlowHorizontalProjectionSnapshot,
+            >,
+                                       vertical_projection_entered: &mut Option<
+                FlowVerticalProjectionSnapshot,
             >| {
                 if link_text_entered {
                     renderer.exit_link_text();
+                }
+                if let Some(snapshot) = vertical_projection_entered.take() {
+                    renderer.exit_vertical_projection(snapshot);
                 }
                 if let Some(snapshot) = horizontal_projection_entered.take() {
                     renderer.exit_horizontal_projection(snapshot);
@@ -16361,6 +16374,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16370,6 +16384,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16379,6 +16394,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16415,6 +16431,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16458,6 +16475,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16487,6 +16505,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16498,6 +16517,7 @@ fn render_node(
                     renderer,
                     &mut out_of_flow_entered,
                     &mut horizontal_projection_entered,
+                    &mut vertical_projection_entered,
                 );
                 return;
             }
@@ -16903,6 +16923,7 @@ fn render_node(
                 renderer,
                 &mut out_of_flow_entered,
                 &mut horizontal_projection_entered,
+                &mut vertical_projection_entered,
             );
         }
     }
@@ -18939,6 +18960,11 @@ struct FlowHorizontalProjectionSnapshot {
     right_inset: usize,
 }
 
+#[derive(Debug)]
+struct FlowVerticalProjectionSnapshot {
+    offset: isize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FlowPositioningContext {
     y: usize,
@@ -19190,6 +19216,7 @@ struct FlowRenderer {
     font_scale_stack: Vec<usize>,
     link_text_depth: usize,
     positioning_context_stack: Vec<FlowPositioningContext>,
+    vertical_projection_offset: isize,
     viewport_fixed_depth: usize,
     viewport_sticky_top_stack: Vec<usize>,
     positive_z_layer_stack: Vec<i32>,
@@ -19256,6 +19283,7 @@ impl FlowRenderer {
             font_scale_stack: Vec::new(),
             link_text_depth: 0,
             positioning_context_stack: Vec::new(),
+            vertical_projection_offset: 0,
             viewport_fixed_depth: 0,
             viewport_sticky_top_stack: Vec::new(),
             positive_z_layer_stack: Vec::new(),
@@ -19403,9 +19431,17 @@ impl FlowRenderer {
     }
 
     fn clipped_bounds(&self, bounds: DisplayCommandBounds) -> Option<DisplayCommandBounds> {
+        let bounds = self.project_display_bounds(bounds);
         match self.active_clip {
             Some(clip) => intersect_display_bounds(bounds, clip),
             None => Some(bounds),
+        }
+    }
+
+    fn project_display_bounds(&self, bounds: DisplayCommandBounds) -> DisplayCommandBounds {
+        DisplayCommandBounds {
+            y: saturating_add_signed(bounds.y, self.vertical_projection_offset),
+            ..bounds
         }
     }
 
@@ -19428,6 +19464,7 @@ impl FlowRenderer {
         let Some(clipped) = self.clipped_bounds(bounds) else {
             return;
         };
+        let visual_y = saturating_add_signed(y, self.vertical_projection_offset);
         let char_count = text.chars().count();
         let start = clipped.x.saturating_sub(x);
         let (start_char, end_char) =
@@ -19444,23 +19481,23 @@ impl FlowRenderer {
             command_width,
         ));
         let text = scaled_text_for_line(&text, font_scale);
-        let row_start = clipped.y.saturating_sub(y);
+        let row_start = clipped.y.saturating_sub(visual_y);
         let row_end = clipped
             .y
             .saturating_add(clipped.height)
-            .saturating_sub(y)
+            .saturating_sub(visual_y)
             .min(font_scale);
         for row_offset in row_start..row_end {
             let command = if shade == 0 {
                 DisplayCommand::Text {
                     x: command_x,
-                    y: y.saturating_add(row_offset),
+                    y: visual_y.saturating_add(row_offset),
                     text: text.clone(),
                 }
             } else {
                 DisplayCommand::StyledText {
                     x: command_x,
-                    y: y.saturating_add(row_offset),
+                    y: visual_y.saturating_add(row_offset),
                     text: text.clone(),
                     shade,
                 }
@@ -19539,22 +19576,26 @@ impl FlowRenderer {
         else {
             return None;
         };
+        let visual_bounds = self.project_display_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        });
         let source_bounds = DisplaySourceBounds {
-            x,
-            y,
-            width,
-            height,
+            x: visual_bounds.x,
+            y: visual_bounds.y,
+            width: visual_bounds.width,
+            height: visual_bounds.height,
         };
-        let clipped = self.clipped_bounds(DisplayCommandBounds {
-            x,
-            y,
-            width,
-            height,
-        })?;
-        let clip_source_bounds = (clipped.x != x
-            || clipped.y != y
-            || clipped.width != width
-            || clipped.height != height)
+        let clipped = match self.active_clip {
+            Some(clip) => intersect_display_bounds(visual_bounds, clip),
+            None => Some(visual_bounds),
+        }?;
+        let clip_source_bounds = (clipped.x != visual_bounds.x
+            || clipped.y != visual_bounds.y
+            || clipped.width != visual_bounds.width
+            || clipped.height != visual_bounds.height)
             .then_some(source_bounds);
         Some((
             DisplayCommand::Image {
@@ -19594,22 +19635,26 @@ impl FlowRenderer {
         else {
             return None;
         };
+        let visual_bounds = self.project_display_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        });
         let source_bounds = DisplaySourceBounds {
-            x,
-            y,
-            width,
-            height,
+            x: visual_bounds.x,
+            y: visual_bounds.y,
+            width: visual_bounds.width,
+            height: visual_bounds.height,
         };
-        let clipped = self.clipped_bounds(DisplayCommandBounds {
-            x,
-            y,
-            width,
-            height,
-        })?;
-        let clip_source_bounds = (clipped.x != x
-            || clipped.y != y
-            || clipped.width != width
-            || clipped.height != height)
+        let clipped = match self.active_clip {
+            Some(clip) => intersect_display_bounds(visual_bounds, clip),
+            None => Some(visual_bounds),
+        }?;
+        let clip_source_bounds = (clipped.x != visual_bounds.x
+            || clipped.y != visual_bounds.y
+            || clipped.width != visual_bounds.width
+            || clipped.height != visual_bounds.height)
             .then_some(source_bounds);
         Some((
             DisplayCommand::BackgroundImage {
@@ -20262,6 +20307,25 @@ impl FlowRenderer {
         self.break_line();
         self.left_inset = snapshot.left_inset;
         self.right_inset = snapshot.right_inset;
+    }
+
+    fn enter_vertical_projection(
+        &mut self,
+        offset: isize,
+    ) -> Option<FlowVerticalProjectionSnapshot> {
+        if offset == 0 {
+            return None;
+        }
+        let snapshot = FlowVerticalProjectionSnapshot {
+            offset: self.vertical_projection_offset,
+        };
+        self.vertical_projection_offset = self.vertical_projection_offset.saturating_add(offset);
+        Some(snapshot)
+    }
+
+    fn exit_vertical_projection(&mut self, snapshot: FlowVerticalProjectionSnapshot) {
+        self.break_line();
+        self.vertical_projection_offset = snapshot.offset;
     }
 
     fn exit_out_of_flow(&mut self, snapshot: FlowOutOfFlowSnapshot) {

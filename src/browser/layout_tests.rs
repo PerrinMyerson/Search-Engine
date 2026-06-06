@@ -6224,6 +6224,170 @@ fn css_relative_horizontal_offset_preserves_flow_and_scrolled_hit_geometry() {
 }
 
 #[test]
+fn css_relative_vertical_offset_keeps_scrolled_hit_geometry_and_flow_stable() {
+    let render = render_html(
+        "mem://relative-vertical-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 36px; }
+              .panel { background: rgb(246, 246, 246); }
+              .cta {
+                display: block;
+                position: relative;
+                top: 24px;
+                transform: translateY(12px);
+                width: 128px;
+                background: rgb(232, 232, 232);
+              }
+              .gap { height: 48px; }
+              .tail { height: 96px; }
+            </style></head><body>
+              <p class="lead">Intro copy before the panel.</p>
+              <section class="panel">
+                <img alt="" width="24" height="18">
+                <a class="cta" href="/shifted">Shifted vertical link</a>
+                <div class="gap"></div>
+                <p>Following body copy keeps normal flow below the shifted visual link.</p>
+              </section>
+              <p class="tail">Trailing copy keeps the viewport scrollable.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("image should render before shifted link");
+    let shifted = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Shifted") =>
+            {
+                Some((*x, *y, text.chars().count()))
+            }
+            _ => None,
+        })
+        .expect("relative vertical link should render a visible text span");
+    let shifted_underlay = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("relative vertical link underlay should be painted");
+    let body = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Following body copy") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("following body copy should render");
+
+    assert_eq!(image_bounds.0, 0);
+    assert!(
+        shifted.1
+            >= image_bounds
+                .1
+                .saturating_add(image_bounds.3)
+                .saturating_add(3),
+        "top plus translateY should move relative content down in display geometry"
+    );
+    assert_eq!(
+        (shifted_underlay.0, shifted_underlay.1),
+        (shifted.0, shifted.1),
+        "relative vertical projection should move the link underlay with the text"
+    );
+    assert!(shifted_underlay.2 >= shifted.2);
+    assert_eq!(
+        body.0, 0,
+        "relative vertical projection should not indent following document flow"
+    );
+    assert!(
+        body.1 > shifted.1,
+        "fixture gap should keep following body text below the shifted visual link"
+    );
+
+    let shifted_target = hit_test_target_node(&render, shifted.0, shifted.1)
+        .expect("shifted vertical link should be hittable at visual coordinates");
+    assert_ne!(
+        hit_test_target_node(&render, shifted.0, image_bounds.1),
+        Some(shifted_target),
+        "normal-flow source row should not receive the shifted link target"
+    );
+
+    let viewport_y = shifted.1.saturating_sub(1);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 48,
+            height: 6,
+        },
+        None,
+    );
+    assert!(viewport.viewport.y > 0);
+    assert!(viewport.max_scroll_y > 0);
+    let local_y = shifted.1.saturating_sub(viewport.viewport.y);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, shifted.0, local_y),
+        Some(shifted_target),
+        "viewport hit testing should use the shifted visual row after scroll"
+    );
+
+    let rgba = rasterize_render_rgba(
+        &render,
+        BrowserRasterOptions {
+            viewport_y: Some(viewport.viewport.y),
+            viewport_width: Some(48),
+            viewport_height: Some(6),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("rasterize relative vertical viewport");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [246, 246, 246, 255]),
+        "scrolled raster should retain the panel underlay"
+    );
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [232, 232, 232, 255]),
+        "scrolled raster should retain the shifted link underlay"
+    );
+}
+
+#[test]
 fn css_logical_inset_shorthands_keep_sticky_nav_hit_geometry_after_scroll() {
     let render = render_html(
         "mem://logical-inset-sticky-flow",
