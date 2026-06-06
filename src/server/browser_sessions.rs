@@ -11116,6 +11116,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       clickMarker.hidden = true;
     }
   };
+  const clearClickMarkerPoint = () => {
+    lastClickPagePoint = null;
+    hideClickMarker();
+  };
   const moveClickMarker = (point) => {
     if (!clickMarker || !raster) {
       return;
@@ -11187,7 +11191,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const point = viewportPointFromPagePoint({ pageX, pageY });
     clearDeferredClick();
     if (!point) {
-      hideClickMarker();
+      clearClickMarkerPoint();
       setClickStatus("Saved click is outside the settled viewport.");
       setViewportFeedback("Saved click target moved outside the settled viewport; click again.");
       return false;
@@ -11618,7 +11622,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     event.preventDefault();
     const point = viewportPointFromEvent(event);
     if (!point) {
-      hideClickMarker();
+      clearClickMarkerPoint();
       setClickStatus("Click missed the rendered page image; move pointer inside the raster or retry with an exact point.");
       setViewportFeedback("Click missed the rendered page image; retry on a visible link/button.");
       return;
