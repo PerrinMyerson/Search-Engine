@@ -15,6 +15,7 @@ const BRAVE_MAX_COUNT: usize = 20;
 const DEFAULT_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 pub const DEFAULT_CACHE_MAX_ENTRIES: usize = 4096;
 pub const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
+pub const DEFAULT_RESULT_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_WEB_RESULTS: usize = 20;
 const DEFAULT_MIN_LOCAL_RESULTS: usize = 20;
 
@@ -24,6 +25,7 @@ pub struct WebSearchConfig {
     cache_path: PathBuf,
     result_log_path: PathBuf,
     result_log_max_entries: usize,
+    result_log_max_bytes: u64,
     cache_ttl_secs: u64,
     min_local_results: usize,
     max_results: usize,
@@ -159,6 +161,8 @@ impl WebSearchService {
             .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
         let result_log_max_entries = env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES")
             .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
+        let result_log_max_bytes =
+            env_u64("BRUTAL_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
         let provider = match api_key {
             Some(api_key) => ThirdPartySearchProvider::Brave { api_key },
             None if cache_path.exists() => ThirdPartySearchProvider::CacheOnly,
@@ -190,6 +194,7 @@ impl WebSearchService {
                 cache_path,
                 result_log_path,
                 result_log_max_entries,
+                result_log_max_bytes,
                 cache_ttl_secs,
                 min_local_results,
                 max_results,
@@ -280,6 +285,7 @@ impl WebSearchService {
             self.provider_name(),
             &results,
             self.config.result_log_max_entries,
+            self.config.result_log_max_bytes,
         )?;
 
         Ok(WebSearchLookup {
@@ -306,6 +312,8 @@ pub fn compact_web_search_storage_from_env(
         env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
     let result_log_max_entries =
         env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
+    let result_log_max_bytes =
+        env_u64("BRUTAL_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
     let result_log_max_entries_per_query =
         env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0);
 
@@ -315,6 +323,7 @@ pub fn compact_web_search_storage_from_env(
         cache_ttl_secs,
         cache_max_entries,
         result_log_max_entries,
+        result_log_max_bytes,
         result_log_max_entries_per_query,
         options,
     )
@@ -326,6 +335,7 @@ fn compact_web_search_storage(
     cache_ttl_secs: u64,
     cache_max_entries: usize,
     result_log_max_entries: usize,
+    result_log_max_bytes: u64,
     result_log_max_entries_per_query: usize,
     options: WebSearchStorageCompactionOptions,
 ) -> Result<WebSearchStorageCompactionReport> {
@@ -343,6 +353,7 @@ fn compact_web_search_storage(
             cache_ttl_secs,
             cache_max_entries,
             result_log_max_entries,
+            result_log_max_bytes,
             result_log_max_entries_per_query,
         )?
     } else {
@@ -356,6 +367,7 @@ fn compact_web_search_storage(
         enforce_result_log_retention_with_query_cap(
             &result_log_path,
             result_log_max_entries,
+            result_log_max_bytes,
             result_log_max_entries_per_query,
         )?;
     }
@@ -382,6 +394,7 @@ fn projected_web_search_storage_state(
     cache_ttl_secs: u64,
     cache_max_entries: usize,
     result_log_max_entries: usize,
+    result_log_max_bytes: u64,
     result_log_max_entries_per_query: usize,
 ) -> Result<(WebSearchStorageArtifactState, WebSearchStorageArtifactState)> {
     let temp_dir = WebStorageProjectionTempDir::create()?;
@@ -409,6 +422,7 @@ fn projected_web_search_storage_state(
         enforce_result_log_retention_with_query_cap(
             &temp_result_log_path,
             result_log_max_entries,
+            result_log_max_bytes,
             result_log_max_entries_per_query,
         )?;
     }
@@ -762,6 +776,7 @@ fn append_result_log(
     provider: &str,
     results: &[WebSearchResult],
     max_entries: usize,
+    max_bytes: u64,
 ) -> Result<()> {
     if results.is_empty() {
         return Ok(());
@@ -793,20 +808,21 @@ fn append_result_log(
         file.write_all(b"\n")?;
     }
     file.flush()?;
-    enforce_result_log_retention(path, max_entries)?;
+    enforce_result_log_retention(path, max_entries, max_bytes)?;
     Ok(())
 }
 
-fn enforce_result_log_retention(path: &Path, max_entries: usize) -> Result<()> {
-    enforce_result_log_retention_with_query_cap(path, max_entries, 0)
+fn enforce_result_log_retention(path: &Path, max_entries: usize, max_bytes: u64) -> Result<()> {
+    enforce_result_log_retention_with_query_cap(path, max_entries, max_bytes, 0)
 }
 
 fn enforce_result_log_retention_with_query_cap(
     path: &Path,
     max_entries: usize,
+    max_bytes: u64,
     max_entries_per_query: usize,
 ) -> Result<()> {
-    if max_entries == 0 || !path.exists() {
+    if (max_entries == 0 && max_bytes == 0) || !path.exists() {
         return Ok(());
     }
 
@@ -841,6 +857,7 @@ fn enforce_result_log_retention_with_query_cap(
     let mut seen = HashSet::new();
     let mut query_counts = HashMap::new();
     let mut retained = Vec::new();
+    let mut retained_bytes = 0u64;
     for entry in entries.into_iter().rev() {
         if !seen.insert(result_log_dedupe_key(&entry)) {
             continue;
@@ -853,8 +870,16 @@ fn enforce_result_log_retention_with_query_cap(
             }
             *count += 1;
         }
+        let entry_bytes = result_log_entry_bytes(&entry)?;
+        if max_bytes > 0
+            && !retained.is_empty()
+            && retained_bytes.saturating_add(entry_bytes) > max_bytes
+        {
+            continue;
+        }
+        retained_bytes = retained_bytes.saturating_add(entry_bytes);
         retained.push(entry);
-        if retained.len() >= max_entries {
+        if max_entries > 0 && retained.len() >= max_entries {
             break;
         }
     }
@@ -882,6 +907,12 @@ fn enforce_result_log_retention_with_query_cap(
         )
     })?;
     Ok(())
+}
+
+fn result_log_entry_bytes(entry: &WebSearchResultLogEntry) -> Result<u64> {
+    Ok(u64::try_from(serde_json::to_vec(entry)?.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1))
 }
 
 fn result_log_dedupe_key(entry: &WebSearchResultLogEntry) -> (String, String, usize, String) {
@@ -1275,6 +1306,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
             WebSearchStorageCompactionOptions::default(),
         )
@@ -1327,6 +1359,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
             WebSearchStorageCompactionOptions {
                 dry_run: true,
@@ -1367,6 +1400,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
             WebSearchStorageCompactionOptions {
                 dry_run: false,
@@ -1417,6 +1451,7 @@ mod tests {
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
             2,
             WebSearchStorageCompactionOptions::default(),
         )
@@ -1447,6 +1482,7 @@ mod tests {
                 web_result("https://example.com/two", 101),
             ],
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
         )
         .unwrap();
 
@@ -1474,6 +1510,7 @@ mod tests {
                 web_result("https://example.com/two", 101),
             ],
             3,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
         )
         .unwrap();
         append_result_log(
@@ -1486,6 +1523,7 @@ mod tests {
                 web_result("https://example.com/four", 103),
             ],
             3,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
         )
         .unwrap();
 
@@ -1495,6 +1533,38 @@ mod tests {
         assert!(lines.contains("https://example.com/two"));
         assert!(lines.contains("https://example.com/three"));
         assert!(lines.contains("https://example.com/four"));
+    }
+
+    #[test]
+    fn append_result_log_keeps_newest_rows_within_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        append_result_log(
+            &path,
+            "Old Query",
+            "old query",
+            "brave",
+            &[web_result("https://example.com/old", 100)],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+        let old_bytes = fs::metadata(&path).unwrap().len();
+        append_result_log(
+            &path,
+            "New Query",
+            "new query",
+            "brave",
+            &[web_result("https://example.com/new", 101)],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            old_bytes.saturating_add(1),
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(lines.lines().count(), 1);
+        assert!(!lines.contains("https://example.com/old"));
+        assert!(lines.contains("https://example.com/new"));
     }
 
     #[test]
@@ -1513,6 +1583,7 @@ mod tests {
             "brave",
             &results,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
         )
         .unwrap();
         append_result_log(
@@ -1522,6 +1593,7 @@ mod tests {
             "brave",
             &results,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
         )
         .unwrap();
 
@@ -1555,6 +1627,7 @@ mod tests {
                 cache_path: path.clone(),
                 result_log_path: dir.path().join("brave-results.jsonl"),
                 result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
+                result_log_max_bytes: DEFAULT_RESULT_LOG_MAX_BYTES,
                 cache_ttl_secs: 60,
                 min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
                 max_results: DEFAULT_MAX_WEB_RESULTS,
