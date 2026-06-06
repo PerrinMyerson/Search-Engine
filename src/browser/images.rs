@@ -304,7 +304,7 @@ fn decode_image_bytes_with_svg_base(
         "svg" | "image/svg+xml" | "image/svg" => decode_simple_svg(bytes, svg_base_source),
         "png" | "apng" | "image/png" | "image/x-png" | "image/apng" => decode_simple_png(bytes),
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
-        | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
+        | "image/jpe" | "image/jfif" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
         "webp" | "image/webp" | "image/x-webp" => decode_webp(bytes),
         "gif" | "image/gif" => decode_gif(bytes),
         _ => None,
@@ -6206,6 +6206,7 @@ pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
             | "image/jpeg"
             | "image/jpg"
             | "image/jpe"
+            | "image/jfif"
             | "image/pjpeg"
             | "image/x-jpeg"
             | "image/webp"
