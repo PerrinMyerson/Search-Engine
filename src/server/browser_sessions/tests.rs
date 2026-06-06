@@ -2705,10 +2705,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const clearViewportPending"));
     assert!(html.contains("const settleViewportPageFailure"));
     assert!(html.contains(r#"shell.removeAttribute("data-viewport-page-error")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-viewport-page-timeout")"#));
     assert!(html.contains(r#"shell.dataset.viewportPageError = "true""#));
-    assert!(
-        html.contains("Browser navigation request failed; current raster retained. Try again.")
-    );
+    assert!(html.contains(r#"shell.dataset.viewportPageTimeout = "true""#));
+    assert!(html.contains("const pageRequestTimeoutMs = 5000"));
+    assert!(html.contains("fetchOptions.signal = controller.signal"));
+    assert!(html.contains("window.setTimeout(() => controller.abort(), pageRequestTimeoutMs)"));
+    assert!(html.contains("const clearPageTimeout"));
+    assert!(html.contains(
+        "Browser navigation request timed out or failed; current raster retained. Try again."
+    ));
     assert!(html.contains("setClickStatus(message);"));
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));

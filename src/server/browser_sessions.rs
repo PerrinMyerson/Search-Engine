@@ -10962,6 +10962,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-viewport-request");
     shell.removeAttribute("data-viewport-partial-error");
     shell.removeAttribute("data-viewport-page-error");
+    shell.removeAttribute("data-viewport-page-timeout");
     shell.removeAttribute("data-pending-viewport-x");
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
@@ -11214,25 +11215,42 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     try {
       sessionStorage.setItem("browserViewportAnchor", "1");
     } catch (_) {}
-    fetch(url.toString(), {
+    const pageRequestTimeoutMs = 5000;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const fetchOptions = {
       headers: { "X-Requested-With": "browser-viewport-scroll" }
-    }).then((response) => {
+    };
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+    }
+    const timeout = controller ? window.setTimeout(() => controller.abort(), pageRequestTimeoutMs) : null;
+    const clearPageTimeout = () => {
+      if (timeout) {
+        window.clearTimeout(timeout);
+      }
+    };
+    fetch(url.toString(), fetchOptions).then((response) => {
       if (!response.ok) {
         throw new Error("viewport request failed");
       }
       return response.text();
     }).then((html) => {
+      clearPageTimeout();
       window.history.pushState(null, "", url.toString());
       document.open();
       document.write(html);
       document.close();
     }).catch(() => {
-      settleViewportPageFailure("Browser navigation request failed; current raster retained. Try again.");
+      clearPageTimeout();
+      settleViewportPageFailure(
+        "Browser navigation request timed out or failed; current raster retained. Try again."
+      );
     });
   };
   const settleViewportPageFailure = (message) => {
     clearViewportPending();
     shell.dataset.viewportPageError = "true";
+    shell.dataset.viewportPageTimeout = "true";
     setViewportFeedback(message);
     setClickStatus(message);
     replayDeferredClickAfterPartial();
