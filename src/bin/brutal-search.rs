@@ -1455,15 +1455,11 @@ fn web_storage_unique_key(name: &str, value: &serde_json::Value) -> Option<Strin
                 .get("provider")
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
-            let rank = value
-                .get("rank")
-                .and_then(|value| value.as_u64())
-                .unwrap_or_default();
             let url = value
                 .get("url")
                 .and_then(|value| value.as_str())
                 .filter(|url| !url.is_empty())?;
-            Some(format!("{query}\t{provider}\t{rank}\t{url}"))
+            Some(format!("{query}\t{provider}\t{url}"))
         }
         _ => None,
     }
@@ -1836,7 +1832,7 @@ mod tests {
         let result_log_path = dir.path().join("brave-results.jsonl");
         std::fs::write(
             &result_log_path,
-            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":120}\n",
+            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/a\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":3,\"url\":\"https://example.com/b\",\"fetched_at_unix\":130}\n",
         )
         .unwrap();
 
@@ -1851,12 +1847,12 @@ mod tests {
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(cache_stats.query_count, 2);
         assert_eq!(cache_stats.max_entries_per_query, 2);
-        assert_eq!(log_stats.entries, 2);
-        assert_eq!(log_stats.bytes, 214);
-        assert_eq!(log_stats.unique_entries, 1);
+        assert_eq!(log_stats.entries, 3);
+        assert_eq!(log_stats.bytes, 321);
+        assert_eq!(log_stats.unique_entries, 2);
         assert_eq!(log_stats.duplicate_entries, 1);
         assert_eq!(log_stats.query_count, 1);
-        assert_eq!(log_stats.max_entries_per_query, 2);
+        assert_eq!(log_stats.max_entries_per_query, 3);
     }
 
     #[test]

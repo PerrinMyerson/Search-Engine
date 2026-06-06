@@ -992,11 +992,10 @@ fn result_log_entry_bytes(entry: &WebSearchResultLogEntry) -> Result<u64> {
         .saturating_add(1))
 }
 
-fn result_log_dedupe_key(entry: &WebSearchResultLogEntry) -> (String, String, usize, String) {
+fn result_log_dedupe_key(entry: &WebSearchResultLogEntry) -> (String, String, String) {
     (
         entry.normalized_query.clone(),
         entry.provider.clone(),
-        entry.rank,
         entry.url.clone(),
     )
 }
@@ -1737,6 +1736,48 @@ mod tests {
         assert_eq!(lines.lines().count(), 2);
         assert_eq!(lines.matches("https://example.com/one").count(), 1);
         assert_eq!(lines.matches("https://example.com/two").count(), 1);
+    }
+
+    #[test]
+    fn append_result_log_dedupes_returned_urls_across_rank_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        let old_results = [
+            web_result("https://example.com/first", 100),
+            web_result("https://example.com/shared", 100),
+        ];
+        let new_results = [
+            web_result("https://example.com/shared", 200),
+            web_result("https://example.com/second", 200),
+        ];
+
+        append_result_log(
+            &path,
+            "Ranked Query",
+            "ranked query",
+            "brave",
+            &old_results,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+        append_result_log(
+            &path,
+            "Ranked Query",
+            "ranked query",
+            "brave",
+            &new_results,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(lines.lines().count(), 3);
+        assert_eq!(lines.matches("https://example.com/shared").count(), 1);
+        assert!(lines.contains(r#""rank":1"#));
+        assert!(lines.contains("https://example.com/first"));
+        assert!(lines.contains("https://example.com/second"));
     }
 
     #[test]
