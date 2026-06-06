@@ -1611,6 +1611,12 @@ fn push_image_srcset_resources(
     let Some(srcset) = element.srcset.as_deref() else {
         return;
     };
+    if let Some(sizes) = image_sizes_attr(element)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    {
+        push_resource(resources, source, element, kind, &element.tag, &url);
+        return;
+    }
     for url in supported_srcset_candidate_urls(srcset) {
         push_resource(resources, source, element, kind, &element.tag, &url);
     }
