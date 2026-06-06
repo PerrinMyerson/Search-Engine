@@ -1645,6 +1645,121 @@ async fn image_color_viewport_svg_embedded_data_image_decodes_and_attaches_color
 }
 
 #[tokio::test]
+async fn image_svg_embedded_relative_image_decodes_and_attaches_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("embedded-relative.svg");
+    let tile = dir.path().join("tile.png");
+    fs::write(&tile, tiny_test_png_rgb_with_sub_filter()).unwrap();
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 4 2" xmlns="http://www.w3.org/2000/svg">
+            <rect width="4" height="2" fill="white"/>
+            <image href="tile.png" x="0" y="0" width="4" height="2"/>
+        </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before relative embedded image</p><img src="embedded-relative.svg" alt="Relative embedded image" width="16" height="8"><p>After relative embedded image</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded =
+        decode_image_reference(&page.display().to_string(), "embedded-relative.svg").unwrap();
+    assert_eq!(decoded.width, 4);
+    assert_eq!(decoded.height, 2);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40)
+    );
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220)
+    );
+    assert!(
+        rgb_pixels
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180)
+    );
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "embedded-relative.svg");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(4));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before relative embedded image"));
+    assert!(render.text.contains("After relative embedded image"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(4),
+                decoded_height: Some(2),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_svg_gradient_decodes_linear_gradient_color_for_rendered_resource() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
