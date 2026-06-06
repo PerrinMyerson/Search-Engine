@@ -1610,8 +1610,8 @@ fn push_image_srcset_resources(
     let Some(srcset) = element.srcset.as_deref() else {
         return;
     };
-    if let Some(sizes) = image_sizes_attr(element)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    if let Some(sizes) = image_resource_sizes_attr(element)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
     {
         push_resource(resources, source, element, kind, &element.tag, &url);
         return;
@@ -1684,14 +1684,14 @@ fn selected_picture_source_srcset_candidate(
     element: &ElementData,
     srcset: &str,
 ) -> Option<String> {
-    if let Some(sizes) = image_sizes_attr(element)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    if let Some(sizes) = image_resource_sizes_attr(element)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
     {
         return Some(url);
     }
     let fallback = picture_source_fallback_img(dom, node_id)?;
-    if let Some(sizes) = image_sizes_attr(fallback)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes), usize::MAX)
+    if let Some(sizes) = image_resource_sizes_attr(fallback)
+        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
     {
         return Some(url);
     }
@@ -1742,6 +1742,29 @@ fn parse_image_resource_dimension_attr(value: &str) -> Option<usize> {
     (pixels.is_finite() && pixels > 0.0).then(|| pixels.ceil() as usize)
 }
 
+fn image_resource_sizes_attr(element: &ElementData) -> Option<String> {
+    let sizes = image_sizes_attr(element)?;
+    if !source_sizes_requires_viewport(sizes) {
+        return Some(sizes.to_owned());
+    }
+    let width = element
+        .attrs
+        .get("width")
+        .and_then(|width| parse_image_resource_dimension_attr(width))?;
+    Some(format!("{width}px"))
+}
+
+fn source_sizes_requires_viewport(sizes: &str) -> bool {
+    let sizes = sizes.to_ascii_lowercase();
+    sizes.trim() == "auto"
+        || sizes.contains("vw")
+        || sizes.contains("calc(")
+        || sizes.contains("min(")
+        || sizes.contains("max(")
+        || sizes.contains("clamp(")
+        || sizes.contains('(')
+}
+
 fn push_image_alias_resources(
     resources: &mut Vec<BrowserResource>,
     source: &str,
@@ -1759,9 +1782,13 @@ fn push_image_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        let selected =
-            selected_supported_srcset_candidate(srcset, image_sizes_attr(element), usize::MAX)
-                .into_iter();
+        let sizes = image_resource_sizes_attr(element);
+        let selected = selected_supported_srcset_candidate(
+            srcset,
+            sizes.as_deref().or_else(|| image_sizes_attr(element)),
+            0,
+        )
+        .into_iter();
         for url in selected {
             push_resource(
                 resources,
