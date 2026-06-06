@@ -10942,6 +10942,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const setViewportPending = (message, target) => {
     shell.dataset.viewportPending = "true";
     shell.dataset.viewportState = "pending";
+    shell.removeAttribute("data-viewport-page-error");
     shell.setAttribute("aria-busy", "true");
     setPendingViewportTarget(target);
     for (const control of viewportControls()) {
@@ -10960,6 +10961,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-viewport-pending");
     shell.removeAttribute("data-viewport-request");
     shell.removeAttribute("data-viewport-partial-error");
+    shell.removeAttribute("data-viewport-page-error");
     shell.removeAttribute("data-pending-viewport-x");
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
@@ -11225,8 +11227,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       document.write(html);
       document.close();
     }).catch(() => {
-      window.location.href = url.toString();
+      settleViewportPageFailure("Browser navigation request failed; current raster retained. Try again.");
     });
+  };
+  const settleViewportPageFailure = (message) => {
+    clearViewportPending();
+    shell.dataset.viewportPageError = "true";
+    setViewportFeedback(message);
+    setClickStatus(message);
+    replayDeferredClickAfterPartial();
   };
   const settleViewportPartialFailure = (message) => {
     clearViewportPending();
