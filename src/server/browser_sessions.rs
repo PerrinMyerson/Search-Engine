@@ -10823,6 +10823,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const clearViewportPending = () => {
     shell.removeAttribute("data-viewport-pending");
     shell.removeAttribute("data-viewport-request");
+    shell.removeAttribute("data-viewport-partial-error");
     shell.removeAttribute("data-pending-viewport-x");
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
@@ -11071,6 +11072,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       window.location.href = url.toString();
     });
   };
+  const settleViewportPartialFailure = (message) => {
+    clearViewportPending();
+    shell.dataset.viewportPartialError = "true";
+    setViewportFeedback(message);
+  };
   const syncViewportHistory = () => {
     if (!window.history || typeof window.history.replaceState !== "function") {
       return;
@@ -11131,7 +11137,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
         return;
       }
-      replaceViewportPage(url, "Visual viewport update timed out; opening full page...");
+      settleViewportPartialFailure("Visual viewport update failed; current viewport retained. Scroll again to retry.");
     }).then(() => {
       clearPartialTimeout();
       if (requestSeq !== viewportRequestSeq) {

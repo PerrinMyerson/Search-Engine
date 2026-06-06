@@ -2687,7 +2687,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const controller = typeof AbortController"));
     assert!(html.contains("controller.abort()"));
     assert!(html.contains("fetch(partialUrl.toString(), fetchOptions)"));
-    assert!(html.contains("Visual viewport update timed out; opening full page..."));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-scroll""#));
     assert!(html.contains("const partialRequestTimeoutMs = 8000"));
     assert!(html.contains("typeof AbortController === \"function\""));
@@ -2695,7 +2694,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("window.setTimeout(() => controller.abort(), partialRequestTimeoutMs)"));
     assert!(html.contains("const clearPartialTimeout"));
     assert!(html.contains("window.clearTimeout(timeout)"));
-    assert!(html.contains("Visual viewport update timed out; opening full page..."));
+    assert!(html.contains("const settleViewportPartialFailure"));
+    assert!(html.contains(r#"shell.dataset.viewportPartialError = "true""#));
+    assert!(html.contains(
+        "Visual viewport update failed; current viewport retained. Scroll again to retry."
+    ));
+    assert!(!html.contains("Visual viewport update timed out; opening full page..."));
     assert!(html.contains("window.history.pushState(null"));
     assert!(html.contains("const syncViewportHistory"));
     assert!(html.contains("window.history.replaceState(null"));
