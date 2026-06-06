@@ -8064,6 +8064,138 @@ fn css_image_single_axis_size_preserves_intrinsic_aspect_ratio() {
 }
 
 #[test]
+fn css_aspect_ratio_media_slot_keeps_article_text_aligned_after_scroll() {
+    let render = render_html(
+        "mem://css-aspect-ratio-article-card",
+        br#"
+            <html><head><style>
+              .lead { height: 24px; }
+              .card {
+                width: 320px;
+                margin-inline: auto;
+                padding: 8px;
+                background: rgb(240, 240, 240);
+              }
+              .hero {
+                width: 160px;
+                aspect-ratio: 16 / 9;
+              }
+              .tail { height: 64px; }
+            </style></head><body>
+              <p class="lead">Intro copy above the story card.</p>
+              <article class="card">
+                <h2>Readable story card</h2>
+                <img class="hero" alt="story preview">
+                <p>Body copy stays aligned beneath the media slot with a <a href="/story">Read more</a> link.</p>
+              </article>
+              <p class="tail">Trailing copy keeps the scroll window honest.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 240 && *width == 42 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("centered article card background");
+    assert_eq!(card_background.0, 19);
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("story preview") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("aspect-ratio media slot");
+    assert_eq!(image_bounds.0, card_background.0 + 1);
+    assert_eq!(image_bounds.2, 20);
+    assert_eq!(image_bounds.3, 8);
+
+    let body_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Body copy stays aligned") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("body copy below aspect-ratio media");
+    assert_eq!(body_text.0, card_background.0 + 1);
+    assert!(body_text.1 >= image_bounds.1 + image_bounds.3);
+
+    let link_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Read more") => {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("link text in article body");
+    assert!(hit_test_target_node(&render, link_text.0, link_text.1).is_some());
+
+    let viewport_y = image_bounds.1.saturating_add(4);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 8,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(80),
+        viewport_height: Some(8),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize aspect-ratio article");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let image_pixel_x = raster_options
+        .padding_x
+        .saturating_add(image_bounds.0.saturating_mul(raster_options.cell_width));
+    let image_pixel_y = raster_options.padding_y;
+    assert_eq!(pixel(image_pixel_x, image_pixel_y), &[240, 240, 240, 255]);
+}
+
+#[test]
 fn css_percent_media_dimensions_preserve_readable_flow() {
     let render = render_html(
         "mem://css-percent-media-dimensions",
