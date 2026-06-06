@@ -10181,6 +10181,101 @@ async fn image_background_usefulness_fetches_gif_imageset_background_color() {
 }
 
 #[tokio::test]
+async fn image_background_sources_attach_selected_density_imageset_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let small = dir.path().join("small.gif");
+    let hero = dir.path().join("hero.gif");
+    fs::write(&small, tiny_test_gif_palette()).unwrap();
+    fs::write(&hero, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before selected background</p>
+            <section data-lazy-background-image="image-set(url('small.gif') type('image/gif') 1x, url('hero.gif') type('image/gif') 2x)">Selected color background</section>
+            <p>After selected background</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "small.gif")
+    );
+
+    let hero_url = hero.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "background_image");
+    assert_eq!(fetch.resource.initiator, "section");
+    assert_eq!(fetch.resource.url, "hero.gif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before selected background"));
+    assert!(render.text.contains("After selected background"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_background_usefulness_fetches_layered_lazy_background_url_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

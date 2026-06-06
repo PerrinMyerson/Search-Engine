@@ -4454,18 +4454,47 @@ fn background_image_set_attr_source(value: &str) -> Option<String> {
     let args = css_function_args(value, &["image-set", "-webkit-image-set"])?;
     split_css_top_level_commas_with_quotes(args)
         .into_iter()
-        .filter_map(background_image_set_candidate_source)
-        .find(|url| !image_source_clearly_unsupported(url))
+        .enumerate()
+        .filter_map(|(order, candidate)| background_image_set_candidate_source(candidate, order))
+        .filter(|candidate| !image_source_clearly_unsupported(&candidate.url))
+        .max_by_key(|candidate| (candidate.density_milli, candidate.order))
+        .map(|candidate| candidate.url)
 }
 
-fn background_image_set_candidate_source(candidate: &str) -> Option<String> {
+#[derive(Debug, Clone)]
+struct BackgroundImageSetCandidate {
+    url: String,
+    density_milli: usize,
+    order: usize,
+}
+
+fn background_image_set_candidate_source(
+    candidate: &str,
+    order: usize,
+) -> Option<BackgroundImageSetCandidate> {
     if background_image_set_candidate_type_unsupported(candidate) {
         return None;
     }
-    css_function_args(candidate, &["url"])
+    let url = css_function_args(candidate, &["url"])
         .and_then(css_url_token)
         .or_else(|| css_quoted_url(candidate))
-        .map(str::to_owned)
+        .map(str::to_owned)?;
+    Some(BackgroundImageSetCandidate {
+        url,
+        density_milli: background_image_set_candidate_density_milli(candidate).unwrap_or(1_000),
+        order,
+    })
+}
+
+fn background_image_set_candidate_density_milli(candidate: &str) -> Option<usize> {
+    candidate
+        .split_ascii_whitespace()
+        .find_map(parse_image_set_density_descriptor)
+}
+
+fn parse_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
+    let density = descriptor.strip_suffix('x')?.parse::<f64>().ok()?;
+    (density.is_finite() && density > 0.0).then(|| (density * 1000.0).round() as usize)
 }
 
 fn background_image_set_candidate_type_unsupported(candidate: &str) -> bool {
