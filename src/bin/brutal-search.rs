@@ -167,6 +167,8 @@ enum Command {
         index: PathBuf,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        force: bool,
         #[arg(long, default_value_t = 0)]
         min_entries: usize,
     },
@@ -475,15 +477,32 @@ async fn main() -> Result<()> {
         Command::CompactWebCache {
             index,
             dry_run,
+            force,
             min_entries,
         } => {
-            let report = compact_web_search_storage_from_env(
-                &index,
-                WebSearchStorageCompactionOptions {
-                    dry_run,
-                    min_entries,
-                },
-            )?;
+            let options = WebSearchStorageCompactionOptions {
+                dry_run,
+                min_entries,
+            };
+            if !dry_run {
+                let preflight = compact_web_search_storage_from_env(
+                    &index,
+                    WebSearchStorageCompactionOptions {
+                        dry_run: true,
+                        min_entries,
+                    },
+                )?;
+                if !web_storage_compaction_apply_is_justified(&preflight, force) {
+                    println!(
+                        "apply_guard: skipped; projected compaction would not remove bytes or duplicate rows"
+                    );
+                    println!("apply_guard_force_hint: rerun with --force to rewrite anyway");
+                    print_web_storage_compaction_report(&preflight);
+                    return Ok(());
+                }
+                println!("apply_guard: proceeding; projected compaction removes storage pressure");
+            }
+            let report = compact_web_search_storage_from_env(&index, options)?;
             print_web_storage_compaction_report(&report);
         }
         Command::RecrawlPlan {
@@ -1274,6 +1293,50 @@ fn web_storage_compaction_snapshot_readiness_lines(
         format!("web_storage_snapshot_projected_removed_bytes: {projected_removed_bytes}"),
         format!("web_storage_snapshot_projected_duplicates: {projected_duplicates}"),
     ]
+}
+
+fn web_storage_compaction_apply_is_justified(
+    report: &WebSearchStorageCompactionReport,
+    force: bool,
+) -> bool {
+    if force {
+        return true;
+    }
+    if report.skipped {
+        return false;
+    }
+    web_storage_compaction_projected_removed_bytes(report) > 0
+        || web_storage_compaction_projected_removed_duplicates(report) > 0
+}
+
+fn web_storage_compaction_projected_removed_bytes(
+    report: &WebSearchStorageCompactionReport,
+) -> u64 {
+    report
+        .cache_before
+        .bytes
+        .saturating_add(report.result_log_before.bytes)
+        .saturating_sub(
+            report
+                .cache_projected_after
+                .bytes
+                .saturating_add(report.result_log_projected_after.bytes),
+        )
+}
+
+fn web_storage_compaction_projected_removed_duplicates(
+    report: &WebSearchStorageCompactionReport,
+) -> usize {
+    report
+        .cache_before
+        .duplicate_entries
+        .saturating_add(report.result_log_before.duplicate_entries)
+        .saturating_sub(
+            report
+                .cache_projected_after
+                .duplicate_entries
+                .saturating_add(report.result_log_projected_after.duplicate_entries),
+        )
 }
 
 fn web_storage_compaction_artifact_lines(
@@ -2142,6 +2205,94 @@ mod tests {
         assert!(lines.contains(&"web_storage_snapshot_projected_bytes: 150".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_projected_removed_bytes: 60".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_projected_duplicates: 0".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_apply_guard_requires_projected_pressure() {
+        let unchanged = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+        let duplicate_pressure = WebSearchStorageCompactionReport {
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 1,
+                duplicate_entries: 1,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            ..unchanged.clone()
+        };
+        let byte_pressure = WebSearchStorageCompactionReport {
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 40,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            ..unchanged.clone()
+        };
+        let skipped = WebSearchStorageCompactionReport {
+            skipped: true,
+            ..unchanged.clone()
+        };
+
+        assert!(!web_storage_compaction_apply_is_justified(
+            &unchanged, false
+        ));
+        assert!(web_storage_compaction_apply_is_justified(&unchanged, true));
+        assert!(web_storage_compaction_apply_is_justified(
+            &duplicate_pressure,
+            false
+        ));
+        assert!(web_storage_compaction_apply_is_justified(
+            &byte_pressure,
+            false
+        ));
+        assert!(!web_storage_compaction_apply_is_justified(&skipped, false));
     }
 
     #[test]
