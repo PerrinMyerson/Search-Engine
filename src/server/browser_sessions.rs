@@ -11359,6 +11359,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     url.searchParams.set("dy", String(appliedDy));
     return { url, dx: appliedDx, dy: appliedDy, x: nextX, y: nextY };
   };
+  const scrollDeltaFromUrl = (url) => {
+    if (!url || url.searchParams.get("action") !== "scroll") {
+      return null;
+    }
+    const dx = Number(url.searchParams.get("dx") || "0");
+    const dy = Number(url.searchParams.get("dy") || "0");
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (!dx && !dy)) {
+      return null;
+    }
+    return { dx, dy };
+  };
   const flushPendingScroll = () => {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
@@ -11503,11 +11514,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     event.preventDefault();
+    const targetUrl = new URL(target.href, window.location.href);
+    const scrollDelta = scrollDeltaFromUrl(targetUrl);
+    if (scrollDelta) {
+      queueViewportScroll(scrollDelta.dx, scrollDelta.dy);
+      return;
+    }
     if (partialRequestInFlight || shell.dataset.viewportPending === "true") {
       setViewportFeedback("Viewport is updating; scroll after it settles.");
       return;
     }
-    replaceViewportPartial(new URL(target.href, window.location.href), "Moving visual viewport...");
+    replaceViewportPartial(targetUrl, "Moving visual viewport...");
   });
   const keyboardDelta = (event) => {
     if (event.altKey || event.ctrlKey || event.metaKey) {

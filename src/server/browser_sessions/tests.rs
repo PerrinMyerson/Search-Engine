@@ -2713,6 +2713,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));
     assert!(html.contains("let pendingScrollAfterRequest = false"));
+    assert!(html.contains("const scrollDeltaFromUrl = (url) =>"));
+    assert!(html.contains(r#"url.searchParams.get("action") !== "scroll""#));
+    assert!(html.contains(r#"Number(url.searchParams.get("dx") || "0")"#));
+    assert!(html.contains("const scrollDelta = scrollDeltaFromUrl(targetUrl)"));
+    assert!(html.contains("queueViewportScroll(scrollDelta.dx, scrollDelta.dy)"));
     assert!(html.contains("shell.dataset.queuedScrollDx = String(pending.dx)"));
     assert!(html.contains("shell.dataset.queuedScrollDy = String(pending.dy)"));
     assert!(html.contains("shell.dataset.queuedScrollDx = String(pendingScrollDx)"));
