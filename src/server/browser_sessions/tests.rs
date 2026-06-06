@@ -2687,6 +2687,18 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const idPrefix = String.fromCharCode(35)"));
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-x")"#));
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-y")"#));
+    assert!(html.contains("const stampCurrentViewportUrl"));
+    assert!(
+        html.contains(r#"url.searchParams.set("viewport_x", String(numberData("viewportX")))"#)
+    );
+    assert!(
+        html.contains(r#"url.searchParams.set("viewport_y", String(numberData("viewportY")))"#)
+    );
+    assert!(html.contains(r#"url.searchParams.set("width", String(numberData("viewportWidth")))"#));
+    assert!(
+        html.contains(r#"url.searchParams.set("height", String(numberData("viewportHeight")))"#)
+    );
+    assert!(html.contains(r#"url.searchParams.set("source", shell.dataset.pageSource)"#));
     assert!(html.contains(r#"shell.addEventListener("mousemove""#));
     assert!(html.contains(r#"shell.addEventListener("mouseleave""#));
     assert!(html.contains("if (!viewportWorkPending())"));
@@ -2805,6 +2817,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const submitViewportClick"));
+    assert!(html.contains(
+        "const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));"
+    ));
     assert!(html.contains("const replayDeferredClickAfterPartial"));
     assert!(html.contains("submitViewportClick(point, \"Clicking saved\")"));
     assert!(html.contains("Saved click is outside the settled viewport."));
@@ -2836,6 +2851,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Moving visual viewport down..."));
     assert!(html.contains("Refreshing visual viewport..."));
     assert!(html.contains("const queuedViewportTarget"));
+    assert!(html.contains(
+        "const url = stampCurrentViewportUrl(new URL(shell.dataset.scrollUrl, window.location.href));"
+    ));
     assert!(html.contains("const baseX = Number(shell.dataset.pendingViewportX)"));
     assert!(html.contains("const baseY = Number(shell.dataset.pendingViewportY)"));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(queued.x)"#));
