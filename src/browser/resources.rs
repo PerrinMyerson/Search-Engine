@@ -1464,9 +1464,11 @@ fn collect_resources_at(
                 if parent_element_tag_is(dom, node_id, "picture")
                     && picture_source_resource_type_supported(element) =>
             {
-                push_src_resource(resources, source, element, "image");
-                push_image_srcset_resources(resources, source, element, "image_candidate");
-                push_image_alias_resources(resources, source, element);
+                if picture_source_resource_media_may_match_screen(element) {
+                    push_src_resource(resources, source, element, "image");
+                    push_image_srcset_resources(resources, source, element, "image_candidate");
+                    push_image_alias_resources(resources, source, element);
+                }
             }
             "source" if parent_element_tag_is(dom, node_id, "picture") => {}
             "source" => {
@@ -1513,6 +1515,32 @@ fn picture_source_resource_type_supported(element: &ElementData) -> bool {
         .attrs
         .get("type")
         .is_none_or(|source_type| image_mime_type_supported(source_type))
+}
+
+fn picture_source_resource_media_may_match_screen(element: &ElementData) -> bool {
+    element.media.as_deref().is_none_or(|media| {
+        media
+            .split(',')
+            .any(picture_source_media_query_may_match_screen)
+    })
+}
+
+fn picture_source_media_query_may_match_screen(query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.strip_prefix("only ").unwrap_or(&query).trim();
+    if let Some(query) = query.strip_prefix("not ") {
+        let query = query.trim();
+        return query.starts_with("print") || query.starts_with("speech");
+    }
+    !(query == "print"
+        || query.starts_with("print ")
+        || query.starts_with("print and")
+        || query == "speech"
+        || query.starts_with("speech ")
+        || query.starts_with("speech and"))
 }
 
 fn parent_element_tag_is(dom: &Dom, node_id: usize, tag: &str) -> bool {
