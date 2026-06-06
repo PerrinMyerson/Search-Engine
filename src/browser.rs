@@ -13502,7 +13502,7 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.animation_reveals_opacity = parse_css_animation_reveals_opacity(value)
                     .or(declarations.animation_reveals_opacity);
             }
-            "overflow" | "overflow-x" | "overflow-y" => {
+            "overflow" | "overflow-x" | "overflow-y" | "overflow-inline" | "overflow-block" => {
                 declarations.overflow = parse_css_overflow(value).or(declarations.overflow);
             }
             "position" => {
