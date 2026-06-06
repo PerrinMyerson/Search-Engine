@@ -8748,6 +8748,67 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
 }
 
 #[tokio::test]
+async fn browser_session_registry_link_navigation_failure_becomes_retained_pending_target() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let unreachable = listener.local_addr().unwrap();
+    drop(listener);
+
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first-link-pending.html");
+    let target_url = format!("http://{unreachable}/next");
+    std::fs::write(
+        &first,
+        format!(
+            r#"<!doctype html><title>First pending link</title><a href="{target_url}">Open pending target</a><p>still readable</p>"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), first.display().to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "First pending link");
+    assert_eq!(payload.link_count, 1);
+    assert!(payload.viewport_image.is_some());
+
+    let link = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "link".to_owned()),
+            ("link".to_owned(), "0".to_owned()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&link).await.unwrap();
+    assert_eq!(payload.history_len, 1);
+    assert_eq!(payload.pending_source.as_deref(), Some(target_url.as_str()));
+    assert!(payload.title.starts_with("Loading http://127.0.0.1:"));
+    assert_eq!(payload.source, target_url);
+    assert!(payload.viewport.contains("Open pending target"));
+    assert!(payload.viewport_image.is_some());
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains("Opened link 1; opening http://127.0.0.1:"));
+    assert!(feedback.contains("is pending after navigation failed"));
+    assert!(feedback.contains("viewport preserved"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains(&format!("Opening {target_url}")));
+    assert!(html.contains("current raster retained"));
+    assert!(html.contains(">Retry load</a>"));
+}
+
+#[tokio::test]
 async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster_contract() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let unreachable = listener.local_addr().unwrap();

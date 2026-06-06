@@ -2593,20 +2593,22 @@ impl BrowserSession {
     }
 
     pub async fn activate_link(&mut self, link_index: usize) -> Result<&BrowserRender> {
-        let target = {
-            let Some(current) = self.current() else {
-                bail!("cannot activate link: session has no current page");
-            };
-            let Some(link) = current.links.get(link_index) else {
-                bail!(
-                    "link index {} not found; current page has {} link(s)",
-                    link_index,
-                    current.links.len()
-                );
-            };
-            link.resolved.clone()
-        };
+        let target = self.link_target(link_index)?;
         self.navigate(&target).await
+    }
+
+    pub fn link_target(&self, link_index: usize) -> Result<String> {
+        let Some(current) = self.current() else {
+            bail!("cannot activate link: session has no current page");
+        };
+        let Some(link) = current.links.get(link_index) else {
+            bail!(
+                "link index {} not found; current page has {} link(s)",
+                link_index,
+                current.links.len()
+            );
+        };
+        Ok(link.resolved.clone())
     }
 
     pub fn focused_control(&self) -> Option<BrowserFocusedControl> {
@@ -2631,47 +2633,50 @@ impl BrowserSession {
     }
 
     pub async fn activate_link_text(&mut self, text: &str) -> Result<&BrowserRender> {
-        let target = {
-            let Some(current) = self.current() else {
-                bail!("cannot activate link text: session has no current page");
-            };
-            let text = collapse_ascii_whitespace(text);
-            ensure!(!text.is_empty(), "cannot activate empty link text");
-            let matches = current
-                .links
-                .iter()
-                .filter(|link| link.text == text)
-                .collect::<Vec<_>>();
-            let Some(link) = matches.first() else {
-                bail!("link text {text:?} not found");
-            };
-            ensure!(
-                matches.len() == 1,
-                "link text {:?} is ambiguous; {} links match",
-                text,
-                matches.len()
-            );
-            link.resolved.clone()
-        };
+        let target = self.link_text_target(text)?;
         self.navigate(&target).await
     }
 
-    pub async fn activate_link_selector(&mut self, selector: &str) -> Result<&BrowserRender> {
-        let target = {
-            let Some(current_index) = self.current_index else {
-                bail!("cannot activate link selector: session has no current page");
-            };
-            let entry = &self.entries[current_index];
-            let Some(node_id) = find_first_matching_selector(&entry.page_state.dom, selector)
-            else {
-                bail!("link selector not found: {selector}");
-            };
-            let Some(href) = anchor_href_for_node(&entry.page_state.dom, node_id) else {
-                bail!("selector did not resolve to a link: {selector}");
-            };
-            resolve_browser_href(&entry.render.source, &href)
+    pub fn link_text_target(&self, text: &str) -> Result<String> {
+        let Some(current) = self.current() else {
+            bail!("cannot activate link text: session has no current page");
         };
+        let text = collapse_ascii_whitespace(text);
+        ensure!(!text.is_empty(), "cannot activate empty link text");
+        let matches = current
+            .links
+            .iter()
+            .filter(|link| link.text == text)
+            .collect::<Vec<_>>();
+        let Some(link) = matches.first() else {
+            bail!("link text {text:?} not found");
+        };
+        ensure!(
+            matches.len() == 1,
+            "link text {:?} is ambiguous; {} links match",
+            text,
+            matches.len()
+        );
+        Ok(link.resolved.clone())
+    }
+
+    pub async fn activate_link_selector(&mut self, selector: &str) -> Result<&BrowserRender> {
+        let target = self.link_selector_target(selector)?;
         self.navigate(&target).await
+    }
+
+    pub fn link_selector_target(&self, selector: &str) -> Result<String> {
+        let Some(current_index) = self.current_index else {
+            bail!("cannot activate link selector: session has no current page");
+        };
+        let entry = &self.entries[current_index];
+        let Some(node_id) = find_first_matching_selector(&entry.page_state.dom, selector) else {
+            bail!("link selector not found: {selector}");
+        };
+        let Some(href) = anchor_href_for_node(&entry.page_state.dom, node_id) else {
+            bail!("selector did not resolve to a link: {selector}");
+        };
+        Ok(resolve_browser_href(&entry.render.source, &href))
     }
 
     pub fn current_links(&self) -> &[BrowserLink] {
