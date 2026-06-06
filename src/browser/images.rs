@@ -4884,6 +4884,12 @@ fn is_lazy_image_placeholder_src(src: &str) -> bool {
             | "1x1.gif"
             | "1x1.png"
             | "1x1.webp"
+            | "favicon.png"
+            | "favicon.jpg"
+            | "favicon.jpeg"
+            | "favicon.webp"
+            | "apple-touch-icon.png"
+            | "apple-touch-icon-precomposed.png"
     ) || filename.contains("placeholder")
 }
 
