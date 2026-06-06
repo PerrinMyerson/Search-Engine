@@ -2078,17 +2078,18 @@ fn push_background_alias_resources(
     }
 
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str) {
-            for url in background_image_urls_from_attr_value(value) {
-                push_resource(
-                    resources,
-                    source,
-                    element,
-                    "background_image",
-                    &element.tag,
-                    url,
-                );
-            }
+        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
+            && let Some(url) = selected_background_image_url_from_attr_value(value)
+        {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                url,
+            );
+            return;
         }
     }
 
