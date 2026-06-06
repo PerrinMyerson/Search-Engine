@@ -15909,7 +15909,7 @@ fn render_children(
     {
         renderer.push_fixed_space_width(justification.leading_space, None);
     }
-    for &child in &node.children {
+    for (child_index, &child) in node.children.iter().enumerate() {
         if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
             continue;
         }
@@ -15956,6 +15956,13 @@ fn render_children(
         }
         let item_start_width = renderer.current_inline_width();
         let item_start_row = renderer.current_row();
+        let item_margin = child_layout
+            .row_items
+            .then(|| row_layout_child_horizontal_margin(dom, child, css_cascade))
+            .unwrap_or_default();
+        if item_margin.left > 0 {
+            renderer.push_fixed_space_width(item_margin.left, None);
+        }
         render_node(
             dom,
             child,
@@ -15965,6 +15972,13 @@ fn render_children(
             layout_box_count,
             child_layout.row_items,
         );
+        let has_following_row_item = child_layout.row_items
+            && node.children[child_index.saturating_add(1)..]
+                .iter()
+                .any(|&next_child| row_layout_child_participates(dom, next_child, css_cascade));
+        if item_margin.right > 0 && has_following_row_item {
+            renderer.push_fixed_space_width(item_margin.right, None);
+        }
         let item_spanned_rows = child_layout.row_items && renderer.current_row() > item_start_row;
         if let Some(width_hint) = child_width_hint
             && !item_spanned_rows
@@ -16087,20 +16101,30 @@ fn row_layout_child_width_estimate(
             if style.display == Display::None {
                 return None;
             }
+            let horizontal_margin = style.margin.left.saturating_add(style.margin.right);
             if let Some(width) = style.flex_basis.or(style.width) {
-                return Some(width.resolve(basis).clamp(1, basis.max(1)));
+                return Some(
+                    width
+                        .resolve(basis)
+                        .saturating_add(horizontal_margin)
+                        .clamp(1, basis.max(1)),
+                );
             }
             if element.tag == "img"
                 || element.tag == "svg"
                 || is_replaced_media_element(&element.tag)
             {
-                return Some(10.min(basis.max(1)));
+                return Some(10usize.saturating_add(horizontal_margin).min(basis.max(1)));
             }
             let text_width = collapse_ascii_whitespace(&text_content(dom, node_id))
                 .chars()
                 .count();
             if text_width > 0 {
-                return Some(text_width.clamp(1, basis.max(1)));
+                return Some(
+                    text_width
+                        .saturating_add(horizontal_margin)
+                        .clamp(1, basis.max(1)),
+                );
             }
             let child_width = node
                 .children
@@ -16109,7 +16133,11 @@ fn row_layout_child_width_estimate(
                     row_layout_child_width_estimate(dom, child, css_cascade, basis)
                 })
                 .sum::<usize>();
-            (child_width > 0).then_some(child_width.clamp(1, basis.max(1)))
+            (child_width > 0).then_some(
+                child_width
+                    .saturating_add(horizontal_margin)
+                    .clamp(1, basis.max(1)),
+            )
         }
         NodeKind::Document | NodeKind::DocumentFragment => None,
     }
@@ -16126,10 +16154,29 @@ fn row_layout_child_width_hint(
         return None;
     };
     let style = computed_style(dom, node_id, element, css_cascade);
-    style
-        .flex_basis
-        .or(style.width)
-        .map(|width| width.resolve(basis).clamp(1, basis.max(1)))
+    let horizontal_margin = style.margin.left.saturating_add(style.margin.right);
+    style.flex_basis.or(style.width).map(|width| {
+        width
+            .resolve(basis)
+            .saturating_add(horizontal_margin)
+            .clamp(1, basis.max(1))
+    })
+}
+
+fn row_layout_child_horizontal_margin(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+) -> BoxSpacing {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return BoxSpacing::default();
+    };
+    let style = computed_style(dom, node_id, element, css_cascade);
+    BoxSpacing {
+        left: style.margin.left,
+        right: style.margin.right,
+        ..BoxSpacing::default()
+    }
 }
 
 fn row_layout_child_participates(dom: &Dom, node_id: usize, css_cascade: &CssCascade) -> bool {
@@ -16443,6 +16490,15 @@ fn render_node(
             let line_height_entered = style.line_height;
             let font_scale_entered = style.font_scale;
             let block_flow = style.display.is_block_flow() && !is_row_item;
+            let inline_margin = if block_flow || is_row_item {
+                BoxSpacing::default()
+            } else {
+                BoxSpacing {
+                    left: style.margin.left,
+                    right: style.margin.right,
+                    ..BoxSpacing::default()
+                }
+            };
             let margin = if block_flow {
                 style.margin
             } else {
@@ -16650,6 +16706,10 @@ fn render_node(
                 false
             };
 
+            if inline_margin.left > 0 {
+                renderer.push_fixed_space_width(inline_margin.left, None);
+            }
+
             if element.tag == "details" {
                 let child_layout = style.child_layout_for_width(renderer.available_width());
                 render_details_children(
@@ -16740,6 +16800,9 @@ fn render_node(
             }
             if text_background_entered.is_some() {
                 renderer.exit_text_background_shade();
+            }
+            if inline_margin.right > 0 {
+                renderer.push_fixed_space_width(inline_margin.right, None);
             }
             if !padding.is_empty() {
                 renderer.exit_insets(padding.left, padding.right);
