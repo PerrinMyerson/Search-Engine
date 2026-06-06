@@ -4930,6 +4930,7 @@ fn lazy_image_render_source(
             )
             .and_then(|srcset| choose_srcset_candidate(srcset, desired_width))
         })
+        .or_else(|| lazy_width_template_render_source(element, desired_width))
         .or_else(|| {
             first_non_empty_attr(
                 element,
@@ -5016,6 +5017,87 @@ fn lazy_image_render_source(
             )
             .map(str::to_owned)
         })
+}
+
+pub(super) fn lazy_width_template_render_source(
+    element: &ElementData,
+    desired_width: Option<usize>,
+) -> Option<String> {
+    let template = first_non_empty_attr(
+        element,
+        &[
+            "data-src",
+            "data-lazy-src",
+            "data-lazysrc",
+            "data-lazy-url",
+            "data-lazyload-src",
+            "data-original",
+            "data-original-src",
+            "data-originalsrc",
+            "data-image",
+            "data-image-src",
+            "data-imagesrc",
+            "data-img-src",
+            "data-imgsrc",
+            "data-product-image",
+            "data-product-src",
+            "data-productsrc",
+            "data-gallery-image",
+            "data-gallery-src",
+            "data-gallerysrc",
+        ],
+    )?;
+    if !template.contains("{width}") {
+        return None;
+    }
+    let width = selected_lazy_template_width(element, desired_width)?;
+    Some(template.replace("{width}", &width.to_string()))
+}
+
+fn selected_lazy_template_width(
+    element: &ElementData,
+    desired_width: Option<usize>,
+) -> Option<usize> {
+    let widths = first_non_empty_attr(
+        element,
+        &[
+            "data-widths",
+            "data-image-widths",
+            "data-img-widths",
+            "data-lazy-widths",
+            "data-product-widths",
+            "data-gallery-widths",
+        ],
+    )
+    .map(parse_lazy_template_widths)
+    .filter(|widths| !widths.is_empty())?;
+    let target = desired_width.or_else(|| image_width_attr_target(element));
+    if let Some(target) = target
+        && let Some(width) = widths.iter().copied().find(|width| *width >= target)
+    {
+        return Some(width);
+    }
+    widths.last().copied()
+}
+
+fn parse_lazy_template_widths(value: &str) -> Vec<usize> {
+    let mut widths = value
+        .trim()
+        .trim_matches(['[', ']'])
+        .split([',', ' '])
+        .filter_map(|part| {
+            let part = part
+                .trim()
+                .trim_matches(['"', '\''])
+                .trim_end_matches("px")
+                .trim();
+            let width = part.parse::<usize>().ok()?;
+            (width > 0).then_some(width)
+        })
+        .collect::<Vec<_>>();
+    widths.sort_unstable();
+    widths.dedup();
+    widths
 }
 
 fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Option<&'a str> {

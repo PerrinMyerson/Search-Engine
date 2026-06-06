@@ -14,7 +14,8 @@ use url::Url;
 use super::images::{
     ImageDecodeDiagnostic, background_image_sizes_attr, image_decode_diagnostic,
     image_mime_type_supported, image_render_source, image_sizes_attr,
-    selected_supported_srcset_candidate, srcset_candidate_urls, supported_srcset_candidate_urls,
+    lazy_width_template_render_source, selected_supported_srcset_candidate, srcset_candidate_urls,
+    supported_srcset_candidate_urls,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -1770,6 +1771,22 @@ fn push_image_alias_resources(
     source: &str,
     element: &ElementData,
 ) {
+    if let Some(url) = lazy_width_template_render_source(
+        element,
+        image_resource_sizes_attr(element)
+            .as_deref()
+            .and_then(parse_image_resource_dimension_attr)
+            .or_else(|| {
+                element
+                    .attrs
+                    .get("width")
+                    .and_then(|width| parse_image_resource_dimension_attr(width))
+            }),
+    ) {
+        push_resource(resources, source, element, "image", &element.tag, &url);
+        return;
+    }
+
     for attr_name in IMAGE_SRC_ALIAS_ATTRS {
         if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
             && !url.trim().is_empty()
