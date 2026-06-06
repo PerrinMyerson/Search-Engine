@@ -11041,7 +11041,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
   };
   const markStaleViewportResponse = (message) => {
-    shell.dataset.viewportState = "stale-response";
+    if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
+      shell.dataset.viewportState = "pending";
+    } else {
+      shell.dataset.viewportState = "stale-response";
+    }
     shell.dataset.staleViewportResponse = "true";
     setViewportFeedback(message);
   };
