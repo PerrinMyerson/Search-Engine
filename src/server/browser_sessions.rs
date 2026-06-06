@@ -10971,6 +10971,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-queued-scroll-target-y");
     shell.removeAttribute("data-scroll-queued-during-request");
     shell.removeAttribute("data-stale-viewport-response");
+    shell.removeAttribute("data-viewport-request-aborted");
     shell.dataset.viewportState = "settled";
     shell.dataset.settledViewportX = String(numberData("viewportX"));
     shell.dataset.settledViewportY = String(numberData("viewportY"));
@@ -11289,6 +11290,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.viewportRequest = "partial";
     const partialRequestTimeoutMs = 2500;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
+    partialRequestController = controller;
     const fetchOptions = {
       headers: { "X-Requested-With": "browser-viewport-partial" }
     };
@@ -11325,12 +11327,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         options.fallback();
         return;
       }
+      if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
+        setViewportFeedback("Applying latest queued scroll...");
+        return;
+      }
       settleViewportPartialFailure("Visual viewport update failed; current viewport retained. Scroll again to retry.");
     }).then(() => {
       clearPartialTimeout();
       if (requestSeq !== viewportRequestSeq) {
         return;
       }
+      partialRequestController = null;
       partialRequestInFlight = false;
       if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
         pendingScrollAfterRequest = false;
@@ -11344,6 +11351,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   let viewportRequestSeq = 0;
   let partialRequestInFlight = false;
+  let partialRequestController = null;
   let pendingScrollAfterRequest = false;
   let pendingScrollDx = 0;
   let pendingScrollDy = 0;
@@ -11388,6 +11396,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return { dx, dy };
   };
+  const abortPartialViewportRequest = () => {
+    if (partialRequestController && typeof partialRequestController.abort === "function") {
+      shell.dataset.viewportRequestAborted = "true";
+      partialRequestController.abort();
+      return true;
+    }
+    return false;
+  };
   const flushPendingScroll = () => {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
@@ -11400,6 +11416,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
         queued
       );
+      abortPartialViewportRequest();
       return true;
     }
     const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
@@ -11431,6 +11448,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
         queued
       );
+      abortPartialViewportRequest();
       return true;
     }
     const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);

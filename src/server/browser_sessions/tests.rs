@@ -2718,10 +2718,17 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("setClickStatus(message);"));
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));
+    assert!(html.contains("let partialRequestController = null"));
     assert!(html.contains("let pendingScrollAfterRequest = false"));
+    assert!(html.contains("partialRequestController = controller"));
+    assert!(html.contains("partialRequestController = null"));
     assert!(html.contains("const scrollDeltaFromUrl = (url) =>"));
     assert!(html.contains(r#"url.searchParams.get("action") !== "scroll""#));
     assert!(html.contains(r#"Number(url.searchParams.get("dx") || "0")"#));
+    assert!(html.contains("const abortPartialViewportRequest = () =>"));
+    assert!(html.contains(r#"shell.dataset.viewportRequestAborted = "true""#));
+    assert!(html.contains("partialRequestController.abort()"));
+    assert!(html.contains("abortPartialViewportRequest();"));
     assert!(html.contains("const scrollDelta = scrollDeltaFromUrl(targetUrl)"));
     assert!(html.contains("queueViewportScroll(scrollDelta.dx, scrollDelta.dy)"));
     assert!(html.contains("shell.dataset.queuedScrollDx = String(pending.dx)"));
@@ -2749,6 +2756,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-target-y")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-scroll-queued-during-request")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-stale-viewport-response")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-viewport-request-aborted")"#));
+    assert!(html.contains("Applying latest queued scroll..."));
     assert!(html.contains("new DOMParser().parseFromString"));
     assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-partial""#));
