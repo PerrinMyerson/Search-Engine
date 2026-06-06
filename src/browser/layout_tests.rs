@@ -3874,6 +3874,166 @@ fn css_table_display_values_use_table_flow() {
 }
 
 #[test]
+fn css_table_border_spacing_keeps_product_card_readable_after_scroll() {
+    let render = render_html(
+        "mem://css-table-card-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 24px; }
+              .card {
+                width: 320px;
+                margin-inline: auto;
+                padding: 8px;
+                background: rgb(244, 244, 244);
+              }
+              .spec {
+                display: table;
+                border-spacing: 24px 12px;
+              }
+              .row { display: table-row; }
+              .cell {
+                display: table-cell;
+                padding-inline: 16px;
+                background: rgb(238, 238, 238);
+              }
+              .tail { height: 72px; }
+            </style></head><body>
+              <p class="lead">Introductory copy above the card.</p>
+              <article class="card">
+                <h2>Product overview</h2>
+                <div class="spec">
+                  <div class="row"><span class="cell">Plan</span><span class="cell"><a href="/plans">Open details</a></span></div>
+                  <div class="row"><span class="cell">Image</span><span class="cell">Aligned media slot</span></div>
+                </div>
+                <p>Body copy remains below the spaced specification table.</p>
+              </article>
+              <p class="tail">Trailing copy makes the viewport scroll.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 244 && *width == 42 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("centered product card background");
+    assert_eq!(card_background.0, 19);
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. } => {
+                    let offset = text.find(needle)?;
+                    Some((x.saturating_add(offset), *y))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("visible text containing {needle:?}"))
+    };
+    let plan = text_position("Plan");
+    let open = text_position("Open details");
+    let image = text_position("Image");
+    let aligned = text_position("Aligned media slot");
+    let cell_underlays = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 238 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        cell_underlays.len() >= 4,
+        "table cells should retain their visible card-like backgrounds"
+    );
+    let plan_cell = cell_underlays
+        .iter()
+        .copied()
+        .find(|cell| plan.0 >= cell.0 && plan.0 < cell.0.saturating_add(cell.2))
+        .expect("plan text inside first cell underlay");
+    let open_cell = cell_underlays
+        .iter()
+        .copied()
+        .find(|cell| open.0 >= cell.0 && open.0 < cell.0.saturating_add(cell.2))
+        .expect("link text inside second cell underlay");
+    assert!(plan.0 >= plan_cell.0);
+    assert!(open.0 >= open_cell.0);
+    assert!(
+        open_cell.0 >= plan_cell.0.saturating_add(plan_cell.2).saturating_add(2),
+        "border-spacing should reserve a visible column gutter between cell boxes"
+    );
+    assert_eq!(image.0, plan.0);
+    assert_eq!(aligned.0, open.0);
+    assert!(
+        image.1 > plan.1 + 1,
+        "vertical border-spacing should keep table rows from collapsing"
+    );
+    assert!(hit_test_target_node(&render, open.0, open.1).is_some());
+
+    let viewport_y = plan.1.saturating_sub(1);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 10,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+    let local_link_y = open.1.saturating_sub(viewport.viewport.y);
+    assert!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, open.0, local_link_y)
+            .is_some()
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(80),
+        viewport_height: Some(10),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled table card");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [244, 244, 244, 255]),
+        "scrolled raster should retain the product card underlay"
+    );
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [238, 238, 238, 255]),
+        "scrolled raster should retain the spaced table cell underlay"
+    );
+}
+
+#[test]
 fn table_colspan_spans_multiple_columns() {
     let render = render_html(
         "mem://table-colspan",

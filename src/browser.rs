@@ -13577,6 +13577,12 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.column_gap =
                     parse_css_axis_gap(value, CssAxis::Horizontal).or(declarations.column_gap);
             }
+            "border-spacing" => {
+                if let Some((horizontal_gap, vertical_gap)) = parse_css_border_spacing(value) {
+                    declarations.column_gap = Some(horizontal_gap);
+                    declarations.row_gap = Some(vertical_gap);
+                }
+            }
             "box-sizing" => {
                 declarations.box_sizing = parse_css_box_sizing(value).or(declarations.box_sizing);
             }
@@ -13893,6 +13899,22 @@ fn parse_css_gap(value: &str) -> Option<(usize, usize)> {
         [row_gap, column_gap, ..] => Some((
             parse_css_axis_gap(row_gap, CssAxis::Vertical)?,
             parse_css_axis_gap(column_gap, CssAxis::Horizontal)?,
+        )),
+        _ => None,
+    }
+}
+
+fn parse_css_border_spacing(value: &str) -> Option<(usize, usize)> {
+    let tokens = value.split_ascii_whitespace().collect::<Vec<_>>();
+    match tokens.as_slice() {
+        [gap] => {
+            let horizontal_gap = parse_css_axis_gap(gap, CssAxis::Horizontal)?;
+            let vertical_gap = parse_css_axis_gap(gap, CssAxis::Vertical)?;
+            Some((horizontal_gap, vertical_gap))
+        }
+        [horizontal_gap, vertical_gap, ..] => Some((
+            parse_css_axis_gap(horizontal_gap, CssAxis::Horizontal)?,
+            parse_css_axis_gap(vertical_gap, CssAxis::Vertical)?,
         )),
         _ => None,
     }
@@ -16444,7 +16466,8 @@ fn render_node(
             } else {
                 None
             };
-            let text_background_entered = if block_flow {
+            let table_cell_flow = is_table_layout_cell_for_flow(element, &style);
+            let text_background_entered = if block_flow || table_cell_flow {
                 None
             } else {
                 style.background_shade
@@ -16489,7 +16512,12 @@ fn render_node(
                 false
             };
             let table_entered = if is_table_layout_container(element, &style) {
-                renderer.enter_table(table_column_widths(dom, node_id, css_cascade));
+                renderer.enter_table(
+                    table_column_widths(dom, node_id, css_cascade),
+                    style.column_gap.unwrap_or(TABLE_COLUMN_GAP_CELLS),
+                    style.row_gap.unwrap_or(0),
+                    table_rows(dom, node_id, css_cascade).len(),
+                );
                 true
             } else {
                 false
@@ -16500,10 +16528,12 @@ fn render_node(
             } else {
                 false
             };
-            let table_cell_entered = if is_table_layout_cell_for_flow(element, &style) {
+            let table_cell_entered = if table_cell_flow {
                 renderer.enter_table_cell(
                     table_cell_colspan(dom, node_id),
                     table_cell_rowspan(dom, node_id),
+                    style.background_shade,
+                    Some(node_id),
                 );
                 true
             } else {
@@ -18469,7 +18499,24 @@ fn table_column_span(dom: &Dom, column_id: usize) -> usize {
 
 fn table_cell_layout_width(dom: &Dom, cell_id: usize, css_cascade: &CssCascade) -> usize {
     let text_width = table_cell_text_width(dom, cell_id, css_cascade);
-    text_width.max(table_column_layout_width(dom, cell_id, css_cascade).unwrap_or(0))
+    let visible_box_width = dom
+        .nodes
+        .get(cell_id)
+        .and_then(|node| match &node.kind {
+            NodeKind::Element(element) => {
+                let style = computed_style(dom, cell_id, element, css_cascade);
+                let border_width = style.border.map(|border| border.width).unwrap_or(0);
+                Some(
+                    text_width
+                        .saturating_add(style.padding.left)
+                        .saturating_add(style.padding.right)
+                        .saturating_add(border_width.saturating_mul(2)),
+                )
+            }
+            _ => None,
+        })
+        .unwrap_or(text_width);
+    visible_box_width.max(table_column_layout_width(dom, cell_id, css_cascade).unwrap_or(0))
 }
 
 fn table_column_layout_width(
@@ -18708,6 +18755,9 @@ struct FlowPositioningContext {
 #[derive(Debug)]
 struct TableFlow {
     column_widths: Vec<usize>,
+    column_gap: usize,
+    row_gap: usize,
+    remaining_rows: usize,
     row_stack: Vec<TableRowFlow>,
     rowspans: Vec<usize>,
 }
@@ -18725,6 +18775,9 @@ struct TableCellFlow {
     colspan: usize,
     rowspan: usize,
     start_width: usize,
+    start_y: usize,
+    background_shade: Option<u8>,
+    target_node: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -18776,6 +18829,7 @@ impl PaintLayerCommands {
 
 fn table_spanned_column_width(
     column_widths: &[usize],
+    column_gap: usize,
     active_cell: TableCellFlow,
     fallback_width: usize,
 ) -> usize {
@@ -18788,13 +18842,19 @@ fn table_spanned_column_width(
     if columns.is_empty() {
         return fallback_width;
     }
-    columns.iter().copied().sum::<usize>().saturating_add(
-        span.saturating_sub(1)
-            .saturating_mul(TABLE_COLUMN_GAP_CELLS),
-    )
+    columns
+        .iter()
+        .copied()
+        .sum::<usize>()
+        .saturating_add(span.saturating_sub(1).saturating_mul(column_gap))
 }
 
-fn table_skipped_column_padding(column_widths: &[usize], start: usize, span: usize) -> usize {
+fn table_skipped_column_padding(
+    column_widths: &[usize],
+    column_gap: usize,
+    start: usize,
+    span: usize,
+) -> usize {
     if span == 0 {
         return 0;
     }
@@ -18803,7 +18863,7 @@ fn table_skipped_column_padding(column_widths: &[usize], start: usize, span: usi
         .map(|columns| columns.iter().copied().sum::<usize>())
         .unwrap_or(0);
     width
-        .saturating_add(span.saturating_mul(TABLE_COLUMN_GAP_CELLS))
+        .saturating_add(span.saturating_mul(column_gap))
         .saturating_sub(1)
 }
 
@@ -20258,9 +20318,18 @@ impl FlowRenderer {
         self.font_scale = self.font_scale_stack.pop().unwrap_or(1);
     }
 
-    fn enter_table(&mut self, column_widths: Vec<usize>) {
+    fn enter_table(
+        &mut self,
+        column_widths: Vec<usize>,
+        column_gap: usize,
+        row_gap: usize,
+        row_count: usize,
+    ) {
         self.table_stack.push(TableFlow {
             column_widths,
+            column_gap,
+            row_gap,
+            remaining_rows: row_count,
             row_stack: Vec::new(),
             rowspans: Vec::new(),
         });
@@ -20281,13 +20350,28 @@ impl FlowRenderer {
     }
 
     fn exit_table_row(&mut self) {
-        if let Some(table) = self.table_stack.last_mut() {
+        let row_gap = if let Some(table) = self.table_stack.last_mut() {
             table.row_stack.pop();
             decrement_table_rowspans(&mut table.rowspans);
+            table.remaining_rows = table.remaining_rows.saturating_sub(1);
+            (table.remaining_rows > 0).then_some(table.row_gap)
+        } else {
+            None
+        };
+        if let Some(row_gap) = row_gap
+            && row_gap > 0
+        {
+            self.push_vertical_space(row_gap);
         }
     }
 
-    fn enter_table_cell(&mut self, colspan: usize, rowspan: usize) {
+    fn enter_table_cell(
+        &mut self,
+        colspan: usize,
+        rowspan: usize,
+        background_shade: Option<u8>,
+        target_node: Option<usize>,
+    ) {
         let skipped_padding = {
             let Some(table) = self.table_stack.last_mut() else {
                 return;
@@ -20313,6 +20397,7 @@ impl FlowRenderer {
                 .current_width
                 .saturating_add(table_skipped_column_padding(
                     &table.column_widths,
+                    table.column_gap,
                     start_column,
                     skipped_columns,
                 ));
@@ -20321,8 +20406,16 @@ impl FlowRenderer {
                 colspan: colspan.clamp(1, 16),
                 rowspan: rowspan.clamp(1, 16),
                 start_width,
+                start_y: self.next_y,
+                background_shade,
+                target_node,
             });
-            table_skipped_column_padding(&table.column_widths, start_column, skipped_columns)
+            table_skipped_column_padding(
+                &table.column_widths,
+                table.column_gap,
+                start_column,
+                skipped_columns,
+            )
         };
         if skipped_padding > 0 {
             self.push_text_run_piece_unspaced(&" ".repeat(skipped_padding), None);
@@ -20330,7 +20423,19 @@ impl FlowRenderer {
     }
 
     fn exit_table_cell(&mut self) {
-        let padding = {
+        let box_x = self.box_x();
+        let text_row_height = self
+            .current_runs
+            .iter()
+            .map(|run| run.font_scale.max(1))
+            .max()
+            .unwrap_or(1);
+        let row_height = self
+            .line_height
+            .max(1)
+            .max(self.inline_replaced_height)
+            .max(text_row_height);
+        let (padding, background) = {
             let Some(table) = self.table_stack.last_mut() else {
                 return;
             };
@@ -20341,8 +20446,12 @@ impl FlowRenderer {
                 return;
             };
             let cell_width = self.current_width.saturating_sub(active_cell.start_width);
-            let column_width =
-                table_spanned_column_width(&table.column_widths, active_cell, cell_width);
+            let column_width = table_spanned_column_width(
+                &table.column_widths,
+                table.column_gap,
+                active_cell,
+                cell_width,
+            );
             let next_column_index = active_cell.column_index.saturating_add(active_cell.colspan);
             if table.rowspans.len() < next_column_index {
                 table.rowspans.resize(next_column_index, 0);
@@ -20353,12 +20462,32 @@ impl FlowRenderer {
             let has_next_cell = row.remaining_cells > 1;
             row.remaining_cells = row.remaining_cells.saturating_sub(1);
             row.next_column_index = next_column_index;
-            has_next_cell.then_some(
-                column_width
-                    .saturating_sub(cell_width)
-                    .saturating_add(TABLE_COLUMN_GAP_CELLS.saturating_sub(1)),
+            let background = active_cell.background_shade.map(|shade| {
+                (
+                    box_x.saturating_add(active_cell.start_width),
+                    active_cell.start_y,
+                    column_width.max(cell_width),
+                    row_height,
+                    shade,
+                    active_cell.target_node,
+                )
+            });
+            (
+                has_next_cell.then_some(
+                    column_width
+                        .saturating_sub(cell_width)
+                        .saturating_add(table.column_gap.saturating_sub(1)),
+                ),
+                background,
             )
         };
+        if let Some((x, y, width, height, shade, target_node)) = background
+            && self.paint_visible()
+            && let Some(command) = self.clipped_rect_command(x, y, width, height, shade)
+        {
+            let target = self.node_hit_target(target_node);
+            self.push_underlay_command(command, target);
+        }
         if let Some(padding) = padding
             && padding > 0
         {
