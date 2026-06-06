@@ -11150,8 +11150,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-deferred-click-page-x");
     shell.removeAttribute("data-deferred-click-page-y");
   };
+  const stampCurrentViewportUrl = (url) => {
+    url.searchParams.set("viewport_x", String(numberData("viewportX")));
+    url.searchParams.set("viewport_y", String(numberData("viewportY")));
+    url.searchParams.set("width", String(numberData("viewportWidth")));
+    url.searchParams.set("height", String(numberData("viewportHeight")));
+    if (shell.dataset.pageSource) {
+      url.searchParams.set("source", shell.dataset.pageSource);
+    }
+    return url;
+  };
   const submitViewportClick = (point, messagePrefix) => {
-    const url = new URL(shell.dataset.clickUrl, window.location.href);
+    const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));
     const size = rasterSize();
     url.searchParams.set("x", String(point.x));
     url.searchParams.set("y", String(point.y));
@@ -11441,7 +11451,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       }
       return null;
     }
-    const url = new URL(shell.dataset.scrollUrl, window.location.href);
+    const url = stampCurrentViewportUrl(new URL(shell.dataset.scrollUrl, window.location.href));
     url.searchParams.set("dx", String(appliedDx));
     url.searchParams.set("dy", String(appliedDy));
     return { url, dx: appliedDx, dy: appliedDy, x: nextX, y: nextY };
