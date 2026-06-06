@@ -2706,8 +2706,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const settleViewportPageFailure"));
     assert!(html.contains(r#"shell.removeAttribute("data-viewport-page-error")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-viewport-page-timeout")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-viewport-recovery")"#));
     assert!(html.contains(r#"shell.dataset.viewportPageError = "true""#));
     assert!(html.contains(r#"shell.dataset.viewportPageTimeout = "true""#));
+    assert!(html.contains(r#"shell.dataset.viewportRecovery = "retained-shell""#));
     assert!(html.contains("const pageRequestTimeoutMs = 5000"));
     assert!(html.contains("fetchOptions.signal = controller.signal"));
     assert!(html.contains("window.setTimeout(() => controller.abort(), pageRequestTimeoutMs)"));
@@ -2774,6 +2776,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("window.clearTimeout(timeout)"));
     assert!(html.contains("const settleViewportPartialFailure"));
     assert!(html.contains(r#"shell.dataset.viewportPartialError = "true""#));
+    assert!(html.contains(r#"shell.dataset.viewportRecovery = "retained-shell""#));
     assert!(html.contains(
         "Visual viewport update failed; current viewport retained. Scroll again to retry."
     ));

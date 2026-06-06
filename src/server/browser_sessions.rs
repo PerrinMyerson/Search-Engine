@@ -11013,6 +11013,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-viewport-partial-error");
     shell.removeAttribute("data-viewport-page-error");
     shell.removeAttribute("data-viewport-page-timeout");
+    shell.removeAttribute("data-viewport-recovery");
     shell.removeAttribute("data-pending-viewport-x");
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
@@ -11302,14 +11303,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     clearViewportPending();
     shell.dataset.viewportPageError = "true";
     shell.dataset.viewportPageTimeout = "true";
+    shell.dataset.viewportRecovery = "retained-shell";
     setViewportFeedback(message);
     setClickStatus(message);
+    shell.focus({ preventScroll: true });
     replayDeferredClickAfterPartial();
   };
   const settleViewportPartialFailure = (message) => {
     clearViewportPending();
     shell.dataset.viewportPartialError = "true";
+    shell.dataset.viewportRecovery = "retained-shell";
     setViewportFeedback(message);
+    shell.focus({ preventScroll: true });
     replayDeferredClickAfterPartial();
   };
   const syncViewportHistory = () => {
