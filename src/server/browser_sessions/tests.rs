@@ -11060,7 +11060,20 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
+    assert!(topbar_html.contains(&format!(
+        r#"title="viewport {}x{} at {},{}""#,
+        payload.width, payload.height, payload.viewport_x, payload.viewport_y
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#" hidden>{}x{}</span>"#,
+        payload.width, payload.height
+    )));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
+    assert!(topbar_html.contains(r#"data-browser-shell-render title="visual "#));
+    assert!(
+        !topbar_html.contains(r#"data-browser-shell-render title="visual pending">visual pending"#)
+    );
     assert!(!topbar_html.contains(r#">Read</a>"#));
     assert!(!topbar_html.contains(r#">Images</a>"#));
     assert!(topbar_html.contains(r#"data-browser-shell-images"#));
