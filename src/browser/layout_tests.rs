@@ -328,6 +328,172 @@ fn css_list_style_type_controls_markers() {
 }
 
 #[test]
+fn list_marker_gutter_keeps_article_links_readable_after_scroll() {
+    let render = render_html(
+        "mem://list-marker-gutter-article-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 24px; }
+              .article {
+                width: 320px;
+                margin-inline: auto;
+                padding: 8px;
+                background: rgb(242, 242, 242);
+              }
+              h2 { margin-block: 8px; }
+              .thumb { width: 128px; height: 48px; }
+              .features {
+                margin: 0;
+                padding: 0;
+              }
+              .tail { height: 72px; }
+            </style></head><body>
+              <p class="lead">Introductory copy above the article.</p>
+              <article class="article">
+                <h2>Readable product section</h2>
+                <img class="thumb" alt="feature graphic">
+                <ul class="features">
+                  <li><a href="/feature">Readable link cards keep article navigation aligned with media instead of falling under marker text after viewport crop</a></li>
+                </ul>
+                <p>Body copy remains below the linked feature row.</p>
+              </article>
+              <p class="tail">Trailing copy makes the viewport scroll.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 242 && *width == 42 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("centered article card background");
+    assert_eq!(card_background.0, 19);
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("feature graphic") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("article image slot");
+    assert_eq!(image_bounds.0, card_background.0 + 1);
+    assert_eq!(image_bounds.2, 16);
+    assert_eq!(image_bounds.3, 4);
+
+    let text_command_containing = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. } => {
+                    let offset = text.find(needle)?;
+                    Some((x.saturating_add(offset), *y, text.as_str()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("visible text command containing {needle:?}"))
+    };
+    let first_link_line = text_command_containing("Readable link cards");
+    let link_target = hit_test_target_node(&render, first_link_line.0, first_link_line.1)
+        .expect("first linked list row hit target");
+    let wrapped_link_line =
+        render
+            .display_list
+            .iter()
+            .filter_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. }
+                    if *y > first_link_line.1 =>
+                {
+                    text.chars().enumerate().find_map(|(offset, ch)| {
+                        if ch.is_whitespace() {
+                            return None;
+                        }
+                        let visual_x = x.saturating_add(offset);
+                        (hit_test_target_node(&render, visual_x, *y) == Some(link_target))
+                            .then_some((visual_x, *y, text.as_str()))
+                    })
+                }
+                _ => None,
+            })
+            .next()
+            .expect("wrapped linked text span aligned to the content column");
+    assert!(
+        first_link_line.0 >= card_background.0 + 3,
+        "linked list text should reserve an article/list marker gutter"
+    );
+    assert_eq!(
+        wrapped_link_line.0, first_link_line.0,
+        "wrapped list-link rows should align to the content column, not the marker"
+    );
+    assert!(
+        wrapped_link_line.1 > first_link_line.1,
+        "fixture should wrap the link onto a second visual row"
+    );
+    assert_eq!(
+        hit_test_target_node(&render, wrapped_link_line.0, wrapped_link_line.1),
+        Some(link_target)
+    );
+
+    let viewport_y = image_bounds.1.saturating_add(2);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 10,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+    let local_y = wrapped_link_line.1.saturating_sub(viewport.viewport.y);
+    assert!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, wrapped_link_line.0, local_y)
+            .is_some(),
+        "visual viewport hit testing should reach the wrapped link row"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(80),
+        viewport_height: Some(10),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize scrolled article list");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [242, 242, 242, 255]),
+        "scrolled raster should retain the article card underlay"
+    );
+}
+
+#[test]
 fn css_display_list_item_controls_marker_generation() {
     let render = render_html(
         "mem://css-display-list-item",

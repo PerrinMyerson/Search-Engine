@@ -16517,11 +16517,20 @@ fn render_node(
             if list_indent > 0 {
                 renderer.enter_insets(list_indent, 0);
             }
-            if style.display == Display::ListItem {
-                if let Some(marker) = list_item_marker(dom, node_id, css_cascade) {
-                    renderer.push_text(&marker, Some(node_id));
+            let list_marker_indent_entered = if style.display == Display::ListItem
+                && let Some(marker) = list_item_marker(dom, node_id, css_cascade)
+            {
+                let marker_width = text_cell_width(&marker, renderer.font_scale);
+                renderer.push_text(&marker, Some(node_id));
+                if marker_width > 0 {
+                    renderer.enter_line_start_indent(marker_width);
+                    true
+                } else {
+                    false
                 }
-            }
+            } else {
+                false
+            };
 
             if element.tag == "details" {
                 render_details_children(
@@ -16554,6 +16563,9 @@ fn render_node(
             }
             if table_row_entered {
                 renderer.exit_table_row();
+            }
+            if list_marker_indent_entered {
+                renderer.exit_line_start_indent();
             }
             if list_indent > 0 {
                 renderer.break_line();
@@ -18676,6 +18688,7 @@ struct FlowOutOfFlowSnapshot {
     soft_break_opportunity: bool,
     next_y: usize,
     pending_text_indent: Option<usize>,
+    line_start_indent: usize,
     table_stack: Vec<TableFlow>,
     active_floats: Vec<ActiveFloat>,
 }
@@ -18916,6 +18929,8 @@ struct FlowRenderer {
     text_indent_stack: Vec<usize>,
     pending_text_indent: Option<usize>,
     pending_text_indent_stack: Vec<Option<usize>>,
+    line_start_indent: usize,
+    line_start_indent_stack: Vec<usize>,
     line_height: usize,
     line_height_stack: Vec<usize>,
     font_scale: usize,
@@ -18980,6 +18995,8 @@ impl FlowRenderer {
             text_indent_stack: Vec::new(),
             pending_text_indent: None,
             pending_text_indent_stack: Vec::new(),
+            line_start_indent: 0,
+            line_start_indent_stack: Vec::new(),
             line_height: 1,
             line_height_stack: Vec::new(),
             font_scale: 1,
@@ -19566,7 +19583,7 @@ impl FlowRenderer {
     fn push_inline_widget(&mut self, text: &str, target_node: Option<usize>) {
         let line_was_empty = self.current_width == 0;
         if line_was_empty {
-            self.push_pending_text_indent();
+            self.push_line_start_spacing();
         }
         let text_width = text_cell_width(text, self.font_scale);
         if text_width == 0 {
@@ -19582,7 +19599,7 @@ impl FlowRenderer {
             }
         }
         if self.current_width == 0 {
-            self.push_pending_text_indent();
+            self.push_line_start_spacing();
         }
         let widget_height = self.line_height.max(self.font_scale).max(2);
         if self.paint_visible() {
@@ -19746,7 +19763,7 @@ impl FlowRenderer {
             return;
         }
         if apply_letter_spacing && self.current_width == 0 {
-            self.push_pending_text_indent();
+            self.push_line_start_spacing();
         }
         let piece = self.transform_text_piece(piece);
         let piece = if apply_letter_spacing {
@@ -19803,6 +19820,13 @@ impl FlowRenderer {
         if indent > 0 {
             self.push_fixed_space_width(indent, None);
         }
+    }
+
+    fn push_line_start_spacing(&mut self) {
+        if self.line_start_indent > 0 {
+            self.push_fixed_space_width(self.line_start_indent, None);
+        }
+        self.push_pending_text_indent();
     }
 
     fn push_fixed_space_width(&mut self, width: usize, target_node: Option<usize>) {
@@ -19952,6 +19976,7 @@ impl FlowRenderer {
             soft_break_opportunity: std::mem::take(&mut self.soft_break_opportunity),
             next_y: self.next_y,
             pending_text_indent: self.pending_text_indent.take(),
+            line_start_indent: self.line_start_indent,
             table_stack: std::mem::take(&mut self.table_stack),
             active_floats: std::mem::take(&mut self.active_floats),
         };
@@ -19996,6 +20021,7 @@ impl FlowRenderer {
         self.soft_break_opportunity = snapshot.soft_break_opportunity;
         self.next_y = snapshot.next_y;
         self.pending_text_indent = snapshot.pending_text_indent;
+        self.line_start_indent = snapshot.line_start_indent;
         self.table_stack = snapshot.table_stack;
         self.active_floats = snapshot.active_floats;
     }
@@ -20205,6 +20231,15 @@ impl FlowRenderer {
         self.pending_text_indent = self.pending_text_indent_stack.pop().unwrap_or(None);
     }
 
+    fn enter_line_start_indent(&mut self, indent: usize) {
+        self.line_start_indent_stack.push(self.line_start_indent);
+        self.line_start_indent = self.line_start_indent.saturating_add(indent);
+    }
+
+    fn exit_line_start_indent(&mut self) {
+        self.line_start_indent = self.line_start_indent_stack.pop().unwrap_or(0);
+    }
+
     fn enter_line_height(&mut self, line_height: usize) {
         self.line_height_stack.push(self.line_height);
         self.line_height = line_height.max(1);
@@ -20372,7 +20407,7 @@ impl FlowRenderer {
             self.current_width = self.current_width.saturating_add(pending_space);
         }
         if self.current_width == 0 {
-            self.push_pending_text_indent();
+            self.push_line_start_spacing();
         }
         if self.current_width > 0
             && self.current_width.saturating_add(rect_width) > self.available_width()
@@ -20501,7 +20536,7 @@ impl FlowRenderer {
             self.current_width = self.current_width.saturating_add(pending_space);
         }
         if self.current_width == 0 {
-            self.push_pending_text_indent();
+            self.push_line_start_spacing();
         }
         if self.current_width > 0
             && self.current_width.saturating_add(image_width) > self.available_width()
