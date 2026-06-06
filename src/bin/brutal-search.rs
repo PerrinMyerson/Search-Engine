@@ -9,7 +9,9 @@ use brutal_search::crawler::{
     CrawlBoundary, CrawlOptions, crawl_many, domain_to_seed, load_domain_file, load_seed_file,
 };
 use brutal_search::daemon::{default_socket_path, send_request};
-use brutal_search::frontier::{FrontierStore, RecrawlPlanEntry, unix_now};
+use brutal_search::frontier::{
+    DEFAULT_MAX_FAILED_FRONTIER_RECORDS, FrontierStats, FrontierStore, RecrawlPlanEntry, unix_now,
+};
 use brutal_search::index::{
     IndexBuildOptions, PreloadMode, SearchIndex, TermCorrection, TermSuggestion, build_from_corpus,
     build_from_fielded_documents,
@@ -818,6 +820,7 @@ struct IndexStorageStats {
     artifacts: Vec<IndexStorageArtifact>,
     web_artifacts: Vec<WebStorageArtifactStats>,
     crawl_frontier_bytes: u64,
+    crawl_frontier_stats: Option<FrontierStats>,
     crawl_snapshot_bytes: u64,
     crawl_snapshot_entries: usize,
 }
@@ -852,6 +855,7 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         artifacts: Vec::new(),
         web_artifacts: Vec::new(),
         crawl_frontier_bytes: 0,
+        crawl_frontier_stats: None,
         crawl_snapshot_bytes: 0,
         crawl_snapshot_entries: 0,
     };
@@ -875,6 +879,7 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         match *name {
             "frontier.bin" => {
                 stats.crawl_frontier_bytes = bytes;
+                stats.crawl_frontier_stats = Some(FrontierStore::open(&path)?.stats());
             }
             "crawl-docs.jsonl" => {
                 stats.crawl_snapshot_bytes = bytes;
@@ -969,7 +974,7 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
         return Vec::new();
     }
 
-    vec![
+    let mut lines = vec![
         format!(
             "crawl_storage_pressure_summary: retained_bytes={} frontier_bytes={} snapshot_bytes={} snapshot_entries={}",
             retained_bytes,
@@ -990,7 +995,38 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_snapshot_entries: {}",
             stats.crawl_snapshot_entries
         ),
-    ]
+    ];
+    if let Some(frontier) = &stats.crawl_frontier_stats {
+        lines.push(format!(
+            "crawl_storage_frontier_records: {}",
+            frontier.total
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_queued: {}",
+            frontier.queued
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_fetching: {}",
+            frontier.fetching
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_fetched: {}",
+            frontier.fetched
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed: {}",
+            frontier.failed
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_deferred: {}",
+            frontier.deferred
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_record_cap: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS
+        ));
+    }
+    lines
 }
 
 fn count_jsonl_entries(path: &Path) -> Result<usize> {
@@ -1437,6 +1473,7 @@ fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry
 #[cfg(test)]
 mod tests {
     use super::*;
+    use url::Url;
 
     #[test]
     fn index_storage_stats_sum_known_artifacts() {
@@ -1447,7 +1484,35 @@ mod tests {
             b"{\"fetched_at_unix\":100}\n{\"fetched_at_unix\":120}\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("frontier.bin"), b"abcd").unwrap();
+        let frontier_path = dir.path().join("frontier.bin");
+        let mut frontier = FrontierStore::open(&frontier_path).unwrap();
+        frontier
+            .discover(Url::parse("https://example.com/queued").unwrap(), 0, 100)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(110, 10).unwrap();
+        frontier.record_failed(&claim.url, "timeout".to_owned(), 30, 120);
+        frontier
+            .discover(Url::parse("https://example.com/fetched").unwrap(), 0, 130)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(140, 10).unwrap();
+        frontier.record_fetched(&claim.url, 200, None, None, 150);
+        frontier
+            .discover(Url::parse("https://example.com/deferred").unwrap(), 0, 160)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(170, 10).unwrap();
+        frontier.record_failed(&claim.url, "retry later".to_owned(), 60, 180);
+        frontier
+            .discover(
+                Url::parse("https://example.com/queued-next").unwrap(),
+                0,
+                190,
+            )
+            .then_some(())
+            .unwrap();
+        frontier.save().unwrap();
         std::fs::write(
             dir.path().join("crawl-docs.jsonl"),
             b"{\"url\":\"https://example.com/1\"}\n\n{\"url\":\"https://example.com/2\"}\n",
@@ -1462,7 +1527,8 @@ mod tests {
 
         let stats = collect_index_storage_stats(dir.path()).unwrap();
 
-        assert_eq!(stats.total_bytes, 146);
+        let frontier_bytes = std::fs::metadata(&frontier_path).unwrap().len();
+        assert_eq!(stats.total_bytes, 142 + frontier_bytes);
         assert_eq!(
             stats.artifacts,
             vec![
@@ -1472,7 +1538,7 @@ mod tests {
                 },
                 IndexStorageArtifact {
                     name: "frontier.bin",
-                    bytes: 4
+                    bytes: frontier_bytes
                 },
                 IndexStorageArtifact {
                     name: "crawl-docs.jsonl",
@@ -1488,7 +1554,18 @@ mod tests {
                 }
             ]
         );
-        assert_eq!(stats.crawl_frontier_bytes, 4);
+        assert_eq!(stats.crawl_frontier_bytes, frontier_bytes);
+        assert_eq!(
+            stats.crawl_frontier_stats,
+            Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: 1,
+                deferred: 1,
+                total: 4,
+            })
+        );
         assert_eq!(stats.crawl_snapshot_bytes, 65);
         assert_eq!(stats.crawl_snapshot_entries, 2);
         assert_eq!(
@@ -1530,6 +1607,7 @@ mod tests {
         assert!(stats.artifacts.is_empty());
         assert!(stats.web_artifacts.is_empty());
         assert_eq!(stats.crawl_frontier_bytes, 0);
+        assert!(stats.crawl_frontier_stats.is_none());
         assert_eq!(stats.crawl_snapshot_bytes, 0);
         assert_eq!(stats.crawl_snapshot_entries, 0);
     }
@@ -1541,6 +1619,14 @@ mod tests {
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
             crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 2,
+                fetched: 3,
+                failed: 4,
+                deferred: 5,
+                total: 15,
+            }),
             crawl_snapshot_bytes: 120,
             crawl_snapshot_entries: 3,
         };
@@ -1552,6 +1638,15 @@ mod tests {
         ));
         assert!(lines.contains(&"crawl_storage_retained_bytes: 170".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_bytes: 50".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_records: 15".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_queued: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_fetching: 2".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_fetched: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_failed: 4".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_deferred: 5".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_record_cap: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
         assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_entries: 3".to_owned()));
     }
