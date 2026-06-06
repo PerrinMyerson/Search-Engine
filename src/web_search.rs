@@ -19,6 +19,8 @@ pub const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
 pub const DEFAULT_RESULT_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_WEB_RESULTS: usize = 20;
 const DEFAULT_MIN_LOCAL_RESULTS: usize = 20;
+const STORED_RESULT_TITLE_MAX_CHARS: usize = 512;
+const STORED_RESULT_SNIPPET_MAX_CHARS: usize = 2048;
 
 #[derive(Debug, Clone)]
 pub struct WebSearchConfig {
@@ -279,13 +281,14 @@ impl WebSearchService {
             }
         };
 
+        let storage_results = web_results_for_storage(&results);
         if self.config.cache_ttl_secs > 0 {
             let mut cache = self.cache.lock().await;
             cache.store(
                 query.to_owned(),
                 normalized_query.clone(),
                 self.provider_name().to_owned(),
-                results.clone(),
+                storage_results.clone(),
                 now_unix(),
             )?;
         }
@@ -294,7 +297,7 @@ impl WebSearchService {
             query,
             &normalized_query,
             self.provider_name(),
-            &results,
+            &storage_results,
             self.config.result_log_max_entries,
             self.config.result_log_max_bytes,
         )?;
@@ -804,6 +807,18 @@ fn brave_snippet(item: &BraveSearchItem) -> String {
         }
     }
     snippet
+}
+
+fn web_results_for_storage(results: &[WebSearchResult]) -> Vec<WebSearchResult> {
+    results
+        .iter()
+        .cloned()
+        .map(|mut result| {
+            truncate_to_char_boundary(&mut result.title, STORED_RESULT_TITLE_MAX_CHARS);
+            truncate_to_char_boundary(&mut result.snippet, STORED_RESULT_SNIPPET_MAX_CHARS);
+            result
+        })
+        .collect()
 }
 
 fn append_cache_entry(path: &Path, entry: &CachedWebSearch) -> Result<()> {
@@ -1722,6 +1737,36 @@ mod tests {
         assert_eq!(lines.lines().count(), 2);
         assert_eq!(lines.matches("https://example.com/one").count(), 1);
         assert_eq!(lines.matches("https://example.com/two").count(), 1);
+    }
+
+    #[test]
+    fn web_results_for_storage_bounds_large_text_fields() {
+        let results = vec![WebSearchResult {
+            title: format!("{}é tail", "t".repeat(STORED_RESULT_TITLE_MAX_CHARS + 16)),
+            url: "https://example.com/large".to_owned(),
+            snippet: format!("{}é tail", "s".repeat(STORED_RESULT_SNIPPET_MAX_CHARS + 16)),
+            score: 1.0,
+            fetched_at_unix: 100,
+            provider: "brave".to_owned(),
+        }];
+
+        let stored = web_results_for_storage(&results);
+
+        assert_eq!(
+            results[0].title.chars().count(),
+            STORED_RESULT_TITLE_MAX_CHARS + 22
+        );
+        assert_eq!(
+            stored[0].title.chars().count(),
+            STORED_RESULT_TITLE_MAX_CHARS
+        );
+        assert_eq!(
+            stored[0].snippet.chars().count(),
+            STORED_RESULT_SNIPPET_MAX_CHARS
+        );
+        assert!(stored[0].title.is_char_boundary(stored[0].title.len()));
+        assert!(stored[0].snippet.is_char_boundary(stored[0].snippet.len()));
+        assert_eq!(stored[0].url, results[0].url);
     }
 
     #[tokio::test]
