@@ -5838,6 +5838,14 @@ fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCan
         .collect::<Vec<_>>();
     if supported.is_empty() {
         candidates.iter().collect()
+    } else if supported
+        .iter()
+        .any(|candidate| !is_lazy_image_placeholder_src(&candidate.url))
+    {
+        supported
+            .into_iter()
+            .filter(|candidate| !is_lazy_image_placeholder_src(&candidate.url))
+            .collect()
     } else {
         supported
     }
