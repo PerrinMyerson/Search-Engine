@@ -13849,9 +13849,20 @@ fn render_browser_session_retained_pending_status(payload: &BrowserSessionPayloa
         &[("url", pending_source.clone())],
         payload,
     );
+    let pending_reason = payload
+        .action_feedback
+        .as_deref()
+        .map(|feedback| {
+            format!(
+                r#"<span class="viewport-state-chip report" data-browser-retained-pending-reason>{reason}</span>"#,
+                reason = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        r#"<span class="viewport-state-chip warning" data-browser-retained-pending-target>Opening {target}</span><span class="viewport-state-chip report" data-browser-retained-pending-raster>current raster retained</span><a class="primary-action" href="{retry_href}" data-browser-continue-load>Retry load</a>"#,
+        r#"<span class="viewport-state-chip warning" data-browser-retained-pending-target>Opening {target}</span><span class="viewport-state-chip report" data-browser-retained-pending-raster>current raster retained</span>{pending_reason}<a class="primary-action" href="{retry_href}" data-browser-continue-load>Retry load</a>"#,
         target = html_escape::encode_text(&browser_session_feedback_excerpt(pending_source)),
+        pending_reason = pending_reason,
         retry_href = html_escape::encode_double_quoted_attribute(&retry_href),
     )
 }
@@ -13862,6 +13873,7 @@ fn render_browser_session_surface_action_feedback(payload: &BrowserSessionPayloa
     }
     if browser_session_scroll_feedback_text(payload).is_some()
         || browser_session_click_feedback_text(payload).is_some()
+        || (payload.pending_source.is_some() && payload.viewport_image.is_some())
     {
         return String::new();
     }
