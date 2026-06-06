@@ -625,6 +625,24 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                                 );
                             }
                         }
+                        "line" => {
+                            let attrs = svg_attrs_with_style_rules("line", attrs, &style_rules);
+                            if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
+                                let shape = SvgShapeAttrs {
+                                    attrs: svg_shape_attrs_with_inherited_paint(
+                                        &paint_stack,
+                                        attrs,
+                                    ),
+                                    transform,
+                                };
+                                svg_collect_shape(
+                                    &mut shapes,
+                                    &mut stored_shapes,
+                                    &definition_stack,
+                                    SvgStoredShape::Line(shape),
+                                );
+                            }
+                        }
                         "path" => {
                             let attrs = svg_attrs_with_style_rules("path", attrs, &style_rules);
                             if let Some(transform) = svg_child_transform(&transform_stack, &attrs) {
@@ -898,6 +916,23 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
         }
         if let Some(stroke) = svg_shape_stroke_paint(&polyline) {
             let stroke_width = svg_shape_stroke_width(polyline, polyline_shape.transform);
+            draw_decoded_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
+        }
+    }
+    for line_shape in shapes.lines {
+        let line = &line_shape.attrs;
+        let points = svg_line_points(line);
+        let points = transform_svg_points(&points, line_shape.transform);
+        if let Some(stroke) = svg_shape_stroke_paint(line) {
+            let stroke_width = svg_shape_stroke_width(line, line_shape.transform);
             draw_decoded_polyline(
                 &mut pixels,
                 &mut rgb_pixels,
@@ -2196,6 +2231,7 @@ enum SvgStoredShape {
     Ellipse(SvgShapeAttrs),
     Polygon(SvgShapeAttrs),
     Polyline(SvgShapeAttrs),
+    Line(SvgShapeAttrs),
     Path(SvgShapeAttrs),
     EmbeddedImage(SvgShapeAttrs),
 }
@@ -2208,6 +2244,7 @@ impl SvgStoredShape {
             | Self::Ellipse(shape)
             | Self::Polygon(shape)
             | Self::Polyline(shape)
+            | Self::Line(shape)
             | Self::Path(shape)
             | Self::EmbeddedImage(shape) => &shape.attrs,
         }
@@ -2222,6 +2259,7 @@ impl SvgStoredShape {
             Self::Polyline(shape) => {
                 Self::Polyline(svg_shape_used_with(shape, transform, inherited))
             }
+            Self::Line(shape) => Self::Line(svg_shape_used_with(shape, transform, inherited)),
             Self::Path(shape) => Self::Path(svg_shape_used_with(shape, transform, inherited)),
             Self::EmbeddedImage(shape) => {
                 Self::EmbeddedImage(svg_shape_used_with(shape, transform, inherited))
@@ -2237,6 +2275,7 @@ struct SvgDecodedShapes {
     ellipses: Vec<SvgShapeAttrs>,
     polygons: Vec<SvgShapeAttrs>,
     polylines: Vec<SvgShapeAttrs>,
+    lines: Vec<SvgShapeAttrs>,
     paths: Vec<SvgShapeAttrs>,
     embedded_images: Vec<SvgShapeAttrs>,
 }
@@ -2249,6 +2288,7 @@ impl SvgDecodedShapes {
             SvgStoredShape::Ellipse(shape) => self.ellipses.push(shape),
             SvgStoredShape::Polygon(shape) => self.polygons.push(shape),
             SvgStoredShape::Polyline(shape) => self.polylines.push(shape),
+            SvgStoredShape::Line(shape) => self.lines.push(shape),
             SvgStoredShape::Path(shape) => self.paths.push(shape),
             SvgStoredShape::EmbeddedImage(shape) => self.embedded_images.push(shape),
         }
@@ -2271,6 +2311,7 @@ impl SvgDecodedShapes {
             .chain(self.ellipses.iter().cloned().map(SvgStoredShape::Ellipse))
             .chain(self.polygons.iter().cloned().map(SvgStoredShape::Polygon))
             .chain(self.polylines.iter().cloned().map(SvgStoredShape::Polyline))
+            .chain(self.lines.iter().cloned().map(SvgStoredShape::Line))
             .chain(self.paths.iter().cloned().map(SvgStoredShape::Path))
             .chain(
                 self.embedded_images
@@ -3210,6 +3251,26 @@ fn parse_svg_points(value: &str) -> Option<Vec<SvgPoint>> {
             })
             .collect(),
     )
+}
+
+fn svg_line_points(attrs: &HashMap<String, String>) -> [SvgPoint; 2] {
+    let x1 = attrs
+        .get("x1")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let y1 = attrs
+        .get("y1")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let x2 = attrs
+        .get("x2")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    let y2 = attrs
+        .get("y2")
+        .and_then(|value| parse_svg_number(value))
+        .unwrap_or(0.0);
+    [SvgPoint { x: x1, y: y1 }, SvgPoint { x: x2, y: y2 }]
 }
 
 fn parse_svg_number_list(value: &str) -> Option<Vec<f32>> {

@@ -1099,6 +1099,107 @@ async fn image_svg_paths_decodes_line_shape_pixels_for_rendered_resource() {
 }
 
 #[tokio::test]
+async fn image_svg_line_stroke_decodes_and_attaches_visible_rgb_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("line-logo.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 10 6" xmlns="http://www.w3.org/2000/svg">
+                <rect width="10" height="6" fill="#ffffff"/>
+                <line x1="1" y1="1" x2="8" y2="1" stroke="rgb(255,0,0)" stroke-width="2"/>
+                <line x1="1" y1="4" x2="8" y2="4" stroke="#0000ff" stroke-width="1"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before line logo</p><img src="line-logo.svg" alt="Line logo" width="30" height="18"><p>After line logo</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "line-logo.svg").unwrap();
+    assert_eq!(decoded.width, 10);
+    assert_eq!(decoded.height, 6);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "line-logo.svg");
+    assert_eq!(fetch.resource.resolved, icon.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(10));
+    assert_eq!(fetch.decoded_height, Some(6));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before line logo"));
+    assert!(render.text.contains("After line logo"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(10),
+                decoded_height: Some(6),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 220 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_svg_curves_decodes_arc_quadratic_and_cubic_path_pixels_for_rendered_resource() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
