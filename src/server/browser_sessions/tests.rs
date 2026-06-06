@@ -9568,6 +9568,95 @@ fn browser_session_action_href_preserves_session_and_viewport() {
 }
 
 #[test]
+fn browser_session_action_state_strips_unsafe_source() {
+    let payload = BrowserSessionPayload {
+        id: "s7".to_owned(),
+        back_href: "/search?q=cat".to_owned(),
+        title: "Example".to_owned(),
+        source: "javascript:window._klOnsite.push(['openForm','XLdhdf'])".to_owned(),
+        rendered_source: BROWSER_ABOUT_BLANK_TARGET.to_owned(),
+        width: 90,
+        height: 30,
+        max_bytes: 1024 * 1024,
+        viewport_x: 12,
+        viewport_y: 7,
+        document_width: 90,
+        document_height: 30,
+        max_scroll_x: 20,
+        max_scroll_y: 0,
+        dom_node_count: 1,
+        link_count: 0,
+        anchor_count: 0,
+        can_back: false,
+        can_forward: false,
+        history_len: 1,
+        current_history_index: Some(0),
+        profile_enabled: false,
+        profile_error: None,
+        current_bookmarked: false,
+        bookmarks_clear_url: None,
+        bookmarks_background_url: None,
+        links_background_url: None,
+        closed_sessions_clear_url: None,
+        profile_tabs_clear_url: None,
+        profile_history_clear_url: None,
+        find_query: String::new(),
+        find_match_count: 0,
+        find_current_index: None,
+        find_current_line: None,
+        find_current_column: None,
+        find_matches: Vec::new(),
+        tab_search_query: String::new(),
+        tab_search_results: Vec::new(),
+        sessions: Vec::new(),
+        closed_sessions: Vec::new(),
+        bookmarks: Vec::new(),
+        profile_history: Vec::new(),
+        history: Vec::new(),
+        viewport: String::new(),
+        viewport_image: None,
+        viewport_image_error: None,
+        page_text: String::new(),
+        focused: None,
+        anchors: Vec::new(),
+        links: Vec::new(),
+        form_count: 0,
+        forms: Vec::new(),
+        cookies: Vec::new(),
+        local_storage: Vec::new(),
+        session_storage: Vec::new(),
+        resource_count: 0,
+        resource_image_count: 0,
+        resource_stylesheet_count: 0,
+        resource_script_count: 0,
+        resources: Vec::new(),
+        resource_report: None,
+        action_feedback: None,
+        pending_source: None,
+        fast_scroll: false,
+    };
+
+    let href =
+        browser_session_action_href(&payload.id, "scroll", &[("dy", "15".to_owned())], &payload);
+    let target = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    assert_eq!(target.param("id").as_deref(), Some("s7"));
+    assert_eq!(target.param("action").as_deref(), Some("scroll"));
+    assert_eq!(target.param("dy").as_deref(), Some("15"));
+    assert!(target.param("source").is_none());
+
+    let hidden = browser_session_common_hidden_inputs(&payload);
+    assert!(hidden.contains(r#"name="id" value="s7""#));
+    assert!(hidden.contains(r#"name="viewport_y" value="7""#));
+    assert!(!hidden.contains(r#"name="source""#));
+    assert!(!hidden.contains("javascript:"));
+}
+
+#[test]
 fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
     let payload = BrowserSessionPayload {
         id: "s9".to_owned(),
@@ -13509,4 +13598,40 @@ async fn browser_page_renders_stale_session_recovery_shell_without_source() {
             .contains(r#"<a href="/search?q=stale">Back to search</a>"#)
     );
     assert!(!response.body.contains("More browser tools"));
+}
+
+#[tokio::test]
+async fn browser_page_refuses_unsafe_source_for_stale_session_recovery() {
+    let registry = BrowserSessionRegistry::default();
+    let stale = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), "s999".to_owned()),
+            ("action".to_owned(), "current".to_owned()),
+            ("from".to_owned(), "/search?q=stale".to_owned()),
+            ("width".to_owned(), "88".to_owned()),
+            ("height".to_owned(), "30".to_owned()),
+            ("viewport_x".to_owned(), "2".to_owned()),
+            ("viewport_y".to_owned(), "12".to_owned()),
+            ("max_bytes".to_owned(), "2097152".to_owned()),
+            (
+                "source".to_owned(),
+                "javascript:window._klOnsite.push(['openForm','XLdhdf'])".to_owned(),
+            ),
+        ],
+    };
+    let error = registry.apply_target(&stale).await.unwrap_err();
+    let response = error.browser_response(&stale);
+    assert_eq!(response.status, 404);
+    assert!(
+        response
+            .body
+            .contains(r#"data-browser-route-error data-browser-missing-session="true""#)
+    );
+    assert!(response.body.contains("Browser session unavailable"));
+    assert!(response.body.contains(r#"data-browser-recovery-source="""#));
+    assert!(response.body.contains("No original URL to retry"));
+    assert!(!response.body.contains("Retry page"));
+    assert!(!response.body.contains("javascript:"));
+    assert!(!response.body.contains("openForm"));
 }

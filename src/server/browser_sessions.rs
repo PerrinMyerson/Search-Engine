@@ -1171,11 +1171,7 @@ fn browser_route_error_response(
     target: &RequestTarget,
 ) -> HttpResponse {
     let back_href = sanitized_search_return_href(target.param("from").as_deref());
-    let target_url = target
-        .param("url")
-        .or_else(|| target.param("target"))
-        .or_else(|| target.param("source"))
-        .unwrap_or_default();
+    let target_url = browser_route_recoverable_target_url(target).unwrap_or_default();
     let retry_href = browser_route_retry_href(target, &target_url);
     let recovery_hidden_inputs = browser_route_recovery_hidden_inputs(target);
     let retry_control = retry_href.as_ref().map_or_else(
@@ -1282,7 +1278,7 @@ fn browser_route_retry_href(target: &RequestTarget, target_url: &str) -> Option<
     if clean_target.is_empty() {
         return None;
     }
-    let normalized = normalize_browser_address_url(clean_target);
+    let normalized = checked_browser_address_url(clean_target).ok()?;
     let mut query = form_urlencoded::Serializer::new(String::new());
     query.append_pair("url", &normalized);
     query.append_pair(
@@ -1295,6 +1291,13 @@ fn browser_route_retry_href(target: &RequestTarget, target_url: &str) -> Option<
         }
     }
     Some(format!("/browser?{}", query.finish()))
+}
+
+fn browser_route_recoverable_target_url(target: &RequestTarget) -> Option<String> {
+    ["url", "target", "source"]
+        .into_iter()
+        .filter_map(|key| target.param(key))
+        .find_map(|value| checked_browser_address_url(&value).ok())
 }
 
 fn browser_route_recovery_hidden_inputs(target: &RequestTarget) -> String {
@@ -1490,7 +1493,7 @@ impl BrowserSessionRegistry {
         if target_url.trim().is_empty() {
             return self.create_profile_tabs_target(target).await;
         }
-        let target_url = normalize_browser_address_url(&target_url);
+        let target_url = checked_browser_address_url(&target_url)?;
 
         let width = parse_usize_param(target, "width", DEFAULT_BROWSER_WIDTH, 40, 160);
         let height = parse_usize_param(target, "height", DEFAULT_BROWSER_HEIGHT, 16, 120);
@@ -1615,9 +1618,9 @@ impl BrowserSessionRegistry {
             .or_else(|| target.param("target"))
             .or_else(|| target.param("source"))
             .unwrap_or_default();
-        if target_url.trim().is_empty() {
+        let Some(target_url) = checked_browser_address_url(&target_url).ok() else {
             return Ok(None);
-        }
+        };
         let mut params = target
             .params
             .iter()
@@ -8268,7 +8271,7 @@ fn browser_action_url(target: &RequestTarget) -> Result<String, BrowserRouteErro
             "missing browser URL".to_owned(),
         ))
     } else {
-        Ok(normalize_browser_address_url(&url))
+        checked_browser_address_url(&url)
     }
 }
 
@@ -8463,6 +8466,44 @@ fn normalize_browser_address_url(input: &str) -> String {
     }
 
     trimmed.to_owned()
+}
+
+fn checked_browser_address_url(input: &str) -> Result<String, BrowserRouteError> {
+    let normalized = normalize_browser_address_url(input);
+    if browser_address_has_unsafe_pseudo_scheme(&normalized) {
+        let scheme = normalized
+            .split_once(':')
+            .map(|(scheme, _)| scheme)
+            .unwrap_or("unknown");
+        return Err(BrowserRouteError::BadRequest(format!(
+            "unsupported browser URL scheme: {scheme}"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn browser_safe_source_param(source: &str) -> Option<&str> {
+    let clean = source.trim();
+    if clean.is_empty() || browser_address_has_unsafe_pseudo_scheme(clean) {
+        None
+    } else {
+        Some(source)
+    }
+}
+
+fn browser_address_has_unsafe_pseudo_scheme(value: &str) -> bool {
+    let clean = value.trim_start();
+    if !browser_address_has_scheme(clean) {
+        return false;
+    }
+    let scheme = clean
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("");
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "javascript" | "vbscript" | "livescript"
+    )
 }
 
 fn browser_address_has_scheme(value: &str) -> bool {
@@ -15858,8 +15899,15 @@ fn browser_session_select_option_links(control: &BrowserSessionFormControlPayloa
 }
 
 fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> String {
+    let source_input =
+        browser_safe_source_param(&payload.source).map_or_else(String::new, |source| {
+            format!(
+                r#"<input type="hidden" name="source" value="{source}">"#,
+                source = html_escape::encode_double_quoted_attribute(source),
+            )
+        });
     format!(
-        r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}"><input type="hidden" name="source" value="{source}">"#,
+        r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">{source_input}"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
         width = payload.width,
@@ -15867,7 +15915,7 @@ fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> Stri
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         max_bytes = payload.max_bytes,
-        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        source_input = source_input,
     )
 }
 
@@ -15941,7 +15989,9 @@ fn browser_session_action_href<T: BrowserSessionHrefSource>(
     query.append_pair("viewport_x", &source.viewport_x().to_string());
     query.append_pair("viewport_y", &source.viewport_y().to_string());
     query.append_pair("max_bytes", &source.max_bytes().to_string());
-    query.append_pair("source", source.source());
+    if let Some(source) = browser_safe_source_param(source.source()) {
+        query.append_pair("source", source);
+    }
     for (key, value) in extra {
         query.append_pair(key, value);
     }
