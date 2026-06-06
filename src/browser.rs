@@ -1379,6 +1379,15 @@ enum BoxSizing {
 enum CssDimension {
     Cells(usize),
     Percent(i32),
+    Min([CssDimensionTerm; 4], usize),
+    Max([CssDimensionTerm; 4], usize),
+    Clamp(CssDimensionTerm, CssDimensionTerm, CssDimensionTerm),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssDimensionTerm {
+    Cells(usize),
+    Percent(i32),
 }
 
 impl CssDimension {
@@ -1393,6 +1402,47 @@ impl CssDimension {
                 let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
                 resolved.max(0) as usize
             }
+            Self::Min(terms, len) => terms
+                .iter()
+                .take(len)
+                .map(|term| term.resolve(basis))
+                .min()
+                .unwrap_or(0),
+            Self::Max(terms, len) => terms
+                .iter()
+                .take(len)
+                .map(|term| term.resolve(basis))
+                .max()
+                .unwrap_or(0),
+            Self::Clamp(minimum, preferred, maximum) => {
+                let minimum = minimum.resolve(basis);
+                let preferred = preferred.resolve(basis);
+                let maximum = maximum.resolve(basis);
+                preferred.clamp(minimum.min(maximum), maximum.max(minimum))
+            }
+        }
+    }
+}
+
+impl CssDimensionTerm {
+    fn zero() -> Self {
+        Self::Cells(0)
+    }
+
+    fn resolve(self, basis: usize) -> usize {
+        match self {
+            Self::Cells(cells) => cells,
+            Self::Percent(basis_points) => {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.max(0) as usize
+            }
+        }
+    }
+
+    fn into_dimension(self) -> CssDimension {
+        match self {
+            Self::Cells(cells) => CssDimension::Cells(cells),
+            Self::Percent(percent) => CssDimension::Percent(percent),
         }
     }
 }
@@ -14075,14 +14125,56 @@ fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
 
 fn parse_css_dimension(value: &str, axis: CssAxis) -> Option<CssDimension> {
     let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if let Some(args) = css_function_arguments(&value, "clamp").first() {
+        let args = split_css_transform_arguments(args);
+        let minimum = args
+            .first()
+            .and_then(|arg| parse_css_dimension_term(arg, axis))?;
+        let preferred = args
+            .get(1)
+            .and_then(|arg| parse_css_dimension_term(arg, axis))?;
+        let maximum = args
+            .get(2)
+            .and_then(|arg| parse_css_dimension_term(arg, axis))?;
+        return Some(CssDimension::Clamp(minimum, preferred, maximum));
+    }
+    if let Some(args) = css_function_arguments(&value, "min").first() {
+        return parse_css_dimension_function_terms(args, axis)
+            .map(|(terms, len)| CssDimension::Min(terms, len));
+    }
+    if let Some(args) = css_function_arguments(&value, "max").first() {
+        return parse_css_dimension_function_terms(args, axis)
+            .map(|(terms, len)| CssDimension::Max(terms, len));
+    }
+    parse_css_dimension_term(&value, axis).map(CssDimensionTerm::into_dimension)
+}
+
+fn parse_css_dimension_function_terms(
+    args: &str,
+    axis: CssAxis,
+) -> Option<([CssDimensionTerm; 4], usize)> {
+    let mut terms = [CssDimensionTerm::zero(); 4];
+    let mut len = 0usize;
+    for arg in split_css_transform_arguments(args) {
+        if len >= terms.len() {
+            break;
+        }
+        terms[len] = parse_css_dimension_term(arg, axis)?;
+        len = len.saturating_add(1);
+    }
+    (len > 0).then_some((terms, len))
+}
+
+fn parse_css_dimension_term(value: &str, axis: CssAxis) -> Option<CssDimensionTerm> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
     if let Some(percent) = value.strip_suffix('%') {
         let percent = percent.trim().parse::<f32>().ok()?;
         if !percent.is_finite() || percent < 0.0 {
             return None;
         }
-        return Some(CssDimension::Percent((percent * 100.0).round() as i32));
+        return Some(CssDimensionTerm::Percent((percent * 100.0).round() as i32));
     }
-    css_length_cells(&value, axis, 512).map(CssDimension::Cells)
+    css_length_cells(&value, axis, 512).map(CssDimensionTerm::Cells)
 }
 
 fn default_horizontal_dimension_basis() -> usize {
@@ -16072,13 +16164,17 @@ fn render_node(
             if !padding.is_empty() {
                 renderer.enter_insets(padding.left, padding.right);
             }
+            let underlay_insert = block_box.map(|_| renderer.underlay_insert_position());
             let background_start = block_box.and_then(|(box_x, box_width, start_y)| {
-                style
-                    .background_shade
-                    .map(|shade| (box_x, box_width, start_y, shade))
+                style.background_shade.and_then(|shade| {
+                    underlay_insert.map(|insert| (box_x, box_width, start_y, shade, insert))
+                })
             });
             let background_image_start = block_box.and_then(|(box_x, box_width, start_y)| {
                 style.background_image_url.clone().map(|url| {
+                    let insert = underlay_insert
+                        .map(|insert| insert.offset(usize::from(style.background_shade.is_some())))
+                        .unwrap_or_else(|| renderer.underlay_insert_position());
                     (
                         box_x,
                         box_width,
@@ -16087,6 +16183,7 @@ fn render_node(
                         style.background_image_size,
                         style.background_image_position,
                         style.background_image_repeat,
+                        insert,
                     )
                 })
             });
@@ -16302,13 +16399,21 @@ fn render_node(
                 );
                 renderer.push_block_border_bottom(box_x, box_width, border, Some(node_id));
             }
-            if let Some((box_x, box_width, start_y, shade)) = background_start {
-                renderer.push_block_background(box_x, box_width, start_y, shade, Some(node_id));
+            if let Some((box_x, box_width, start_y, shade, insert)) = background_start {
+                renderer.insert_block_background(
+                    insert,
+                    box_x,
+                    box_width,
+                    start_y,
+                    shade,
+                    Some(node_id),
+                );
             }
-            if let Some((box_x, box_width, start_y, url, size, position, repeat)) =
+            if let Some((box_x, box_width, start_y, url, size, position, repeat, insert)) =
                 background_image_start
             {
-                renderer.push_block_background_image(
+                renderer.insert_block_background_image(
+                    insert,
                     box_x,
                     box_width,
                     start_y,
@@ -18341,6 +18446,21 @@ struct PaintLayerCommands {
     display_targets: Vec<DisplayHitTarget>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PaintUnderlayInsertion {
+    z_index: Option<i32>,
+    index: usize,
+}
+
+impl PaintUnderlayInsertion {
+    fn offset(self, amount: usize) -> Self {
+        Self {
+            z_index: self.z_index,
+            index: self.index.saturating_add(amount),
+        }
+    }
+}
+
 impl PaintLayerCommands {
     fn new(z_index: i32) -> Self {
         Self {
@@ -18633,6 +18753,39 @@ impl FlowRenderer {
         } else {
             self.underlay_list.push(command);
             self.underlay_targets.push(target);
+        }
+    }
+
+    fn underlay_insert_position(&mut self) -> PaintUnderlayInsertion {
+        if let Some(z_index) = self.current_positive_z_index() {
+            let layer = self.positive_z_layer_mut(z_index);
+            PaintUnderlayInsertion {
+                z_index: Some(z_index),
+                index: layer.underlay_list.len(),
+            }
+        } else {
+            PaintUnderlayInsertion {
+                z_index: None,
+                index: self.underlay_list.len(),
+            }
+        }
+    }
+
+    fn insert_underlay_command(
+        &mut self,
+        position: PaintUnderlayInsertion,
+        command: DisplayCommand,
+        target: DisplayHitTarget,
+    ) {
+        if let Some(z_index) = position.z_index {
+            let layer = self.positive_z_layer_mut(z_index);
+            let index = position.index.min(layer.underlay_list.len());
+            layer.underlay_list.insert(index, command);
+            layer.underlay_targets.insert(index, target);
+        } else {
+            let index = position.index.min(self.underlay_list.len());
+            self.underlay_list.insert(index, command);
+            self.underlay_targets.insert(index, target);
         }
     }
 
@@ -20409,8 +20562,9 @@ impl FlowRenderer {
         self.next_y = self.next_y.saturating_add(border.width);
     }
 
-    fn push_block_background(
+    fn insert_block_background(
         &mut self,
+        insert: PaintUnderlayInsertion,
         x: usize,
         width: usize,
         start_y: usize,
@@ -20423,12 +20577,13 @@ impl FlowRenderer {
         let height = self.next_y.saturating_sub(start_y).max(1);
         if let Some(command) = self.clipped_rect_command(x, start_y, width, height, shade) {
             let target = self.node_hit_target(target_node);
-            self.push_underlay_command(command, target);
+            self.insert_underlay_command(insert, command, target);
         }
     }
 
-    fn push_block_background_image(
+    fn insert_block_background_image(
         &mut self,
+        insert: PaintUnderlayInsertion,
         x: usize,
         width: usize,
         start_y: usize,
@@ -20465,7 +20620,7 @@ impl FlowRenderer {
             let target = self
                 .node_hit_target(target_node)
                 .with_source_bounds(source_bounds);
-            self.push_underlay_command(command, target);
+            self.insert_underlay_command(insert, command, target);
         }
     }
 

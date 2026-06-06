@@ -3229,6 +3229,171 @@ fn large_viewport_raster_text_uses_readable_span_with_form_and_image() {
 }
 
 #[test]
+fn css_function_widths_center_readable_card_flow_after_scroll() {
+    let render = render_html(
+        "mem://function-width-readable-card-flow",
+        br#"
+            <html><head><style>
+              .card {
+                width: min(100%, 320px);
+                margin-inline: auto;
+                padding: 8px;
+                background: rgb(240, 240, 240);
+              }
+              .rail {
+                width: clamp(160px, 50%, 240px);
+                background: rgb(224, 224, 224);
+              }
+              img {
+                width: max(96px, 20%);
+                height: 24px;
+              }
+            </style></head><body>
+              <p>Intro row keeps the page scrollable.</p>
+              <section class="card">
+                <h2>Readable page card</h2>
+                <p class="rail"><a href="/details">Open details</a> alongside normal copy.</p>
+                <img alt="preview">
+                <p>Body copy should stay inside the centered card instead of stretching across the whole viewport.</p>
+              </section>
+              <p>Trailing row one.</p>
+              <p>Trailing row two.</p>
+              <p>Trailing row three.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 240 && *width == 42 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("min() content width plus padding should center a readable card");
+    assert_eq!(card_background.0, 19);
+    assert!(card_background.3 >= 6);
+
+    let rail_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 224 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("clamp() width should reserve a readable inner rail");
+    assert_eq!(rail_background.0, card_background.0 + 1);
+    assert_eq!(rail_background.2, 20);
+    assert!(rail_background.3 >= 1);
+
+    let link_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Open details") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("link text should remain visible inside the rail");
+    assert_eq!(link_text.0, rail_background.0);
+    assert!(hit_test_target_node(&render, link_text.0, link_text.1).is_some());
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("preview") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("max() image width should paint a replaced-media slot");
+    assert_eq!(image_bounds.0, card_background.0 + 1);
+    assert_eq!(image_bounds.2, 12);
+    assert_eq!(image_bounds.3, 2);
+
+    let viewport_y = rail_background.1;
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 6,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(80),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled function-width card");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let viewport_bottom = viewport_y.saturating_add(raster_options.viewport_height.unwrap_or(0));
+    let mut rail_background_visible = false;
+    for cell_y in rail_background.1..rail_background.1.saturating_add(rail_background.3) {
+        if cell_y < viewport_y || cell_y >= viewport_bottom {
+            continue;
+        }
+        let pixel_y = raster_options.padding_y.saturating_add(
+            cell_y
+                .saturating_sub(viewport_y)
+                .saturating_mul(raster_options.cell_height),
+        );
+        for cell_x in rail_background.0..rail_background.0.saturating_add(rail_background.2) {
+            let pixel_x = raster_options
+                .padding_x
+                .saturating_add(cell_x.saturating_mul(raster_options.cell_width));
+            if pixel(pixel_x, pixel_y) == [224, 224, 224, 255] {
+                rail_background_visible = true;
+                break;
+            }
+        }
+        if rail_background_visible {
+            break;
+        }
+    }
+    assert!(
+        rail_background_visible,
+        "scrolled raster should preserve a visible clamp() rail background pixel"
+    );
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
