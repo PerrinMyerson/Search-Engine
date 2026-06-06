@@ -2649,6 +2649,15 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"document.addEventListener("click""#));
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
+    assert!(
+        html.contains(
+            "const lineStep = Math.max(1, Math.floor(numberData(\"viewportHeight\") / 6));"
+        )
+    );
+    assert!(html.contains(r#"dy = lineStep"#));
+    assert!(html.contains(r#"dy = -lineStep"#));
+    assert!(html.contains(r#"dx = lineStep"#));
+    assert!(html.contains(r#"dx = -lineStep"#));
     assert!(html.contains("setViewportPending"));
     assert!(html.contains("shell.dataset.viewportState = \"pending\""));
     assert!(html.contains("shell.dataset.pendingViewportX = String(target.x)"));
@@ -2823,7 +2832,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const latestQueued = queuedScrollDelta();"));
     assert!(html.contains("buildScrollUrl(latestQueued.dx, latestQueued.dy)"));
     assert!(html.contains("const queueViewportScroll"));
-    assert!(html.contains("const scrollFlushDelayMs = 24"));
+    assert!(html.contains("const scrollFlushDelayMs = 18"));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const submitViewportClick"));
@@ -2923,6 +2932,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         html.contains(r#"const remainingY = numberData("maxScrollY") - numberData("viewportY")"#)
     );
     assert!(html.contains("dy = remainingY > 0 ? remainingY : 1"));
+    assert!(html.contains("let units = delta / 16"));
+    assert!(html.contains("const limit = Math.max(1, Math.max(1, viewportSize));"));
     assert!(html.contains("WheelEvent.DOM_DELTA_LINE"));
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
