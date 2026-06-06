@@ -2865,7 +2865,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("clicking after it settles."));
     assert!(html.contains("Click inside the rendered page image."));
     assert!(html.contains("Click missed the rendered page image."));
-    assert!(html.contains("Click missed the rendered page image; move pointer inside the raster."));
+    assert!(html
+        .contains("Click missed the rendered page image; move pointer inside the raster or retry with an exact point."));
+    assert!(html.contains("Click missed the rendered page image; retry on a visible link/button."));
     assert!(html.contains("submitViewportClick(point, \"Clicking\")"));
     assert!(html.contains("Click inside the rendered page image."));
     assert!(html.contains("Click missed the rendered page image."));
@@ -9320,6 +9322,9 @@ async fn browser_session_fresh_click_at_miss_keeps_session_and_viewport() {
             .as_deref()
             .is_some_and(|feedback| feedback.contains("No click target at DOM point x 999, y 999"))
     );
+    assert!(payload.action_feedback.as_deref().is_some_and(|feedback| {
+        feedback.contains("click a visible link/button or retry with an exact point")
+    }));
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
@@ -9327,6 +9332,7 @@ async fn browser_session_fresh_click_at_miss_keeps_session_and_viewport() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains("No click target at DOM point x 999, y 999"));
+    assert!(html.contains("click a visible link/button or retry with an exact point"));
     assert!(html.contains("viewport preserved"));
     assert!(html.contains(r#"data-viewport-x="3""#));
     assert!(html.contains(r#"data-viewport-y="2""#));
@@ -9381,11 +9387,15 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
             .as_deref()
             .is_some_and(|feedback| feedback.contains("No click target at DOM point x 999, y 999"))
     );
+    assert!(payload.action_feedback.as_deref().is_some_and(|feedback| {
+        feedback.contains("click a visible link/button or retry with an exact point")
+    }));
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains("No click target at DOM point x 999, y 999"));
+    assert!(html.contains("click a visible link/button or retry with an exact point"));
     assert!(html.contains("viewport preserved"));
     assert!(html.contains(&format!(r#"data-viewport-x="{expected_viewport_x}""#)));
     assert!(html.contains(&format!(r#"data-viewport-y="{expected_viewport_y}""#)));

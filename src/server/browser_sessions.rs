@@ -11605,8 +11605,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const point = viewportPointFromEvent(event);
     if (!point) {
       hideClickMarker();
-      setClickStatus("Click missed the rendered page image; move pointer inside the raster.");
-      setViewportFeedback("Click missed the rendered page image.");
+      setClickStatus("Click missed the rendered page image; move pointer inside the raster or retry with an exact point.");
+      setViewportFeedback("Click missed the rendered page image; retry on a visible link/button.");
       return;
     }
     moveClickMarker(point);
@@ -16263,7 +16263,10 @@ fn set_browser_click_error_feedback(
 ) {
     let error_excerpt = browser_session_feedback_excerpt(error);
     let label = if browser_click_error_is_target_miss(error) {
-        miss_label
+        format!(
+            "{miss_label}; {hint}",
+            hint = browser_click_miss_retry_hint()
+        )
     } else {
         format!("{click_label}; {failure_label}")
     };
@@ -16291,6 +16294,10 @@ fn browser_click_error_is_target_miss(error: &str) -> bool {
     error.contains("did not hit a DOM target")
         || error.contains("cannot click: session has no current page")
         || error.contains("cannot click coordinates: session has no current page")
+}
+
+fn browser_click_miss_retry_hint() -> &'static str {
+    "click a visible link/button or retry with an exact point"
 }
 
 fn set_browser_navigation_feedback(
