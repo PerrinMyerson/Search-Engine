@@ -11451,6 +11451,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return { dx, dy };
   };
+  const viewportWorkPending = () => Boolean(pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest);
   const abortPartialViewportRequest = () => {
     if (partialRequestController && typeof partialRequestController.abort === "function") {
       shell.dataset.viewportRequestAborted = "true";
@@ -11556,7 +11557,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!point) {
       hideClickMarker();
       setClickStatus("Click inside the rendered page image.");
-      setViewportFeedback("Click missed the rendered page image.");
+      if (!viewportWorkPending()) {
+        setViewportFeedback("Click missed the rendered page image.");
+      }
       return;
     }
     moveClickMarker(point);
@@ -11567,7 +11570,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       hoverPointTimer = null;
     }, 120);
     setClickStatus(`${pointMessage(point)}. Click.`);
-    setViewportFeedback(`${pointMessage(point)}. Click.`);
+    if (!viewportWorkPending()) {
+      setViewportFeedback(`${pointMessage(point)}. Click.`);
+    }
   });
   shell.addEventListener("mouseleave", () => {
     hideClickMarker();
@@ -11587,7 +11592,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     moveClickMarker(point);
-    if (pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest) {
+    if (viewportWorkPending()) {
       shell.dataset.deferredClickX = String(point.x);
       shell.dataset.deferredClickY = String(point.y);
       shell.dataset.deferredClickPageX = String(point.pageX);

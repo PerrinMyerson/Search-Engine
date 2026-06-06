@@ -2727,6 +2727,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const scrollDeltaFromUrl = (url) =>"));
     assert!(html.contains(r#"url.searchParams.get("action") !== "scroll""#));
     assert!(html.contains(r#"Number(url.searchParams.get("dx") || "0")"#));
+    assert!(html.contains("const viewportWorkPending = () => Boolean("));
+    assert!(html.contains("if (!viewportWorkPending())"));
     assert!(html.contains("const abortPartialViewportRequest = () =>"));
     assert!(html.contains(r#"shell.dataset.viewportRequestAborted = "true""#));
     assert!(html.contains("partialRequestController.abort()"));
@@ -2808,6 +2810,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("shell.dataset.pendingViewportX = String(scroll.x)"));
     assert!(html.contains("shell.dataset.pendingViewportY = String(scroll.y)"));
     assert!(html.contains("Scrolling visual viewport to x ${pending.x}, y ${pending.y}..."));
+    assert!(html.contains("if (viewportWorkPending())"));
     assert!(html.contains("Viewport is updating; scroll after it settles."));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains("const viewportControls = () => Array.from"));
