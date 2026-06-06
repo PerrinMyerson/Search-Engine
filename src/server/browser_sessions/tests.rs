@@ -13312,7 +13312,19 @@ async fn browser_page_returns_pending_session_when_initial_render_fails() {
 }
 
 #[tokio::test]
-async fn browser_page_renders_stale_session_recovery_shell() {
+async fn browser_page_recovers_stale_session_when_source_is_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("stale-recovery.html");
+    let lines = (0..80)
+        .map(|index| format!("Recovered page line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &page,
+        format!(r#"<!doctype html><title>Recovered stale session</title><pre>{lines}</pre>"#),
+    )
+    .unwrap();
+
     let registry = BrowserSessionRegistry::default();
     let stale = RequestTarget {
         path: "/browser".to_owned(),
@@ -13325,10 +13337,46 @@ async fn browser_page_renders_stale_session_recovery_shell() {
             ("viewport_x".to_owned(), "2".to_owned()),
             ("viewport_y".to_owned(), "12".to_owned()),
             ("max_bytes".to_owned(), "2097152".to_owned()),
-            (
-                "source".to_owned(),
-                "https://example.com/path?x=1".to_owned(),
-            ),
+            ("source".to_owned(), page.display().to_string()),
+        ],
+    };
+    let (payload, back_href) = registry.apply_target(&stale).await.unwrap();
+    assert_eq!(payload.id, "s1");
+    assert_eq!(payload.title, "Recovered stale session");
+    assert_eq!(payload.back_href, "/search?q=stale");
+    assert_eq!(back_href, "/search?q=stale");
+    assert_eq!(payload.viewport_x, 0);
+    assert_eq!(payload.viewport_y, 12);
+    assert_eq!(payload.max_bytes, 2097152);
+    assert!(payload.viewport.contains("Recovered page"));
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains("Recovered expired browser session"));
+    assert!(feedback.contains("browser session s999 not found"));
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(html.contains(r#"data-browser-primary-surface"#));
+    assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"data-click-url="/browser?id=s1&amp;action=click-at"#));
+    assert!(html.contains("Recovered expired browser session"));
+    assert!(!html.contains("Browser session unavailable"));
+    assert!(!html.contains(r#"data-browser-missing-session="true""#));
+}
+
+#[tokio::test]
+async fn browser_page_renders_stale_session_recovery_shell_without_source() {
+    let registry = BrowserSessionRegistry::default();
+    let stale = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), "s999".to_owned()),
+            ("action".to_owned(), "current".to_owned()),
+            ("from".to_owned(), "/search?q=stale".to_owned()),
+            ("width".to_owned(), "88".to_owned()),
+            ("height".to_owned(), "30".to_owned()),
+            ("viewport_x".to_owned(), "2".to_owned()),
+            ("viewport_y".to_owned(), "12".to_owned()),
+            ("max_bytes".to_owned(), "2097152".to_owned()),
         ],
     };
     let error = registry.apply_target(&stale).await.unwrap_err();
@@ -13363,23 +13411,8 @@ async fn browser_page_renders_stale_session_recovery_shell() {
             .body
             .contains(r#"<span class="viewport-state-chip">shell ready</span>"#)
     );
-    assert!(
-        response
-            .body
-            .contains(r#"data-browser-recovery-source="https://example.com/path?x=1""#)
-    );
-    assert!(response.body.contains(
-        r#"<input data-browser-address type="text" name="url" value="https://example.com/path?x=1""#
-    ));
-    assert!(response.body.contains(
-        r#"<a class="primary-action" href="/browser?url=https%3A%2F%2Fexample.com%2Fpath%3Fx%3D1"#
-    ));
-    assert!(response.body.contains("from=%2Fsearch%3Fq%3Dstale"));
-    assert!(response.body.contains("width=88"));
-    assert!(response.body.contains("height=30"));
-    assert!(response.body.contains("viewport_x=2"));
-    assert!(response.body.contains("viewport_y=12"));
-    assert!(response.body.contains("max_bytes=2097152"));
+    assert!(response.body.contains(r#"data-browser-recovery-source="""#));
+    assert!(response.body.contains("No original URL to retry"));
     assert!(response.body.contains(r#"name="width" value="88""#));
     assert!(response.body.contains(r#"name="height" value="30""#));
     assert!(response.body.contains(r#"name="viewport_x" value="2""#));

@@ -1590,6 +1590,43 @@ impl BrowserSessionRegistry {
         Ok((payload, back_href))
     }
 
+    async fn recover_missing_session_target(
+        &self,
+        target: &RequestTarget,
+        missing_message: &str,
+    ) -> Result<Option<(BrowserSessionPayload, String)>, BrowserRouteError> {
+        let target_url = target
+            .param("url")
+            .or_else(|| target.param("target"))
+            .or_else(|| target.param("source"))
+            .unwrap_or_default();
+        if target_url.trim().is_empty() {
+            return Ok(None);
+        }
+        let mut params = target
+            .params
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "id" | "url" | "target" | "source"))
+            .cloned()
+            .collect::<Vec<_>>();
+        params.insert(0, ("url".to_owned(), target_url));
+        let recovered = RequestTarget {
+            path: target.path.clone(),
+            params,
+        };
+        let (mut payload, back_href) = self.create_target(&recovered).await?;
+        let prior = payload.action_feedback.take();
+        let recovery = format!(
+            "Recovered expired browser session; reopened page in a new session ({})",
+            browser_session_feedback_excerpt(missing_message)
+        );
+        payload.action_feedback = Some(match prior {
+            Some(feedback) if !feedback.trim().is_empty() => format!("{recovery}; {feedback}"),
+            _ => recovery,
+        });
+        Ok(Some((payload, back_href)))
+    }
+
     async fn take_session_for_action(
         &self,
         id: &str,
@@ -1844,9 +1881,22 @@ impl BrowserSessionRegistry {
             return Ok(result);
         }
 
-        let mut web_session = self
+        let mut web_session = match self
             .take_session_for_action(&id, notifies_in_flight_waiters)
-            .await?;
+            .await
+        {
+            Ok(web_session) => web_session,
+            Err(BrowserRouteError::NotFound(message)) => {
+                if let Some(result) = self
+                    .recover_missing_session_target(target, &message)
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return Err(BrowserRouteError::NotFound(message));
+            }
+            Err(error) => return Err(error),
+        };
 
         web_session.width =
             parse_optional_usize_param(target, "width", 40, 160).unwrap_or(web_session.width);
