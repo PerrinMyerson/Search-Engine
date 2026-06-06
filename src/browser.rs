@@ -1464,6 +1464,34 @@ impl CssDimensionTerm {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CssAspectRatio {
+    width: usize,
+    height: usize,
+}
+
+impl CssAspectRatio {
+    fn height_for_width(self, width: usize) -> Option<usize> {
+        if self.width == 0 {
+            return None;
+        }
+        let width_px = width as f32 * css_axis_cell_px(CssAxis::Horizontal);
+        let height_px = width_px * self.height as f32 / self.width as f32;
+        Some((height_px / css_axis_cell_px(CssAxis::Vertical)).ceil() as usize)
+            .filter(|height| *height > 0)
+    }
+
+    fn width_for_height(self, height: usize) -> Option<usize> {
+        if self.height == 0 {
+            return None;
+        }
+        let height_px = height as f32 * css_axis_cell_px(CssAxis::Vertical);
+        let width_px = height_px * self.width as f32 / self.height as f32;
+        Some((width_px / css_axis_cell_px(CssAxis::Horizontal)).ceil() as usize)
+            .filter(|width| *width > 0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CssListStyleType {
     NoMarker,
     Disc,
@@ -1526,6 +1554,7 @@ struct ComputedStyle {
     min_width: CssDimension,
     height: Option<CssDimension>,
     max_height: Option<CssDimension>,
+    aspect_ratio: Option<CssAspectRatio>,
     margin_left_auto: bool,
     margin_right_auto: bool,
     min_height: CssDimension,
@@ -1727,6 +1756,7 @@ struct CssDeclarations {
     min_width: Option<CssDimension>,
     height: Option<CssDimension>,
     max_height: Option<CssDimension>,
+    aspect_ratio: Option<CssAspectRatio>,
     margin_left_auto: Option<bool>,
     margin_right_auto: Option<bool>,
     min_height: Option<CssDimension>,
@@ -13684,6 +13714,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.max_height =
                     parse_css_dimension(value, CssAxis::Vertical).or(declarations.max_height);
             }
+            "aspect-ratio" => {
+                declarations.aspect_ratio =
+                    parse_css_aspect_ratio(value).or(declarations.aspect_ratio);
+            }
             "min-height" | "min-block-size" => {
                 declarations.min_height =
                     parse_css_dimension(value, CssAxis::Vertical).or(declarations.min_height);
@@ -14213,6 +14247,29 @@ fn parse_css_dimension_term(value: &str, axis: CssAxis) -> Option<CssDimensionTe
         return Some(CssDimensionTerm::Percent((percent * 100.0).round() as i32));
     }
     css_length_cells(&value, axis, 512).map(CssDimensionTerm::Cells)
+}
+
+fn parse_css_aspect_ratio(value: &str) -> Option<CssAspectRatio> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "auto" || value == "inherit" || value == "initial" {
+        return None;
+    }
+    let value = value.strip_prefix("auto ").unwrap_or(value.as_str()).trim();
+    let (width, height) = value
+        .split_once('/')
+        .map(|(width, height)| (width.trim(), height.trim()))
+        .unwrap_or((value, "1"));
+    let width = parse_css_aspect_ratio_component(width)?;
+    let height = parse_css_aspect_ratio_component(height)?;
+    Some(CssAspectRatio { width, height })
+}
+
+fn parse_css_aspect_ratio_component(value: &str) -> Option<usize> {
+    let component = value.trim().parse::<f32>().ok()?;
+    if !component.is_finite() || component <= 0.0 {
+        return None;
+    }
+    Some(((component * 1000.0).round() as usize).max(1))
 }
 
 fn default_horizontal_dimension_basis() -> usize {
@@ -16838,20 +16895,29 @@ fn image_placeholder_extent(
         .and_then(|value| parse_css_dimension(value, CssAxis::Vertical))
         .map(|height| height.resolve(height_basis));
     let (decoded_width, decoded_height) = intrinsic_size.unzip();
-    let (ratio_width, ratio_height) = match (attr_width, attr_height) {
-        (Some(width), Some(height)) => (Some(width), Some(height)),
-        _ => (decoded_width, decoded_height),
-    };
+    let style_ratio = style
+        .aspect_ratio
+        .map(|ratio| (Some(ratio.width), Some(ratio.height)));
+    let (ratio_width, ratio_height) =
+        style_ratio.unwrap_or_else(|| match (attr_width, attr_height) {
+            (Some(width), Some(height)) => (Some(width), Some(height)),
+            _ => (decoded_width, decoded_height),
+        });
     let style_width = style.resolved_width(width_basis);
     let style_height = style.resolved_height();
     let (mut width, mut height) = match (style_width, style_height) {
         (Some(width), Some(height)) => (width, height),
         (Some(width), None) => {
             let width = constrain_image_width(width, style, width_basis);
-            let height = ratio_width
-                .zip(ratio_height)
-                .and_then(|(intrinsic_width, intrinsic_height)| {
-                    scale_image_dimension(width, intrinsic_height, intrinsic_width)
+            let height = style
+                .aspect_ratio
+                .and_then(|ratio| ratio.height_for_width(width))
+                .or_else(|| {
+                    ratio_width
+                        .zip(ratio_height)
+                        .and_then(|(intrinsic_width, intrinsic_height)| {
+                            scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                        })
                 })
                 .or(attr_height)
                 .or(decoded_height)
@@ -16860,10 +16926,15 @@ fn image_placeholder_extent(
         }
         (None, Some(height)) => {
             let height = constrain_image_height(height, style);
-            let width = ratio_width
-                .zip(ratio_height)
-                .and_then(|(intrinsic_width, intrinsic_height)| {
-                    scale_image_dimension(height, intrinsic_width, intrinsic_height)
+            let width = style
+                .aspect_ratio
+                .and_then(|ratio| ratio.width_for_height(height))
+                .or_else(|| {
+                    ratio_width
+                        .zip(ratio_height)
+                        .and_then(|(intrinsic_width, intrinsic_height)| {
+                            scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                        })
                 })
                 .or(attr_width)
                 .or(decoded_width)
@@ -16873,20 +16944,30 @@ fn image_placeholder_extent(
         (None, None) => match (attr_width, attr_height) {
             (Some(width), Some(height)) => (width, height),
             (Some(width), None) => {
-                let height = decoded_width
-                    .zip(decoded_height)
-                    .and_then(|(intrinsic_width, intrinsic_height)| {
-                        scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                let height = style
+                    .aspect_ratio
+                    .and_then(|ratio| ratio.height_for_width(width))
+                    .or_else(|| {
+                        decoded_width.zip(decoded_height).and_then(
+                            |(intrinsic_width, intrinsic_height)| {
+                                scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                            },
+                        )
                     })
                     .or(decoded_height)
                     .unwrap_or(4);
                 (width, height)
             }
             (None, Some(height)) => {
-                let width = decoded_width
-                    .zip(decoded_height)
-                    .and_then(|(intrinsic_width, intrinsic_height)| {
-                        scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                let width = style
+                    .aspect_ratio
+                    .and_then(|ratio| ratio.width_for_height(height))
+                    .or_else(|| {
+                        decoded_width.zip(decoded_height).and_then(
+                            |(intrinsic_width, intrinsic_height)| {
+                                scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                            },
+                        )
                     })
                     .or(decoded_width)
                     .unwrap_or(10);
@@ -17443,6 +17524,7 @@ fn computed_style(
             min_width: CssDimension::zero(),
             height: None,
             max_height: None,
+            aspect_ratio: None,
             margin_left_auto: false,
             margin_right_auto: false,
             min_height: CssDimension::zero(),
@@ -17496,6 +17578,7 @@ fn computed_style(
     let mut min_width = CssDimension::zero();
     let mut height = None;
     let mut max_height = None;
+    let mut aspect_ratio = None;
     let mut margin_left_auto = false;
     let mut margin_right_auto = false;
     let mut min_height = CssDimension::zero();
@@ -17546,6 +17629,7 @@ fn computed_style(
     let mut min_width_specificity = 0u32;
     let mut height_specificity = 0u32;
     let mut max_height_specificity = 0u32;
+    let mut aspect_ratio_specificity = 0u32;
     let mut margin_left_auto_specificity = 0u32;
     let mut margin_right_auto_specificity = 0u32;
     let mut min_height_specificity = 0u32;
@@ -17840,6 +17924,12 @@ fn computed_style(
                 max_height = Some(rule_max_height);
                 max_height_specificity = rule_specificity;
             }
+            if let Some(rule_aspect_ratio) = rule.declarations.aspect_ratio
+                && rule_specificity >= aspect_ratio_specificity
+            {
+                aspect_ratio = Some(rule_aspect_ratio);
+                aspect_ratio_specificity = rule_specificity;
+            }
             if let Some(rule_margin_left_auto) = rule.declarations.margin_left_auto
                 && rule_specificity >= margin_left_auto_specificity
             {
@@ -18006,6 +18096,9 @@ fn computed_style(
         if let Some(inline_max_height) = inline.max_height {
             max_height = Some(inline_max_height);
         }
+        if let Some(inline_aspect_ratio) = inline.aspect_ratio {
+            aspect_ratio = Some(inline_aspect_ratio);
+        }
         if let Some(inline_margin_left_auto) = inline.margin_left_auto {
             margin_left_auto = inline_margin_left_auto;
         }
@@ -18070,6 +18163,7 @@ fn computed_style(
         min_width,
         height,
         max_height,
+        aspect_ratio,
         margin_left_auto,
         margin_right_auto,
         min_height,
