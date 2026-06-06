@@ -1229,6 +1229,20 @@ enum FlexDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JustifyContent {
+    Start,
+    Center,
+    End,
+    SpaceBetween,
+}
+
+impl Default for JustifyContent {
+    fn default() -> Self {
+        Self::Start
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextAlign {
     Start,
     Center,
@@ -1479,6 +1493,7 @@ struct ComputedStyle {
     flex_direction: FlexDirection,
     flex_wrap: bool,
     flex_basis: Option<CssDimension>,
+    justify_content: JustifyContent,
     grid_columns: Option<usize>,
     position: Position,
     position_top: Option<CssPositionOffset>,
@@ -1638,6 +1653,7 @@ impl ComputedStyle {
                     .then(|| self.row_gap.unwrap_or(0))
             },
             column_gap: self.column_gap,
+            justify_content: self.justify_content,
             wrap_after: grid_columns,
             wrap_items: flex_row && self.flex_wrap,
         }
@@ -1649,6 +1665,7 @@ struct ChildLayout {
     row_items: bool,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
+    justify_content: JustifyContent,
     wrap_after: Option<usize>,
     wrap_items: bool,
 }
@@ -1667,6 +1684,7 @@ struct CssDeclarations {
     flex_direction: Option<FlexDirection>,
     flex_wrap: Option<bool>,
     flex_basis: Option<CssDimension>,
+    justify_content: Option<JustifyContent>,
     grid_columns: Option<usize>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
@@ -13375,6 +13393,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.flex_basis =
                     parse_css_flex_basis_shorthand(value).or(declarations.flex_basis);
             }
+            "justify-content" => {
+                declarations.justify_content =
+                    parse_css_justify_content(value).or(declarations.justify_content);
+            }
             "grid-template-columns" => {
                 declarations.grid_columns =
                     parse_css_grid_template_columns(value).or(declarations.grid_columns);
@@ -13863,6 +13885,18 @@ fn parse_css_flex_wrap(value: &str) -> Option<bool> {
         match token.trim().to_ascii_lowercase().as_str() {
             "wrap" | "wrap-reverse" => Some(true),
             "nowrap" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn parse_css_justify_content(value: &str) -> Option<JustifyContent> {
+    value.split_ascii_whitespace().find_map(|token| {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "normal" | "start" | "flex-start" | "left" => Some(JustifyContent::Start),
+            "center" => Some(JustifyContent::Center),
+            "end" | "flex-end" | "right" => Some(JustifyContent::End),
+            "space-between" => Some(JustifyContent::SpaceBetween),
             _ => None,
         }
     })
@@ -15692,6 +15726,18 @@ fn render_children(
     };
     let mut child_seen = false;
     let mut row_item_count = 0usize;
+    let row_justification = row_layout_justification(
+        dom,
+        node_id,
+        css_cascade,
+        child_layout,
+        renderer.available_width(),
+    );
+    if let Some(justification) = row_justification
+        && justification.leading_space > 0
+    {
+        renderer.push_fixed_space_width(justification.leading_space, None);
+    }
     for &child in &node.children {
         if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
             continue;
@@ -15704,7 +15750,9 @@ fn render_children(
             .flatten();
         if child_seen {
             if child_layout.row_items {
-                let column_gap = child_layout.column_gap.unwrap_or(1);
+                let column_gap = row_justification
+                    .map(|justification| justification.column_gap)
+                    .unwrap_or_else(|| child_layout.column_gap.unwrap_or(1));
                 let wraps_by_count = child_layout
                     .wrap_after
                     .is_some_and(|wrap_after| row_item_count >= wrap_after);
@@ -15723,6 +15771,8 @@ fn render_children(
                         renderer.push_vertical_space(row_gap);
                     }
                     row_item_count = 0;
+                } else if row_justification.is_some() {
+                    renderer.push_fixed_space_width(column_gap, None);
                 } else {
                     match child_layout.column_gap {
                         Some(gap) => renderer.push_fixed_space_width(gap, None),
@@ -15766,6 +15816,116 @@ fn render_children(
                 row_item_count = 0;
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RowJustification {
+    leading_space: usize,
+    column_gap: usize,
+}
+
+fn row_layout_justification(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    child_layout: ChildLayout,
+    available_width: usize,
+) -> Option<RowJustification> {
+    if !child_layout.row_items
+        || child_layout.wrap_items
+        || child_layout.wrap_after.is_some()
+        || child_layout.justify_content == JustifyContent::Start
+    {
+        return None;
+    }
+    let node = dom.nodes.get(node_id)?;
+    let mut item_widths = Vec::new();
+    for &child in &node.children {
+        if !row_layout_child_participates(dom, child, css_cascade) {
+            continue;
+        }
+        item_widths.push(row_layout_child_width_estimate(
+            dom,
+            child,
+            css_cascade,
+            available_width,
+        )?);
+    }
+    if item_widths.is_empty() {
+        return None;
+    }
+    let base_gap = child_layout.column_gap.unwrap_or(1);
+    let gap_count = item_widths.len().saturating_sub(1);
+    let content_width = item_widths
+        .iter()
+        .copied()
+        .sum::<usize>()
+        .saturating_add(base_gap.saturating_mul(gap_count));
+    let remaining = available_width.checked_sub(content_width)?;
+    match child_layout.justify_content {
+        JustifyContent::Start => None,
+        JustifyContent::Center => Some(RowJustification {
+            leading_space: remaining / 2,
+            column_gap: base_gap,
+        }),
+        JustifyContent::End => Some(RowJustification {
+            leading_space: remaining,
+            column_gap: base_gap,
+        }),
+        JustifyContent::SpaceBetween => Some(RowJustification {
+            leading_space: 0,
+            column_gap: if gap_count > 0 {
+                base_gap.saturating_add(remaining / gap_count)
+            } else {
+                base_gap
+            },
+        }),
+    }
+}
+
+fn row_layout_child_width_estimate(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    basis: usize,
+) -> Option<usize> {
+    let node = dom.nodes.get(node_id)?;
+    match &node.kind {
+        NodeKind::Text(text) => {
+            let width = collapse_ascii_whitespace(text).chars().count();
+            (width > 0).then_some(width)
+        }
+        NodeKind::Element(element) => {
+            let style = computed_style(dom, node_id, element, css_cascade);
+            if style.display == Display::None {
+                return None;
+            }
+            if let Some(width) = style.flex_basis.or(style.width) {
+                return Some(width.resolve(basis).clamp(1, basis.max(1)));
+            }
+            if element.tag == "img"
+                || element.tag == "svg"
+                || is_replaced_media_element(&element.tag)
+            {
+                return Some(10.min(basis.max(1)));
+            }
+            let text_width = collapse_ascii_whitespace(&text_content(dom, node_id))
+                .chars()
+                .count();
+            if text_width > 0 {
+                return Some(text_width.clamp(1, basis.max(1)));
+            }
+            let child_width = node
+                .children
+                .iter()
+                .filter_map(|&child| {
+                    row_layout_child_width_estimate(dom, child, css_cascade, basis)
+                })
+                .sum::<usize>();
+            (child_width > 0).then_some(child_width.clamp(1, basis.max(1)))
+        }
+        NodeKind::Document | NodeKind::DocumentFragment => None,
     }
 }
 
@@ -17233,6 +17393,7 @@ fn computed_style(
             flex_direction: FlexDirection::Row,
             flex_wrap: false,
             flex_basis: None,
+            justify_content: JustifyContent::Start,
             grid_columns: None,
             position: Position::Static,
             position_top: None,
@@ -17285,6 +17446,7 @@ fn computed_style(
     let mut flex_direction = FlexDirection::Row;
     let mut flex_wrap = false;
     let mut flex_basis = None;
+    let mut justify_content = JustifyContent::Start;
     let mut grid_columns = None;
     let mut position = Position::Static;
     let mut position_top = None;
@@ -17335,6 +17497,7 @@ fn computed_style(
     let mut flex_direction_specificity = 0u32;
     let mut flex_wrap_specificity = 0u32;
     let mut flex_basis_specificity = 0u32;
+    let mut justify_content_specificity = 0u32;
     let mut grid_columns_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
@@ -17476,6 +17639,12 @@ fn computed_style(
             {
                 flex_basis = Some(rule_flex_basis);
                 flex_basis_specificity = rule_specificity;
+            }
+            if let Some(rule_justify_content) = rule.declarations.justify_content
+                && rule_specificity >= justify_content_specificity
+            {
+                justify_content = rule_justify_content;
+                justify_content_specificity = rule_specificity;
             }
             if let Some(rule_grid_columns) = rule.declarations.grid_columns
                 && rule_specificity >= grid_columns_specificity
@@ -17727,6 +17896,9 @@ fn computed_style(
         if let Some(inline_flex_basis) = inline.flex_basis {
             flex_basis = Some(inline_flex_basis);
         }
+        if let Some(inline_justify_content) = inline.justify_content {
+            justify_content = inline_justify_content;
+        }
         if let Some(inline_grid_columns) = inline.grid_columns {
             grid_columns = Some(inline_grid_columns);
         }
@@ -17848,6 +18020,7 @@ fn computed_style(
         flex_direction,
         flex_wrap,
         flex_basis,
+        justify_content,
         grid_columns,
         position,
         position_top,
