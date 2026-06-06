@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ pub use browser_perf::{
 };
 
 pub const BENCH_STATUS_FILE: &str = "bench-status.json";
+pub const DEFAULT_BENCH_STATUS_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct BenchOptions {
@@ -434,13 +435,39 @@ pub fn write_bench_status(
 }
 
 pub fn write_bench_status_path(path: impl AsRef<Path>, report: &BenchStatusReport) -> Result<()> {
+    write_bench_status_path_with_max_bytes(
+        path,
+        report,
+        env_usize("BRUTAL_BENCH_STATUS_MAX_BYTES").unwrap_or(DEFAULT_BENCH_STATUS_MAX_BYTES),
+    )
+}
+
+fn write_bench_status_path_with_max_bytes(
+    path: impl AsRef<Path>,
+    report: &BenchStatusReport,
+    max_bytes: usize,
+) -> Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(report)?;
+    if max_bytes > 0 && json.len() > max_bytes {
+        anyhow::bail!(
+            "bench status report {} is {} bytes, above BRUTAL_BENCH_STATUS_MAX_BYTES={}",
+            path.display(),
+            json.len(),
+            max_bytes
+        );
+    }
     fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
     Ok(())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
 }
 
 pub fn run_smoke(options: SmokeOptions) -> Result<SmokeReport> {
@@ -3992,6 +4019,19 @@ mod tests {
         };
         assert_eq!(report.engine, "rust<script>");
         assert_eq!(report.p95_us, 17);
+    }
+
+    #[test]
+    fn bench_status_write_rejects_reports_above_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(BENCH_STATUS_FILE);
+        let status = BenchStatusReport::Search(report_fixture(&"rust".repeat(128), 17));
+
+        write_bench_status_path_with_max_bytes(&path, &status, 64).unwrap_err();
+        assert!(!path.exists());
+
+        write_bench_status_path_with_max_bytes(&path, &status, 0).unwrap();
+        assert!(path.exists());
     }
 
     #[test]
