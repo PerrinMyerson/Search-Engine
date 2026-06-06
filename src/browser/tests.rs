@@ -9771,6 +9771,125 @@ async fn image_inline_real_pages_decode_lazyload_alias_sources() {
 }
 
 #[tokio::test]
+async fn image_webp_srcset_aliases_attach_selected_visible_rgb_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let picture = dir.path().join("picture.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&picture, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before webp aliases</p>
+            <img src="/assets/loading.gif" data-srcset-webp="hero.avif 320w, hero.webp 640w" data-sizes="80px" alt="WebP alias hero" width="80" height="24">
+            <picture>
+                <source type="image/webp" data-lazy-srcset-webp="dead.avif 320w, picture.webp 640w">
+                <img src="/assets/blank.gif" alt="WebP alias picture" width="80" height="24">
+            </picture>
+            <p>After webp aliases</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.ends_with(".avif"))
+    );
+
+    let expected = [
+        (hero.display().to_string(), "hero.webp"),
+        (picture.display().to_string(), "picture.webp"),
+    ];
+    let mut decoded_hashes = Vec::new();
+    for (resolved, url) in expected {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "image");
+        assert_eq!(fetch.resource.initiator, "img");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        decoded_hashes.push((resolved, fetch.decoded_hash.clone().unwrap()));
+    }
+
+    let render = render_session.current().unwrap();
+    assert!(render.text.contains("Before webp aliases"));
+    assert!(render.text.contains("After webp aliases"));
+    for (resolved, decoded_hash) in decoded_hashes {
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            )
+        }));
+    }
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 245 && pixel[1] < 245 && pixel[2] < 245 && pixel[3] == 255 })
+    );
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url.ends_with(".avif"))
+    );
+    for expected in [&hero, &picture] {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == expected.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+    }
+}
+
+#[tokio::test]
 async fn image_foreground_sources_decode_real_page_file_aliases_in_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
