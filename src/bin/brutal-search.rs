@@ -1207,6 +1207,9 @@ fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport
     if report.dry_run && !report.skipped {
         println!("dry_run_note: no files were rewritten; projected_after shows retained rows");
     }
+    for line in web_storage_compaction_snapshot_readiness_lines(report) {
+        println!("{line}");
+    }
     for line in web_storage_result_log_query_cap_lines(web_storage_result_log_query_cap()) {
         println!("{line}");
     }
@@ -1236,6 +1239,41 @@ fn print_web_storage_compaction_artifact(
     for line in web_storage_compaction_artifact_lines(label, path, before, after, projected_after) {
         println!("{line}");
     }
+}
+
+fn web_storage_compaction_snapshot_readiness_lines(
+    report: &WebSearchStorageCompactionReport,
+) -> Vec<String> {
+    let before_bytes = report
+        .cache_before
+        .bytes
+        .saturating_add(report.result_log_before.bytes);
+    let projected_bytes = report
+        .cache_projected_after
+        .bytes
+        .saturating_add(report.result_log_projected_after.bytes);
+    let projected_duplicates = report
+        .cache_projected_after
+        .duplicate_entries
+        .saturating_add(report.result_log_projected_after.duplicate_entries);
+    let projected_removed_bytes = before_bytes.saturating_sub(projected_bytes);
+    let status = if report.skipped {
+        "skipped"
+    } else if projected_duplicates == 0 {
+        "ready"
+    } else {
+        "needs-compaction"
+    };
+
+    vec![
+        format!(
+            "web_storage_snapshot_readiness: status={} projected_bytes={} projected_removed_bytes={} projected_duplicates={}",
+            status, projected_bytes, projected_removed_bytes, projected_duplicates
+        ),
+        format!("web_storage_snapshot_projected_bytes: {projected_bytes}"),
+        format!("web_storage_snapshot_projected_removed_bytes: {projected_removed_bytes}"),
+        format!("web_storage_snapshot_projected_duplicates: {projected_duplicates}"),
+    ]
 }
 
 fn web_storage_compaction_artifact_lines(
@@ -2051,6 +2089,59 @@ mod tests {
         assert!(lines.contains(&"web-cache_duplicate_entries_projected_removed: 2".to_owned()));
         assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
         assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_reports_projected_pressure() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_readiness: status=ready projected_bytes=150 projected_removed_bytes=60 projected_duplicates=0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_bytes: 150".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_removed_bytes: 60".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_duplicates: 0".to_owned()));
     }
 
     #[test]
