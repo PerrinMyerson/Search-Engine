@@ -16644,15 +16644,24 @@ fn render_node(
                 (None, None) => None,
             };
             let overflow_clip_entered = if block_flow && style.overflow.clips() {
-                let clip_y = renderer.current_row();
-                renderer.enter_clip(DisplayCommandBounds {
-                    x: renderer.box_x(),
-                    y: clip_y,
-                    width: renderer.available_width(),
-                    height: overflow_clip_height
-                        .unwrap_or_else(|| usize::MAX.saturating_sub(clip_y)),
+                let clip_x = renderer.box_x().saturating_sub(padding.left);
+                let clip_y = side_start_y;
+                let clip_width = renderer
+                    .available_width()
+                    .saturating_add(padding.left)
+                    .saturating_add(padding.right);
+                let clip_height = overflow_clip_height.map(|height| {
+                    height
+                        .saturating_add(padding.top)
+                        .saturating_add(padding.bottom)
                 });
-                Some((clip_y, style_height.is_some(), overflow_clip_height))
+                renderer.enter_clip(DisplayCommandBounds {
+                    x: clip_x,
+                    y: clip_y,
+                    width: clip_width,
+                    height: clip_height.unwrap_or_else(|| usize::MAX.saturating_sub(clip_y)),
+                });
+                Some((clip_y, style_height.is_some(), clip_height))
             } else {
                 None
             };
