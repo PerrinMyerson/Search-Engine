@@ -916,6 +916,10 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     }
     let now = unix_now();
     let stale_secs = web_storage_stale_threshold_secs();
+    let web_summary = web_storage_pressure_summary(&stats.web_artifacts, now, stale_secs);
+    for line in storage_pressure_rollup_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
     for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
         println!("{line}");
     }
@@ -1029,6 +1033,41 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
         ));
     }
     lines
+}
+
+fn storage_pressure_rollup_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let core_bytes = stats
+        .total_bytes
+        .saturating_sub(crawl_bytes)
+        .saturating_sub(web_summary.bytes);
+    let frontier_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.total)
+        .unwrap_or(0);
+    vec![
+        format!(
+            "storage_pressure_summary: total_bytes={} core_index_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_duplicates={} snapshot_entries={} frontier_records={}",
+            stats.total_bytes,
+            core_bytes,
+            web_summary.bytes,
+            crawl_bytes,
+            web_summary.entries,
+            web_summary.duplicate_entries,
+            stats.crawl_snapshot_entries,
+            frontier_records
+        ),
+        format!("storage_pressure_total_bytes: {}", stats.total_bytes),
+        format!("storage_pressure_core_index_bytes: {core_bytes}"),
+        format!("storage_pressure_web_bytes: {}", web_summary.bytes),
+        format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
+    ]
 }
 
 fn count_jsonl_entries(path: &Path) -> Result<usize> {
@@ -1746,6 +1785,43 @@ mod tests {
         )));
         assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_entries: 3".to_owned()));
+    }
+
+    #[test]
+    fn storage_pressure_rollup_separates_core_web_and_crawl_bytes() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            duplicate_entries: 4,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_pressure_rollup_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_pressure_total_bytes: 1000".to_owned()));
+        assert!(lines.contains(&"storage_pressure_core_index_bytes: 400".to_owned()));
+        assert!(lines.contains(&"storage_pressure_web_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=400 web_bytes=300 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
     }
 
     #[test]
