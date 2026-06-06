@@ -2683,6 +2683,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
     assert!(html.contains("((point.y + 0.5) / size.height) * rasterRect.height"));
     assert!(html.contains("const restoreClickMarkerAfterPartial"));
+    assert!(html.contains("if (!point) {\n      clearClickMarkerPoint();"));
     assert!(html.contains("clickMarker.hidden = true"));
     assert!(html.contains("clickMarker.hidden = false"));
     assert!(html.contains("lastClickPagePoint = { pageX: point.pageX, pageY: point.pageY }"));
