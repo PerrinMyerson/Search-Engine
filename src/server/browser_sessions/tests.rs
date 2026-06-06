@@ -2703,6 +2703,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("options.samePageOnly && shell.dataset.pageSource"));
     assert!(html.contains("shell.dataset.pageSource !== nextShell.dataset.pageSource"));
     assert!(html.contains("const clearViewportPending"));
+    assert!(html.contains("const settleViewportPageFailure"));
+    assert!(html.contains(r#"shell.removeAttribute("data-viewport-page-error")"#));
+    assert!(html.contains(r#"shell.dataset.viewportPageError = "true""#));
+    assert!(
+        html.contains("Browser navigation request failed; current raster retained. Try again.")
+    );
+    assert!(html.contains("setClickStatus(message);"));
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));
     assert!(html.contains("let pendingScrollAfterRequest = false"));
