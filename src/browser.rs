@@ -1234,6 +1234,8 @@ enum JustifyContent {
     Center,
     End,
     SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
 }
 
 impl Default for JustifyContent {
@@ -13897,6 +13899,8 @@ fn parse_css_justify_content(value: &str) -> Option<JustifyContent> {
             "center" => Some(JustifyContent::Center),
             "end" | "flex-end" | "right" => Some(JustifyContent::End),
             "space-between" => Some(JustifyContent::SpaceBetween),
+            "space-around" => Some(JustifyContent::SpaceAround),
+            "space-evenly" => Some(JustifyContent::SpaceEvenly),
             _ => None,
         }
     })
@@ -15881,6 +15885,21 @@ fn row_layout_justification(
                 base_gap
             },
         }),
+        JustifyContent::SpaceAround => {
+            let item_count = item_widths.len();
+            Some(RowJustification {
+                leading_space: remaining / item_count.saturating_mul(2).max(1),
+                column_gap: base_gap.saturating_add(remaining / item_count.max(1)),
+            })
+        }
+        JustifyContent::SpaceEvenly => {
+            let spacing_slots = item_widths.len().saturating_add(1);
+            let distributed = remaining / spacing_slots.max(1);
+            Some(RowJustification {
+                leading_space: distributed,
+                column_gap: base_gap.saturating_add(distributed),
+            })
+        }
     }
 }
 
