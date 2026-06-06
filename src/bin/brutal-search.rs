@@ -1280,6 +1280,30 @@ fn web_storage_compaction_artifact_lines(
             "{label}_entries_projected_removed: {}",
             before.entries.saturating_sub(projected_after.entries)
         ),
+        format!("{label}_unique_entries_before: {}", before.unique_entries),
+        format!("{label}_unique_entries_after: {}", after.unique_entries),
+        format!(
+            "{label}_unique_entries_projected_after: {}",
+            projected_after.unique_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_before: {}",
+            before.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_after: {}",
+            after.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_projected_after: {}",
+            projected_after.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_projected_removed: {}",
+            before
+                .duplicate_entries
+                .saturating_sub(projected_after.duplicate_entries)
+        ),
     ]
 }
 
@@ -1998,14 +2022,20 @@ mod tests {
             WebSearchStorageArtifactState {
                 bytes: 120,
                 entries: 6,
+                unique_entries: 4,
+                duplicate_entries: 2,
             },
             WebSearchStorageArtifactState {
                 bytes: 120,
                 entries: 6,
+                unique_entries: 4,
+                duplicate_entries: 2,
             },
             WebSearchStorageArtifactState {
                 bytes: 80,
                 entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
             },
         );
 
@@ -2015,6 +2045,10 @@ mod tests {
         assert!(lines.contains(&"web-cache_entries_projected_after: 4".to_owned()));
         assert!(lines.contains(&"web-cache_entries_projected_retained: 4".to_owned()));
         assert!(lines.contains(&"web-cache_entries_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_unique_entries_projected_after: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_before: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_projected_after: 0".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_projected_removed: 2".to_owned()));
         assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
         assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
     }

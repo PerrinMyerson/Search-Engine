@@ -76,6 +76,8 @@ pub struct WebSearchStorageCompactionReport {
 pub struct WebSearchStorageArtifactState {
     pub bytes: u64,
     pub entries: usize,
+    pub unique_entries: usize,
+    pub duplicate_entries: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -504,20 +506,30 @@ fn web_storage_artifact_state(path: &Path) -> Result<WebSearchStorageArtifactSta
     };
     Ok(WebSearchStorageArtifactState {
         bytes,
-        entries: count_nonempty_lines(path)?,
+        ..web_storage_artifact_rows(path)?
     })
 }
 
-fn count_nonempty_lines(path: &Path) -> Result<usize> {
+fn web_storage_artifact_rows(path: &Path) -> Result<WebSearchStorageArtifactState> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WebSearchStorageArtifactState {
+                bytes: 0,
+                entries: 0,
+                unique_entries: 0,
+                duplicate_entries: 0,
+            });
+        }
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("open web storage artifact {}", path.display()));
         }
     };
     let mut entries = 0usize;
+    let mut unique_entries = 0usize;
+    let mut duplicate_entries = 0usize;
+    let mut seen = HashSet::new();
     for (line_no, line) in BufReader::new(file).lines().enumerate() {
         let line = line.with_context(|| {
             format!(
@@ -526,11 +538,53 @@ fn count_nonempty_lines(path: &Path) -> Result<usize> {
                 path.display()
             )
         })?;
-        if !line.trim().is_empty() {
-            entries += 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        entries = entries.saturating_add(1);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if let Some(key) = web_storage_artifact_unique_key(path, &value) {
+            if seen.insert(key) {
+                unique_entries = unique_entries.saturating_add(1);
+            } else {
+                duplicate_entries = duplicate_entries.saturating_add(1);
+            }
         }
     }
-    Ok(entries)
+    Ok(WebSearchStorageArtifactState {
+        bytes: 0,
+        entries,
+        unique_entries,
+        duplicate_entries,
+    })
+}
+
+fn web_storage_artifact_unique_key(path: &Path, value: &serde_json::Value) -> Option<String> {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("web-cache.jsonl") => value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+            .filter(|query| !query.is_empty())
+            .map(str::to_owned),
+        Some("brave-results.jsonl") => {
+            let query = value
+                .get("normalized_query")
+                .and_then(|value| value.as_str())
+                .filter(|query| !query.is_empty())?;
+            let provider = value
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let url = value
+                .get("url")
+                .and_then(|value| value.as_str())
+                .filter(|url| !url.is_empty())?;
+            Some(format!("{query}\t{provider}\t{url}"))
+        }
+        _ => None,
+    }
 }
 
 impl WebResultCache {
@@ -1506,6 +1560,10 @@ mod tests {
         assert_eq!(report.cache_before, report.cache_after);
         assert!(report.cache_projected_after.bytes < report.cache_before.bytes);
         assert!(report.cache_projected_after.entries < report.cache_before.entries);
+        assert_eq!(report.cache_before.unique_entries, 1);
+        assert_eq!(report.cache_before.duplicate_entries, 1);
+        assert_eq!(report.cache_projected_after.unique_entries, 1);
+        assert_eq!(report.cache_projected_after.duplicate_entries, 0);
         assert_eq!(fs::read_to_string(cache_path).unwrap(), before);
     }
 
