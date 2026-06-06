@@ -1044,6 +1044,187 @@ fn css_grid_template_columns_wraps_mixed_content_in_scrolled_viewport() {
 }
 
 #[test]
+fn css_grid_auto_fit_minmax_keeps_card_rows_readable_after_scroll() {
+    let image_url = "mem://auto-fit-grid-card-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![90],
+        rgb_pixels: Some(vec![40, 150, 210]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><head><style>
+              .lead {{ height: 24px; }}
+              .cards {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                gap: 12px 8px;
+                background: rgb(246, 246, 246);
+              }}
+              .tail {{ height: 72px; }}
+            </style></head><body>
+              <p class="lead">Intro copy before the card grid.</p>
+              <section class="cards">
+                <img src="{image_url}" width="16" height="12" alt="">
+                <a href="/one">One card</a>
+                <img src="{image_url}" width="16" height="12" alt="">
+                <a href="/two">Two card</a>
+                <img src="{image_url}" width="16" height="12" alt="">
+                <a href="/three">Three card</a>
+              </section>
+              <p class="tail">Trailing copy keeps the page scrollable.</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://auto-fit-grid-card-flow",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render auto-fit grid card flow with decoded image");
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(image_bounds.len(), 3);
+    assert_eq!(image_bounds[0].2, 2);
+    assert_eq!(image_bounds[1].1, image_bounds[0].1);
+    assert!(
+        image_bounds[2].1 > image_bounds[0].1,
+        "auto-fit minmax grid should wrap later cards instead of flattening into one row, images={image_bounds:?}"
+    );
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. } => {
+                    let offset = text.find(needle)?;
+                    Some((x.saturating_add(offset), *y))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("visible text containing {needle:?}"))
+    };
+    let first = text_position("One card");
+    let second = text_position("Two card");
+    let third = text_position("Three card");
+    assert_eq!(first.1, image_bounds[0].1);
+    assert_eq!(second.1, image_bounds[1].1);
+    assert_eq!(third.1, image_bounds[2].1);
+    assert!(first.0 > image_bounds[0].0 + image_bounds[0].2);
+    assert!(second.0 > image_bounds[1].0 + image_bounds[1].2);
+    assert!(third.0 > image_bounds[2].0 + image_bounds[2].2);
+    let third_target = hit_test_target_node(&render, third.0, third.1)
+        .expect("wrapped auto-fit grid link should expose a visual hit target");
+
+    let viewport_y = image_bounds[2].1;
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 6,
+        },
+        None,
+    );
+    assert!(viewport.viewport.y > 0);
+    assert!(viewport.viewport.y <= viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+    let local_third_y = third.1.saturating_sub(viewport.viewport.y);
+    assert!(local_third_y < viewport.viewport.height);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, third.0, local_third_y),
+        Some(third_target)
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(80),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize scrolled auto-fit grid card row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let image_sample_y = raster_options
+        .padding_y
+        .saturating_add(image_bounds[2].1.saturating_sub(viewport.viewport.y));
+    assert_eq!(
+        pixel(raster_options.padding_x, image_sample_y),
+        &[40, 150, 210, 255]
+    );
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [246, 246, 246, 255]),
+        "scrolled raster should retain the grid section underlay"
+    );
+    let text_col_start = raster_options
+        .padding_x
+        .saturating_add(third.0.saturating_mul(raster_options.cell_width));
+    let text_col_end =
+        text_col_start.saturating_add("Three card".len() * raster_options.cell_width);
+    let mut glyph_pixels = 0usize;
+    let text_row_start = raster_options.padding_y.saturating_add(local_third_y);
+    for y in text_row_start..text_row_start.saturating_add(7).min(rgba.height) {
+        for x in text_col_start..text_col_end.min(rgba.width) {
+            let pixel = pixel(x, y);
+            if pixel != [255, 255, 255, 255]
+                && pixel != [246, 246, 246, 255]
+                && pixel != [40, 150, 210, 255]
+            {
+                glyph_pixels = glyph_pixels.saturating_add(1);
+            }
+        }
+    }
+    assert!(
+        glyph_pixels >= 8,
+        "expected readable linked text beside the decoded image in the scrolled auto-fit grid row"
+    );
+}
+
+#[test]
 fn css_flex_wrap_basis_keeps_mixed_cards_stable_in_scrolled_viewport() {
     let image_url = "mem://flex-wrap-card-image".to_owned();
     let decoded = DecodedImage {

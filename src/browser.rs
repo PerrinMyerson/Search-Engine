@@ -1525,6 +1525,7 @@ struct ComputedStyle {
     flex_basis: Option<CssDimension>,
     justify_content: JustifyContent,
     grid_columns: Option<usize>,
+    grid_auto_min_column_width: Option<usize>,
     position: Position,
     position_top: Option<CssPositionOffset>,
     position_bottom: Option<CssPositionOffset>,
@@ -1669,12 +1670,28 @@ impl ComputedStyle {
     }
 
     fn child_layout(&self) -> ChildLayout {
-        let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
-            && self.flex_direction == FlexDirection::Column;
-        let flex_row = matches!(self.display, Display::Flex | Display::InlineFlex) && !flex_column;
         let grid_columns = matches!(self.display, Display::Grid | Display::InlineGrid)
             .then_some(self.grid_columns)
             .flatten();
+        self.child_layout_with_grid_columns(grid_columns)
+    }
+
+    fn child_layout_for_width(&self, available_width: usize) -> ChildLayout {
+        let grid_columns = if matches!(self.display, Display::Grid | Display::InlineGrid) {
+            self.grid_columns.or_else(|| {
+                self.grid_auto_min_column_width
+                    .map(|min_width| auto_grid_column_count(available_width, min_width))
+            })
+        } else {
+            None
+        };
+        self.child_layout_with_grid_columns(grid_columns)
+    }
+
+    fn child_layout_with_grid_columns(&self, grid_columns: Option<usize>) -> ChildLayout {
+        let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
+            && self.flex_direction == FlexDirection::Column;
+        let flex_row = matches!(self.display, Display::Flex | Display::InlineFlex) && !flex_column;
         ChildLayout {
             row_items: self.display.lays_out_children_in_row() && !flex_column,
             row_gap: if flex_column {
@@ -1717,6 +1734,7 @@ struct CssDeclarations {
     flex_basis: Option<CssDimension>,
     justify_content: Option<JustifyContent>,
     grid_columns: Option<usize>,
+    grid_auto_min_column_width: Option<usize>,
     background_shade: Option<u8>,
     background_image_url: Option<String>,
     background_image_size: Option<BackgroundImageSize>,
@@ -13432,6 +13450,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "grid-template-columns" => {
                 declarations.grid_columns =
                     parse_css_grid_template_columns(value).or(declarations.grid_columns);
+                declarations.grid_auto_min_column_width =
+                    parse_css_grid_auto_min_column_width(value)
+                        .or(declarations.grid_auto_min_column_width);
             }
             "float" => {
                 declarations.float = parse_css_float(value).or(declarations.float);
@@ -14041,6 +14062,73 @@ fn parse_css_grid_template_columns(value: &str) -> Option<usize> {
         count = count.saturating_add(1);
     }
     (count > 0).then(|| count.clamp(1, 12))
+}
+
+fn parse_css_grid_auto_min_column_width(value: &str) -> Option<usize> {
+    let repeat_args = css_first_function_arguments(value, &["repeat"])?;
+    let mut args = split_css_top_level_arguments(repeat_args);
+    if args.len() < 2 {
+        return None;
+    }
+    let repeated = args.remove(0);
+    if !matches!(
+        repeated.to_ascii_lowercase().as_str(),
+        "auto-fit" | "auto-fill"
+    ) {
+        return None;
+    }
+    let track = args.join(", ");
+    let minmax_args = css_first_function_arguments(&track, &["minmax"])?;
+    let min_track = split_css_top_level_arguments(minmax_args)
+        .into_iter()
+        .next()?
+        .to_owned();
+    parse_css_axis_gap(&min_track, CssAxis::Horizontal).map(|width| width.max(1))
+}
+
+fn auto_grid_column_count(available_width: usize, min_column_width: usize) -> usize {
+    if min_column_width == 0 || available_width == 0 {
+        return 1;
+    }
+    (available_width / min_column_width).clamp(1, 12)
+}
+
+fn split_css_top_level_arguments(value: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in value.char_indices() {
+        if let Some(quote_ch) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote_ch {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let arg = value[start..index].trim();
+                if !arg.is_empty() {
+                    args.push(arg);
+                }
+                start = index.saturating_add(ch.len_utf8());
+            }
+            _ => {}
+        }
+    }
+    let arg = value[start..].trim();
+    if !arg.is_empty() {
+        args.push(arg);
+    }
+    args
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -16563,6 +16651,7 @@ fn render_node(
             };
 
             if element.tag == "details" {
+                let child_layout = style.child_layout_for_width(renderer.available_width());
                 render_details_children(
                     dom,
                     node_id,
@@ -16571,9 +16660,10 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
-                    style.child_layout(),
+                    child_layout,
                 );
             } else {
+                let child_layout = style.child_layout_for_width(renderer.available_width());
                 render_children(
                     dom,
                     node_id,
@@ -16581,7 +16671,7 @@ fn render_node(
                     css_cascade,
                     renderer,
                     layout_box_count,
-                    style.child_layout(),
+                    child_layout,
                 );
             }
 
@@ -17537,6 +17627,7 @@ fn computed_style(
             flex_basis: None,
             justify_content: JustifyContent::Start,
             grid_columns: None,
+            grid_auto_min_column_width: None,
             position: Position::Static,
             position_top: None,
             position_bottom: None,
@@ -17591,6 +17682,7 @@ fn computed_style(
     let mut flex_basis = None;
     let mut justify_content = JustifyContent::Start;
     let mut grid_columns = None;
+    let mut grid_auto_min_column_width = None;
     let mut position = Position::Static;
     let mut position_top = None;
     let mut position_bottom = None;
@@ -17643,6 +17735,7 @@ fn computed_style(
     let mut flex_basis_specificity = 0u32;
     let mut justify_content_specificity = 0u32;
     let mut grid_columns_specificity = 0u32;
+    let mut grid_auto_min_column_width_specificity = 0u32;
     let mut position_specificity = 0u32;
     let mut position_top_specificity = 0u32;
     let mut position_bottom_specificity = 0u32;
@@ -17796,6 +17889,13 @@ fn computed_style(
             {
                 grid_columns = Some(rule_grid_columns);
                 grid_columns_specificity = rule_specificity;
+            }
+            if let Some(rule_grid_auto_min_column_width) =
+                rule.declarations.grid_auto_min_column_width
+                && rule_specificity >= grid_auto_min_column_width_specificity
+            {
+                grid_auto_min_column_width = Some(rule_grid_auto_min_column_width);
+                grid_auto_min_column_width_specificity = rule_specificity;
             }
             if let Some(rule_position) = rule.declarations.position
                 && rule_specificity >= position_specificity
@@ -18053,6 +18153,9 @@ fn computed_style(
         if let Some(inline_grid_columns) = inline.grid_columns {
             grid_columns = Some(inline_grid_columns);
         }
+        if let Some(inline_grid_auto_min_column_width) = inline.grid_auto_min_column_width {
+            grid_auto_min_column_width = Some(inline_grid_auto_min_column_width);
+        }
         if let Some(inline_position) = inline.position {
             position = inline_position;
         }
@@ -18176,6 +18279,7 @@ fn computed_style(
         flex_basis,
         justify_content,
         grid_columns,
+        grid_auto_min_column_width,
         position,
         position_top,
         position_bottom,
