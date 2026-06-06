@@ -2714,7 +2714,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("if (requestSeq !== viewportRequestSeq)"));
     assert!(html.contains("partialRequestInFlight = true"));
     assert!(html.contains("partialRequestInFlight = false"));
-    assert!(html.contains("Scroll queued; updating visual viewport after current frame..."));
+    assert!(html.contains("Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}..."));
     assert!(html.contains(r#"shell.dataset.scrollQueuedDuringRequest = "true""#));
     assert!(html.contains("pendingScrollTimer = setTimeout(flushPendingScroll, 0)"));
     assert!(html.contains("const keepFocus = document.activeElement === shell"));
@@ -2727,6 +2727,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.removeAttribute("data-pending-viewport-y")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-dx")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-dy")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-target-x")"#));
+    assert!(html.contains(r#"shell.removeAttribute("data-queued-scroll-target-y")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-scroll-queued-during-request")"#));
     assert!(html.contains(r#"shell.removeAttribute("data-stale-viewport-response")"#));
     assert!(html.contains("new DOMParser().parseFromString"));
@@ -2795,6 +2797,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Moving visual viewport up..."));
     assert!(html.contains("Moving visual viewport down..."));
     assert!(html.contains("Refreshing visual viewport..."));
+    assert!(html.contains("const queuedViewportTarget"));
+    assert!(html.contains("const baseX = Number(shell.dataset.pendingViewportX)"));
+    assert!(html.contains("const baseY = Number(shell.dataset.pendingViewportY)"));
+    assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(queued.x)"#));
+    assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(queued.y)"#));
+    assert!(html.contains("Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}..."));
     assert!(html.contains("Moving visual viewport..."));
     assert!(html.contains(r#"shell.dataset.viewportRequest"#));
     assert!(html.contains("Saved ${pointMessage(point)} while viewport updates"));
