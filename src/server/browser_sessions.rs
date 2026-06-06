@@ -11177,7 +11177,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const point = viewportPointFromPagePoint({ pageX, pageY });
     clearDeferredClick();
     if (!point) {
+      hideClickMarker();
       setClickStatus("Saved click is outside the settled viewport.");
+      setViewportFeedback("Saved click target moved outside the settled viewport; click again.");
       return false;
     }
     moveClickMarker(point);

@@ -2806,6 +2806,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const submitViewportClick"));
     assert!(html.contains("const replayDeferredClickAfterPartial"));
     assert!(html.contains("submitViewportClick(point, \"Clicking saved\")"));
+    assert!(html.contains("Saved click is outside the settled viewport."));
+    assert!(html.contains("Saved click target moved outside the settled viewport; click again."));
     assert!(html.contains("replayDeferredClickAfterPartial();"));
     assert!(html.contains("shell.dataset.pendingViewportX = String(pending.x)"));
     assert!(html.contains("shell.dataset.pendingViewportY = String(pending.y)"));
