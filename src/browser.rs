@@ -1245,6 +1245,18 @@ impl Default for JustifyContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignItems {
+    Start,
+    Center,
+}
+
+impl Default for AlignItems {
+    fn default() -> Self {
+        Self::Start
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextAlign {
     Start,
     Center,
@@ -1524,6 +1536,7 @@ struct ComputedStyle {
     flex_wrap: bool,
     flex_basis: Option<CssDimension>,
     justify_content: JustifyContent,
+    align_items: AlignItems,
     grid_columns: Option<usize>,
     grid_auto_min_column_width: Option<usize>,
     position: Position,
@@ -1702,6 +1715,7 @@ impl ComputedStyle {
             },
             column_gap: self.column_gap,
             justify_content: self.justify_content,
+            align_items: self.align_items,
             wrap_after: grid_columns,
             wrap_items: flex_row && self.flex_wrap,
         }
@@ -1714,6 +1728,7 @@ struct ChildLayout {
     row_gap: Option<usize>,
     column_gap: Option<usize>,
     justify_content: JustifyContent,
+    align_items: AlignItems,
     wrap_after: Option<usize>,
     wrap_items: bool,
 }
@@ -1733,6 +1748,7 @@ struct CssDeclarations {
     flex_wrap: Option<bool>,
     flex_basis: Option<CssDimension>,
     justify_content: Option<JustifyContent>,
+    align_items: Option<AlignItems>,
     grid_columns: Option<usize>,
     grid_auto_min_column_width: Option<usize>,
     background_shade: Option<u8>,
@@ -13447,6 +13463,10 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.justify_content =
                     parse_css_justify_content(value).or(declarations.justify_content);
             }
+            "align-items" => {
+                declarations.align_items =
+                    parse_css_align_items(value).or(declarations.align_items);
+            }
             "grid-template-columns" => {
                 declarations.grid_columns =
                     parse_css_grid_template_columns(value).or(declarations.grid_columns);
@@ -13988,6 +14008,16 @@ fn parse_css_justify_content(value: &str) -> Option<JustifyContent> {
             "space-between" => Some(JustifyContent::SpaceBetween),
             "space-around" => Some(JustifyContent::SpaceAround),
             "space-evenly" => Some(JustifyContent::SpaceEvenly),
+            _ => None,
+        }
+    })
+}
+
+fn parse_css_align_items(value: &str) -> Option<AlignItems> {
+    value.split_ascii_whitespace().find_map(|token| {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "center" => Some(AlignItems::Center),
+            "normal" | "start" | "flex-start" | "stretch" | "baseline" => Some(AlignItems::Start),
             _ => None,
         }
     })
@@ -15922,6 +15952,10 @@ fn render_children(
     let Some(node) = dom.nodes.get(node_id) else {
         return;
     };
+    let row_align_entered = child_layout.row_items && child_layout.align_items != AlignItems::Start;
+    if row_align_entered {
+        renderer.enter_row_align_items(child_layout.align_items);
+    }
     let mut child_seen = false;
     let mut row_item_count = 0usize;
     let row_justification = row_layout_justification(
@@ -16028,6 +16062,10 @@ fn render_children(
                 row_item_count = 0;
             }
         }
+    }
+    if row_align_entered {
+        renderer.break_line();
+        renderer.exit_row_align_items();
     }
 }
 
@@ -17745,6 +17783,7 @@ fn computed_style(
             flex_wrap: false,
             flex_basis: None,
             justify_content: JustifyContent::Start,
+            align_items: AlignItems::Start,
             grid_columns: None,
             grid_auto_min_column_width: None,
             position: Position::Static,
@@ -17800,6 +17839,7 @@ fn computed_style(
     let mut flex_wrap = false;
     let mut flex_basis = None;
     let mut justify_content = JustifyContent::Start;
+    let mut align_items = AlignItems::Start;
     let mut grid_columns = None;
     let mut grid_auto_min_column_width = None;
     let mut position = Position::Static;
@@ -17853,6 +17893,7 @@ fn computed_style(
     let mut flex_wrap_specificity = 0u32;
     let mut flex_basis_specificity = 0u32;
     let mut justify_content_specificity = 0u32;
+    let mut align_items_specificity = 0u32;
     let mut grid_columns_specificity = 0u32;
     let mut grid_auto_min_column_width_specificity = 0u32;
     let mut position_specificity = 0u32;
@@ -18002,6 +18043,12 @@ fn computed_style(
             {
                 justify_content = rule_justify_content;
                 justify_content_specificity = rule_specificity;
+            }
+            if let Some(rule_align_items) = rule.declarations.align_items
+                && rule_specificity >= align_items_specificity
+            {
+                align_items = rule_align_items;
+                align_items_specificity = rule_specificity;
             }
             if let Some(rule_grid_columns) = rule.declarations.grid_columns
                 && rule_specificity >= grid_columns_specificity
@@ -18269,6 +18316,9 @@ fn computed_style(
         if let Some(inline_justify_content) = inline.justify_content {
             justify_content = inline_justify_content;
         }
+        if let Some(inline_align_items) = inline.align_items {
+            align_items = inline_align_items;
+        }
         if let Some(inline_grid_columns) = inline.grid_columns {
             grid_columns = Some(inline_grid_columns);
         }
@@ -18397,6 +18447,7 @@ fn computed_style(
         flex_wrap,
         flex_basis,
         justify_content,
+        align_items,
         grid_columns,
         grid_auto_min_column_width,
         position,
@@ -19223,6 +19274,8 @@ struct FlowRenderer {
     line_height_stack: Vec<usize>,
     font_scale: usize,
     font_scale_stack: Vec<usize>,
+    row_align_items: AlignItems,
+    row_align_items_stack: Vec<AlignItems>,
     link_text_depth: usize,
     positioning_context_stack: Vec<FlowPositioningContext>,
     vertical_projection_offset: isize,
@@ -19290,6 +19343,8 @@ impl FlowRenderer {
             line_height_stack: Vec::new(),
             font_scale: 1,
             font_scale_stack: Vec::new(),
+            row_align_items: AlignItems::Start,
+            row_align_items_stack: Vec::new(),
             link_text_depth: 0,
             positioning_context_stack: Vec::new(),
             vertical_projection_offset: 0,
@@ -19983,13 +20038,23 @@ impl FlowRenderer {
                     .box_x()
                     .saturating_add(align_offset)
                     .saturating_add(run.start_x);
+                let run_height = run.font_scale.max(1);
+                let row_align_offset = match self.row_align_items {
+                    AlignItems::Start => 0,
+                    AlignItems::Center => row_height.saturating_sub(run_height) / 2,
+                };
+                let run_y = y.saturating_add(row_align_offset);
+                let (background_y, background_height) = match self.row_align_items {
+                    AlignItems::Start => (y, row_height),
+                    AlignItems::Center => (run_y, run_height),
+                };
                 if run.visible {
                     if let Some(background_shade) = run.background_shade
                         && let Some(command) = self.clipped_rect_command(
                             run_x,
-                            y,
+                            background_y,
                             run_width,
-                            row_height,
+                            background_height,
                             background_shade,
                         )
                     {
@@ -20000,7 +20065,7 @@ impl FlowRenderer {
                         && run_width > 0
                         && let Some(command) = self.clipped_rect_command(
                             run_x,
-                            y.saturating_add(row_height.saturating_sub(1)),
+                            run_y.saturating_add(run_height.saturating_sub(1)),
                             run_width,
                             1,
                             LINK_UNDERLINE_SHADE,
@@ -20012,7 +20077,7 @@ impl FlowRenderer {
                     text.push_str(&scaled_text_for_line(&run.text, run.font_scale));
                     self.push_text_display_command(
                         run_x,
-                        y,
+                        run_y,
                         run.text,
                         run.shade,
                         run.font_scale,
@@ -20582,6 +20647,15 @@ impl FlowRenderer {
 
     fn exit_font_scale(&mut self) {
         self.font_scale = self.font_scale_stack.pop().unwrap_or(1);
+    }
+
+    fn enter_row_align_items(&mut self, align_items: AlignItems) {
+        self.row_align_items_stack.push(self.row_align_items);
+        self.row_align_items = align_items;
+    }
+
+    fn exit_row_align_items(&mut self) {
+        self.row_align_items = self.row_align_items_stack.pop().unwrap_or_default();
     }
 
     fn enter_table(
