@@ -2120,7 +2120,21 @@ fn selected_replaced_media_image_url(element: &ElementData) -> Option<&str> {
         _ => None,
     }?
     .trim();
-    (!url.is_empty() && url_likely_supported_image(url)).then_some(url)
+    if url.is_empty() {
+        return None;
+    }
+    let type_hint = element
+        .type_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|type_hint| !type_hint.is_empty());
+    if type_hint.is_some_and(|type_hint| {
+        media_type_declares_image(type_hint) && !image_mime_type_supported(type_hint)
+    }) {
+        return None;
+    }
+    (url_likely_supported_image(url) || type_hint.is_some_and(image_mime_type_supported))
+        .then_some(url)
 }
 
 fn url_likely_supported_image(url: &str) -> bool {

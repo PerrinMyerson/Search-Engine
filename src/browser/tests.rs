@@ -5498,13 +5498,19 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     let poster = dir.path().join("poster.png");
     let object = dir.path().join("object.png");
     let object_gif = dir.path().join("object.gif");
+    let typed_object = dir.path().join("typed-object");
+    let unsupported_typed_object = dir.path().join("unsupported-typed-object.gif");
     let embed = dir.path().join("embed.webp");
     let embed_gif = dir.path().join("embed.gif");
+    let typed_embed = dir.path().join("typed-embed");
     fs::write(&poster, &png_bytes).unwrap();
     fs::write(&object, &png_bytes).unwrap();
     fs::write(&object_gif, tiny_test_gif_palette()).unwrap();
+    fs::write(&typed_object, tiny_test_gif_palette()).unwrap();
+    fs::write(&unsupported_typed_object, tiny_test_gif_palette()).unwrap();
     fs::write(&embed, tiny_test_webp_bytes()).unwrap();
     fs::write(&embed_gif, tiny_test_gif_palette()).unwrap();
+    fs::write(&typed_embed, tiny_test_gif_palette()).unwrap();
     fs::write(
         &page,
         r#"<html><body>
@@ -5512,8 +5518,11 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             <video poster="poster.png" width="16" height="24"></video>
             <object data="object.png" width="16" height="24"></object>
             <object data="object.gif" width="16" height="24"></object>
+            <object data="typed-object" type="image/gif" width="16" height="24"></object>
+            <object data="unsupported-typed-object.gif" type="image/avif" width="16" height="24"></object>
             <embed src="embed.webp" width="16" height="24">
             <embed src="embed.gif" width="16" height="24">
+            <embed src="typed-embed" type="image/gif" width="16" height="24">
             <p>After media</p>
         </body></html>"#,
     )
@@ -5526,9 +5535,15 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 5);
-    assert_eq!(report.decoded, 5);
+    assert_eq!(report.image_count, 7);
+    assert_eq!(report.decoded, 7);
     assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "unsupported-typed-object.gif")
+    );
     assert!(report.fetches.iter().any(|fetch| {
         fetch.resource.kind == "poster"
             && fetch.resource.initiator == "video"
@@ -5568,6 +5583,36 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     );
     let object_gif_hash = object_gif_fetch.decoded_hash.clone().unwrap();
     let object_gif_color_hash = object_gif_fetch.decoded_color_hash.clone().unwrap();
+    let typed_object_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| {
+            fetch.resource.kind == "image"
+                && fetch.resource.initiator == "object"
+                && fetch.resource.resolved == typed_object.display().to_string()
+        })
+        .unwrap();
+    assert_eq!(typed_object_fetch.status, "fetched");
+    assert_eq!(
+        typed_object_fetch.resource.type_hint.as_deref(),
+        Some("image/gif")
+    );
+    assert_eq!(typed_object_fetch.content_type, None);
+    assert_eq!(
+        typed_object_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(
+        typed_object_fetch.diagnostic.as_deref(),
+        Some("image_decoded")
+    );
+    assert!(
+        typed_object_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let typed_object_hash = typed_object_fetch.decoded_hash.clone().unwrap();
+    let typed_object_color_hash = typed_object_fetch.decoded_color_hash.clone().unwrap();
     assert!(report.fetches.iter().any(|fetch| {
         fetch.resource.kind == "image"
             && fetch.resource.initiator == "embed"
@@ -5597,6 +5642,36 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             .is_some_and(|bytes| bytes > 0)
     );
     let embed_gif_hash = embed_gif_fetch.decoded_hash.clone().unwrap();
+    let typed_embed_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| {
+            fetch.resource.kind == "image"
+                && fetch.resource.initiator == "embed"
+                && fetch.resource.resolved == typed_embed.display().to_string()
+        })
+        .unwrap();
+    assert_eq!(typed_embed_fetch.status, "fetched");
+    assert_eq!(
+        typed_embed_fetch.resource.type_hint.as_deref(),
+        Some("image/gif")
+    );
+    assert_eq!(typed_embed_fetch.content_type, None);
+    assert_eq!(
+        typed_embed_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(
+        typed_embed_fetch.diagnostic.as_deref(),
+        Some("image_decoded")
+    );
+    assert!(
+        typed_embed_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let typed_embed_hash = typed_embed_fetch.decoded_hash.clone().unwrap();
+    let typed_embed_color_hash = typed_embed_fetch.decoded_color_hash.clone().unwrap();
 
     let render = session.current().unwrap();
     assert!(render.display_list.iter().any(|command| {
@@ -5638,6 +5713,25 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             } if url == &object_gif.display().to_string() && hash == &object_gif_hash
         )
     }));
+    let rendered_typed_object = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == typed_object_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_typed_object.image.color_pixel_hash().as_deref(),
+        Some(typed_object_color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &typed_object.display().to_string() && hash == &typed_object_hash
+        )
+    }));
     assert!(render.display_list.iter().any(|command| {
         matches!(
             command,
@@ -5656,6 +5750,25 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
                 decoded_hash: Some(hash),
                 ..
             } if url == &embed_gif.display().to_string() && hash == &embed_gif_hash
+        )
+    }));
+    let rendered_typed_embed = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == typed_embed_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_typed_embed.image.color_pixel_hash().as_deref(),
+        Some(typed_embed_color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &typed_embed.display().to_string() && hash == &typed_embed_hash
         )
     }));
 
