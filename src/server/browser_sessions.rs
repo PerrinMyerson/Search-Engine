@@ -16319,7 +16319,7 @@ fn set_browser_form_navigation_feedback(
     let suffix = if navigated {
         "; navigated"
     } else {
-        "; no navigation"
+        "; no navigation; viewport preserved"
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
 }

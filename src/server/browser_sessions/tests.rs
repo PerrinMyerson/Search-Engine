@@ -10180,7 +10180,7 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert!(payload.forms[0].controls[1].checked);
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Activated form 0 control 2; no navigation")
+        Some("Activated form 0 control 2; no navigation; viewport preserved")
     );
 
     let fill = RequestTarget {
