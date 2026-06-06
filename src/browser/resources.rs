@@ -1633,7 +1633,10 @@ fn push_image_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        for url in supported_srcset_candidate_urls(srcset) {
+        let selected =
+            selected_supported_srcset_candidate(srcset, image_sizes_attr(element), usize::MAX)
+                .into_iter();
+        for url in selected {
             push_resource(
                 resources,
                 source,
@@ -1642,6 +1645,7 @@ fn push_image_alias_resources(
                 &element.tag,
                 &url,
             );
+            return;
         }
     }
 }
