@@ -304,9 +304,7 @@ async fn crawl_with_frontier(
     frontier.save()?;
 
     let mut docs = if let Some(path) = options.document_snapshot_path.as_deref() {
-        let docs = load_document_snapshot(path)?;
-        compact_document_snapshot(path)?;
-        docs
+        compact_document_snapshot_to_limit(path, options.max_pages)?
     } else {
         Vec::new()
     };
@@ -582,6 +580,34 @@ fn compact_document_snapshot(path: &Path) -> Result<usize> {
     Ok(removed)
 }
 
+fn compact_document_snapshot_to_limit(
+    path: &Path,
+    max_docs: usize,
+) -> Result<Vec<FieldedDocument>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let (mut docs, entries) = read_document_snapshot(path)?;
+    let mut removed = entries.saturating_sub(docs.len());
+    if max_docs > 0 && docs.len() > max_docs {
+        let pruned = docs.len() - max_docs;
+        docs.sort_by(|left, right| {
+            right
+                .fetched_at_unix
+                .cmp(&left.fetched_at_unix)
+                .then_with(|| left.url.cmp(&right.url))
+        });
+        docs.truncate(max_docs);
+        removed = removed.saturating_add(pruned);
+    }
+
+    if removed > 0 {
+        write_document_snapshot(path, &docs)?;
+    }
+    Ok(docs)
+}
+
 fn compact_document_snapshot_if_needed(
     path: &Path,
     unique_docs: usize,
@@ -821,6 +847,37 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].title, "A 1024");
         assert_eq!(docs[0].body, "body 1024");
+    }
+
+    #[test]
+    fn document_snapshot_load_compacts_to_max_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crawl-docs.jsonl");
+        for (url, fetched_at) in [
+            ("https://example.com/old", 10),
+            ("https://example.com/new", 30),
+            ("https://example.com/middle", 20),
+            ("https://example.com/old", 40),
+        ] {
+            let mut doc = FieldedDocument::from_plain_text(
+                url.to_owned(),
+                url.to_owned(),
+                format!("body {fetched_at}"),
+                None,
+            );
+            doc.fetched_at_unix = Some(fetched_at);
+            append_document_snapshot(&path, &doc).unwrap();
+        }
+
+        let docs = compact_document_snapshot_to_limit(&path, 2).unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+
+        assert_eq!(docs.len(), 2);
+        assert_eq!(contents.lines().count(), 2);
+        assert!(docs.iter().any(|doc| doc.url == "https://example.com/old"));
+        assert!(docs.iter().any(|doc| doc.url == "https://example.com/new"));
+        assert!(!contents.contains("body 10"));
+        assert!(!contents.contains("https://example.com/middle"));
     }
 
     #[test]
