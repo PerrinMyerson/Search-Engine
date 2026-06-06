@@ -5497,17 +5497,23 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     let page = dir.path().join("page.html");
     let poster = dir.path().join("poster.png");
     let object = dir.path().join("object.png");
+    let object_gif = dir.path().join("object.gif");
     let embed = dir.path().join("embed.webp");
+    let embed_gif = dir.path().join("embed.gif");
     fs::write(&poster, &png_bytes).unwrap();
     fs::write(&object, &png_bytes).unwrap();
+    fs::write(&object_gif, tiny_test_gif_palette()).unwrap();
     fs::write(&embed, tiny_test_webp_bytes()).unwrap();
+    fs::write(&embed_gif, tiny_test_gif_palette()).unwrap();
     fs::write(
         &page,
         r#"<html><body>
             <p>Before media</p>
             <video poster="poster.png" width="16" height="24"></video>
             <object data="object.png" width="16" height="24"></object>
+            <object data="object.gif" width="16" height="24"></object>
             <embed src="embed.webp" width="16" height="24">
+            <embed src="embed.gif" width="16" height="24">
             <p>After media</p>
         </body></html>"#,
     )
@@ -5520,8 +5526,8 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 3);
-    assert_eq!(report.decoded, 3);
+    assert_eq!(report.image_count, 5);
+    assert_eq!(report.decoded, 5);
     assert_eq!(report.failed, 0);
     assert!(report.fetches.iter().any(|fetch| {
         fetch.resource.kind == "poster"
@@ -5536,6 +5542,32 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             && fetch.resource.resolved == object.display().to_string()
             && fetch.status == "fetched"
     }));
+    let object_gif_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| {
+            fetch.resource.kind == "image"
+                && fetch.resource.initiator == "object"
+                && fetch.resource.resolved == object_gif.display().to_string()
+        })
+        .unwrap();
+    assert_eq!(object_gif_fetch.status, "fetched");
+    assert_eq!(object_gif_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        object_gif_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(
+        object_gif_fetch.diagnostic.as_deref(),
+        Some("image_decoded")
+    );
+    assert!(
+        object_gif_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let object_gif_hash = object_gif_fetch.decoded_hash.clone().unwrap();
+    let object_gif_color_hash = object_gif_fetch.decoded_color_hash.clone().unwrap();
     assert!(report.fetches.iter().any(|fetch| {
         fetch.resource.kind == "image"
             && fetch.resource.initiator == "embed"
@@ -5543,9 +5575,30 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             && fetch.status == "fetched"
             && fetch.content_type.as_deref() == Some("image/webp")
     }));
+    let embed_gif_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| {
+            fetch.resource.kind == "image"
+                && fetch.resource.initiator == "embed"
+                && fetch.resource.resolved == embed_gif.display().to_string()
+        })
+        .unwrap();
+    assert_eq!(embed_gif_fetch.status, "fetched");
+    assert_eq!(embed_gif_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        embed_gif_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(embed_gif_fetch.diagnostic.as_deref(), Some("image_decoded"));
+    assert!(
+        embed_gif_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let embed_gif_hash = embed_gif_fetch.decoded_hash.clone().unwrap();
 
     let render = session.current().unwrap();
-    assert_eq!(render.decoded_images.len(), 3);
     assert!(render.display_list.iter().any(|command| {
         matches!(
             command,
@@ -5566,6 +5619,25 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             } if url == &object.display().to_string() && *hash == expected_hash
         )
     }));
+    let rendered_gif = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == object_gif_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_gif.image.color_pixel_hash().as_deref(),
+        Some(object_gif_color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &object_gif.display().to_string() && hash == &object_gif_hash
+        )
+    }));
     assert!(render.display_list.iter().any(|command| {
         matches!(
             command,
@@ -5576,6 +5648,36 @@ async fn image_resource_bundle_decodes_replaced_media_image_resources() {
             } if url == &embed.display().to_string()
         )
     }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &embed_gif.display().to_string() && hash == &embed_gif_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
 }
 
 #[tokio::test]
