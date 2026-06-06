@@ -8265,11 +8265,11 @@ fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
             r#"
             <html><head><style>
               .spacer {{ height: 24px; }}
-              img {{ width: 48px; height: 36px; }}
+              img {{ width: 20px; height: 8px; }}
               a {{ line-height: 2; }}
             </style></head><body>
               <div class="spacer"></div>
-              <img src="{image_url}" alt="preview">
+              <a href="/preview"><img src="{image_url}" alt="preview"></a>
               <p>Open the <a href="/details">readable details</a> for this example page.</p>
               <p>More body text keeps the viewport scrollable.</p>
             </body></html>
@@ -8340,6 +8340,45 @@ fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     assert_eq!(
         anchor_href_for_node(&page_state.dom, target_node).as_deref(),
         Some("/details")
+    );
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("linked image should render as a visual command");
+    let image_viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: image_bounds.1.saturating_sub(1),
+            width: 34,
+            height: 4,
+        },
+        None,
+    );
+    let image_edge_x = image_bounds.0.saturating_add(image_bounds.2);
+    let image_local_y = image_bounds.1.saturating_sub(image_viewport.viewport.y);
+    let image_target = hit_test_target_node_in_viewport(
+        &render,
+        image_viewport.viewport,
+        image_edge_x,
+        image_local_y,
+    )
+    .expect("viewport click beside linked image should use its visual hit box");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, image_target).as_deref(),
+        Some("/preview")
     );
 
     let raster_options = BrowserRasterOptions {
