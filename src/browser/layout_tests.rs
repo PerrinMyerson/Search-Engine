@@ -8126,13 +8126,17 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
         },
     );
 
-    assert!(render.text.contains("[rust browser]"));
-    assert!(render.text.contains("[x]"));
-    assert!(render.text.contains("( )"));
-    assert!(render.text.contains("[******]"));
-    assert!(render.text.contains("[News]"));
-    assert!(render.text.contains("[ship it]"));
-    assert!(render.text.contains("[Go]"));
+    assert!(render.text.contains("rust browser"));
+    assert!(render.text.contains("******"));
+    assert!(render.text.contains("News"));
+    assert!(render.text.contains("ship it"));
+    assert!(render.text.contains("Go"));
+    for terminal_label in ["[rust browser]", "[******]", "[News]", "[ship it]", "[Go]"] {
+        assert!(
+            !render.text.contains(terminal_label),
+            "form controls should render browser-like labels instead of terminal brackets"
+        );
+    }
     let widget_boxes = render
         .display_list
         .iter()
@@ -8155,7 +8159,7 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
     assert_eq!(first_widget.0, 0);
     assert!(first_widget.1 <= 1);
     assert!(
-        first_widget.2 > "[rust browser]".len(),
+        first_widget.2 > "rust browser".len(),
         "input visual box should include padding around rendered text"
     );
     assert!(
@@ -8168,7 +8172,7 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
         .display_list
         .iter()
         .find_map(|command| match command {
-            DisplayCommand::Text { x, y, text } if text.contains("[rust browser]") => {
+            DisplayCommand::Text { x, y, text } if text.contains("rust browser") => {
                 Some((*x, *y, text.as_str()))
             }
             _ => None,
@@ -8212,8 +8216,10 @@ fn inline_widgets_paint_light_fill_and_border_without_losing_hit_box() {
         .expect("button should paint a light control interior");
     assert_eq!(fill.0, 0);
     assert_eq!(fill.1, 0);
-    assert!(fill.2 > "[Search]".len());
+    assert!(fill.2 > "Search".len());
     assert!(fill.3 >= 2);
+    assert!(render.text.contains("Search"));
+    assert!(!render.text.contains("[Search]"));
 
     let border_segments = render
         .display_list
