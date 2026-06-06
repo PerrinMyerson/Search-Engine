@@ -132,7 +132,7 @@ fn decode_cached_resource_image(
     bytes: &[u8],
 ) -> Option<DecodedImage> {
     if let Some(content_type) = content_type
-        && let Some(decoded) = decode_image_bytes(content_type, bytes)
+        && let Some(decoded) = decode_image_bytes_with_svg_base(content_type, bytes, Some(url))
     {
         return Some(decoded);
     }
@@ -146,7 +146,7 @@ fn decode_cached_resource_image(
         })
         .or_else(|| image_type_from_path(Path::new(url)));
     image_type
-        .and_then(|image_type| decode_image_bytes(&image_type, bytes))
+        .and_then(|image_type| decode_image_bytes_with_svg_base(&image_type, bytes, Some(url)))
         .or_else(|| decode_sniffed_image_bytes(bytes))
 }
 
@@ -286,6 +286,14 @@ pub(super) fn decode_image_reference(source: &str, url: &str) -> Option<DecodedI
 }
 
 fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
+    decode_image_bytes_with_svg_base(image_type, bytes, None)
+}
+
+fn decode_image_bytes_with_svg_base(
+    image_type: &str,
+    bytes: &[u8],
+    svg_base_source: Option<&str>,
+) -> Option<DecodedImage> {
     let image_type = image_type
         .split(';')
         .next()
@@ -293,7 +301,7 @@ fn decode_image_bytes(image_type: &str, bytes: &[u8]) -> Option<DecodedImage> {
         .trim()
         .to_ascii_lowercase();
     match image_type.as_str() {
-        "svg" | "image/svg+xml" | "image/svg" => decode_simple_svg(bytes),
+        "svg" | "image/svg+xml" | "image/svg" => decode_simple_svg(bytes, svg_base_source),
         "png" | "image/png" | "image/x-png" => decode_simple_png(bytes),
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
         | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
@@ -313,7 +321,7 @@ fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
     } else if is_gif_bytes(bytes) {
         decode_gif(bytes)
     } else if is_svg_bytes(bytes) {
-        decode_simple_svg(bytes)
+        decode_simple_svg(bytes, None)
     } else {
         None
     }
@@ -450,12 +458,13 @@ fn image_type_from_path(path: &Path) -> Option<String> {
 
 fn decode_image_file(path: PathBuf) -> Option<DecodedImage> {
     let bytes = fs::read(&path).ok()?;
+    let source = path.to_string_lossy();
     image_type_from_path(&path)
-        .and_then(|extension| decode_image_bytes(&extension, &bytes))
+        .and_then(|extension| decode_image_bytes_with_svg_base(&extension, &bytes, Some(&source)))
         .or_else(|| decode_sniffed_image_bytes(&bytes))
 }
 
-fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
+fn decode_simple_svg(bytes: &[u8], base_source: Option<&str>) -> Option<DecodedImage> {
     let mut cursor = 0usize;
     let mut width = None;
     let mut height = None;
@@ -1037,6 +1046,7 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             height,
             &embedded.attrs,
             embedded.transform,
+            base_source,
         );
     }
 
@@ -4202,18 +4212,21 @@ fn draw_decoded_svg_embedded_image(
     image_height: usize,
     attrs: &HashMap<String, String>,
     transform: SvgTransform,
+    base_source: Option<&str>,
 ) -> Option<()> {
     let href = attrs
         .get("href")
         .or_else(|| attrs.get("xlink:href"))?
         .trim();
-    if !href
+    let embedded = if href
         .get(..5)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
     {
-        return None;
-    }
-    let embedded = decode_image_reference("mem://svg-embedded-image", href)?;
+        decode_image_reference("mem://svg-embedded-image", href)?
+    } else {
+        let base_source = base_source?;
+        decode_image_reference(base_source, href)?
+    };
     let x = attrs
         .get("x")
         .and_then(|value| parse_svg_number(value))
