@@ -134,7 +134,7 @@ async fn route_target(target: &RequestTarget, state: &ServerState) -> HttpRespon
     let index = state.local.current();
     match target.path.as_str() {
         "/" | "/search" => html_response(search_page()),
-        "/render" => render_page(target, index.as_ref()),
+        "/render" => render_page(target, index.as_ref(), state).await,
         "/browser" => browser_sessions::browser_page(target, state).await,
         "/crawl" => crawl_status_page(index.as_ref()),
         "/bench" => bench_status_page(index.as_ref()),
@@ -151,7 +151,11 @@ async fn route_target(target: &RequestTarget, state: &ServerState) -> HttpRespon
     }
 }
 
-fn render_page(target: &RequestTarget, index: &SearchIndex) -> HttpResponse {
+async fn render_page(
+    target: &RequestTarget,
+    index: &SearchIndex,
+    state: &ServerState,
+) -> HttpResponse {
     let target_id = target
         .param("id")
         .or_else(|| target.param("target"))
@@ -167,14 +171,41 @@ fn render_page(target: &RequestTarget, index: &SearchIndex) -> HttpResponse {
     let Some(doc) = index.doc(doc_id) else {
         return text_response(404, "Not Found", "document not found");
     };
+    let doc_url = doc.url.clone();
+    let doc_title = doc.title.clone();
+
+    let back_href = sanitized_search_return_href(target.param("from").as_deref());
+    if target.param("view").as_deref() != Some("text") {
+        let browser_target = render_browser_target_for_document(target, &doc_url, &back_href);
+        return browser_sessions::browser_page(&browser_target, state).await;
+    }
+
     let Some(text) = index.text(doc_id) else {
         return text_response(404, "Not Found", "document text not found");
     };
-
-    let back_href = sanitized_search_return_href(target.param("from").as_deref());
     html_response(render_document_page(
-        doc_id, &doc.url, &doc.title, text, &back_href,
+        doc_id, &doc_url, &doc_title, text, &back_href,
     ))
+}
+
+fn render_browser_target_for_document(
+    target: &RequestTarget,
+    doc_url: &str,
+    back_href: &str,
+) -> RequestTarget {
+    let mut params = vec![
+        ("url".to_owned(), doc_url.to_owned()),
+        ("from".to_owned(), back_href.to_owned()),
+    ];
+    for key in ["width", "height", "viewport_x", "viewport_y", "max_bytes"] {
+        if let Some(value) = target.param(key) {
+            params.push((key.to_owned(), value));
+        }
+    }
+    RequestTarget {
+        path: "/browser".to_owned(),
+        params,
+    }
 }
 
 async fn api_search(target: &RequestTarget, state: &ServerState) -> HttpResponse {
@@ -2581,6 +2612,34 @@ mod tests {
             Some("https://example.com/cat")
         );
         assert_eq!(target.param("from").as_deref(), Some("/search?q=cat"));
+    }
+
+    #[test]
+    fn legacy_render_target_opens_browser_document_by_default() {
+        let target = parse_request_target(
+            "GET /render?id=37&from=/search?q=cat&width=100&height=44&viewport_y=8&view=text HTTP/1.1\r\n\r\n",
+        )
+        .unwrap();
+
+        let browser_target = render_browser_target_for_document(
+            &target,
+            "https://example.com/cat facts?a=1",
+            "/search?q=cat",
+        );
+
+        assert_eq!(browser_target.path, "/browser");
+        assert_eq!(
+            browser_target.param("url").as_deref(),
+            Some("https://example.com/cat facts?a=1")
+        );
+        assert_eq!(
+            browser_target.param("from").as_deref(),
+            Some("/search?q=cat")
+        );
+        assert_eq!(browser_target.param("width").as_deref(), Some("100"));
+        assert_eq!(browser_target.param("height").as_deref(), Some("44"));
+        assert_eq!(browser_target.param("viewport_y").as_deref(), Some("8"));
+        assert_eq!(browser_target.param("view"), None);
     }
 
     #[test]
