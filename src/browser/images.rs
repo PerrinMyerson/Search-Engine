@@ -6120,7 +6120,7 @@ fn positive_media_query_matches_current_screen(query: &str, viewport_width_css_p
                 _ => {}
             }
         }
-        let Some(matches) = media_width_feature_matches(part, viewport_width_css_px) else {
+        let Some(matches) = media_feature_matches(part, viewport_width_css_px) else {
             return false;
         };
         if !matches {
@@ -6155,15 +6155,26 @@ fn media_query_parts(query: &str) -> Vec<&str> {
     parts
 }
 
-fn media_width_feature_matches(feature: &str, viewport_width_css_px: usize) -> Option<bool> {
+fn media_feature_matches(feature: &str, viewport_width_css_px: usize) -> Option<bool> {
     let feature = feature.strip_prefix('(')?.strip_suffix(')')?.trim();
     let (name, value) = feature.split_once(':')?;
+    if name.trim() == "orientation" {
+        return media_orientation_feature_matches(value);
+    }
     let width = parse_css_pixel_dimension(value)?;
     let viewport_width = viewport_width_css_px as f64;
     match name.trim() {
         "min-width" => Some(viewport_width >= width),
         "max-width" => Some(viewport_width <= width),
         "width" => Some((viewport_width - width).abs() < f64::EPSILON),
+        _ => None,
+    }
+}
+
+fn media_orientation_feature_matches(value: &str) -> Option<bool> {
+    match value.trim() {
+        "landscape" => Some(true),
+        "portrait" => Some(false),
         _ => None,
     }
 }
