@@ -2892,6 +2892,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("clicking after it settles."));
     assert!(html.contains("Click inside the rendered page image."));
     assert!(html.contains("Click missed the rendered page image."));
+    assert!(html.contains("clearDeferredClick();"));
+    assert!(html.contains(r#"shell.dataset.clickMissClearedDeferred = "true""#));
     assert!(html
         .contains("Click missed the rendered page image; move pointer inside the raster or retry with an exact point."));
     assert!(html.contains("Click missed the rendered page image; retry on a visible link/button."));

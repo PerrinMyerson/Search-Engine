@@ -11643,6 +11643,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const point = viewportPointFromEvent(event);
     if (!point) {
       clearClickMarkerPoint();
+      clearDeferredClick();
+      shell.dataset.clickMissClearedDeferred = "true";
       setClickStatus("Click missed the rendered page image; move pointer inside the raster or retry with an exact point.");
       setViewportFeedback("Click missed the rendered page image; retry on a visible link/button.");
       return;
