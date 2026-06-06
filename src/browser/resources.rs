@@ -1722,12 +1722,16 @@ const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
 
 const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-srcset",
+    "data-srcset-webp",
     "data-lazy-srcset",
+    "data-lazy-srcset-webp",
+    "data-lazy-webp-srcset",
     "data-lazysrcset",
     "data-lazyload-srcset",
     "data-original-srcset",
     "data-originalset",
     "data-originalsrcset",
+    "data-webp-srcset",
     "data-flickity-lazyload-srcset",
     "data-image-srcset",
     "data-imagesrcset",
