@@ -10699,7 +10699,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
                     )
                 });
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>No rendered viewport yet</strong><span>Opening {source}. The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable.</span>{pending_status}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-pending-viewport="true" data-page-source="{source_attr}" data-viewport-state="loading" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" tabindex="0" role="region" aria-busy="true" aria-label="Browser viewport is loading {source_attr}" title="Browser viewport is loading {source_attr}"><div class="browser-raster-placeholder"><strong>No rendered viewport yet</strong><span>Opening {source}. The renderer has not produced a page image yet; the tab is retained and the browser controls remain usable.</span>{pending_status}<a class="clear-link primary-action" href="{continue_href}" data-browser-continue-load>Continue loading</a></div></div>"#,
             viewport_x = payload.viewport_x,
             viewport_y = payload.viewport_y,
             viewport_width = payload.width,
@@ -10714,9 +10714,10 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-click-coordinate-space="raster-pixels" data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
+            source = html_escape::encode_double_quoted_attribute(&payload.source),
             viewport_accessibility_label =
                 html_escape::encode_double_quoted_attribute(viewport_accessibility_label),
             viewport_x = payload.viewport_x,
@@ -10732,9 +10733,10 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-page-source="{source}" data-scroll-url="{scroll_url}" data-click-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
+            source = html_escape::encode_double_quoted_attribute(&payload.source),
             viewport_accessibility_label =
                 html_escape::encode_double_quoted_attribute(viewport_accessibility_label),
             viewport_x = payload.viewport_x,
@@ -10965,7 +10967,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.lastClickPageY = String(point.pageY);
     const message = `${messagePrefix} ${pointMessage(point)}...`;
     setClickStatus(message);
-    replaceViewportPage(url, message);
+    replaceViewportPartial(url, message, {
+      samePageOnly: true,
+      fallback: () => replaceViewportPage(url, message)
+    });
   };
   const replayDeferredClickAfterPartial = () => {
     const pageX = Number(shell.dataset.deferredClickPageX);
@@ -11007,7 +11012,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     current.replaceWith(next.cloneNode(true));
     return true;
   };
-  const applyViewportPartial = (html) => {
+  const applyViewportPartial = (html, options = {}) => {
     if (typeof DOMParser !== "function") {
       return false;
     }
@@ -11015,6 +11020,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const partial = doc.querySelector("[data-browser-partial-viewport]");
     const nextShell = doc.querySelector("[data-browser-viewport-scroll]");
     if (!partial || !nextShell) {
+      return false;
+    }
+    if (options.samePageOnly && shell.dataset.pageSource && nextShell.dataset.pageSource && shell.dataset.pageSource !== nextShell.dataset.pageSource) {
       return false;
     }
     const keepFocus = document.activeElement === shell;
@@ -11092,7 +11100,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       window.history.replaceState(null, "", currentUrl.toString());
     } catch (_) {}
   };
-  const replaceViewportPartial = (url, message) => {
+  const replaceViewportPartial = (url, message, options = {}) => {
     setViewportPending(message);
     if (typeof fetch !== "function" || !window.history || typeof window.history.replaceState !== "function") {
       window.location.href = url.toString();
@@ -11127,7 +11135,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         markStaleViewportResponse("Ignored stale visual viewport update; newer scroll is pending.");
         return;
       }
-      if (!applyViewportPartial(html)) {
+      if (!applyViewportPartial(html, options)) {
         throw new Error("viewport partial response missing required fragments");
       }
       syncViewportHistory();
@@ -11135,6 +11143,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
+        return;
+      }
+      if (typeof options.fallback === "function") {
+        options.fallback();
         return;
       }
       settleViewportPartialFailure("Visual viewport update failed; current viewport retained. Scroll again to retry.");
@@ -11295,6 +11307,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     event.preventDefault();
     const point = viewportPointFromEvent(event);
     if (!point) {
+      hideClickMarker();
+      setClickStatus("Click missed the rendered page image; move pointer inside the raster.");
+      setViewportFeedback("Click missed the rendered page image.");
       return;
     }
     moveClickMarker(point);
