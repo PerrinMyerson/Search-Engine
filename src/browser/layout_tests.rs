@@ -7091,6 +7091,174 @@ fn overflow_clip_uses_padding_box_for_scrolled_media_and_hit_geometry() {
 }
 
 #[test]
+fn overflow_block_clip_keeps_adjacent_scroll_slices_and_hit_geometry_stable() {
+    let image_url = "mem://overflow-block-clip-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![48, 132, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><head><style>
+              .lead {{ height: 24px; }}
+              .card {{
+                height: 36px;
+                overflow-block: clip;
+                padding: 8px;
+                background: rgb(244, 244, 244);
+              }}
+              .tail {{ height: 96px; }}
+            </style></head><body>
+              <p class="lead">Intro copy before the clipped card.</p>
+              <section class="card">
+                <img src="{image_url}" width="24" height="12" alt="">
+                <a href="/visible">Visible card link</a>
+                <div style="height:48px"></div>
+                <a href="/hidden">Hidden overflow link</a>
+              </section>
+              <p class="tail">Trailing copy keeps the viewport scrollable.</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://overflow-block-clip",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render overflow-block clip fixture");
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 244 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("card background should paint");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image should render inside overflow-block card");
+    let visible_link = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Visible card") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("visible link should remain inside overflow-block clip");
+    assert!(
+        !render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                if text.contains("Hidden overflow")
+        )),
+        "overflow-block: clip should cull text below the block clip"
+    );
+    assert_eq!(card_background.0, 0);
+    assert!(image_bounds.1 >= card_background.1);
+    assert!(visible_link.1 > image_bounds.1);
+
+    let visible_target = hit_test_target_node(&render, visible_link.0, visible_link.1)
+        .expect("visible clipped link should hit");
+    let first_viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: card_background.1,
+            width: 32,
+            height: 4,
+        },
+        None,
+    );
+    let second_viewport =
+        browser_document_viewport_after_scroll(&render, first_viewport.viewport, 0, 1);
+    assert_eq!(
+        second_viewport.viewport.y,
+        first_viewport.viewport.y.saturating_add(1)
+    );
+    assert!(second_viewport.max_scroll_y > 0);
+
+    let local_link_y = visible_link.1.saturating_sub(second_viewport.viewport.y);
+    assert_eq!(
+        hit_test_target_node_in_viewport(
+            &render,
+            second_viewport.viewport,
+            visible_link.0,
+            local_link_y
+        ),
+        Some(visible_target),
+        "viewport hit testing should stay aligned with visible overflow-block content"
+    );
+
+    for viewport_y in [first_viewport.viewport.y, second_viewport.viewport.y] {
+        let rgba = rasterize_render_rgba(
+            &render,
+            BrowserRasterOptions {
+                viewport_y: Some(viewport_y),
+                viewport_width: Some(32),
+                viewport_height: Some(4),
+                ..BrowserRasterOptions::default()
+            },
+        )
+        .expect("rasterize adjacent overflow-block viewport");
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [244, 244, 244, 255]),
+            "adjacent scrolled raster should retain the card underlay"
+        );
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [48, 132, 220, 255]),
+            "adjacent scrolled raster should retain decoded image color"
+        );
+    }
+}
+
+#[test]
 fn fixed_visuals_do_not_extend_scroll_extent_but_paint_in_scrolled_viewport() {
     let image_url = "mem://fixed-scroll-extent-image".to_owned();
     let decoded = DecodedImage {
