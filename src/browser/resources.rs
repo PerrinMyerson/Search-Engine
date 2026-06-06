@@ -1366,6 +1366,7 @@ fn content_type_for_path(path: &Path) -> Option<&'static str> {
         Some("json") | Some("webmanifest") => Some("application/json"),
         Some("html") | Some("htm") | Some("xhtml") => Some("text/html"),
         Some("svg") => Some("image/svg+xml"),
+        Some("apng") => Some("image/apng"),
         Some("png") => Some("image/png"),
         Some("jpg") | Some("jpeg") => Some("image/jpeg"),
         Some("gif") => Some("image/gif"),
