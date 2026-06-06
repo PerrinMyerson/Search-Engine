@@ -1200,6 +1200,115 @@ async fn image_svg_line_stroke_decodes_and_attaches_visible_rgb_pixels() {
 }
 
 #[tokio::test]
+async fn image_svg_shape_strokes_decode_and_attach_visible_rgb_pixels() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let icon = dir.path().join("shape-strokes.svg");
+    fs::write(
+        &icon,
+        r##"<svg viewBox="0 0 18 12" xmlns="http://www.w3.org/2000/svg">
+                <rect width="18" height="12" fill="#ffffff"/>
+                <rect x="1" y="1" width="5" height="4" fill="none" stroke="#ff0000" stroke-width="2"/>
+                <circle cx="12" cy="4" r="3" fill="none" stroke="#00aa00" stroke-width="2"/>
+                <polygon points="4,10 9,7 14,10" fill="none" stroke="#0000ff" stroke-width="2"/>
+            </svg>"##,
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><body><p>Before stroked logo</p><img src="shape-strokes.svg" alt="Stroked logo" width="36" height="24"><p>After stroked logo</p></body></html>"#,
+    )
+    .unwrap();
+
+    let decoded = decode_image_reference(&page.display().to_string(), "shape-strokes.svg").unwrap();
+    assert_eq!(decoded.width, 18);
+    assert_eq!(decoded.height, 12);
+    let rgb_pixels = decoded.rgb_pixels.as_ref().unwrap();
+    assert_eq!(rgb_pixels.len(), decoded.width * decoded.height * 3);
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [255, 0, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 170, 0]));
+    assert!(rgb_pixels.chunks_exact(3).any(|pixel| pixel == [0, 0, 255]));
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.decoded_image_bytes, decoded.pixels.len());
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "shape-strokes.svg");
+    assert_eq!(fetch.resource.resolved, icon.display().to_string());
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.decoded_width, Some(18));
+    assert_eq!(fetch.decoded_height, Some(12));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before stroked logo"));
+    assert!(render.text.contains("After stroked logo"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == expected_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        decoded.rgb_pixels.as_deref()
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_width: Some(18),
+                decoded_height: Some(12),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &icon.display().to_string() && *hash == expected_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 130 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 220 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_svg_curves_decodes_arc_quadratic_and_cubic_path_pixels_for_rendered_resource() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

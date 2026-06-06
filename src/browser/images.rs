@@ -826,19 +826,30 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
                     fill,
                 );
             }
-        } else if let Some(points) = svg_rect_points(rect, width, height) {
-            let Some(fill) = svg_shape_fill_paint(rect) else {
-                continue;
-            };
+        }
+        if let Some(points) = svg_rect_points(rect, width, height) {
             let points = transform_svg_points(&points, rect_shape.transform);
-            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            if !rect_shape.transform.is_identity()
+                && let Some(fill) = svg_shape_fill_paint(rect)
+            {
+                fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            }
+            if let Some(stroke) = svg_shape_stroke_paint(rect) {
+                let stroke_width = svg_shape_stroke_width(rect, rect_shape.transform);
+                draw_decoded_closed_polyline(
+                    &mut pixels,
+                    &mut rgb_pixels,
+                    width,
+                    height,
+                    &points,
+                    stroke,
+                    stroke_width,
+                );
+            }
         }
     }
     for circle_shape in shapes.circles {
         let circle = &circle_shape.attrs;
-        let Some(fill) = svg_shape_fill_paint(&circle) else {
-            continue;
-        };
         let Some(cx) = circle.get("cx").and_then(|value| parse_svg_number(value)) else {
             continue;
         };
@@ -854,45 +865,83 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             rx: radius,
             ry: radius,
         };
-        if circle_shape.transform.is_identity() {
-            fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
-        } else {
+        if let Some(fill) = svg_shape_fill_paint(&circle) {
+            if circle_shape.transform.is_identity() {
+                fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
+            } else {
+                let points =
+                    transform_svg_points(&svg_ellipse_points(ellipse, 24), circle_shape.transform);
+                fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            }
+        }
+        if let Some(stroke) = svg_shape_stroke_paint(circle) {
             let points =
                 transform_svg_points(&svg_ellipse_points(ellipse, 24), circle_shape.transform);
-            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            let stroke_width = svg_shape_stroke_width(circle, circle_shape.transform);
+            draw_decoded_closed_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
         }
     }
     for ellipse_shape in shapes.ellipses {
-        let ellipse = &ellipse_shape.attrs;
-        let Some(fill) = svg_shape_fill_paint(&ellipse) else {
+        let ellipse_attrs = &ellipse_shape.attrs;
+        let Some(cx) = ellipse_attrs
+            .get("cx")
+            .and_then(|value| parse_svg_number(value))
+        else {
             continue;
         };
-        let Some(cx) = ellipse.get("cx").and_then(|value| parse_svg_number(value)) else {
+        let Some(cy) = ellipse_attrs
+            .get("cy")
+            .and_then(|value| parse_svg_number(value))
+        else {
             continue;
         };
-        let Some(cy) = ellipse.get("cy").and_then(|value| parse_svg_number(value)) else {
+        let Some(rx) = ellipse_attrs
+            .get("rx")
+            .and_then(|value| parse_svg_number(value))
+        else {
             continue;
         };
-        let Some(rx) = ellipse.get("rx").and_then(|value| parse_svg_number(value)) else {
-            continue;
-        };
-        let Some(ry) = ellipse.get("ry").and_then(|value| parse_svg_number(value)) else {
+        let Some(ry) = ellipse_attrs
+            .get("ry")
+            .and_then(|value| parse_svg_number(value))
+        else {
             continue;
         };
         let ellipse = SvgEllipse { cx, cy, rx, ry };
-        if ellipse_shape.transform.is_identity() {
-            fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
-        } else {
+        if let Some(fill) = svg_shape_fill_paint(ellipse_attrs) {
+            if ellipse_shape.transform.is_identity() {
+                fill_decoded_ellipse(&mut pixels, &mut rgb_pixels, width, height, ellipse, fill);
+            } else {
+                let points =
+                    transform_svg_points(&svg_ellipse_points(ellipse, 24), ellipse_shape.transform);
+                fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            }
+        }
+        if let Some(stroke) = svg_shape_stroke_paint(ellipse_attrs) {
             let points =
                 transform_svg_points(&svg_ellipse_points(ellipse, 24), ellipse_shape.transform);
-            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+            let stroke_width = svg_shape_stroke_width(ellipse_attrs, ellipse_shape.transform);
+            draw_decoded_closed_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
         }
     }
     for polygon_shape in shapes.polygons {
         let polygon = &polygon_shape.attrs;
-        let Some(fill) = svg_shape_fill_paint(&polygon) else {
-            continue;
-        };
         let Some(points) = polygon
             .get("points")
             .and_then(|value| parse_svg_points(value))
@@ -900,7 +949,21 @@ fn decode_simple_svg(bytes: &[u8]) -> Option<DecodedImage> {
             continue;
         };
         let points = transform_svg_points(&points, polygon_shape.transform);
-        fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+        if let Some(fill) = svg_shape_fill_paint(&polygon) {
+            fill_decoded_polygon(&mut pixels, &mut rgb_pixels, width, height, &points, fill);
+        }
+        if let Some(stroke) = svg_shape_stroke_paint(polygon) {
+            let stroke_width = svg_shape_stroke_width(polygon, polygon_shape.transform);
+            draw_decoded_closed_polyline(
+                &mut pixels,
+                &mut rgb_pixels,
+                width,
+                height,
+                &points,
+                stroke,
+                stroke_width,
+            );
+        }
     }
     for polyline_shape in shapes.polylines {
         let polyline = &polyline_shape.attrs;
@@ -4057,6 +4120,31 @@ fn draw_decoded_polyline(
             );
         }
     }
+}
+
+fn draw_decoded_closed_polyline(
+    pixels: &mut [u8],
+    rgb_pixels: &mut [u8],
+    image_width: usize,
+    image_height: usize,
+    points: &[SvgPoint],
+    paint: SvgPaint,
+    stroke_width: usize,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let mut closed = points.to_vec();
+    closed.push(points[0]);
+    draw_decoded_polyline(
+        pixels,
+        rgb_pixels,
+        image_width,
+        image_height,
+        &closed,
+        paint,
+        stroke_width,
+    );
 }
 
 fn set_decoded_stroke_pixel(
