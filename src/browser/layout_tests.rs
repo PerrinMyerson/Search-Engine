@@ -6224,6 +6224,159 @@ fn css_relative_horizontal_offset_preserves_flow_and_scrolled_hit_geometry() {
 }
 
 #[test]
+fn css_logical_inset_shorthands_keep_sticky_nav_hit_geometry_after_scroll() {
+    let render = render_html(
+        "mem://logical-inset-sticky-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 36px; }
+              .panel { background: rgb(246, 246, 246); }
+              .sticky {
+                display: block;
+                position: sticky;
+                inset-block: 12px 0;
+                inset-inline: 24px 0;
+                width: 120px;
+                background: rgb(232, 232, 232);
+              }
+              .tail { height: 96px; }
+            </style></head><body>
+              <p class="lead">Intro copy above the product panel.</p>
+              <section class="panel">
+                <a class="sticky" href="/sticky">Sticky details</a>
+                <img alt="" width="24" height="18">
+                <p>Body copy stays in normal flow below the sticky link and image.</p>
+              </section>
+              <p class="tail">Trailing copy keeps the viewport scrollable.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (sticky_index, sticky_text) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Sticky details") =>
+            {
+                Some((index, (*x, *y)))
+            }
+            _ => None,
+        })
+        .expect("sticky logical inset link should render text");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("image should remain in normal panel flow");
+    let body = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Body copy stays") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("body copy should render after sticky/image content");
+
+    assert!(
+        sticky_text.0 >= 3,
+        "inset-inline should shift sticky text in visual/display geometry"
+    );
+    assert_eq!(
+        image_bounds.0, 0,
+        "sticky inline inset should not indent following image flow"
+    );
+    assert_eq!(
+        body.0, 0,
+        "sticky inline inset should not indent following body text"
+    );
+    assert!(
+        body.1 > image_bounds.1,
+        "body text should stay below the image in normal flow"
+    );
+
+    let viewport_y = sticky_text.1.saturating_add(2);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 48,
+            height: 6,
+        },
+        None,
+    );
+    assert!(viewport.viewport.y > sticky_text.1);
+    assert!(viewport.max_scroll_y > 0);
+
+    let sticky_bounds = display_command_bounds_for_viewport(
+        &render.display_list[sticky_index],
+        raster_viewport_from_state(viewport.viewport),
+        display_command_viewport_fixed(&render, sticky_index),
+        display_command_viewport_sticky_top(&render, sticky_index),
+    );
+    assert_eq!(
+        sticky_bounds.y,
+        viewport.viewport.y + 1,
+        "inset-block should pin sticky text one visual row below the scrolled viewport top"
+    );
+    assert_eq!(
+        sticky_bounds.x, sticky_text.0,
+        "viewport-adjusted sticky bounds should preserve the inline logical inset"
+    );
+
+    let sticky_target = hit_test_target_node(&render, sticky_text.0, sticky_text.1)
+        .expect("normal-flow sticky link should be hittable before scroll");
+    let local_y = sticky_bounds.y.saturating_sub(viewport.viewport.y);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, sticky_bounds.x, local_y),
+        Some(sticky_target),
+        "viewport hit testing should use visual sticky bounds after logical inset projection"
+    );
+
+    let rgba = rasterize_render_rgba(
+        &render,
+        BrowserRasterOptions {
+            viewport_y: Some(viewport.viewport.y),
+            viewport_width: Some(48),
+            viewport_height: Some(6),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("rasterize logical inset sticky viewport");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [246, 246, 246, 255]),
+        "scrolled raster should retain the panel underlay"
+    );
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [232, 232, 232, 255]),
+        "scrolled raster should retain the shifted sticky link underlay"
+    );
+}
+
+#[test]
 fn css_absolute_bottom_uses_positioned_context_in_scrolled_rgba_viewport() {
     let image_url = "mem://absolute-bottom-context-image".to_owned();
     let decoded = DecodedImage {
