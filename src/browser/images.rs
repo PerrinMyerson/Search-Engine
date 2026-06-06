@@ -302,7 +302,7 @@ fn decode_image_bytes_with_svg_base(
         .to_ascii_lowercase();
     match image_type.as_str() {
         "svg" | "image/svg+xml" | "image/svg" => decode_simple_svg(bytes, svg_base_source),
-        "png" | "image/png" | "image/x-png" => decode_simple_png(bytes),
+        "png" | "apng" | "image/png" | "image/x-png" | "image/apng" => decode_simple_png(bytes),
         "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "image/jpeg" | "image/jpg"
         | "image/jpe" | "image/pjpeg" | "image/x-jpeg" => decode_jpeg(bytes),
         "webp" | "image/webp" | "image/x-webp" => decode_webp(bytes),
@@ -6202,6 +6202,7 @@ pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
             | "image/svg"
             | "image/png"
             | "image/x-png"
+            | "image/apng"
             | "image/jpeg"
             | "image/jpg"
             | "image/jpe"
