@@ -693,8 +693,9 @@ struct SearchApiResult {
 
 impl SearchApiResult {
     fn from_local(result: SearchResult) -> Self {
+        let render_url = Some(browser_render_url(&result.url));
         Self {
-            render_url: Some(format!("/render?id={}", result.doc_id)),
+            render_url,
             doc_id: Some(result.doc_id),
             url: result.url,
             canonical_url: result.canonical_url,
@@ -2528,6 +2529,29 @@ mod tests {
             target.param("url").as_deref(),
             Some("https://example.com/a path?q=cat&x=1")
         );
+    }
+
+    #[test]
+    fn local_search_results_open_browser_as_primary_target() {
+        let result = SearchApiResult::from_local(SearchResult {
+            doc_id: 37,
+            url: "https://example.com/cats".to_owned(),
+            canonical_url: None,
+            title: "Cat result".to_owned(),
+            language: Some("en".to_owned()),
+            fetched_at_unix: Some(1),
+            score: 12.0,
+            authority_score: 0.25,
+            snippet: "snippet".to_owned(),
+            duplicate_of: 37,
+            duplicate_count: 1,
+        });
+
+        assert_eq!(
+            result.render_url.as_deref(),
+            Some("/browser?url=https%3A%2F%2Fexample.com%2Fcats")
+        );
+        assert_eq!(result.doc_id, Some(37));
     }
 
     #[test]
