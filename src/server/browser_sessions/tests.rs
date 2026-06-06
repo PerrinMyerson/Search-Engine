@@ -2760,6 +2760,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"dx: targetX - numberData("viewportX")"#));
     assert!(html.contains(r#"dy: targetY - numberData("viewportY")"#));
     assert!(html.contains("const viewportWorkPending = () => Boolean("));
+    assert!(html.contains("const cancelPendingScrollTimerForClick = () =>"));
+    assert!(html.contains(
+        "if (!pendingScrollTimer || partialRequestInFlight || shell.dataset.viewportRequest)"
+    ));
+    assert!(html.contains(r#"shell.dataset.clickCanceledPendingScroll = "true""#));
+    assert!(html.contains("Scroll paused for click."));
+    assert!(html.contains("if (cancelPendingScrollTimerForClick())"));
     assert!(html.contains("if (!viewportWorkPending())"));
     assert!(html.contains("const abortPartialViewportRequest = () =>"));
     assert!(html.contains(r#"shell.dataset.viewportRequestAborted = "true""#));

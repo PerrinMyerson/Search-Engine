@@ -11489,6 +11489,20 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     };
   };
   const viewportWorkPending = () => Boolean(pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest);
+  const cancelPendingScrollTimerForClick = () => {
+    if (!pendingScrollTimer || partialRequestInFlight || shell.dataset.viewportRequest) {
+      return false;
+    }
+    clearTimeout(pendingScrollTimer);
+    pendingScrollTimer = null;
+    pendingScrollAfterRequest = false;
+    pendingScrollDx = 0;
+    pendingScrollDy = 0;
+    shell.dataset.clickCanceledPendingScroll = "true";
+    clearViewportPending();
+    setViewportFeedback("Scroll paused for click.");
+    return true;
+  };
   const abortPartialViewportRequest = () => {
     if (partialRequestController && typeof partialRequestController.abort === "function") {
       shell.dataset.viewportRequestAborted = "true";
@@ -11635,6 +11649,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     moveClickMarker(point);
     if (viewportWorkPending()) {
+      if (cancelPendingScrollTimerForClick()) {
+        submitViewportClick(point, "Clicking");
+        return;
+      }
       shell.dataset.deferredClickX = String(point.x);
       shell.dataset.deferredClickY = String(point.y);
       shell.dataset.deferredClickPageX = String(point.pageX);
