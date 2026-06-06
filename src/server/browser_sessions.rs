@@ -13674,25 +13674,27 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     let mut status = String::new();
     let action_urls = browser_session_resource_action_urls(payload);
     let show_read_action = !browser_session_has_ready_raster(payload);
-    let raster_label = if let Some(image) = &payload.viewport_image {
-        format!("visual {}x{}", image.width, image.height)
+    let (raster_label, raster_title) = if let Some(image) = &payload.viewport_image {
+        let size = format!("{}x{}", image.width, image.height);
+        (size.clone(), format!("visual {size}"))
     } else if payload.viewport_image_error.is_some() {
-        "visual error".to_owned()
+        ("error".to_owned(), "visual error".to_owned())
     } else {
-        "visual pending".to_owned()
+        ("pending".to_owned(), "visual pending".to_owned())
     };
     let image_state =
         browser_session_chrome_image_state(payload, action_urls.load_images.is_some());
     let has_image_state = image_state.is_some();
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}">{width}x{height}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster}">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
         x = payload.viewport_x,
         y = payload.viewport_y,
         raster = html_escape::encode_text(&raster_label),
+        raster_title = html_escape::encode_double_quoted_attribute(&raster_title),
     );
     if show_read_action {
         if let Some(href) = action_urls.make_visual.as_deref() {
