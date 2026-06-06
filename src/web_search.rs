@@ -14,6 +14,7 @@ const BRAVE_WEB_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web
 const BRAVE_MAX_COUNT: usize = 20;
 const DEFAULT_CACHE_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 pub const DEFAULT_CACHE_MAX_ENTRIES: usize = 4096;
+pub const DEFAULT_CACHE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_RESULT_LOG_MAX_ENTRIES: usize = 4096;
 pub const DEFAULT_RESULT_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_MAX_WEB_RESULTS: usize = 20;
@@ -26,6 +27,7 @@ pub struct WebSearchConfig {
     result_log_path: PathBuf,
     result_log_max_entries: usize,
     result_log_max_bytes: u64,
+    cache_max_bytes: u64,
     cache_ttl_secs: u64,
     min_local_results: usize,
     max_results: usize,
@@ -95,6 +97,7 @@ struct WebResultCache {
     path: PathBuf,
     ttl_secs: u64,
     max_entries: usize,
+    max_bytes: u64,
     entries: HashMap<String, CachedWebSearch>,
 }
 
@@ -171,6 +174,8 @@ impl WebSearchService {
         let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
         let cache_max_entries =
             env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
+        let cache_max_bytes =
+            env_u64("BRUTAL_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
         let min_local_results =
             env_usize("BRUTAL_WEB_FALLBACK_MIN_LOCAL_RESULTS").unwrap_or(DEFAULT_MIN_LOCAL_RESULTS);
         let max_results = env_usize("BRUTAL_WEB_FALLBACK_COUNT")
@@ -179,7 +184,12 @@ impl WebSearchService {
         let country = env::var("BRAVE_SEARCH_COUNTRY").unwrap_or_else(|_| "us".to_owned());
         let search_lang = env::var("BRAVE_SEARCH_LANG").unwrap_or_else(|_| "en".to_owned());
 
-        let cache = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
+        let cache = WebResultCache::load(
+            cache_path.clone(),
+            cache_ttl_secs,
+            cache_max_entries,
+            cache_max_bytes,
+        )?;
         let client = reqwest::Client::builder()
             .user_agent("brutal-search/0.1 web-search-provider")
             .timeout(Duration::from_secs(8))
@@ -195,6 +205,7 @@ impl WebSearchService {
                 result_log_path,
                 result_log_max_entries,
                 result_log_max_bytes,
+                cache_max_bytes,
                 cache_ttl_secs,
                 min_local_results,
                 max_results,
@@ -310,6 +321,7 @@ pub fn compact_web_search_storage_from_env(
     let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
     let cache_max_entries =
         env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
+    let cache_max_bytes = env_u64("BRUTAL_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
     let result_log_max_entries =
         env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
     let result_log_max_bytes =
@@ -322,6 +334,7 @@ pub fn compact_web_search_storage_from_env(
         result_log_path,
         cache_ttl_secs,
         cache_max_entries,
+        cache_max_bytes,
         result_log_max_entries,
         result_log_max_bytes,
         result_log_max_entries_per_query,
@@ -334,6 +347,7 @@ fn compact_web_search_storage(
     result_log_path: PathBuf,
     cache_ttl_secs: u64,
     cache_max_entries: usize,
+    cache_max_bytes: u64,
     result_log_max_entries: usize,
     result_log_max_bytes: u64,
     result_log_max_entries_per_query: usize,
@@ -352,6 +366,7 @@ fn compact_web_search_storage(
             &result_log_path,
             cache_ttl_secs,
             cache_max_entries,
+            cache_max_bytes,
             result_log_max_entries,
             result_log_max_bytes,
             result_log_max_entries_per_query,
@@ -361,7 +376,12 @@ fn compact_web_search_storage(
     };
 
     if should_compact && cache_path.exists() {
-        let _ = WebResultCache::load(cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
+        let _ = WebResultCache::load(
+            cache_path.clone(),
+            cache_ttl_secs,
+            cache_max_entries,
+            cache_max_bytes,
+        )?;
     }
     if should_compact {
         enforce_result_log_retention_with_query_cap(
@@ -393,6 +413,7 @@ fn projected_web_search_storage_state(
     result_log_path: &Path,
     cache_ttl_secs: u64,
     cache_max_entries: usize,
+    cache_max_bytes: u64,
     result_log_max_entries: usize,
     result_log_max_bytes: u64,
     result_log_max_entries_per_query: usize,
@@ -409,7 +430,12 @@ fn projected_web_search_storage_state(
                 temp_cache_path.display()
             )
         })?;
-        let _ = WebResultCache::load(temp_cache_path.clone(), cache_ttl_secs, cache_max_entries)?;
+        let _ = WebResultCache::load(
+            temp_cache_path.clone(),
+            cache_ttl_secs,
+            cache_max_entries,
+            cache_max_bytes,
+        )?;
     }
     if result_log_path.exists() {
         fs::copy(result_log_path, &temp_result_log_path).with_context(|| {
@@ -505,7 +531,7 @@ fn count_nonempty_lines(path: &Path) -> Result<usize> {
 }
 
 impl WebResultCache {
-    fn load(path: PathBuf, ttl_secs: u64, max_entries: usize) -> Result<Self> {
+    fn load(path: PathBuf, ttl_secs: u64, max_entries: usize, max_bytes: u64) -> Result<Self> {
         let mut entries = HashMap::new();
         let mut parsed_lines = 0usize;
         let mut skipped_lines = false;
@@ -548,6 +574,7 @@ impl WebResultCache {
             path,
             ttl_secs,
             max_entries,
+            max_bytes,
             entries,
         };
         let pruned = cache.enforce_retention(now_unix());
@@ -613,6 +640,33 @@ impl WebResultCache {
                 .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
             for (_, query) in entries_by_age.into_iter().take(remove_count) {
                 self.entries.remove(&query);
+            }
+        }
+
+        if self.max_bytes > 0 {
+            let mut entries_by_age = self
+                .entries
+                .iter()
+                .map(|(query, entry)| {
+                    (
+                        entry.fetched_at_unix,
+                        query.clone(),
+                        cache_entry_bytes(entry),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut retained_bytes = entries_by_age
+                .iter()
+                .fold(0u64, |total, (_, _, bytes)| total.saturating_add(*bytes));
+            entries_by_age
+                .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+            for (_, query, bytes) in entries_by_age {
+                if retained_bytes <= self.max_bytes || self.entries.len() <= 1 {
+                    break;
+                }
+                if self.entries.remove(&query).is_some() {
+                    retained_bytes = retained_bytes.saturating_sub(bytes);
+                }
             }
         }
 
@@ -767,6 +821,14 @@ fn append_cache_entry(path: &Path, entry: &CachedWebSearch) -> Result<()> {
     file.write_all(b"\n")?;
     file.flush()?;
     Ok(())
+}
+
+fn cache_entry_bytes(entry: &CachedWebSearch) -> u64 {
+    serde_json::to_vec(entry)
+        .ok()
+        .and_then(|bytes| u64::try_from(bytes.len()).ok())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
 }
 
 fn append_result_log(
@@ -1069,6 +1131,7 @@ mod tests {
             path: PathBuf::from("unused"),
             ttl_secs: 10,
             max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+            max_bytes: DEFAULT_CACHE_MAX_BYTES,
             entries: HashMap::new(),
         };
         cache.entries.insert(
@@ -1101,6 +1164,7 @@ mod tests {
             path: path.clone(),
             ttl_secs: 100,
             max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+            max_bytes: DEFAULT_CACHE_MAX_BYTES,
             entries: HashMap::new(),
         };
 
@@ -1137,6 +1201,7 @@ mod tests {
             path: path.clone(),
             ttl_secs: 100,
             max_entries: 2,
+            max_bytes: DEFAULT_CACHE_MAX_BYTES,
             entries: HashMap::new(),
         };
 
@@ -1161,6 +1226,46 @@ mod tests {
         assert!(!lines.contains("https://example.com/10"));
         assert!(lines.contains("https://example.com/11"));
         assert!(lines.contains("https://example.com/12"));
+    }
+
+    #[test]
+    fn cache_store_keeps_newest_entry_within_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("web-cache.jsonl");
+        let mut cache = WebResultCache {
+            path: path.clone(),
+            ttl_secs: 100,
+            max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+            max_bytes: DEFAULT_CACHE_MAX_BYTES,
+            entries: HashMap::new(),
+        };
+
+        cache
+            .store(
+                "old".to_owned(),
+                "old".to_owned(),
+                "brave".to_owned(),
+                vec![web_result("https://example.com/old", 10)],
+                10,
+            )
+            .unwrap();
+        let old_file_bytes = fs::metadata(&path).unwrap().len();
+        cache.max_bytes = old_file_bytes.saturating_add(1);
+        cache
+            .store(
+                "new".to_owned(),
+                "new".to_owned(),
+                "brave".to_owned(),
+                vec![web_result("https://example.com/new", 20)],
+                20,
+            )
+            .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(lines.lines().count(), 1);
+        assert!(!lines.contains("https://example.com/old"));
+        assert!(lines.contains("https://example.com/new"));
     }
 
     #[test]
@@ -1205,7 +1310,13 @@ mod tests {
         )
         .unwrap();
 
-        let cache = WebResultCache::load(path.clone(), 5, DEFAULT_CACHE_MAX_ENTRIES).unwrap();
+        let cache = WebResultCache::load(
+            path.clone(),
+            5,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
+        )
+        .unwrap();
 
         let lines = fs::read_to_string(path).unwrap();
         assert_eq!(cache.entries.len(), 1);
@@ -1243,7 +1354,13 @@ mod tests {
         )
         .unwrap();
 
-        let cache = WebResultCache::load(path.clone(), 1_000, DEFAULT_CACHE_MAX_ENTRIES).unwrap();
+        let cache = WebResultCache::load(
+            path.clone(),
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
+        )
+        .unwrap();
 
         let lines = fs::read_to_string(path).unwrap();
         assert_eq!(cache.entries.len(), 1);
@@ -1305,6 +1422,7 @@ mod tests {
             result_log_path.clone(),
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
@@ -1358,6 +1476,7 @@ mod tests {
             result_log_path,
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
@@ -1399,6 +1518,7 @@ mod tests {
             result_log_path,
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_BYTES,
             0,
@@ -1450,6 +1570,7 @@ mod tests {
             result_log_path.clone(),
             1_000,
             DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
             DEFAULT_RESULT_LOG_MAX_ENTRIES,
             DEFAULT_RESULT_LOG_MAX_BYTES,
             2,
@@ -1628,6 +1749,7 @@ mod tests {
                 result_log_path: dir.path().join("brave-results.jsonl"),
                 result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
                 result_log_max_bytes: DEFAULT_RESULT_LOG_MAX_BYTES,
+                cache_max_bytes: DEFAULT_CACHE_MAX_BYTES,
                 cache_ttl_secs: 60,
                 min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
                 max_results: DEFAULT_MAX_WEB_RESULTS,
@@ -1635,7 +1757,8 @@ mod tests {
                 search_lang: "en".to_owned(),
             },
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(
-                WebResultCache::load(path, 60, DEFAULT_CACHE_MAX_ENTRIES).unwrap(),
+                WebResultCache::load(path, 60, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_BYTES)
+                    .unwrap(),
             )),
         };
 
