@@ -8923,6 +8923,8 @@ async fn browser_session_registry_link_navigation_failure_becomes_retained_pendi
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-retained-pending-target"#));
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains(r#"data-browser-retained-pending-reason"#));
+    assert!(html.contains("Opened link 1; opening http://127.0.0.1:"));
     assert!(html.contains(&format!("Opening {target_url}")));
     assert!(html.contains("current raster retained"));
     assert!(html.contains(">Retry load</a>"));
@@ -9025,6 +9027,8 @@ async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
     assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains(r#"data-browser-retained-pending-reason"#));
+    assert!(html.contains("Clicked raster x"));
     assert!(html.contains(&format!("Opening {target_url}")));
     assert!(html.contains("current raster retained"));
     assert!(html.contains(">Retry load</a>"));
@@ -9093,6 +9097,8 @@ async fn browser_session_registry_form_submit_failure_becomes_retained_pending_t
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-retained-pending-target"#));
+    assert!(html.contains(r#"data-browser-retained-pending-reason"#));
+    assert!(html.contains("Submitted form 0; opening http://127.0.0.1:"));
     assert!(html.contains(&format!("Opening {target_url}")));
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
     assert!(html.contains("current raster retained"));
@@ -9773,6 +9779,7 @@ fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
     assert!(html.contains(r#"data-browser-retained-pending-target"#));
     assert!(html.contains("Opening https://iana.org/"));
     assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(html.contains(r#"data-browser-retained-pending-reason"#));
     assert!(html.contains("current raster retained"));
     assert!(html.contains(">Retry load</a>"));
     assert!(html.contains("Still opening https://iana.org/"));
