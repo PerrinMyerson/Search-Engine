@@ -51,6 +51,7 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
 const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
 const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
 const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
+const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -1461,8 +1462,7 @@ fn print_scheduler_report(report: &RecrawlRoundReport) -> Result<()> {
 
 fn write_recrawl_plan(output: Option<&std::path::Path>, plan: &[RecrawlPlanEntry]) -> Result<()> {
     if let Some(path) = output {
-        let mut file = std::fs::File::create(path)?;
-        write_recrawl_plan_entries(&mut file, plan)?;
+        write_recrawl_plan_file(path, plan, recrawl_plan_output_max_bytes())?;
     } else {
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
@@ -1472,10 +1472,61 @@ fn write_recrawl_plan(output: Option<&std::path::Path>, plan: &[RecrawlPlanEntry
     Ok(())
 }
 
+fn write_recrawl_plan_file(
+    path: &std::path::Path,
+    plan: &[RecrawlPlanEntry],
+    max_bytes: u64,
+) -> Result<()> {
+    let lines = recrawl_plan_entry_lines(plan)?;
+    let total_bytes = lines
+        .iter()
+        .fold(0u64, |total, line| total.saturating_add(line.len() as u64));
+    if max_bytes > 0 && total_bytes > max_bytes {
+        bail!(
+            "recrawl plan output {} is {} bytes, above BRUTAL_RECRAWL_PLAN_OUTPUT_MAX_BYTES={}",
+            path.display(),
+            total_bytes,
+            max_bytes
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create recrawl plan output parent {}", parent.display()))?;
+    }
+    let tmp_path = path.with_extension("tmp");
+    {
+        let mut file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("create recrawl plan temp {}", tmp_path.display()))?;
+        for line in &lines {
+            file.write_all(line)?;
+        }
+        file.flush()?;
+    }
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "replace recrawl plan output {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry]) -> Result<()> {
+    for line in recrawl_plan_entry_lines(plan)? {
+        writer.write_all(&line)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn recrawl_plan_entry_lines(plan: &[RecrawlPlanEntry]) -> Result<Vec<Vec<u8>>> {
+    let mut lines = Vec::with_capacity(plan.len());
     for entry in plan {
+        let mut line = Vec::new();
         serde_json::to_writer(
-            &mut *writer,
+            &mut line,
             &serde_json::json!({
                 "url": entry.url.as_str(),
                 "priority": entry.priority,
@@ -1484,16 +1535,42 @@ fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry
                 "age_secs": entry.age_secs,
             }),
         )?;
-        (*writer).write_all(b"\n")?;
+        line.push(b'\n');
+        lines.push(line);
     }
-    (*writer).flush()?;
-    Ok(())
+    Ok(lines)
+}
+
+fn recrawl_plan_output_max_bytes() -> u64 {
+    web_storage_env_u64("BRUTAL_RECRAWL_PLAN_OUTPUT_MAX_BYTES")
+        .unwrap_or(DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use url::Url;
+
+    #[test]
+    fn recrawl_plan_file_respects_output_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recrawl-plan.jsonl");
+        let plan = vec![RecrawlPlanEntry {
+            url: format!("https://example.com/{}", "x".repeat(128)),
+            priority: 100,
+            recrawl_after: 10,
+            last_fetched_at: 1,
+            age_secs: 9,
+        }];
+
+        write_recrawl_plan_file(&path, &plan, 64).unwrap_err();
+        assert!(!path.exists());
+
+        write_recrawl_plan_file(&path, &plan, 0).unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("https://example.com/"));
+    }
 
     #[test]
     fn index_storage_stats_sum_known_artifacts() {
