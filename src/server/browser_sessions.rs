@@ -6264,11 +6264,19 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::Link(index) => {
             let before = current_session_source(web_session);
-            web_session
-                .session
-                .activate_link(index)
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            let target_url = web_session.session.link_target(index).ok();
+            if let Err(error) = web_session.session.activate_link(index).await {
+                if let Some(target_url) = target_url.as_deref() {
+                    set_browser_link_pending_navigation_feedback(
+                        web_session,
+                        format!("Opened link {}", index + 1),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
@@ -6293,11 +6301,22 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::LinkText(text) => {
             let before = current_session_source(web_session);
-            web_session
-                .session
-                .activate_link_text(&text)
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            let target_url = web_session.session.link_text_target(&text).ok();
+            if let Err(error) = web_session.session.activate_link_text(&text).await {
+                if let Some(target_url) = target_url.as_deref() {
+                    set_browser_link_pending_navigation_feedback(
+                        web_session,
+                        format!(
+                            "Opened link text {}",
+                            browser_session_feedback_excerpt(&text)
+                        ),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
@@ -6315,11 +6334,22 @@ async fn apply_browser_action(
         }
         BrowserSessionAction::LinkSelector(selector) => {
             let before = current_session_source(web_session);
-            web_session
-                .session
-                .activate_link_selector(&selector)
-                .await
-                .map_err(|error| BrowserRouteError::BadRequest(error.to_string()))?;
+            let target_url = web_session.session.link_selector_target(&selector).ok();
+            if let Err(error) = web_session.session.activate_link_selector(&selector).await {
+                if let Some(target_url) = target_url.as_deref() {
+                    set_browser_link_pending_navigation_feedback(
+                        web_session,
+                        format!(
+                            "Opened link selector {}",
+                            browser_session_feedback_excerpt(&selector)
+                        ),
+                        target_url,
+                        &error.to_string(),
+                    );
+                    return Ok(());
+                }
+                return Err(BrowserRouteError::BadRequest(error.to_string()));
+            }
             if current_session_source(web_session) != before {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
@@ -15934,6 +15964,23 @@ fn set_browser_navigation_feedback(
     } else {
         web_session.action_feedback = Some(format!("{label}; no navigation; viewport preserved"));
     }
+}
+
+fn set_browser_link_pending_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    label: String,
+    target_url: &str,
+    error: &str,
+) {
+    web_session.pending_source = Some(target_url.to_owned());
+    web_session.display_source = None;
+    web_session.resource_report = None;
+    clear_browser_find_active_line(web_session);
+    web_session.action_feedback = Some(format!(
+        "{label}; opening {} is pending after navigation failed: {}; viewport preserved",
+        browser_session_feedback_excerpt(target_url),
+        browser_session_feedback_excerpt(error)
+    ));
 }
 
 fn browser_session_navigation_scope(before: Option<&str>, after: &str) -> &'static str {
