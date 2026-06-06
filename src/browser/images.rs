@@ -4465,6 +4465,7 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
         ],
     )
     .and_then(|srcset| choose_srcset_candidate(srcset, background_srcset_target_width(element)))
+    .or_else(|| background_width_template_render_source(element))
     .or_else(|| {
         first_non_empty_attr(
             element,
@@ -4526,6 +4527,76 @@ pub(super) fn background_image_sizes_attr(element: &ElementData) -> Option<&str>
         ],
     )
     .or_else(|| image_sizes_attr(element))
+}
+
+pub(super) fn background_width_template_render_source(element: &ElementData) -> Option<String> {
+    let template = first_non_empty_attr(
+        element,
+        &[
+            "data-bg",
+            "data-bg-image",
+            "data-bg-image-url",
+            "data-bg-src",
+            "data-bgsrc",
+            "data-background",
+            "data-background-url",
+            "data-background-image",
+            "data-background-image-url",
+            "data-backgroundimage",
+            "data-backgroundimageurl",
+            "data-background-src",
+            "data-backgroundsrc",
+            "data-lazy-bg",
+            "data-lazy-bg-image",
+            "data-lazy-bg-image-url",
+            "data-lazybg",
+            "data-lazy-background",
+            "data-lazy-background-url",
+            "data-lazybackground",
+            "data-lazy-background-image",
+            "data-lazy-background-image-url",
+            "data-lazybackgroundimage",
+            "data-lazybackgroundimageurl",
+        ],
+    )?;
+    if !template.contains("{width}") {
+        return None;
+    }
+    let width = selected_background_template_width(element)?;
+    let source = template.replace("{width}", &width.to_string());
+    background_image_attr_source(&source)
+}
+
+fn selected_background_template_width(element: &ElementData) -> Option<usize> {
+    let widths = first_non_empty_attr(
+        element,
+        &[
+            "data-bg-widths",
+            "data-bgwidths",
+            "data-bgset-widths",
+            "data-bgsetwidths",
+            "data-background-widths",
+            "data-backgroundwidths",
+            "data-lazy-bg-widths",
+            "data-lazybgwidths",
+            "data-lazy-background-widths",
+            "data-lazybackgroundwidths",
+            "data-widths",
+            "data-image-widths",
+            "data-img-widths",
+            "data-lazy-widths",
+        ],
+    )
+    .map(parse_lazy_template_widths)
+    .filter(|widths| !widths.is_empty())?;
+    let target =
+        background_srcset_target_width(element).or_else(|| image_width_attr_target(element));
+    if let Some(target) = target
+        && let Some(width) = widths.iter().copied().find(|width| *width >= target)
+    {
+        return Some(width);
+    }
+    widths.last().copied()
 }
 
 fn background_image_attr_source(value: &str) -> Option<String> {

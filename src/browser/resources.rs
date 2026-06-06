@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::images::{
-    ImageDecodeDiagnostic, background_image_sizes_attr, image_decode_diagnostic,
-    image_mime_type_supported, image_render_source, image_sizes_attr,
+    ImageDecodeDiagnostic, background_image_sizes_attr, background_width_template_render_source,
+    image_decode_diagnostic, image_mime_type_supported, image_render_source, image_sizes_attr,
     lazy_width_template_render_source, selected_supported_srcset_candidate, srcset_candidate_urls,
     supported_srcset_candidate_urls,
 };
@@ -1977,6 +1977,18 @@ fn push_selected_background_alias_resource(
         }
     }
 
+    if let Some(url) = background_width_template_render_source(element) {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            &url,
+        );
+        return;
+    }
+
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
         if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
             && let Some(url) = selected_background_image_url_from_attr_value(value)
@@ -2028,6 +2040,18 @@ fn push_background_alias_resources(
     source: &str,
     element: &ElementData,
 ) {
+    if let Some(url) = background_width_template_render_source(element) {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            &url,
+        );
+        return;
+    }
+
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
         if let Some(value) = element.attrs.get(*attr_name).map(String::as_str) {
             for url in background_image_urls_from_attr_value(value) {
