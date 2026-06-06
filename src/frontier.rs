@@ -10,6 +10,7 @@ use url::Url;
 use crate::urlcanon::canonicalize_url;
 
 pub const DEFAULT_MAX_FAILED_FRONTIER_RECORDS: usize = 10_000;
+pub const DEFAULT_MAX_FRONTIER_ERROR_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UrlState {
@@ -286,7 +287,7 @@ impl FrontierStore {
         };
         record.updated_at = now;
         record.next_fetch_at = now.saturating_add(retry_after_secs);
-        record.last_error = Some(error);
+        record.last_error = Some(truncate_error(error, DEFAULT_MAX_FRONTIER_ERROR_CHARS));
         true
     }
 
@@ -467,6 +468,18 @@ pub fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn truncate_error(mut error: String, max_chars: usize) -> String {
+    if max_chars == 0 {
+        error.clear();
+        return error;
+    }
+    let mut chars = error.char_indices();
+    if let Some((index, _)) = chars.nth(max_chars) {
+        error.truncate(index);
+    }
+    error
 }
 
 #[cfg(test)]
@@ -669,5 +682,26 @@ mod tests {
             frontier.get("https://example.com/deferred").unwrap().state,
             UrlState::Deferred
         );
+    }
+
+    #[test]
+    fn record_failed_bounds_persisted_error_text() {
+        let path = tempfile::tempdir().unwrap().path().join("frontier.bin");
+        let mut frontier = FrontierStore::open(path).unwrap();
+        frontier.discover(Url::parse("https://example.com/large-error").unwrap(), 0, 1);
+        let claim = frontier.claim_next(2, 10).unwrap();
+
+        let error = format!(
+            "{}é tail",
+            "x".repeat(DEFAULT_MAX_FRONTIER_ERROR_CHARS + 16)
+        );
+        assert!(frontier.record_failed(&claim.url, error, 0, 3));
+
+        let stored = frontier
+            .get("https://example.com/large-error")
+            .and_then(|record| record.last_error.as_ref())
+            .unwrap();
+        assert_eq!(stored.chars().count(), DEFAULT_MAX_FRONTIER_ERROR_CHARS);
+        assert!(stored.is_char_boundary(stored.len()));
     }
 }
