@@ -11160,6 +11160,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-deferred-click-page-x");
     shell.removeAttribute("data-deferred-click-page-y");
   };
+  const clearDeferredClickForScroll = () => {
+    if (shell.dataset.deferredClickPageX || shell.dataset.deferredClickPageY) {
+      shell.dataset.scrollClearedDeferredClick = "true";
+    }
+    clearDeferredClick();
+  };
   const stampCurrentViewportUrl = (url) => {
     url.searchParams.set("viewport_x", String(numberData("viewportX")));
     url.searchParams.set("viewport_y", String(numberData("viewportY")));
@@ -11544,6 +11550,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return true;
   };
   const queueViewportScroll = (dx, dy) => {
+    clearDeferredClickForScroll();
     pendingScrollDx += dx;
     pendingScrollDy += dy;
     if (partialRequestInFlight) {

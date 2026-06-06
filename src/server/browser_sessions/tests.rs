@@ -2842,6 +2842,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const scrollFlushDelayMs = 18"));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
+    assert!(html.contains("const clearDeferredClickForScroll = () =>"));
+    assert!(html.contains(r#"shell.dataset.scrollClearedDeferredClick = "true""#));
+    assert!(html.contains("clearDeferredClickForScroll();"));
     assert!(html.contains("const submitViewportClick"));
     assert!(html.contains(
         "const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));"
