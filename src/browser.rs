@@ -1248,6 +1248,7 @@ impl Default for JustifyContent {
 enum AlignItems {
     Start,
     Center,
+    End,
 }
 
 impl Default for AlignItems {
@@ -14017,6 +14018,7 @@ fn parse_css_align_items(value: &str) -> Option<AlignItems> {
     value.split_ascii_whitespace().find_map(|token| {
         match token.trim().to_ascii_lowercase().as_str() {
             "center" => Some(AlignItems::Center),
+            "end" | "flex-end" => Some(AlignItems::End),
             "normal" | "start" | "flex-start" | "stretch" | "baseline" => Some(AlignItems::Start),
             _ => None,
         }
@@ -20042,11 +20044,12 @@ impl FlowRenderer {
                 let row_align_offset = match self.row_align_items {
                     AlignItems::Start => 0,
                     AlignItems::Center => row_height.saturating_sub(run_height) / 2,
+                    AlignItems::End => row_height.saturating_sub(run_height),
                 };
                 let run_y = y.saturating_add(row_align_offset);
                 let (background_y, background_height) = match self.row_align_items {
                     AlignItems::Start => (y, row_height),
-                    AlignItems::Center => (run_y, run_height),
+                    AlignItems::Center | AlignItems::End => (run_y, run_height),
                 };
                 if run.visible {
                     if let Some(background_shade) = run.background_shade
