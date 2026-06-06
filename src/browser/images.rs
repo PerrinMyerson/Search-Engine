@@ -4840,6 +4840,46 @@ fn picture_source_lazy_srcset(
     )
 }
 
+fn picture_source_lazy_width_template(
+    dom: &Dom,
+    img_node_id: usize,
+    viewport_width_css_px: usize,
+) -> Option<String> {
+    let parent = dom.nodes.get(img_node_id)?.parent?;
+    let parent_node = dom.nodes.get(parent)?;
+    if !matches!(&parent_node.kind, NodeKind::Element(element) if element.tag == "picture") {
+        return None;
+    }
+    let fallback = dom.nodes.get(img_node_id).and_then(|node| {
+        if let NodeKind::Element(element) = &node.kind {
+            Some(element)
+        } else {
+            None
+        }
+    })?;
+
+    for &child in &parent_node.children {
+        if child == img_node_id {
+            break;
+        }
+        if let Some(NodeKind::Element(element)) = dom.nodes.get(child).map(|node| &node.kind)
+            && element.tag == "source"
+            && picture_source_media_matches(element.media.as_deref(), viewport_width_css_px)
+            && picture_source_type_supported(element)
+        {
+            let target_width = source_srcset_target_width(
+                image_sizes_attr(element),
+                fallback,
+                viewport_width_css_px,
+            );
+            if let Some(url) = lazy_width_template_render_source(element, target_width) {
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
 fn picture_source_attr<'a>(
     dom: &'a Dom,
     img_node_id: usize,
@@ -4884,11 +4924,13 @@ fn lazy_image_render_source(
     desired_width: Option<usize>,
     viewport_width_css_px: usize,
 ) -> Option<String> {
-    picture_source_lazy_srcset(dom, node_id, viewport_width_css_px)
-        .and_then(|source| {
-            let source_target_width =
-                source_srcset_target_width(source.sizes, element, viewport_width_css_px);
-            choose_srcset_candidate(source.srcset, source_target_width)
+    picture_source_lazy_width_template(dom, node_id, viewport_width_css_px)
+        .or_else(|| {
+            picture_source_lazy_srcset(dom, node_id, viewport_width_css_px).and_then(|source| {
+                let source_target_width =
+                    source_srcset_target_width(source.sizes, element, viewport_width_css_px);
+                choose_srcset_candidate(source.srcset, source_target_width)
+            })
         })
         .or_else(|| {
             first_non_empty_attr(

@@ -1653,6 +1653,22 @@ fn push_picture_source_image_resources(
         }
     }
 
+    if let Some(url) = lazy_width_template_render_source(
+        element,
+        picture_source_fallback_img(dom, node_id)
+            .and_then(image_resource_sizes_attr)
+            .as_deref()
+            .and_then(parse_image_resource_dimension_attr)
+            .or_else(|| {
+                picture_source_fallback_img(dom, node_id)
+                    .and_then(|fallback| fallback.attrs.get("width"))
+                    .and_then(|width| parse_image_resource_dimension_attr(width))
+            }),
+    ) {
+        push_resource(resources, source, element, "image", &element.tag, &url);
+        return;
+    }
+
     for attr_name in IMAGE_SRC_ALIAS_ATTRS {
         if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
             && !url.trim().is_empty()
