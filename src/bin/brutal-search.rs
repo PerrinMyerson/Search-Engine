@@ -26,8 +26,9 @@ use brutal_search::sitemap::{
     SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
 };
 use brutal_search::web_search::{
-    WebSearchStorageArtifactState, WebSearchStorageCompactionOptions,
-    WebSearchStorageCompactionReport, compact_web_search_storage_from_env,
+    DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_RESULT_LOG_MAX_ENTRIES, WebSearchStorageArtifactState,
+    WebSearchStorageCompactionOptions, WebSearchStorageCompactionReport,
+    compact_web_search_storage_from_env,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -903,6 +904,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in crawl_storage_pressure_summary_lines(&stats) {
         println!("{line}");
     }
+    for line in web_storage_retention_config_lines(web_storage_retention_config()) {
+        println!("{line}");
+    }
     let now = unix_now();
     let stale_secs = web_storage_stale_threshold_secs();
     for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
@@ -1203,10 +1207,54 @@ fn web_storage_compaction_artifact_lines(
 }
 
 fn web_storage_result_log_query_cap() -> usize {
-    env::var("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY")
+    web_storage_env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebStorageRetentionConfig {
+    cache_max_entries: usize,
+    result_log_max_entries: usize,
+    result_log_max_entries_per_query: usize,
+}
+
+fn web_storage_retention_config() -> WebStorageRetentionConfig {
+    WebStorageRetentionConfig {
+        cache_max_entries: web_storage_env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES")
+            .unwrap_or(DEFAULT_CACHE_MAX_ENTRIES),
+        result_log_max_entries: web_storage_env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES")
+            .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES),
+        result_log_max_entries_per_query: web_storage_result_log_query_cap(),
+    }
+}
+
+fn web_storage_env_usize(name: &str) -> Option<usize> {
+    env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0)
+}
+
+fn web_storage_retention_config_lines(config: WebStorageRetentionConfig) -> Vec<String> {
+    vec![
+        format!(
+            "web_storage_retention_summary: web-cache_max_entries={} brave-results_max_entries={} brave-results_max_entries_per_query={}",
+            config.cache_max_entries,
+            config.result_log_max_entries,
+            config.result_log_max_entries_per_query
+        ),
+        format!(
+            "web_storage_cache_max_entries: {}",
+            config.cache_max_entries
+        ),
+        format!(
+            "web_storage_result_log_max_entries: {}",
+            config.result_log_max_entries
+        ),
+        format!(
+            "web_storage_result_log_max_entries_per_query: {}",
+            config.result_log_max_entries_per_query
+        ),
+        "web_storage_retention_note: normal search preserves durable web-cache and brave-results rows while enforcing global caps; per-query caps apply during compact-web-cache dry-run/compaction when configured".to_owned(),
+    ]
 }
 
 fn web_storage_result_log_query_cap_lines(max_entries_per_query: usize) -> Vec<String> {
@@ -1716,6 +1764,25 @@ mod tests {
         assert!(lines.contains(&"brave-results_entries_per_query_cap: 2".to_owned()));
         assert!(lines.contains(
             &"brave-results_entries_per_query_cap_note: applies only to compact-web-cache and dry-run projection; normal search append is unchanged".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_retention_config_lines_explain_effective_caps() {
+        let lines = web_storage_retention_config_lines(WebStorageRetentionConfig {
+            cache_max_entries: 11,
+            result_log_max_entries: 22,
+            result_log_max_entries_per_query: 3,
+        });
+
+        assert!(lines.contains(
+            &"web_storage_retention_summary: web-cache_max_entries=11 brave-results_max_entries=22 brave-results_max_entries_per_query=3".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_cache_max_entries: 11".to_owned()));
+        assert!(lines.contains(&"web_storage_result_log_max_entries: 22".to_owned()));
+        assert!(lines.contains(&"web_storage_result_log_max_entries_per_query: 3".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_retention_note: normal search preserves durable web-cache and brave-results rows while enforcing global caps; per-query caps apply during compact-web-cache dry-run/compaction when configured".to_owned()
         ));
     }
 }
