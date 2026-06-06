@@ -10626,6 +10626,11 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("sessionStorage.removeItem(stateKey)"));
     assert!(html.contains("AbortController"));
     assert!(html.contains("requestTimeoutMs"));
+    assert!(html.contains("const requestTimeoutMs = 12000"));
+    assert!(html.contains("const failedRetryCooldownMs = 60000"));
+    assert!(html.contains(r#"currentState.startsWith("failed:")"#));
+    assert!(html.contains("Date.now() - failedAt < failedRetryCooldownMs"));
+    assert!(html.contains("Visual render failed or timed out. Use Tools to retry."));
     assert!(html.contains("timeoutSeconds"));
     assert!(html.contains("updateProgress"));
     assert!(html.contains("elapsed, timeout"));

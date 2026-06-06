@@ -10508,7 +10508,8 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
   const blockBrowserControls = {block_browser_controls};
   const runningRefreshDelayMs = 5000;
   const runningStaleAfterMs = 45000;
-  const requestTimeoutMs = 90000;
+  const failedRetryCooldownMs = 60000;
+  const requestTimeoutMs = 12000;
   const timeoutSeconds = Math.round(requestTimeoutMs / 1000);
   const status = document.querySelector("[data-auto-visual-status]");
   const setStatus = (message) => {{
@@ -10609,6 +10610,14 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
       scheduleRefresh("Visual render is still running. Refreshing soon...", runningRefreshDelayMs);
       return;
     }}
+  }} else if (currentState.startsWith("failed:")) {{
+    const failedAt = Number(currentState.slice("failed:".length));
+    if (Number.isFinite(failedAt) && Date.now() - failedAt < failedRetryCooldownMs) {{
+      setAutoVisualControlsBusy(false);
+      setStatus("Visual render failed or timed out. Use Tools to retry.");
+      return;
+    }}
+    sessionStorage.removeItem(stateKey);
   }}
   sessionStorage.setItem(stateKey, `running:${{Date.now()}}`);
   const request = async (label, url) => {{
