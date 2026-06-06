@@ -2537,6 +2537,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-y="4""#));
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
+    assert!(html.contains(r#"data-page-source=""#));
     assert!(html.contains(r#"data-raster-width=""#));
     assert!(html.contains(r#"data-raster-height=""#));
     assert!(html.contains(r#"data-viewport-state="settled""#));
@@ -2655,6 +2656,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const replaceViewportPage"));
     assert!(html.contains("const replaceViewportPartial"));
     assert!(html.contains("const applyViewportPartial"));
+    assert!(html.contains("const applyViewportPartial = (html, options = {})"));
+    assert!(html.contains("const replaceViewportPartial = (url, message, options = {})"));
+    assert!(html.contains("replaceViewportPartial(url, message, {"));
+    assert!(html.contains("samePageOnly: true"));
+    assert!(html.contains("fallback: () => replaceViewportPage(url, message)"));
+    assert!(html.contains("applyViewportPartial(html, options)"));
+    assert!(html.contains("options.samePageOnly && shell.dataset.pageSource"));
+    assert!(html.contains("shell.dataset.pageSource !== nextShell.dataset.pageSource"));
     assert!(html.contains("const clearViewportPending"));
     assert!(html.contains("let viewportRequestSeq = 0"));
     assert!(html.contains("let partialRequestInFlight = false"));
@@ -2751,6 +2760,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("clicking after it settles."));
     assert!(html.contains("Click inside the rendered page image."));
     assert!(html.contains("Click missed the rendered page image."));
+    assert!(html.contains("Click missed the rendered page image; move pointer inside the raster."));
     assert!(html.contains("submitViewportClick(point, \"Clicking\")"));
     assert!(html.contains("Click inside the rendered page image."));
     assert!(html.contains("Click missed the rendered page image."));
@@ -2777,6 +2787,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(partial.contains(r#"data-browser-partial-command-strip"#));
     assert!(partial.contains(r#"data-viewport-x="8""#));
     assert!(partial.contains(r#"data-viewport-y="4""#));
+    assert!(partial.contains(r#"data-page-source=""#));
     assert!(partial.contains(r#"data-raster-width=""#));
     assert!(partial.contains(r#"data-raster-height=""#));
     assert!(partial.contains(r#"class="browser-raster-shell""#));
