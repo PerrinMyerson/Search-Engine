@@ -10964,6 +10964,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-pending-viewport-y");
     shell.removeAttribute("data-queued-scroll-dx");
     shell.removeAttribute("data-queued-scroll-dy");
+    shell.removeAttribute("data-queued-scroll-target-x");
+    shell.removeAttribute("data-queued-scroll-target-y");
     shell.removeAttribute("data-scroll-queued-during-request");
     shell.removeAttribute("data-stale-viewport-response");
     shell.dataset.viewportState = "settled";
@@ -11137,6 +11139,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return "Moving visual viewport down...";
     }
     return "Refreshing visual viewport...";
+  };
+  const queuedViewportTarget = (dx, dy) => {
+    const baseX = Number(shell.dataset.pendingViewportX);
+    const baseY = Number(shell.dataset.pendingViewportY);
+    const x = Number.isFinite(baseX) ? baseX : numberData("viewportX");
+    const y = Number.isFinite(baseY) ? baseY : numberData("viewportY");
+    const maxX = Math.max(0, numberData("maxScrollX"));
+    const maxY = Math.max(0, numberData("maxScrollY"));
+    const nextX = clamp(x + dx, 0, maxX);
+    const nextY = clamp(y + dy, 0, maxY);
+    return { x: nextX, y: nextY, dx: nextX - x, dy: nextY - y };
   };
   const replaceElementFromPartial = (doc, selector) => {
     const current = document.querySelector(selector);
@@ -11341,8 +11354,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
+      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
       shell.dataset.scrollQueuedDuringRequest = "true";
-      setViewportPending("Scroll queued; updating visual viewport after current frame...");
+      shell.dataset.queuedScrollTargetX = String(queued.x);
+      shell.dataset.queuedScrollTargetY = String(queued.y);
+      setViewportPending(
+        `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
+        queued
+      );
       return true;
     }
     const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
@@ -11364,10 +11383,16 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollDy += dy;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
+      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
       shell.dataset.scrollQueuedDuringRequest = "true";
       shell.dataset.queuedScrollDx = String(pendingScrollDx);
       shell.dataset.queuedScrollDy = String(pendingScrollDy);
-      setViewportPending("Scroll queued; updating visual viewport after current frame...");
+      shell.dataset.queuedScrollTargetX = String(queued.x);
+      shell.dataset.queuedScrollTargetY = String(queued.y);
+      setViewportPending(
+        `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
+        queued
+      );
       return true;
     }
     const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
