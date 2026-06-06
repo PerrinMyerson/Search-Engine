@@ -8881,6 +8881,151 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
 }
 
 #[tokio::test]
+async fn browser_session_registry_load_images_current_and_click_preserve_scrolled_viewport() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first-scrolled-click.html");
+    let second = dir.path().join("second-scrolled-click.html");
+    let image = dir.path().join("tile.svg");
+    std::fs::write(
+        &image,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##,
+    )
+    .unwrap();
+    let lines = (0..30)
+        .map(|index| format!("scroll spacer line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &first,
+        format!(
+            r#"<!doctype html><title>Scrolled click source</title><img src="tile.svg" alt="Tile"><pre>{lines}</pre><a id="go" href="{}">Continue after scroll</a>"#,
+            second.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &second,
+        r#"<!doctype html><title>Scrolled click target</title><p>arrived after retained scroll</p>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), first.display().to_string()),
+            ("from".to_owned(), "/search?q=scrolled-click".to_owned()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "12".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    assert_eq!(payload.title, "Scrolled click source");
+    assert_eq!(payload.viewport_y, 0);
+    assert!(payload.resource_image_count > 0);
+    let session_id = payload.id.clone();
+
+    let (link_x, link_y) = {
+        let sessions = registry.sessions.lock().await;
+        let web_session = sessions.get(&session_id).unwrap();
+        web_session
+            .session
+            .current()
+            .unwrap()
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::browser::DisplayCommand::Text { x, y, text }
+                | crate::browser::DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Continue after scroll") =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .expect("link text is rendered")
+    };
+    assert!(link_y > payload.height);
+    let target_viewport_y = link_y.saturating_sub(2).min(payload.max_scroll_y);
+
+    let scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), target_viewport_y.to_string()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&scroll).await.unwrap();
+    assert_eq!(payload.id, session_id);
+    assert_eq!(payload.viewport_y, target_viewport_y);
+    assert!(payload.viewport.contains("Continue after scroll"));
+
+    let load_images = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "load-images".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&load_images).await.unwrap();
+    assert_eq!(payload.id, session_id);
+    assert_eq!(payload.viewport_y, target_viewport_y);
+    assert!(payload.resource_report.is_some());
+    assert!(payload.viewport.contains("Continue after scroll"));
+
+    let current = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "current".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&current).await.unwrap();
+    assert_eq!(payload.id, session_id);
+    assert_eq!(payload.viewport_y, target_viewport_y);
+
+    let raster = payload.viewport_image.as_ref().unwrap();
+    let raster_width = raster.width;
+    let raster_height = raster.height;
+    let raster_options = BrowserRasterOptions::default();
+    let viewport_click_x = link_x.saturating_sub(payload.viewport_x);
+    let viewport_click_y = link_y.saturating_sub(payload.viewport_y);
+    let raster_x = viewport_click_x
+        .saturating_mul(raster_options.cell_width)
+        .saturating_add(raster_options.padding_x);
+    let raster_y = viewport_click_y
+        .saturating_mul(raster_options.cell_height)
+        .saturating_add(raster_options.padding_y);
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), raster_x.to_string()),
+            ("y".to_owned(), raster_y.to_string()),
+            ("raster_width".to_owned(), raster_width.to_string()),
+            ("raster_height".to_owned(), raster_height.to_string()),
+            ("width".to_owned(), payload.width.to_string()),
+            ("height".to_owned(), payload.height.to_string()),
+            ("viewport_y".to_owned(), payload.viewport_y.to_string()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.id, session_id);
+    assert_eq!(payload.title, "Scrolled click target");
+    assert_eq!(payload.viewport_y, 0);
+    assert!(payload.viewport.contains("arrived after retained scroll"));
+    assert!(payload
+        .action_feedback
+        .as_deref()
+        .is_some_and(|feedback| feedback.contains(&format!(
+            "mapped to DOM point x {viewport_click_x}, y {viewport_click_y} (page {link_x}, {link_y})"
+        ))));
+}
+
+#[tokio::test]
 async fn browser_session_registry_link_navigation_failure_becomes_retained_pending_target() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let unreachable = listener.local_addr().unwrap();

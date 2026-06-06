@@ -6294,7 +6294,9 @@ async fn apply_browser_action(
     }
 
     match action {
-        BrowserSessionAction::Current => {}
+        BrowserSessionAction::Current => {
+            normalize_browser_session_viewport(web_session);
+        }
         BrowserSessionAction::Open(url) => {
             let target_url = web_session.session.resolve_current_target(&url);
             apply_browser_open_with_pending_shell(web_session, &target_url).await?;
@@ -6816,6 +6818,7 @@ async fn apply_browser_action(
                 browser_session_resource_report_from_stylesheets(stylesheet_report),
                 browser_session_resource_report_from_images(image_report),
             ));
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::ApplyStylesheets => {
             let report = web_session
@@ -6829,6 +6832,7 @@ async fn apply_browser_action(
                 })?;
             web_session.resource_report =
                 Some(browser_session_resource_report_from_stylesheets(report));
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::RunScripts => {
             let report = web_session
@@ -6840,6 +6844,7 @@ async fn apply_browser_action(
                 })?;
             web_session.resource_report =
                 Some(browser_session_resource_report_from_scripts(report));
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::LoadImages => {
             let report = web_session
@@ -6850,6 +6855,7 @@ async fn apply_browser_action(
                     BrowserRouteError::Upstream(format!("browser image render failed: {error:#}"))
                 })?;
             web_session.resource_report = Some(browser_session_resource_report_from_images(report));
+            normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::ClearResourceReport => {
             web_session.resource_report = None;
