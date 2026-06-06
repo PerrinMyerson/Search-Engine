@@ -11141,7 +11141,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     const point = viewportPointFromPagePoint(lastClickPagePoint);
     if (!point) {
-      hideClickMarker();
+      clearClickMarkerPoint();
       setClickStatus("Ready for page click.");
       return;
     }
