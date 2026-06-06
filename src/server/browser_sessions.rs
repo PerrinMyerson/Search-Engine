@@ -1135,7 +1135,11 @@ pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) ->
             html_response(if browser_session_target_wants_viewport_partial(target) {
                 render_browser_session_viewport_partial(&payload)
             } else {
-                render_browser_session_page(&payload, &back_href)
+                render_browser_session_page_with_diagnostics(
+                    &payload,
+                    &back_href,
+                    browser_session_target_wants_diagnostics(target),
+                )
             })
         }
         Err(error) => error.browser_response(target),
@@ -1146,6 +1150,17 @@ fn browser_session_target_wants_viewport_partial(target: &RequestTarget) -> bool
     target
         .param("partial")
         .is_some_and(|value| value.eq_ignore_ascii_case("viewport"))
+}
+
+fn browser_session_target_wants_diagnostics(target: &RequestTarget) -> bool {
+    ["debug", "tools", "diagnostics"].into_iter().any(|key| {
+        target.param(key).is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "open"
+            )
+        })
+    })
 }
 
 fn browser_route_error_response(
@@ -9797,41 +9812,87 @@ fn browser_base64_encode(bytes: &[u8]) -> String {
 }
 
 fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str) -> String {
+    render_browser_session_page_with_diagnostics(payload, back_href, true)
+}
+
+fn render_browser_session_page_with_diagnostics(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    show_diagnostics: bool,
+) -> String {
     let mut link_rows = String::new();
-    for link in &payload.links {
-        let _ = write!(
-            link_rows,
-            r#"<li><span>{index}</span><div class="link-body"><a href="{href}">{label}</a><div class="link-target">{url}</div><div class="link-actions"><a href="{href}">Open</a><a href="{new_href}">New session</a><a href="{background_href}">Background</a></div></div></li>"#,
-            index = link.index + 1,
-            href = html_escape::encode_double_quoted_attribute(&link.action_url),
-            new_href = html_escape::encode_double_quoted_attribute(&link.new_session_url),
-            background_href =
-                html_escape::encode_double_quoted_attribute(&link.background_session_url),
-            label = html_escape::encode_text(&link.label),
-            url = html_escape::encode_text(&link.url),
-        );
+    if show_diagnostics {
+        for link in &payload.links {
+            let _ = write!(
+                link_rows,
+                r#"<li><span>{index}</span><div class="link-body"><a href="{href}">{label}</a><div class="link-target">{url}</div><div class="link-actions"><a href="{href}">Open</a><a href="{new_href}">New session</a><a href="{background_href}">Background</a></div></div></li>"#,
+                index = link.index + 1,
+                href = html_escape::encode_double_quoted_attribute(&link.action_url),
+                new_href = html_escape::encode_double_quoted_attribute(&link.new_session_url),
+                background_href =
+                    html_escape::encode_double_quoted_attribute(&link.background_session_url),
+                label = html_escape::encode_text(&link.label),
+                url = html_escape::encode_text(&link.url),
+            );
+        }
     }
-    if payload.link_count > payload.links.len() {
+    if show_diagnostics && payload.link_count > payload.links.len() {
         let _ = write!(
             link_rows,
             r#"<li><span></span><div>{count} more links omitted</div></li>"#,
             count = payload.link_count - payload.links.len(),
         );
     }
-    if link_rows.is_empty() {
+    if show_diagnostics && link_rows.is_empty() {
         link_rows
             .push_str(r#"<li><span></span><div>No links found in this session page.</div></li>"#);
     }
-    let link_controls = render_browser_session_link_controls(payload);
-    let form_rows = render_browser_session_forms(payload);
-    let click_controls = render_browser_session_click_controls(payload);
-    let keyboard_controls = render_browser_session_keyboard_controls(payload);
-    let inspector = render_browser_session_inspector(payload);
-    let session_tabs = render_browser_session_tabs(payload);
+    let link_controls = if show_diagnostics {
+        render_browser_session_link_controls(payload)
+    } else {
+        String::new()
+    };
+    let form_rows = if show_diagnostics {
+        render_browser_session_forms(payload)
+    } else {
+        String::new()
+    };
+    let click_controls = if show_diagnostics {
+        render_browser_session_click_controls(payload)
+    } else {
+        String::new()
+    };
+    let keyboard_controls = if show_diagnostics {
+        render_browser_session_keyboard_controls(payload)
+    } else {
+        String::new()
+    };
+    let inspector = if show_diagnostics {
+        render_browser_session_inspector(payload)
+    } else {
+        String::new()
+    };
+    let session_tabs = if show_diagnostics {
+        render_browser_session_tabs(payload)
+    } else {
+        String::new()
+    };
     let primary_tab_strip = render_browser_session_primary_tab_strip(payload);
-    let closed_sessions = render_browser_session_closed_sessions(payload);
-    let bookmarks = render_browser_session_bookmarks(payload);
-    let profile_history = render_browser_session_profile_history(payload);
+    let closed_sessions = if show_diagnostics {
+        render_browser_session_closed_sessions(payload)
+    } else {
+        String::new()
+    };
+    let bookmarks = if show_diagnostics {
+        render_browser_session_bookmarks(payload)
+    } else {
+        String::new()
+    };
+    let profile_history = if show_diagnostics {
+        render_browser_session_profile_history(payload)
+    } else {
+        String::new()
+    };
     let find_controls = render_browser_session_find_controls(payload);
     let viewport = render_browser_session_viewport(payload);
     let viewport_image = render_browser_session_viewport_image(payload);
@@ -9846,7 +9907,11 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
     let auto_visual_bootstrap = render_browser_session_auto_visual_bootstrap(payload);
     let pending_load_retry = render_browser_session_pending_load_retry_script(payload);
     let viewport_command_strip = render_browser_session_viewport_command_strip(payload);
-    let viewport_text = render_browser_session_viewport_text(payload, &viewport);
+    let viewport_text = if show_diagnostics {
+        render_browser_session_viewport_text(payload, &viewport)
+    } else {
+        String::new()
+    };
     let navigation_state = render_browser_session_navigation_state(payload, back_href);
     let page_summary = format!(
         r#"<details class="browser-page-summary" data-browser-page-details><summary>Page details</summary><div class="browser-page-summary-content"><div class="meta">rust browser session {id} · history {history_index}/{history_len} · viewport {width}x{height} at x={viewport_x} y={viewport_y} · max scroll {max_scroll_x}x{max_scroll_y} · document {doc_width}x{doc_height} · {nodes} DOM nodes · {links} links · {anchors} anchors · {forms} forms</div>{navigation_state}</div></details>"#,
@@ -10035,6 +10100,63 @@ fn render_browser_session_page(payload: &BrowserSessionPayload, back_href: &str)
         "Restore tab",
         restore_tab_href,
     );
+    let diagnostics_href = browser_session_action_href(
+        &payload.id,
+        "current",
+        &[("debug", "1".to_owned())],
+        payload,
+    );
+    let diagnostics_section = if show_diagnostics {
+        format!(
+            r#"<details class="debug-stack browser-tools-menu" data-browser-tools-tray>
+<summary>Diagnostics</summary>
+<div class="debug-stack-content">
+<details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
+<details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
+<details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
+<details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
+</div>
+</details>"#,
+            move_left_control = move_left_control,
+            move_right_control = move_right_control,
+            duplicate_href = html_escape::encode_double_quoted_attribute(&duplicate_href),
+            pin_current_href = html_escape::encode_double_quoted_attribute(&pin_current_href),
+            pin_current_label = pin_current_label,
+            pin_all_control = pin_all_control,
+            unpin_all_control = unpin_all_control,
+            close_current_control = close_current_control,
+            close_others_control = close_others_control,
+            close_unpinned_control = close_unpinned_control,
+            close_left_control = close_left_control,
+            close_right_control = close_right_control,
+            close_duplicates_control = close_duplicates_control,
+            restore_tab_control = restore_tab_control,
+            session_tabs = session_tabs,
+            closed_sessions = closed_sessions,
+            bookmarks = bookmarks,
+            profile_history = profile_history,
+            click_controls = click_controls,
+            keyboard_controls = keyboard_controls,
+            forms = payload.form_count,
+            forms_json_href = html_escape::encode_double_quoted_attribute(&forms_json_href),
+            forms_csv_href = html_escape::encode_double_quoted_attribute(&forms_csv_href),
+            form_rows = form_rows,
+            inspector = inspector,
+            links = payload.link_count,
+            links_csv_href = html_escape::encode_double_quoted_attribute(&links_csv_href),
+            links_new_sessions_control = links_new_sessions_control,
+            links_background_control = links_background_control,
+            bookmark_links_control = bookmark_links_control,
+            remove_link_bookmarks_control = remove_link_bookmarks_control,
+            link_controls = link_controls,
+            link_rows = link_rows,
+        )
+    } else {
+        format!(
+            r#"<div class="debug-stack browser-tools-menu browser-diagnostics-compact" data-browser-tools-tray><span class="meta">Diagnostics are available when needed.</span><a class="clear-link" href="{diagnostics_href}">Open diagnostics</a></div>"#,
+            diagnostics_href = html_escape::encode_double_quoted_attribute(&diagnostics_href),
+        )
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -10205,6 +10327,8 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-tools-menu {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
 .browser-tools-menu > summary {{ cursor: pointer; padding: 11px 12px; color: #20242a; font-size: 14px; font-weight: 900; }}
 .browser-tools-menu > summary::marker {{ color: #5d636b; }}
+.browser-diagnostics-compact {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; }}
+.browser-diagnostics-compact .meta {{ min-width: 0; }}
 .debug-stack-content {{ display: grid; gap: 10px; padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
 .debug-stack-content > :first-child {{ margin-top: 12px; }}
 .debug-section {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; }}
@@ -10288,15 +10412,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {primary_input_controls}
 <details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{viewport_scroll_controls}{page_summary}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
-<details class="debug-stack browser-tools-menu" data-browser-tools-tray>
-<summary>Diagnostics</summary>
-<div class="debug-stack-content">
-<details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
-<details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
-<details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
-<details class="debug-section"><summary>Links</summary><div class="debug-section-content"><div class="session-title"><h2>Links</h2><div class="resource-actions"><span class="meta">{links} found</span><a class="clear-link" href="{links_csv_href}">Links CSV</a>{links_new_sessions_control}{links_background_control}{bookmark_links_control}{remove_link_bookmarks_control}</div></div><div class="browser-actions">{link_controls}</div><ol>{link_rows}</ol></div></details>
-</div>
-</details>
+{diagnostics_section}
 {keyboard_controls_script}
 </main>
 </body>
@@ -10311,34 +10427,11 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         forward_control = forward_control,
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         keyboard_controls_script = keyboard_controls_script,
-        move_left_control = move_left_control,
-        move_right_control = move_right_control,
-        duplicate_href = html_escape::encode_double_quoted_attribute(&duplicate_href),
-        pin_current_href = html_escape::encode_double_quoted_attribute(&pin_current_href),
-        pin_current_label = pin_current_label,
-        pin_all_control = pin_all_control,
-        unpin_all_control = unpin_all_control,
-        close_current_control = close_current_control,
-        close_others_control = close_others_control,
-        close_unpinned_control = close_unpinned_control,
-        close_left_control = close_left_control,
-        close_right_control = close_right_control,
-        close_duplicates_control = close_duplicates_control,
-        restore_tab_control = restore_tab_control,
         width = payload.width,
         height = payload.height,
         max_bytes = payload.max_bytes,
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
-        forms_json_href = html_escape::encode_double_quoted_attribute(&forms_json_href),
-        forms_csv_href = html_escape::encode_double_quoted_attribute(&forms_csv_href),
-        links_csv_href = html_escape::encode_double_quoted_attribute(&links_csv_href),
-        links_new_sessions_control = links_new_sessions_control,
-        links_background_control = links_background_control,
-        bookmark_links_control = bookmark_links_control,
-        remove_link_bookmarks_control = remove_link_bookmarks_control,
-        links = payload.link_count,
-        forms = payload.form_count,
         viewport_status = viewport_status,
         viewport_scroll_controls = viewport_scroll_controls,
         pending_primary_page_state = pending_primary_page_state.unwrap_or_default(),
@@ -10354,18 +10447,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         viewport_interaction_controls = viewport_interaction_controls,
         primary_input_controls = primary_input_controls,
         viewport_text = viewport_text,
-        click_controls = click_controls,
-        keyboard_controls = keyboard_controls,
         find_controls = find_controls,
         primary_tab_strip = primary_tab_strip,
-        session_tabs = session_tabs,
-        closed_sessions = closed_sessions,
-        bookmarks = bookmarks,
-        profile_history = profile_history,
-        form_rows = form_rows,
-        inspector = inspector,
-        link_controls = link_controls,
-        link_rows = link_rows,
+        diagnostics_section = diagnostics_section,
     )
 }
 
