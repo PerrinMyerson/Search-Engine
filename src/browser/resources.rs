@@ -1779,9 +1779,7 @@ fn push_selected_background_alias_resource(
 
     for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
         if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = background_image_urls_from_attr_value(value)
-                .into_iter()
-                .last()
+            && let Some(url) = selected_background_image_url_from_attr_value(value)
         {
             push_resource(
                 resources,
@@ -1794,6 +1792,35 @@ fn push_selected_background_alias_resource(
             return;
         }
     }
+}
+
+fn selected_background_image_url_from_attr_value(value: &str) -> Option<&str> {
+    split_css_top_level_commas(value)
+        .into_iter()
+        .filter_map(selected_background_image_url_from_attr_layer)
+        .filter(|url| !background_image_candidate_clearly_unsupported(url))
+        .last()
+}
+
+fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if let Some(args) = css_function_args(value, &["image-set", "-webkit-image-set"]) {
+        return split_css_top_level_commas(args)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, candidate)| {
+                background_image_set_candidate_url_with_density(candidate, order)
+            })
+            .filter(|candidate| !background_image_candidate_clearly_unsupported(candidate.url))
+            .max_by_key(|candidate| (candidate.density_milli, candidate.order))
+            .map(|candidate| candidate.url);
+    }
+    background_image_urls_from_attr_layer(value)
+        .into_iter()
+        .find(|url| !background_image_candidate_clearly_unsupported(url))
 }
 
 fn push_background_alias_resources(
@@ -1876,12 +1903,42 @@ fn background_image_urls_from_attr_layer(value: &str) -> Vec<&str> {
 }
 
 fn background_image_set_candidate_url(candidate: &str) -> Option<&str> {
+    background_image_set_candidate_url_with_density(candidate, 0).map(|candidate| candidate.url)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BackgroundImageSetCandidate<'a> {
+    url: &'a str,
+    density_milli: usize,
+    order: usize,
+}
+
+fn background_image_set_candidate_url_with_density(
+    candidate: &str,
+    order: usize,
+) -> Option<BackgroundImageSetCandidate<'_>> {
     if background_image_set_candidate_type_unsupported(candidate) {
         return None;
     }
-    css_function_args(candidate, &["url"])
+    let url = css_function_args(candidate, &["url"])
         .and_then(css_url_token)
-        .or_else(|| css_quoted_url(candidate))
+        .or_else(|| css_quoted_url(candidate))?;
+    Some(BackgroundImageSetCandidate {
+        url,
+        density_milli: background_image_set_candidate_density_milli(candidate).unwrap_or(1_000),
+        order,
+    })
+}
+
+fn background_image_set_candidate_density_milli(candidate: &str) -> Option<usize> {
+    candidate
+        .split_ascii_whitespace()
+        .find_map(parse_image_set_density_descriptor)
+}
+
+fn parse_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
+    let density = descriptor.strip_suffix('x')?.parse::<f64>().ok()?;
+    (density.is_finite() && density > 0.0).then(|| (density * 1000.0).round() as usize)
 }
 
 fn background_image_set_candidate_type_unsupported(candidate: &str) -> bool {
