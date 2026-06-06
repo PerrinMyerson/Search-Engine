@@ -11467,6 +11467,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return { dx, dy };
   };
+  const queuedScrollDelta = () => {
+    const targetX = Number(shell.dataset.queuedScrollTargetX);
+    const targetY = Number(shell.dataset.queuedScrollTargetY);
+    if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) {
+      return null;
+    }
+    return {
+      dx: targetX - numberData("viewportX"),
+      dy: targetY - numberData("viewportY")
+    };
+  };
   const viewportWorkPending = () => Boolean(pendingScrollTimer || shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest);
   const abortPartialViewportRequest = () => {
     if (partialRequestController && typeof partialRequestController.abort === "function") {
@@ -11491,7 +11502,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       abortPartialViewportRequest();
       return true;
     }
-    const scroll = buildScrollUrl(pendingScrollDx, pendingScrollDy);
+    const latestQueued = queuedScrollDelta();
+    const scroll = latestQueued
+      ? buildScrollUrl(latestQueued.dx, latestQueued.dy)
+      : buildScrollUrl(pendingScrollDx, pendingScrollDy);
     pendingScrollDx = 0;
     pendingScrollDy = 0;
     if (!scroll) {

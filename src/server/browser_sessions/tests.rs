@@ -2742,6 +2742,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const scrollDeltaFromUrl = (url) =>"));
     assert!(html.contains(r#"url.searchParams.get("action") !== "scroll""#));
     assert!(html.contains(r#"Number(url.searchParams.get("dx") || "0")"#));
+    assert!(html.contains("const queuedScrollDelta = () =>"));
+    assert!(html.contains("const targetX = Number(shell.dataset.queuedScrollTargetX)"));
+    assert!(html.contains("const targetY = Number(shell.dataset.queuedScrollTargetY)"));
+    assert!(html.contains(r#"dx: targetX - numberData("viewportX")"#));
+    assert!(html.contains(r#"dy: targetY - numberData("viewportY")"#));
     assert!(html.contains("const viewportWorkPending = () => Boolean("));
     assert!(html.contains("if (!viewportWorkPending())"));
     assert!(html.contains("const abortPartialViewportRequest = () =>"));
@@ -2812,6 +2817,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("let pendingScrollDx = 0"));
     assert!(html.contains("let pendingScrollDy = 0"));
     assert!(html.contains("const flushPendingScroll"));
+    assert!(html.contains("const latestQueued = queuedScrollDelta();"));
+    assert!(html.contains("buildScrollUrl(latestQueued.dx, latestQueued.dy)"));
     assert!(html.contains("const queueViewportScroll"));
     assert!(html.contains("const scrollFlushDelayMs = 24"));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
