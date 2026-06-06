@@ -3504,6 +3504,116 @@ fn css_justify_content_space_between_nav_keeps_visible_hit_geometry_after_scroll
 }
 
 #[test]
+fn css_justify_content_space_around_nav_keeps_visible_hit_geometry_after_scroll() {
+    let render = render_html(
+        "mem://justify-content-space-around-nav-flow",
+        br#"
+            <html><head><style>
+              .spacer { height: 24px; }
+              .tail { height: 64px; }
+              nav {
+                display: flex;
+                justify-content: space-around;
+                gap: 8px;
+                width: 320px;
+                margin-inline: auto;
+                background: rgb(236, 236, 236);
+              }
+              nav a { color: black; }
+            </style></head><body>
+              <p class="spacer">Intro text above the navigation.</p>
+              <nav>
+                <a href="/docs">Docs</a>
+                <a href="/install">Install</a>
+                <a href="/learn">Learn</a>
+              </nav>
+              <p>Paragraph copy below the row keeps the document scrollable and readable.</p>
+              <p class="tail">Additional copy keeps the nav scroll target reachable.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let nav_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 236 && *width == 40 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("centered flex nav background");
+    assert_eq!(nav_background.0, 20);
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::StyledText { x, y, text, .. } if text == needle => Some((*x, *y)),
+                DisplayCommand::Text { x, y, text } if text == needle => Some((*x, *y)),
+                _ => None,
+            })
+    };
+    let docs = text_position("Docs").expect("Docs link in flex nav");
+    let install = text_position("Install").expect("Install link in flex nav");
+    let learn = text_position("Learn").expect("Learn link in flex nav");
+    assert_eq!(docs.0, nav_background.0 + 3);
+    assert_eq!(install.0, nav_background.0 + 15);
+    assert_eq!(learn.0, nav_background.0 + 30);
+    assert_eq!(docs.1, nav_background.1);
+    assert_eq!(install.1, nav_background.1);
+    assert_eq!(learn.1, nav_background.1);
+    assert!(hit_test_target_node(&render, docs.0, docs.1).is_some());
+    assert!(hit_test_target_node(&render, learn.0, learn.1).is_some());
+
+    let viewport_y = nav_background.1;
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 80,
+            height: 5,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, viewport_y);
+    assert!(viewport.max_scroll_y > 0);
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(80),
+        viewport_height: Some(5),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options).expect("rasterize space-around nav");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let gap_pixel_x = raster_options.padding_x.saturating_add(
+        nav_background
+            .0
+            .saturating_add(10)
+            .saturating_mul(raster_options.cell_width),
+    );
+    let nav_pixel_y = raster_options.padding_y;
+    assert_eq!(pixel(gap_pixel_x, nav_pixel_y), &[236, 236, 236, 255]);
+}
+
+#[test]
 fn flows_simple_table_cells_across_rows() {
     let render = render_html(
         "mem://table",
