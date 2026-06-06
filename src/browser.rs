@@ -16262,9 +16262,8 @@ fn render_node(
                 .position
                 .is_out_of_flow()
                 .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
-            let mut horizontal_projection_entered = style
-                .position
-                .is_out_of_flow()
+            let mut horizontal_projection_entered = (style.position.is_out_of_flow()
+                || style.position == Position::Relative)
                 .then(|| {
                     renderer.enter_horizontal_projection(
                         style.horizontal_projection_offset(renderer.available_width()),

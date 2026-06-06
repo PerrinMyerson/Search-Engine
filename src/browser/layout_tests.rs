@@ -6085,6 +6085,145 @@ fn css_positioned_horizontal_offsets_and_translate_project_overlay_paint() {
 }
 
 #[test]
+fn css_relative_horizontal_offset_preserves_flow_and_scrolled_hit_geometry() {
+    let render = render_html(
+        "mem://relative-horizontal-flow",
+        br#"
+            <html><head><style>
+              .lead { height: 24px; }
+              .panel { background: rgb(246, 246, 246); }
+              .cta {
+                position: relative;
+                left: 32px;
+                background: rgb(232, 232, 232);
+              }
+              .tail { height: 72px; }
+            </style></head><body>
+              <p class="lead">Intro copy before the panel.</p>
+              <section class="panel">
+                <img alt="" width="16" height="12">
+                <a class="cta" href="/details">Shifted link</a>
+                <p>Body copy remains in normal flow below the relative link.</p>
+              </section>
+              <p class="tail">Trailing copy keeps the viewport scrollable.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("image should remain in normal panel flow");
+    let shifted = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Shifted link") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("relative link text should be visible");
+    let shifted_underlay = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x, y, width, shade, ..
+            } if *shade == 232 => Some((*x, *y, *width)),
+            _ => None,
+        })
+        .expect("relative link underlay should be painted");
+    let body = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Body copy remains") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("following body copy should stay in normal flow");
+
+    assert_eq!(image_bounds.0, 0);
+    assert!(
+        shifted.0 >= image_bounds.0 + 4,
+        "position:relative left offset should move the link visually without moving the image"
+    );
+    assert_eq!(
+        (shifted_underlay.0, shifted_underlay.1),
+        shifted,
+        "relative horizontal offset should move the link underlay with the text"
+    );
+    assert!(
+        shifted_underlay.2 >= "Shifted link".len(),
+        "relative link underlay should cover the shifted text run"
+    );
+    assert_eq!(
+        body.0, 0,
+        "relative horizontal offset should not indent following normal-flow content"
+    );
+    assert!(
+        body.1 > shifted.1,
+        "relative horizontal offset should preserve vertical flow below the link"
+    );
+    let shifted_target = hit_test_target_node(&render, shifted.0, shifted.1)
+        .expect("shifted link should be hittable");
+
+    let viewport_y = shifted.1.saturating_sub(1);
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: viewport_y,
+            width: 48,
+            height: 6,
+        },
+        None,
+    );
+    assert!(viewport.viewport.y > 0);
+    assert!(viewport.max_scroll_y > 0);
+    let local_y = shifted.1.saturating_sub(viewport.viewport.y);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, shifted.0, local_y),
+        Some(shifted_target)
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(48),
+        viewport_height: Some(6),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize relative link viewport");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [246, 246, 246, 255]),
+        "scrolled raster should retain the panel underlay"
+    );
+}
+
+#[test]
 fn css_absolute_bottom_uses_positioned_context_in_scrolled_rgba_viewport() {
     let image_url = "mem://absolute-bottom-context-image".to_owned();
     let decoded = DecodedImage {
