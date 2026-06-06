@@ -211,6 +211,44 @@ async fn browser_session_registry_opens_links_by_text_and_selector() {
 }
 
 #[tokio::test]
+async fn browser_session_page_can_omit_heavy_diagnostics_for_default_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("slim.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>Slim</title><form><input name="q" value="cats"><button>Go</button></form><a href="/next">Next</a><p>Visible page text for the viewport.</p>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("from".to_owned(), "/search?q=slim".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+
+    let slim_html = render_browser_session_page_with_diagnostics(&payload, &back_href, false);
+    assert!(slim_html.contains(r#"data-browser-primary-surface"#));
+    assert!(slim_html.contains(r#"class="browser-raster-shell""#));
+    assert!(slim_html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(slim_html.contains("Open diagnostics"));
+    assert!(slim_html.contains("debug=1"));
+    assert!(!slim_html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(!slim_html.contains("Links CSV"));
+    assert!(!slim_html.contains("Forms JSON"));
+    assert!(!slim_html.contains(r#"Text viewport"#));
+
+    let diagnostic_html = render_browser_session_page_with_diagnostics(&payload, &back_href, true);
+    assert!(diagnostic_html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(diagnostic_html.contains("Links CSV"));
+    assert!(diagnostic_html.contains("Forms JSON"));
+    assert!(diagnostic_html.contains("Text viewport"));
+}
+
+#[tokio::test]
 async fn browser_session_registry_opens_links_in_new_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("first.html");
