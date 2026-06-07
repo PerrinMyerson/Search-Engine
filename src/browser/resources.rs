@@ -1832,14 +1832,6 @@ fn push_image_alias_resources(
         return;
     }
 
-    for attr_name in IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
-            && !url.trim().is_empty()
-        {
-            push_resource(resources, source, element, "image", &element.tag, url);
-        }
-    }
-
     for attr_name in IMAGE_SRCSET_ALIAS_ATTRS {
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
@@ -1861,6 +1853,14 @@ fn push_image_alias_resources(
                 &url,
             );
             return;
+        }
+    }
+
+    for attr_name in IMAGE_SRC_ALIAS_ATTRS {
+        if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
+            && !url.trim().is_empty()
+        {
+            push_resource(resources, source, element, "image", &element.tag, url);
         }
     }
 }
