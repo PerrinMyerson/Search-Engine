@@ -9984,6 +9984,13 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         new_session_target.param("source").as_deref(),
         Some("https://example.com")
     );
+
+    let sessions_html = render_browser_session_tabs(&payload);
+    assert!(sessions_html.contains(r#"name="viewport_y" value="7""#));
+    assert!(sessions_html.contains(r#"name="max_bytes" value="1048576""#));
+    assert!(sessions_html.contains(
+        r#"<input type="hidden" name="source" value="https://example.com"><input type="text" inputmode="url""#
+    ));
 }
 
 #[test]
@@ -10087,6 +10094,12 @@ fn browser_session_action_state_strips_unsafe_source() {
     );
     assert!(new_session_target.param("source").is_none());
     assert!(!new_session_href.contains("javascript"));
+
+    let sessions_html = render_browser_session_tabs(&payload);
+    assert!(sessions_html.contains(r#"name="viewport_y" value="7""#));
+    assert!(sessions_html.contains(r#"name="max_bytes" value="1048576""#));
+    assert!(!sessions_html.contains(r#"name="source""#));
+    assert!(!sessions_html.contains("javascript:"));
 }
 
 #[test]
