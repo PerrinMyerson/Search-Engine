@@ -6198,6 +6198,89 @@ async fn image_raster_fidelity_decodes_indexed_png_resource_pixels() {
 }
 
 #[tokio::test]
+async fn image_bmp_mime_decodes_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.bmp");
+    fs::write(&hero, tiny_test_bmp_rgb()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before BMP</p>
+            <img src="hero.bmp" width="16" height="16" alt="BMP hero">
+            <p>After BMP</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let hero_url = hero.display().to_string();
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/bmp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    let rendered = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
@@ -9919,6 +10002,25 @@ fn tiny_test_adam7_png_rgb() -> Vec<u8> {
         pixels[offset..offset + 3].copy_from_slice(&rgb);
     }
     encode_test_adam7_png(width as u32, height as u32, 2, &pixels)
+}
+
+fn tiny_test_bmp_rgb() -> Vec<u8> {
+    vec![
+        b'B', b'M', 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, // file header
+        40, 0, 0, 0, // DIB header size
+        2, 0, 0, 0, // width
+        2, 0, 0, 0, // height
+        1, 0, // planes
+        24, 0, // bits per pixel
+        0, 0, 0, 0, // BI_RGB
+        16, 0, 0, 0, // image size
+        0, 0, 0, 0, // x pixels per meter
+        0, 0, 0, 0, // y pixels per meter
+        0, 0, 0, 0, // colors used
+        0, 0, 0, 0, // important colors
+        255, 0, 0, 255, 255, 255, 0, 0, // bottom row: blue, white, padding
+        0, 0, 255, 0, 180, 0, 0, 0, // top row: red, green, padding
+    ]
 }
 
 fn tiny_test_png_rgb16() -> Vec<u8> {
