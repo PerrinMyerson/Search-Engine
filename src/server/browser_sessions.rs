@@ -11042,17 +11042,25 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.removeAttribute("data-viewport-pending");
       status.removeAttribute("data-pending-viewport-x");
       status.removeAttribute("data-pending-viewport-y");
+      status.removeAttribute("data-stale-viewport-response");
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
   };
   const markStaleViewportResponse = (message) => {
     if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
+      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
+      setPendingViewportTarget(queued);
       shell.dataset.viewportState = "pending";
     } else {
       shell.dataset.viewportState = "stale-response";
     }
     shell.dataset.staleViewportResponse = "true";
+    const status = viewportStatus();
+    if (status) {
+      status.dataset.staleViewportResponse = "true";
+      status.setAttribute("aria-label", message);
+    }
     setViewportFeedback(message);
   };
   const numberData = (name) => {
