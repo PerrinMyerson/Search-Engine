@@ -54,6 +54,8 @@ pub struct WebSearchService {
 pub struct WebSearchLookup {
     pub provider: &'static str,
     pub cache_hit: bool,
+    pub cache_status: &'static str,
+    pub retained_cache_results: usize,
     pub fetched: bool,
     pub results: Vec<WebSearchResult>,
 }
@@ -241,6 +243,8 @@ impl WebSearchService {
             return Ok(WebSearchLookup {
                 provider: self.provider_name(),
                 cache_hit: false,
+                cache_status: "skipped-empty-query",
+                retained_cache_results: 0,
                 fetched: false,
                 results: Vec::new(),
             });
@@ -252,9 +256,12 @@ impl WebSearchService {
         if self.config.cache_ttl_secs > 0 {
             let cache = self.cache.lock().await;
             if let Some(results) = cache.lookup(&normalized_query, now_unix()) {
+                let retained_cache_results = results.len();
                 return Ok(WebSearchLookup {
                     provider: self.provider_name(),
                     cache_hit: true,
+                    cache_status: "hit",
+                    retained_cache_results,
                     fetched: false,
                     results: take_results(results, limit),
                 });
@@ -277,6 +284,12 @@ impl WebSearchService {
                 return Ok(WebSearchLookup {
                     provider: self.provider_name(),
                     cache_hit: false,
+                    cache_status: if self.config.cache_ttl_secs == 0 {
+                        "disabled"
+                    } else {
+                        "miss"
+                    },
+                    retained_cache_results: 0,
                     fetched: false,
                     results: Vec::new(),
                 });
@@ -307,6 +320,12 @@ impl WebSearchService {
         Ok(WebSearchLookup {
             provider: self.provider_name(),
             cache_hit: false,
+            cache_status: if self.config.cache_ttl_secs == 0 {
+                "disabled-fetched"
+            } else {
+                "miss-fetched"
+            },
+            retained_cache_results: 0,
             fetched: true,
             results,
         })
@@ -1909,6 +1928,8 @@ mod tests {
         let hit = service.search("  Cached   Query ", 10).await.unwrap();
         assert_eq!(hit.provider, "brave-cache");
         assert!(hit.cache_hit);
+        assert_eq!(hit.cache_status, "hit");
+        assert_eq!(hit.retained_cache_results, 1);
         assert!(!hit.fetched);
         assert_eq!(hit.results.len(), 1);
         assert_eq!(hit.results[0].url, "https://example.com/cached");
@@ -1916,6 +1937,8 @@ mod tests {
         let miss = service.search("missing", 10).await.unwrap();
         assert_eq!(miss.provider, "brave-cache");
         assert!(!miss.cache_hit);
+        assert_eq!(miss.cache_status, "miss");
+        assert_eq!(miss.retained_cache_results, 0);
         assert!(!miss.fetched);
         assert!(miss.results.is_empty());
     }
