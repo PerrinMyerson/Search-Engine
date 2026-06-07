@@ -11246,6 +11246,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const nextY = clamp(y + dy, 0, maxY);
     return { x: nextX, y: nextY, dx: nextX - x, dy: nextY - y };
   };
+  const normalizePendingScrollDelta = (target) => {
+    pendingScrollDx = target.dx;
+    pendingScrollDy = target.dy;
+  };
   const replaceElementFromPartial = (doc, selector) => {
     const current = document.querySelector(selector);
     const next = doc.querySelector(selector);
@@ -11564,6 +11568,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
       const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
+      normalizePendingScrollDelta(queued);
       shell.dataset.scrollQueuedDuringRequest = "true";
       shell.dataset.queuedScrollDx = String(pendingScrollDx);
       shell.dataset.queuedScrollDy = String(pendingScrollDy);
@@ -11586,6 +11591,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       }
       return false;
     }
+    normalizePendingScrollDelta(pending);
     shell.dataset.pendingViewportX = String(pending.x);
     shell.dataset.pendingViewportY = String(pending.y);
     shell.dataset.queuedScrollDx = String(pending.dx);
