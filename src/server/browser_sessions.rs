@@ -10178,6 +10178,7 @@ fn render_browser_session_page_with_diagnostics(
             r#"<details class="debug-stack browser-tools-menu" data-browser-tools-tray>
 <summary>Diagnostics</summary>
 <div class="debug-stack-content">
+{page_summary}
 <details class="debug-section"><summary>Tabs and saved state</summary><div class="debug-section-content"><div class="toolbar secondary-toolbar">{move_left_control}{move_right_control}<a href="{duplicate_href}">Duplicate current</a><a href="{pin_current_href}">{pin_current_label}</a>{pin_all_control}{unpin_all_control}{close_current_control}{close_others_control}{close_unpinned_control}{close_left_control}{close_right_control}{close_duplicates_control}{restore_tab_control}</div>{session_tabs}{closed_sessions}{bookmarks}{profile_history}</div></details>
 <details class="debug-section"><summary>Input tools and forms</summary><div class="debug-section-content"><h2>Click</h2><div class="browser-actions">{click_controls}</div><h2>Keyboard</h2><div class="keyboard-actions">{keyboard_controls}</div><div class="session-title"><h2>Forms</h2><div class="resource-actions"><span class="meta">{forms} found</span><a class="clear-link" href="{forms_json_href}">Forms JSON</a><a class="clear-link" href="{forms_csv_href}">Forms CSV</a></div></div><div class="browser-forms">{form_rows}</div></div></details>
 <details class="debug-section"><summary>Inspector and resources</summary><div class="debug-section-content"><h2>Inspector</h2><div class="browser-inspector">{inspector}</div></div></details>
@@ -10217,10 +10218,11 @@ fn render_browser_session_page_with_diagnostics(
             remove_link_bookmarks_control = remove_link_bookmarks_control,
             link_controls = link_controls,
             link_rows = link_rows,
+            page_summary = page_summary,
         )
     } else {
         format!(
-            r#"<div class="debug-stack browser-tools-menu browser-diagnostics-compact" data-browser-tools-tray><span class="meta">Diagnostics are available when needed.</span><a class="clear-link" href="{diagnostics_href}">Open diagnostics</a></div>"#,
+            r#"<div class="debug-stack browser-tools-menu browser-diagnostics-compact" data-browser-tools-tray><span class="meta">Diagnostics and page details are available when needed.</span><a class="clear-link" href="{diagnostics_href}">Open diagnostics</a></div>"#,
             diagnostics_href = html_escape::encode_double_quoted_attribute(&diagnostics_href),
         )
     };
@@ -10267,10 +10269,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill strong, .browser-tab-pill span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-tab-pill strong {{ font-size: 13px; font-weight: 800; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
-.browser-page-head {{ margin: 6px 0 8px; }}
-.browser-page-title {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin: 4px 0 6px; }}
-.browser-page-title h1 {{ margin: 0; font-size: 15px; font-weight: 900; }}
-.browser-page-title .meta {{ min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.browser-location-strip {{ display: flex; min-width: 0; align-items: baseline; gap: 8px; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
+.browser-location-strip strong {{ flex: 0 1 auto; min-width: 0; color: #20242a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.browser-location-strip .meta {{ flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-page-summary {{ margin: 4px 0 8px; color: #3a3f45; }}
 .browser-page-summary > summary {{ cursor: pointer; color: #5d636b; font-size: 12px; font-weight: 800; }}
 .browser-page-summary-content {{ display: grid; gap: 6px; padding-top: 8px; }}
@@ -10475,11 +10476,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
+<div class="browser-location-strip" data-browser-location-strip><strong>{heading}</strong><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
 {primary_tab_strip}
 </header>
-<section class="browser-page-head">
-<div class="browser-page-title"><h1>{heading}</h1><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
-</section>
 {auto_visual_bootstrap}
 {pending_load_retry}
 <section class="browser-viewport-primary" data-browser-primary-surface>
@@ -10489,7 +10488,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{viewport_scroll_controls}{page_summary}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
 {diagnostics_section}
 {keyboard_controls_script}
@@ -10521,7 +10520,6 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         browser_chrome_status = render_browser_session_chrome_status(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
-        page_summary = page_summary,
         resource_quick_actions = resource_quick_actions,
         viewport_image = viewport_image,
         viewport_interaction_controls = viewport_interaction_controls,
