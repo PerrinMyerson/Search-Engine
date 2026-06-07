@@ -9978,6 +9978,108 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
 }
 
 #[test]
+fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://flow-only-scroll-height",
+        br#"
+            <html><body>
+              <a href="/nav" style="display:block; position:fixed; top:0; width:160px; height:24px; background:rgb(245,245,245)">Nav</a>
+              <p>Article opening text</p>
+              <div style="height:96px"></div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+    .expect("render flow-only trailing height fixture");
+    let render = profiled.render;
+
+    assert!(
+        render
+            .display_list
+            .iter()
+            .filter_map(display_command_text)
+            .all(|text| !text.contains("height")),
+        "fixture should not rely on painted spacer text for scroll height"
+    );
+    let fixed_text_index = render
+        .display_list
+        .iter()
+        .position(|command| {
+            matches!(
+                command,
+                DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                    if text == "Nav"
+            )
+        })
+        .expect("fixed nav text should render");
+    assert!(display_command_viewport_fixed(&render, fixed_text_index));
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 99,
+            width: 24,
+            height: 4,
+        },
+        None,
+    );
+    assert!(
+        viewport.max_scroll_y >= 6,
+        "flow-only trailing height should contribute to document scroll bounds"
+    );
+    assert_eq!(viewport.viewport.y, viewport.max_scroll_y);
+
+    let fixed_target = hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 0)
+        .expect("fixed nav should remain hittable after scrolling into flow-only space");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, fixed_target).as_deref(),
+        Some("/nav")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize flow-only bottom slice");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(viewport.viewport.y));
+    assert!(
+        report.visible_command_count > 0,
+        "fixed viewport content should keep the scrolled flow-only slice usable"
+    );
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let fixed_background_x = raster_options
+        .padding_x
+        .saturating_add(8usize.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(fixed_background_x, raster_options.padding_y),
+        &[245, 245, 245, 255],
+        "fixed nav background should project into the scrolled flow-only viewport"
+    );
+}
+
+#[test]
 fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
     let image_url = "mem://diagonal-scroll-image".to_owned();
     let decoded = DecodedImage {

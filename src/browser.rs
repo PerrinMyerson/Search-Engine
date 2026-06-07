@@ -4856,7 +4856,7 @@ fn nearest_retained_layout_parent(
 
 fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
     let mut max_column = render.viewport_width.max(1);
-    let mut max_row = 1usize;
+    let mut max_row = render_text_row_count(render).max(1);
     for (command_index, command) in render.display_list.iter().enumerate() {
         if !display_command_affects_scroll_extent(render, command_index) {
             continue;
@@ -4874,6 +4874,14 @@ fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
         max_row = max_row.max(bounds.y.saturating_add(bounds.height));
     }
     (max_column, max_row)
+}
+
+fn render_text_row_count(render: &BrowserRender) -> usize {
+    if render.text.is_empty() {
+        0
+    } else {
+        render.text.split('\n').count()
+    }
 }
 
 fn layout_box_affects_scroll_extent(render: &BrowserRender, layout_box: &BrowserLayoutBox) -> bool {
@@ -20333,6 +20341,12 @@ impl FlowRenderer {
         }
     }
 
+    fn ensure_text_row_count(&mut self, rows: usize) {
+        while self.lines.len() < rows {
+            self.lines.push(String::new());
+        }
+    }
+
     fn push_text_run_piece(&mut self, piece: &str, target_node: Option<usize>) {
         self.push_text_run_piece_with_spacing(piece, target_node, true);
     }
@@ -21484,16 +21498,24 @@ impl FlowRenderer {
 
     fn push_vertical_space(&mut self, rows: usize) {
         self.break_line();
-        self.next_y = self.next_y.saturating_add(rows);
+        let next_y = self.next_y.saturating_add(rows);
+        self.ensure_text_row_count(next_y);
+        self.next_y = next_y;
     }
 
     fn ensure_current_row_at_least(&mut self, row: usize) {
         self.break_line();
+        if row > self.next_y {
+            self.ensure_text_row_count(row);
+        }
         self.next_y = self.next_y.max(row);
     }
 
     fn set_current_row(&mut self, row: usize) {
         self.break_line();
+        if row > self.next_y {
+            self.ensure_text_row_count(row);
+        }
         self.next_y = row;
     }
 
