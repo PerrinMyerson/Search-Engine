@@ -4077,9 +4077,8 @@ fn hit_test_target_node_in_viewport(
     y: usize,
 ) -> Option<usize> {
     let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
-    hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
+    hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y)
         .or_else(|| hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y))
-        .or_else(|| hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y))
         .or_else(|| {
             hit_test_nearby_visual_target_node_for_viewport(render, viewport, page_x, page_y)
         })
