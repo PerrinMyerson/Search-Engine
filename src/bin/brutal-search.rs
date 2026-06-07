@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
@@ -52,6 +52,7 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
 const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
 const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
 const WEB_STORAGE_QUERY_EXAMPLE_LIMIT: usize = 3;
+const WEB_STORAGE_PROVIDER_GROWTH_LIMIT: usize = 3;
 const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
@@ -872,6 +873,7 @@ struct WebStorageArtifactStats {
     query_count: usize,
     query_examples: Vec<String>,
     provider_count: usize,
+    provider_growth: Vec<String>,
     max_entries_per_query: usize,
     oldest_fetched_at_unix: Option<u64>,
     newest_fetched_at_unix: Option<u64>,
@@ -892,6 +894,13 @@ struct WebStoragePressureSummary {
     max_entries_per_query: usize,
     stale_artifacts: usize,
     suggested_dry_runs: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WebStorageProviderGrowth {
+    entries: usize,
+    bytes: u64,
+    result_rows: usize,
 }
 
 fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
@@ -1801,6 +1810,10 @@ fn web_storage_export_readiness_lines(
             web_storage_format_query_examples(&replay_missing_query_examples)
         ),
         format!(
+            "web_storage_provider_growth: report_only=true limit={WEB_STORAGE_PROVIDER_GROWTH_LIMIT} {}",
+            web_storage_provider_growth_summary(artifacts)
+        ),
+        format!(
             "web_storage_replay_staleness: status={staleness_status} report_only=true newest_age_secs={} oldest_age_secs={} stale_after_secs={stale_secs}",
             newest_age_secs
                 .map(|age_secs| age_secs.to_string())
@@ -1865,9 +1878,26 @@ fn web_storage_format_query_examples(examples: &[String]) -> String {
     }
     examples
         .iter()
-        .map(|query| query.replace(|ch: char| ch.is_whitespace() || ch == ',', "_"))
+        .map(|query| web_storage_sanitize_token(query))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn web_storage_provider_growth_summary(artifacts: &[WebStorageArtifactStats]) -> String {
+    let summaries = artifacts
+        .iter()
+        .filter(|artifact| !artifact.provider_growth.is_empty())
+        .map(|artifact| format!("{}={}", artifact.name, artifact.provider_growth.join("|")))
+        .collect::<Vec<_>>();
+    if summaries.is_empty() {
+        "providers=none".to_owned()
+    } else {
+        summaries.join(" ")
+    }
+}
+
+fn web_storage_sanitize_token(value: &str) -> String {
+    value.replace(|ch: char| ch.is_whitespace() || ch == ',' || ch == '|', "_")
 }
 
 fn web_storage_pressure_summary(
@@ -2270,6 +2300,7 @@ fn collect_web_storage_artifact_stats(
         query_count: 0,
         query_examples: Vec::new(),
         provider_count: 0,
+        provider_growth: Vec::new(),
         max_entries_per_query: 0,
         oldest_fetched_at_unix: None,
         newest_fetched_at_unix: None,
@@ -2277,6 +2308,7 @@ fn collect_web_storage_artifact_stats(
     let mut unique_keys = std::collections::HashSet::new();
     let mut query_counts = HashMap::new();
     let mut providers = std::collections::HashSet::new();
+    let mut provider_growth = BTreeMap::new();
 
     for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
         let line = line.with_context(|| {
@@ -2322,6 +2354,17 @@ fn collect_web_storage_artifact_stats(
             .filter(|provider| !provider.is_empty())
         {
             providers.insert(provider.to_owned());
+            let growth =
+                provider_growth
+                    .entry(provider.to_owned())
+                    .or_insert(WebStorageProviderGrowth {
+                        entries: 0,
+                        bytes: 0,
+                        result_rows: 0,
+                    });
+            growth.entries = growth.entries.saturating_add(1);
+            growth.bytes = growth.bytes.saturating_add(row_bytes);
+            growth.result_rows = growth.result_rows.saturating_add(durability.total);
         }
         let Some(fetched_at_unix) = value
             .get("fetched_at_unix")
@@ -2346,6 +2389,19 @@ fn collect_web_storage_artifact_stats(
     stats.query_count = query_counts.len();
     stats.query_examples = query_examples;
     stats.provider_count = providers.len();
+    stats.provider_growth = provider_growth
+        .into_iter()
+        .take(WEB_STORAGE_PROVIDER_GROWTH_LIMIT)
+        .map(|(provider, growth)| {
+            format!(
+                "{}:entries={}:bytes={}:result_rows={}",
+                web_storage_sanitize_token(&provider),
+                growth.entries,
+                growth.bytes,
+                growth.result_rows
+            )
+        })
+        .collect();
     stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
 
     Ok(stats)
@@ -2708,6 +2764,7 @@ mod tests {
                     query_count: 0,
                     query_examples: Vec::new(),
                     provider_count: 0,
+                    provider_growth: Vec::new(),
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -2726,6 +2783,7 @@ mod tests {
                     query_count: 0,
                     query_examples: Vec::new(),
                     provider_count: 0,
+                    provider_growth: Vec::new(),
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(130),
                     newest_fetched_at_unix: Some(130),
@@ -3277,6 +3335,7 @@ mod tests {
             query_count: 2,
             query_examples: Vec::new(),
             provider_count: 1,
+            provider_growth: Vec::new(),
             max_entries_per_query: 2,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3295,6 +3354,7 @@ mod tests {
             query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             query_examples: Vec::new(),
             provider_count: 1,
+            provider_growth: Vec::new(),
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3313,6 +3373,7 @@ mod tests {
             query_count: 2,
             query_examples: Vec::new(),
             provider_count: 1,
+            provider_growth: Vec::new(),
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3358,6 +3419,7 @@ mod tests {
             query_count: 2,
             query_examples: Vec::new(),
             provider_count: 1,
+            provider_growth: Vec::new(),
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3376,6 +3438,7 @@ mod tests {
             query_count: 2,
             query_examples: Vec::new(),
             provider_count: 1,
+            provider_growth: Vec::new(),
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(190),
             newest_fetched_at_unix: Some(200),
@@ -3407,6 +3470,7 @@ mod tests {
                     query_count: 2,
                     query_examples: Vec::new(),
                     provider_count: 1,
+                    provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -3425,6 +3489,7 @@ mod tests {
                     query_count: 2,
                     query_examples: Vec::new(),
                     provider_count: 1,
+                    provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
                     newest_fetched_at_unix: Some(200),
@@ -3499,6 +3564,7 @@ mod tests {
                     query_count: 2,
                     query_examples: vec!["one".to_owned(), "two".to_owned()],
                     provider_count: 1,
+                    provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -3517,6 +3583,7 @@ mod tests {
                     query_count: 2,
                     query_examples: vec!["one".to_owned(), "two".to_owned()],
                     provider_count: 1,
+                    provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
                     newest_fetched_at_unix: Some(200),
@@ -3541,6 +3608,9 @@ mod tests {
         ));
         assert!(ready_lines.contains(
             &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=none".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_provider_growth: report_only=true limit=3 web-cache.jsonl=brave:entries=3:bytes=120:result_rows=4 brave-results.jsonl=brave:entries=2:bytes=90:result_rows=2".to_owned()
         ));
         assert!(ready_lines.contains(
             &"web_storage_replay_staleness: status=fresh report_only=true newest_age_secs=0 oldest_age_secs=100 stale_after_secs=60".to_owned()
@@ -3618,6 +3688,7 @@ mod tests {
                 query_count: 2,
                 query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
                 provider_count: 1,
+                provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
                 max_entries_per_query: 1,
                 oldest_fetched_at_unix: Some(190),
                 newest_fetched_at_unix: Some(200),
@@ -3635,6 +3706,9 @@ mod tests {
         ));
         assert!(lines.contains(
             &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=cached_only,result_only".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_provider_growth: report_only=true limit=3 brave-results.jsonl=brave:entries=2:bytes=90:result_rows=2".to_owned()
         ));
         assert!(lines.contains(
             &"web_storage_replay_staleness: status=stale report_only=true newest_age_secs=100 oldest_age_secs=110 stale_after_secs=60".to_owned()
@@ -3681,6 +3755,10 @@ mod tests {
                 query_count: 2,
                 query_examples: Vec::new(),
                 provider_count: 2,
+                provider_growth: vec![
+                    "brave:entries=2:bytes=80:result_rows=2".to_owned(),
+                    "cache:entries=1:bytes=40:result_rows=2".to_owned(),
+                ],
                 max_entries_per_query: 2,
                 oldest_fetched_at_unix: Some(100),
                 newest_fetched_at_unix: Some(120),
@@ -3708,6 +3786,7 @@ mod tests {
                 query_count: 2,
                 query_examples: Vec::new(),
                 provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
                 max_entries_per_query: 2,
                 oldest_fetched_at_unix: Some(100),
                 newest_fetched_at_unix: Some(120),
