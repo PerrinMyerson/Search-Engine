@@ -1225,6 +1225,7 @@ enum ClearSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlexDirection {
     Row,
+    RowReverse,
     Column,
 }
 
@@ -1708,6 +1709,7 @@ impl ComputedStyle {
         let flex_row = matches!(self.display, Display::Flex | Display::InlineFlex) && !flex_column;
         ChildLayout {
             row_items: self.display.lays_out_children_in_row() && !flex_column,
+            reverse_items: self.flex_direction == FlexDirection::RowReverse,
             row_gap: if flex_column {
                 Some(self.row_gap.unwrap_or(0))
             } else {
@@ -1726,6 +1728,7 @@ impl ComputedStyle {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ChildLayout {
     row_items: bool,
+    reverse_items: bool,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
     justify_content: JustifyContent,
@@ -13983,7 +13986,8 @@ fn parse_css_axis_gap(value: &str, axis: CssAxis) -> Option<usize> {
 fn parse_css_flex_direction(value: &str) -> Option<FlexDirection> {
     value.split_ascii_whitespace().find_map(|token| {
         match token.trim().to_ascii_lowercase().as_str() {
-            "row" | "row-reverse" => Some(FlexDirection::Row),
+            "row" => Some(FlexDirection::Row),
+            "row-reverse" => Some(FlexDirection::RowReverse),
             "column" | "column-reverse" => Some(FlexDirection::Column),
             _ => None,
         }
@@ -15972,10 +15976,19 @@ fn render_children(
     {
         renderer.push_fixed_space_width(justification.leading_space, None);
     }
-    for (child_index, &child) in node.children.iter().enumerate() {
-        if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade) {
-            continue;
-        }
+    let mut child_sequence: Vec<usize> = if child_layout.row_items {
+        node.children
+            .iter()
+            .copied()
+            .filter(|&child| row_layout_child_participates(dom, child, css_cascade))
+            .collect()
+    } else {
+        node.children.clone()
+    };
+    if child_layout.reverse_items {
+        child_sequence.reverse();
+    }
+    for (child_index, &child) in child_sequence.iter().enumerate() {
         let child_width_hint = child_layout
             .wrap_items
             .then(|| {
@@ -16035,10 +16048,8 @@ fn render_children(
             layout_box_count,
             child_layout.row_items,
         );
-        let has_following_row_item = child_layout.row_items
-            && node.children[child_index.saturating_add(1)..]
-                .iter()
-                .any(|&next_child| row_layout_child_participates(dom, next_child, css_cascade));
+        let has_following_row_item =
+            child_layout.row_items && child_index.saturating_add(1) < child_sequence.len();
         if item_margin.right > 0 && has_following_row_item {
             renderer.push_fixed_space_width(item_margin.right, None);
         }
