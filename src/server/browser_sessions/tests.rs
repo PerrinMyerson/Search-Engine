@@ -3518,10 +3518,14 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     let tab_strip_index = html
         .find(r#"data-browser-tab-menu"#)
         .expect("compact tab menu should render for multiple tabs");
-    let page_head_index = html
-        .find(r#"class="browser-page-head""#)
-        .expect("page heading should render");
-    assert!(tab_strip_index < page_head_index);
+    let location_index = html
+        .find(r#"data-browser-location-strip"#)
+        .expect("compact location strip should render");
+    let viewport_index = html
+        .find(r#"class="browser-viewport-primary""#)
+        .expect("primary viewport should render");
+    assert!(location_index < tab_strip_index);
+    assert!(tab_strip_index < viewport_index);
     assert!(html.contains(r#"aria-label="Open browser tabs""#));
     assert!(html.contains(
         r#"<summary data-browser-tab-summary><strong>2 tabs</strong><span>Two</span></summary>"#
@@ -13145,12 +13149,12 @@ async fn browser_session_page_renders_form_controls() {
     let html = render_browser_session_page(&payload, &back_href);
 
     let topbar_index = html.find(r#"class="browser-topbar""#).unwrap();
-    let title_index = html.find("<h1>Form</h1>").unwrap();
+    let location_index = html.find(r#"data-browser-location-strip"#).unwrap();
     let viewport_index = html.find(r#"class="browser-viewport-primary""#).unwrap();
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
-    assert!(topbar_index < title_index);
+    assert!(topbar_index < location_index);
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
@@ -13164,7 +13168,9 @@ async fn browser_session_page_renders_form_controls() {
         r#"<input type="hidden" name="source" value="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
-    assert!(html.contains(&format!(
+    assert!(topbar_html.contains(r#"data-browser-location-strip"#));
+    assert!(topbar_html.contains("<strong>Form</strong>"));
+    assert!(topbar_html.contains(&format!(
         r#"<div class="meta" data-browser-current-location title="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
@@ -13214,13 +13220,14 @@ async fn browser_session_page_renders_form_controls() {
     assert!(!topbar_html.contains(">Top</a>"));
     assert!(!topbar_html.contains(">Down</a>"));
     assert!(!topbar_html.contains(">Bottom</a>"));
-    assert!(title_index < viewport_index);
+    assert!(location_index < viewport_index);
     assert!(viewport_index < raster_index);
     assert!(raster_index < controls_tray_index);
     assert!(controls_tray_index < debug_index);
     assert!(viewport_index < debug_index);
     assert!(html.contains(r#"data-browser-primary-surface"#));
     let primary_html = &html[viewport_index..controls_tray_index];
+    let controls_html = &html[controls_tray_index..debug_index];
     assert!(primary_html.contains(r#"<div class="viewport-status" data-browser-viewport-status>"#));
     assert!(html.contains(r#".viewport-status { display: grid; gap: 5px; margin: 4px 0 8px; }"#));
     assert!(html.contains(r#".viewport-status-text span { min-height: 22px;"#));
@@ -13229,9 +13236,10 @@ async fn browser_session_page_renders_form_controls() {
     ));
     assert!(!primary_html.contains(r#"<summary>Visible links</summary>"#));
     assert!(!primary_html.contains(r#"class="viewport-link-list""#));
+    assert!(!controls_html.contains(r#"<summary>Page details</summary>"#));
     assert!(html.contains(r#"data-browser-page-details"#));
     assert!(html.contains(r#"<summary>Page details</summary>"#));
-    assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > raster_index);
+    assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > debug_index);
     assert!(html.contains(r#"<summary>More browser tools</summary>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
