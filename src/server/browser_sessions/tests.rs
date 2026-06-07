@@ -2666,10 +2666,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("shell.dataset.settledViewportX = String(numberData(\"viewportX\"))"));
     assert!(html.contains("shell.dataset.settledViewportY = String(numberData(\"viewportY\"))"));
     assert!(html.contains("const markStaleViewportResponse"));
+    assert!(
+        html.contains("const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);")
+    );
+    assert!(html.contains("setPendingViewportTarget(queued);"));
     assert!(html.contains("pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)"));
     assert!(html.contains("shell.dataset.viewportState = \"pending\""));
     assert!(html.contains("shell.dataset.viewportState = \"stale-response\""));
     assert!(html.contains("shell.dataset.staleViewportResponse = \"true\""));
+    assert!(html.contains("status.dataset.staleViewportResponse = \"true\""));
+    assert!(html.contains(r#"status.removeAttribute("data-stale-viewport-response")"#));
     assert!(html.contains("Ignored stale visual viewport update; newer scroll is pending."));
     assert!(html.contains("Ignored stale visual viewport error; newer scroll is pending."));
     assert!(html.contains("const viewportPointFromEvent"));
