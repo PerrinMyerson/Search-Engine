@@ -10478,7 +10478,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {primary_tab_strip}
 </header>
 <section class="browser-page-head">
-<div class="browser-page-title"><h1>{heading}</h1><div class="meta" title="{source_attr}">{source}</div></div>
+<div class="browser-page-title"><h1>{heading}</h1><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
 </section>
 {auto_visual_bootstrap}
 {pending_load_retry}
