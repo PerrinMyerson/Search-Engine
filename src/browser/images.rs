@@ -4725,7 +4725,7 @@ fn background_image_set_attr_source(value: &str) -> Option<String> {
         .into_iter()
         .enumerate()
         .filter_map(|(order, candidate)| background_image_set_candidate_source(candidate, order))
-        .filter(|candidate| !image_source_clearly_unsupported(&candidate.url))
+        .filter(background_image_set_candidate_source_supported)
         .max_by_key(|candidate| (candidate.density_milli, candidate.order))
         .map(|candidate| candidate.url)
 }
@@ -4735,6 +4735,7 @@ struct BackgroundImageSetCandidate {
     url: String,
     density_milli: usize,
     order: usize,
+    type_supported: bool,
 }
 
 fn background_image_set_candidate_source(
@@ -4752,7 +4753,18 @@ fn background_image_set_candidate_source(
         url,
         density_milli: background_image_set_candidate_density_milli(candidate).unwrap_or(1_000),
         order,
+        type_supported: background_image_set_candidate_type(candidate)
+            .is_some_and(image_mime_type_supported),
     })
+}
+
+fn background_image_set_candidate_source_supported(
+    candidate: &BackgroundImageSetCandidate,
+) -> bool {
+    if candidate.url.trim_start().starts_with("data:") {
+        return !image_source_clearly_unsupported(&candidate.url);
+    }
+    candidate.type_supported || !image_source_clearly_unsupported(&candidate.url)
 }
 
 fn background_image_set_candidate_density_milli(candidate: &str) -> Option<usize> {
@@ -4778,9 +4790,12 @@ fn parse_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
 }
 
 fn background_image_set_candidate_type_unsupported(candidate: &str) -> bool {
-    css_nested_function_args(candidate, &["type"])
-        .and_then(css_url_token)
+    background_image_set_candidate_type(candidate)
         .is_some_and(|image_type| !image_mime_type_supported(image_type))
+}
+
+fn background_image_set_candidate_type(candidate: &str) -> Option<&str> {
+    css_nested_function_args(candidate, &["type"]).and_then(css_url_token)
 }
 
 fn css_nested_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {

@@ -14119,6 +14119,121 @@ async fn image_background_imageset_resolution_descriptor_selects_visible_rgb_can
 }
 
 #[tokio::test]
+async fn image_background_imageset_type_allows_misleading_extension_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.avif");
+    let fallback = dir.path().join("fallback.gif");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&fallback, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before typed image-set background</p>
+            <section data-lazy-background-image="image-set(url('fallback.gif') type('image/gif') 1x, url('hero.avif') type('image/webp') 2x)">Typed image-set background</section>
+            <p>After typed image-set background</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let hero_url = hero.display().to_string();
+    let fallback_url = fallback.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(!resource_report.resources.iter().any(
+        |fetch| fetch.resource.resolved == fallback_url || fetch.resource.url == "fallback.gif"
+    ));
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "background_image");
+    assert_eq!(resource_fetch.resource.initiator, "section");
+    assert_eq!(resource_fetch.resource.url, "hero.avif");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), None);
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!report.fetches.iter().any(
+        |fetch| fetch.resource.resolved == fallback_url || fetch.resource.url == "fallback.gif"
+    ));
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "background_image");
+    assert_eq!(fetch.resource.initiator, "section");
+    assert_eq!(fetch.resource.url, "hero.avif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), None);
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before typed image-set background"));
+    assert!(render.text.contains("After typed image-set background"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 245 && pixel[1] < 245 && pixel[2] < 245 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_background_usefulness_fetches_layered_lazy_background_url_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
