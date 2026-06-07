@@ -1274,6 +1274,18 @@ fn web_storage_pressure_summary_lines(
             summary.duplicate_row_bytes
         ),
         format!(
+            "web_storage_pressure_retained_result_rows: {}",
+            summary.result_rows
+        ),
+        format!(
+            "web_storage_pressure_removable_row_bytes: {}",
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_zero_removal: {}",
+            summary.duplicate_entries == 0 && summary.duplicate_row_bytes == 0
+        ),
+        format!(
             "web_storage_pressure_duplicate_entries: {}",
             summary.duplicate_entries
         ),
@@ -1445,8 +1457,12 @@ fn web_storage_compaction_snapshot_readiness_lines(
         .duplicate_entries
         .saturating_add(report.result_log_projected_after.duplicate_entries);
     let projected_removed_bytes = before_bytes.saturating_sub(projected_bytes);
+    let projected_removed_duplicates = web_storage_compaction_projected_removed_duplicates(report);
+    let zero_removal = web_storage_compaction_zero_removal(report);
     let status = if report.skipped {
         "skipped"
+    } else if zero_removal {
+        "zero-removal"
     } else if projected_duplicates == 0 {
         "ready"
     } else {
@@ -1461,6 +1477,10 @@ fn web_storage_compaction_snapshot_readiness_lines(
         format!("web_storage_snapshot_projected_bytes: {projected_bytes}"),
         format!("web_storage_snapshot_projected_removed_bytes: {projected_removed_bytes}"),
         format!("web_storage_snapshot_projected_duplicates: {projected_duplicates}"),
+        format!("web_storage_snapshot_retained_bytes: {projected_bytes}"),
+        format!("web_storage_snapshot_removable_bytes: {projected_removed_bytes}"),
+        format!("web_storage_snapshot_removable_duplicates: {projected_removed_duplicates}"),
+        format!("web_storage_snapshot_zero_removal: {zero_removal}"),
     ]
 }
 
@@ -1506,6 +1526,12 @@ fn web_storage_compaction_projected_removed_duplicates(
                 .duplicate_entries
                 .saturating_add(report.result_log_projected_after.duplicate_entries),
         )
+}
+
+fn web_storage_compaction_zero_removal(report: &WebSearchStorageCompactionReport) -> bool {
+    !report.skipped
+        && web_storage_compaction_projected_removed_bytes(report) == 0
+        && web_storage_compaction_projected_removed_duplicates(report) == 0
 }
 
 fn web_storage_compaction_artifact_lines(
@@ -2445,6 +2471,9 @@ mod tests {
         assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_after: 170".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_removed: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_retained_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_removable_row_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_zero_removal: false".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_row_bytes: 40".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
@@ -2543,6 +2572,65 @@ mod tests {
         assert!(lines.contains(&"web_storage_snapshot_projected_bytes: 150".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_projected_removed_bytes: 60".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_projected_duplicates: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_retained_bytes: 150".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 60".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 3".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_zero_removal: false".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_flags_zero_removal() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_readiness: status=zero-removal projected_bytes=210 projected_removed_bytes=0 projected_duplicates=0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_retained_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_zero_removal: true".to_owned()));
+        assert!(!web_storage_compaction_apply_is_justified(&report, false));
     }
 
     #[test]
