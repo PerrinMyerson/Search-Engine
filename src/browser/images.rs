@@ -4478,51 +4478,60 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
     )
     .and_then(|srcset| choose_srcset_candidate(srcset, background_srcset_target_width(element)))
     .or_else(|| background_width_template_render_source(element))
-    .or_else(|| {
-        first_non_empty_attr(
-            element,
-            &[
-                "data-bg",
-                "data-bg-image",
-                "data-bg-image-url",
-                "data-bg-url",
-                "data-bgimage",
-                "data-bgimageurl",
-                "data-bg-src",
-                "data-bgsrc",
-                "data-background",
-                "data-background-url",
-                "data-background-image",
-                "data-background-image-url",
-                "data-backgroundimage",
-                "data-backgroundimageurl",
-                "data-background-src",
-                "data-backgroundsrc",
-                "data-lazy-bg",
-                "data-lazy-bg-image",
-                "data-lazy-bg-image-url",
-                "data-lazy-bg-url",
-                "data-lazybg",
-                "data-lazybg-url",
-                "data-lazybgimage",
-                "data-lazybgimageurl",
-                "data-lazy-background",
-                "data-lazy-background-url",
-                "data-lazybackground",
-                "data-lazy-background-image",
-                "data-lazy-background-image-url",
-                "data-lazybackgroundimage",
-                "data-lazybackgroundimageurl",
-            ],
-        )
-        .and_then(background_image_attr_source)
-    })
+    .or_else(|| preferred_background_image_attr_source(element))
     .or_else(|| {
         element
             .style
             .as_deref()
             .and_then(background_image_style_attr_source)
     })
+}
+
+const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
+    "data-bg",
+    "data-bg-image",
+    "data-bg-image-url",
+    "data-bg-url",
+    "data-bgimage",
+    "data-bgimageurl",
+    "data-bg-src",
+    "data-bgsrc",
+    "data-background",
+    "data-background-url",
+    "data-background-image",
+    "data-background-image-url",
+    "data-backgroundimage",
+    "data-backgroundimageurl",
+    "data-background-src",
+    "data-backgroundsrc",
+    "data-lazy-bg",
+    "data-lazy-bg-image",
+    "data-lazy-bg-image-url",
+    "data-lazy-bg-url",
+    "data-lazybg",
+    "data-lazybg-url",
+    "data-lazybgimage",
+    "data-lazybgimageurl",
+    "data-lazy-background",
+    "data-lazy-background-url",
+    "data-lazybackground",
+    "data-lazy-background-image",
+    "data-lazy-background-image-url",
+    "data-lazybackgroundimage",
+    "data-lazybackgroundimageurl",
+];
+
+fn preferred_background_image_attr_source(element: &ElementData) -> Option<String> {
+    let candidates = BACKGROUND_IMAGE_SRC_ALIAS_ATTRS
+        .iter()
+        .filter_map(|attr_name| element.attrs.get(*attr_name).map(String::as_str))
+        .filter_map(background_image_attr_source)
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .find(|url| !is_lazy_image_placeholder_src(url))
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
@@ -4565,42 +4574,7 @@ pub(super) fn background_image_sizes_attr(element: &ElementData) -> Option<&str>
 }
 
 pub(super) fn background_width_template_render_source(element: &ElementData) -> Option<String> {
-    let template = first_non_empty_attr(
-        element,
-        &[
-            "data-bg",
-            "data-bg-image",
-            "data-bg-image-url",
-            "data-bg-url",
-            "data-bgimage",
-            "data-bgimageurl",
-            "data-bg-src",
-            "data-bgsrc",
-            "data-background",
-            "data-background-url",
-            "data-background-image",
-            "data-background-image-url",
-            "data-backgroundimage",
-            "data-backgroundimageurl",
-            "data-background-src",
-            "data-backgroundsrc",
-            "data-lazy-bg",
-            "data-lazy-bg-image",
-            "data-lazy-bg-image-url",
-            "data-lazy-bg-url",
-            "data-lazybg",
-            "data-lazybg-url",
-            "data-lazybgimage",
-            "data-lazybgimageurl",
-            "data-lazy-background",
-            "data-lazy-background-url",
-            "data-lazybackground",
-            "data-lazy-background-image",
-            "data-lazy-background-image-url",
-            "data-lazybackgroundimage",
-            "data-lazybackgroundimageurl",
-        ],
-    )?;
+    let template = first_non_empty_attr(element, BACKGROUND_IMAGE_SRC_ALIAS_ATTRS)?;
     if !template.contains("{width}") {
         return None;
     }

@@ -2126,20 +2126,16 @@ fn push_selected_background_alias_resource(
         return;
     }
 
-    for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = selected_background_image_url_from_attr_value(value)
-        {
-            push_resource(
-                resources,
-                source,
-                element,
-                "background_image",
-                &element.tag,
-                url,
-            );
-            return;
-        }
+    if let Some(url) = selected_background_alias_url(element) {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            url,
+        );
+        return;
     }
 
     if let Some(url) = element
@@ -2163,6 +2159,19 @@ fn selected_background_image_url_from_attr_value(value: &str) -> Option<&str> {
         .into_iter()
         .filter_map(selected_background_image_url_from_attr_layer)
         .last()
+}
+
+fn selected_background_alias_url(element: &ElementData) -> Option<&str> {
+    let candidates = BACKGROUND_IMAGE_SRC_ALIAS_ATTRS
+        .iter()
+        .filter_map(|attr_name| element.attrs.get(*attr_name).map(String::as_str))
+        .filter_map(selected_background_image_url_from_attr_value)
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .copied()
+        .find(|url| !is_lazy_image_placeholder_src(url))
+        .or_else(|| candidates.into_iter().next())
 }
 
 fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
@@ -2219,20 +2228,16 @@ fn push_background_alias_resources(
         return;
     }
 
-    for attr_name in BACKGROUND_IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(value) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = selected_background_image_url_from_attr_value(value)
-        {
-            push_resource(
-                resources,
-                source,
-                element,
-                "background_image",
-                &element.tag,
-                url,
-            );
-            return;
-        }
+    if let Some(url) = selected_background_alias_url(element) {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            url,
+        );
+        return;
     }
 
     if let Some(url) = element
