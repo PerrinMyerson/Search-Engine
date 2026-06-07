@@ -9023,6 +9023,10 @@ async fn browser_session_registry_load_images_current_and_click_preserve_scrolle
     let (payload, _) = registry.apply_target(&current).await.unwrap();
     assert_eq!(payload.id, session_id);
     assert_eq!(payload.viewport_y, target_viewport_y);
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(format!("Viewport settled at x 0, y {target_viewport_y}.").as_str())
+    );
 
     let raster = payload.viewport_image.as_ref().unwrap();
     let raster_width = raster.width;
