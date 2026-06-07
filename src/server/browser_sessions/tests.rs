@@ -9117,6 +9117,10 @@ async fn browser_session_registry_load_images_current_and_click_preserve_scrolle
     assert_eq!(payload.viewport_y, target_viewport_y);
     assert!(payload.resource_report.is_some());
     assert!(payload.viewport.contains("Continue after scroll"));
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(format!("Loaded images; viewport settled at x 0, y {target_viewport_y}.").as_str())
+    );
 
     let current = RequestTarget {
         path: "/browser".to_owned(),
