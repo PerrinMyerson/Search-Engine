@@ -6303,6 +6303,7 @@ async fn apply_browser_action(
             apply_browser_open_with_pending_shell(web_session, &target_url).await?;
         }
         BrowserSessionAction::Back => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .back()
@@ -6311,8 +6312,10 @@ async fn apply_browser_action(
             clear_browser_find_active_line(web_session);
             web_session.pending_source = None;
             web_session.display_source = None;
+            set_browser_history_navigation_feedback(web_session, "Went back", before);
         }
         BrowserSessionAction::Forward => {
+            let before = current_session_source(web_session);
             web_session
                 .session
                 .forward()
@@ -6321,6 +6324,7 @@ async fn apply_browser_action(
             clear_browser_find_active_line(web_session);
             web_session.pending_source = None;
             web_session.display_source = None;
+            set_browser_history_navigation_feedback(web_session, "Went forward", before);
         }
         BrowserSessionAction::Reload => {
             if let Some(pending_source) = web_session.pending_source.clone() {
@@ -16451,6 +16455,26 @@ fn set_browser_navigation_feedback(
         web_session.action_feedback = Some(format!(
             "{label}; opened {scope}: {}",
             browser_session_feedback_excerpt(target)
+        ));
+    } else {
+        web_session.action_feedback = Some(format!("{label}; no navigation; viewport preserved"));
+    }
+}
+
+fn set_browser_history_navigation_feedback(
+    web_session: &mut BrowserWebSession,
+    label: &str,
+    before: Option<String>,
+) {
+    let after = current_session_source(web_session);
+    if after != before {
+        let target = after.as_deref().unwrap_or("current page");
+        let scope = browser_session_navigation_scope(before.as_deref(), target);
+        web_session.action_feedback = Some(format!(
+            "{label}; opened {scope}: {}; viewport settled at x {}, y {}",
+            browser_session_feedback_excerpt(target),
+            web_session.viewport_x,
+            web_session.viewport_y,
         ));
     } else {
         web_session.action_feedback = Some(format!("{label}; no navigation; viewport preserved"));
