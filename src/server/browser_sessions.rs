@@ -14673,9 +14673,10 @@ fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
         label = html_escape::encode_double_quoted_attribute(current_label),
     );
     let tab_search = render_browser_session_tab_search(payload);
+    let source_input = browser_session_source_hidden_input(&payload.source);
 
     format!(
-        r#"<section class="session-shell"><div class="session-title"><h2>Sessions</h2><div class="resource-actions"><span class="meta">{count} open</span><a class="clear-link" href="{tabs_csv_href}">Tabs CSV</a>{forget_saved}</div></div><div class="session-tabs">{tabs}{jump_form}{label_form}{tab_search}<form class="session-new" action="/browser" method="get"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}"><input type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" placeholder="New session URL" aria-label="New session URL"><button type="submit">New</button></form></div></section>"#,
+        r#"<section class="session-shell"><div class="session-title"><h2>Sessions</h2><div class="resource-actions"><span class="meta">{count} open</span><a class="clear-link" href="{tabs_csv_href}">Tabs CSV</a>{forget_saved}</div></div><div class="session-tabs">{tabs}{jump_form}{label_form}{tab_search}<form class="session-new" action="/browser" method="get"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">{source_input}<input type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" placeholder="New session URL" aria-label="New session URL"><button type="submit">New</button></form></div></section>"#,
         count = payload.sessions.len(),
         tabs_csv_href = html_escape::encode_double_quoted_attribute(&tabs_csv_href),
         forget_saved = forget_saved,
@@ -14689,6 +14690,7 @@ fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         max_bytes = payload.max_bytes,
+        source_input = source_input,
     )
 }
 
