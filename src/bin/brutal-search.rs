@@ -1734,6 +1734,13 @@ fn web_storage_export_readiness_lines(
         format!(
             "web_storage_replay_readiness: status={replay_status} report_only=true cache_query_buckets={cache_query_buckets} replayable_result_rows={cache_replayable_result_rows} result_log_unique_urls={result_log_unique_urls}"
         ),
+        format!(
+            "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
+            summary.unique_row_bytes,
+            summary.duplicate_row_bytes,
+            summary.unique_entries,
+            summary.duplicate_entries
+        ),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
         format!("web_storage_replayable_result_rows: {cache_replayable_result_rows}"),
         format!("web_storage_export_unique_result_urls: {result_log_unique_urls}"),
@@ -3370,6 +3377,9 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
         ));
+        assert!(ready_lines.contains(
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
+        ));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(ready_lines.contains(
             &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
@@ -3434,6 +3444,9 @@ mod tests {
 
         assert!(lines.contains(
             &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
         ));
     }
 
