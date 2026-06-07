@@ -6678,7 +6678,7 @@ async fn apply_browser_action(
             set_browser_form_navigation_feedback(
                 web_session,
                 format!("Activated form {form_index} control {control_index}"),
-                navigated,
+                before,
             );
         }
         BrowserSessionAction::FocusNext => {
@@ -6749,7 +6749,7 @@ async fn apply_browser_action(
             set_browser_form_navigation_feedback(
                 web_session,
                 "Submitted focused form".to_owned(),
-                navigated,
+                before,
             );
         }
         BrowserSessionAction::Space => {
@@ -7106,11 +7106,13 @@ async fn apply_browser_action(
             if navigated {
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                web_session.pending_source = None;
+                web_session.display_source = None;
             }
             set_browser_form_navigation_feedback(
                 web_session,
                 format!("Submitted form {form_index}"),
-                navigated,
+                before,
             );
         }
     }
@@ -16493,12 +16495,20 @@ fn browser_session_navigation_scope(before: Option<&str>, after: &str) -> &'stat
 fn set_browser_form_navigation_feedback(
     web_session: &mut BrowserWebSession,
     label: String,
-    navigated: bool,
+    before: Option<String>,
 ) {
-    let suffix = if navigated {
-        "; navigated"
+    let after = current_session_source(web_session);
+    let suffix = if after != before {
+        let target = after.as_deref().unwrap_or("current page");
+        let scope = browser_session_navigation_scope(before.as_deref(), target);
+        format!(
+            "; opened {scope}: {}; viewport settled at x {}, y {}",
+            browser_session_feedback_excerpt(target),
+            web_session.viewport_x,
+            web_session.viewport_y,
+        )
     } else {
-        "; no navigation; viewport preserved"
+        "; no navigation; viewport preserved".to_owned()
     };
     web_session.action_feedback = Some(format!("{label}{suffix}"));
 }
