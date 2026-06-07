@@ -6296,6 +6296,7 @@ async fn apply_browser_action(
     match action {
         BrowserSessionAction::Current => {
             normalize_browser_session_viewport(web_session);
+            set_browser_viewport_settled_feedback(web_session);
         }
         BrowserSessionAction::Open(url) => {
             let target_url = web_session.session.resolve_current_target(&url);
@@ -16556,6 +16557,13 @@ fn set_browser_viewport_jump_feedback(
             web_session.viewport_x, web_session.viewport_y
         ));
     }
+}
+
+fn set_browser_viewport_settled_feedback(web_session: &mut BrowserWebSession) {
+    web_session.action_feedback = Some(format!(
+        "Viewport settled at x {}, y {}.",
+        web_session.viewport_x, web_session.viewport_y
+    ));
 }
 
 fn normalize_browser_session_viewport(web_session: &mut BrowserWebSession) {
