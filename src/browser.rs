@@ -5208,8 +5208,19 @@ pub fn browser_document_viewport(
     let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
     let (visible_layout_box_count, culled_layout_box_count, visible_layout_boxes) =
         layout_box_visibility(render, viewport);
-    let (invalidated_regions, full_repaint) =
+    let (mut invalidated_regions, full_repaint) =
         browser_viewport_invalidated_regions(previous, viewport_state);
+    if !full_repaint
+        && let Some(previous_state) = previous
+        && (previous_state.x != viewport_state.x || previous_state.y != viewport_state.y)
+    {
+        append_viewport_positioned_invalidated_regions(
+            render,
+            previous_state,
+            viewport_state,
+            &mut invalidated_regions,
+        );
+    }
     let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
     let invalidated_area = invalidated_regions
         .iter()
@@ -5291,7 +5302,7 @@ pub fn browser_viewport_frame(
     let raster = rasterize_render_rgba(render, raster_options)?;
     let frame = rgba_raster_report(render, &raster, raster_options);
     let dirty_pixel_regions =
-        browser_viewport_frame_dirty_regions(render, &viewport, &frame, raster_options);
+        browser_viewport_frame_dirty_regions(&viewport, &frame, raster_options);
     let dirty_pixel_area = dirty_pixel_regions
         .iter()
         .map(|region| region.width.saturating_mul(region.height))
@@ -5601,7 +5612,6 @@ fn subtract_viewport_rect(
 }
 
 fn browser_viewport_frame_dirty_regions(
-    render: &BrowserRender,
     viewport: &BrowserDocumentViewportReport,
     frame: &BrowserRgbaRasterReport,
     options: BrowserRasterOptions,
@@ -5619,19 +5629,8 @@ fn browser_viewport_frame_dirty_regions(
         }];
     }
 
-    let mut invalidated_regions = viewport.invalidated_regions.clone();
-    if let Some(previous_state) = viewport.previous
-        && (previous_state.x != viewport.viewport.x || previous_state.y != viewport.viewport.y)
-    {
-        append_viewport_positioned_invalidated_regions(
-            render,
-            previous_state,
-            viewport.viewport,
-            &mut invalidated_regions,
-        );
-    }
-
-    invalidated_regions
+    viewport
+        .invalidated_regions
         .iter()
         .filter(|region| region.width > 0 && region.height > 0)
         .map(|region| BrowserViewportFrameDirtyRect {
