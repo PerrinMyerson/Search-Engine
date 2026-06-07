@@ -2128,7 +2128,6 @@ fn selected_background_image_url_from_attr_value(value: &str) -> Option<&str> {
     split_css_top_level_commas(value)
         .into_iter()
         .filter_map(selected_background_image_url_from_attr_layer)
-        .filter(|url| !background_image_candidate_clearly_unsupported(url))
         .last()
 }
 
@@ -2144,7 +2143,7 @@ fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
             .filter_map(|(order, candidate)| {
                 background_image_set_candidate_url_with_density(candidate, order)
             })
-            .filter(|candidate| !background_image_candidate_clearly_unsupported(candidate.url))
+            .filter(background_image_set_candidate_url_supported)
             .max_by_key(|candidate| (candidate.density_milli, candidate.order))
             .map(|candidate| candidate.url);
     }
@@ -2318,6 +2317,7 @@ struct BackgroundImageSetCandidate<'a> {
     url: &'a str,
     density_milli: usize,
     order: usize,
+    type_supported: bool,
 }
 
 fn background_image_set_candidate_url_with_density(
@@ -2334,7 +2334,18 @@ fn background_image_set_candidate_url_with_density(
         url,
         density_milli: background_image_set_candidate_density_milli(candidate).unwrap_or(1_000),
         order,
+        type_supported: background_image_set_candidate_type(candidate)
+            .is_some_and(image_mime_type_supported),
     })
+}
+
+fn background_image_set_candidate_url_supported(
+    candidate: &BackgroundImageSetCandidate<'_>,
+) -> bool {
+    if candidate.url.trim_start().starts_with("data:") {
+        return !background_image_candidate_clearly_unsupported(candidate.url);
+    }
+    candidate.type_supported || !background_image_candidate_clearly_unsupported(candidate.url)
 }
 
 fn background_image_set_candidate_density_milli(candidate: &str) -> Option<usize> {
@@ -2360,9 +2371,12 @@ fn parse_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
 }
 
 fn background_image_set_candidate_type_unsupported(candidate: &str) -> bool {
-    css_nested_function_args(candidate, &["type"])
-        .and_then(css_url_token)
+    background_image_set_candidate_type(candidate)
         .is_some_and(|image_type| !image_mime_type_supported(image_type))
+}
+
+fn background_image_set_candidate_type(candidate: &str) -> Option<&str> {
+    css_nested_function_args(candidate, &["type"]).and_then(css_url_token)
 }
 
 fn css_nested_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
