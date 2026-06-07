@@ -10128,6 +10128,160 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
 }
 
 #[test]
+fn fixed_overlay_scroll_frame_invalidates_shifted_previous_pixels_and_hit_geometry() {
+    let image_url = "mem://fixed-overlay-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![72],
+        rgb_pixels: Some(vec![30, 130, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://fixed-overlay-scroll-frame".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 6,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(42)).with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 2,
+                target_node: Some(42),
+            }])
+            .with_viewport_fixed(true),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 6,
+                height: 3,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Article section".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "More scrollable copy".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 9,
+                text: "Footer".to_owned(),
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 1,
+                width: 4,
+                height: 1,
+                shade: 244,
+                red: 244,
+                green: 244,
+                blue: 244,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 1,
+                text: "Go".to_owned(),
+                shade: 0,
+            },
+        ],
+        text: "Article section\nMore scrollable copy\nFooter".to_owned(),
+    };
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 6,
+        height: 4,
+    };
+    let requested = BrowserViewportState { y: 1, ..previous };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(previous.width),
+        viewport_height: Some(previous.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, requested, Some(previous), options)
+        .expect("render fixed overlay scroll frame");
+
+    assert_eq!(frame.report.viewport.viewport.y, 1);
+    assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+    assert!(!frame.report.viewport.full_repaint);
+    assert_eq!(
+        frame
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .map(|region| (
+                region.viewport_x,
+                region.viewport_y,
+                region.viewport_width,
+                region.viewport_height
+            ))
+            .collect::<Vec<_>>(),
+        vec![(0, 3, 6, 1), (0, 1, 4, 1), (0, 0, 4, 1)]
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, requested, 1, 1),
+        Some(42),
+        "fixed link hit geometry should remain on the visible overlay after scroll"
+    );
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(3)),
+            options
+                .padding_y
+                .saturating_add(options.cell_height.saturating_mul(1))
+        ),
+        &[244, 244, 244, 255],
+        "fixed overlay should paint above the scrolled image at its current viewport row"
+    );
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        &[30, 130, 220, 255],
+        "the row where old fixed pixels would be copied now contains scrolled image content"
+    );
+}
+
+#[test]
 fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() {
     let image_url = "mem://small-scroll-image".to_owned();
     let decoded = DecodedImage {

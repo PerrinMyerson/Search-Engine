@@ -5355,6 +5355,8 @@ fn append_viewport_positioned_invalidated_regions(
             current_viewport,
             viewport_fixed,
             viewport_sticky_top,
+            0,
+            0,
             regions,
         );
         append_display_command_viewport_dirty_region(
@@ -5362,6 +5364,8 @@ fn append_viewport_positioned_invalidated_regions(
             previous_viewport,
             viewport_fixed,
             viewport_sticky_top,
+            browser_viewport_signed_delta(previous.x, current.x),
+            browser_viewport_signed_delta(previous.y, current.y),
             regions,
         );
     }
@@ -5372,6 +5376,8 @@ fn append_display_command_viewport_dirty_region(
     viewport: RasterViewport,
     viewport_fixed: bool,
     viewport_sticky_top: Option<usize>,
+    output_shift_x: isize,
+    output_shift_y: isize,
     regions: &mut Vec<BrowserViewportRect>,
 ) {
     let command_bounds =
@@ -5380,15 +5386,47 @@ fn append_display_command_viewport_dirty_region(
     else {
         return;
     };
-    append_non_overlapping_viewport_rect(
-        regions,
+    let Some(rect) = shift_and_clip_viewport_rect(
         BrowserViewportRect {
             x: visible_bounds.x.saturating_sub(viewport.x),
             y: visible_bounds.y.saturating_sub(viewport.y),
             width: visible_bounds.width,
             height: visible_bounds.height,
         },
-    );
+        output_shift_x,
+        output_shift_y,
+        viewport.width,
+        viewport.height,
+    ) else {
+        return;
+    };
+    append_non_overlapping_viewport_rect(regions, rect);
+}
+
+fn shift_and_clip_viewport_rect(
+    rect: BrowserViewportRect,
+    shift_x: isize,
+    shift_y: isize,
+    viewport_width: usize,
+    viewport_height: usize,
+) -> Option<BrowserViewportRect> {
+    let start_x = rect.x as i128 + shift_x as i128;
+    let start_y = rect.y as i128 + shift_y as i128;
+    let end_x = start_x + rect.width as i128;
+    let end_y = start_y + rect.height as i128;
+    let clipped_x = start_x.max(0);
+    let clipped_y = start_y.max(0);
+    let clipped_end_x = end_x.min(viewport_width as i128);
+    let clipped_end_y = end_y.min(viewport_height as i128);
+    if clipped_x >= clipped_end_x || clipped_y >= clipped_end_y {
+        return None;
+    }
+    Some(BrowserViewportRect {
+        x: clipped_x as usize,
+        y: clipped_y as usize,
+        width: clipped_end_x.saturating_sub(clipped_x) as usize,
+        height: clipped_end_y.saturating_sub(clipped_y) as usize,
+    })
 }
 
 fn append_non_overlapping_viewport_rect(
