@@ -4083,11 +4083,14 @@ fn hit_test_target_node_in_viewport(
     y: usize,
 ) -> Option<usize> {
     let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
-    hit_test_visual_target_node_for_viewport(render, viewport, page_x, page_y)
-        .or_else(|| hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y))
-        .or_else(|| {
-            hit_test_nearby_visual_target_node_for_viewport(render, viewport, page_x, page_y)
-        })
+    if let Some(target_node) =
+        hit_test_topmost_visual_layer_for_viewport(render, viewport, page_x, page_y)
+    {
+        return target_node;
+    }
+    hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y).or_else(|| {
+        hit_test_nearby_visual_target_node_for_viewport(render, viewport, page_x, page_y)
+    })
 }
 
 fn viewport_local_point_to_page(
@@ -4299,18 +4302,52 @@ fn hit_test_nearby_visual_target_node(render: &BrowserRender, x: usize, y: usize
         })
 }
 
-fn hit_test_visual_target_node_for_viewport(
+fn hit_test_topmost_visual_layer_for_viewport(
     render: &BrowserRender,
     viewport: RasterViewport,
     x: usize,
     y: usize,
-) -> Option<usize> {
+) -> Option<Option<usize>> {
+    if let Some(target) = hit_test_topmost_visual_layer_for_viewport_matching(
+        render,
+        viewport,
+        x,
+        y,
+        |render, command_index| {
+            display_command_viewport_fixed(render, command_index)
+                || display_command_viewport_sticky_top(render, command_index).is_some()
+        },
+    ) {
+        return Some(target);
+    }
+    hit_test_topmost_visual_layer_for_viewport_matching(
+        render,
+        viewport,
+        x,
+        y,
+        |render, command_index| {
+            !display_command_viewport_fixed(render, command_index)
+                && display_command_viewport_sticky_top(render, command_index).is_none()
+        },
+    )
+}
+
+fn hit_test_topmost_visual_layer_for_viewport_matching(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+    mut include: impl FnMut(&BrowserRender, usize) -> bool,
+) -> Option<Option<usize>> {
     render
         .display_list
         .iter()
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if !include(render, command_index) {
+                return None;
+            }
             let bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
@@ -4320,10 +4357,12 @@ fn hit_test_visual_target_node_for_viewport(
             if !bounds.contains(x, y) {
                 return None;
             }
-            render
-                .hit_targets
-                .get(command_index)
-                .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)))
+            Some(
+                render
+                    .hit_targets
+                    .get(command_index)
+                    .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
+            )
         })
 }
 
