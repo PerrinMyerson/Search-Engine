@@ -8832,8 +8832,8 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("arrived"));
     let expected_feedback = format!(
-        "Clicked selector #go; opened local page: {}",
-        browser_session_feedback_excerpt(&second.display().to_string())
+        "Clicked selector #go; opened local page: {}; viewport settled at x 0, y 0",
+        browser_session_feedback_excerpt(&second.display().to_string()),
     );
     assert_eq!(
         payload.action_feedback.as_deref(),
@@ -8841,8 +8841,19 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(!html.contains("data-browser-action-feedback"));
-    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
     assert!(html.contains(&expected_feedback));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    assert!(current_href.contains(&format!("id={}", payload.id)));
+    assert!(current_href.contains("action=current"));
+    assert!(current_href.contains("viewport_x=0"));
+    assert!(current_href.contains("viewport_y=0"));
+    assert!(html.contains(&format!(
+        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
 }
 
@@ -8941,7 +8952,7 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(!payload.fast_scroll);
     assert!(payload.viewport.contains("arrived by raster click"));
     let expected_feedback = format!(
-        "Clicked raster x {raster_x}, y {raster_y} ({}x{}) mapped to DOM point x {link_x}, y {link_y} (page {link_x}, {link_y}); opened local page: {}",
+        "Clicked raster x {raster_x}, y {raster_y} ({}x{}) mapped to DOM point x {link_x}, y {link_y} (page {link_x}, {link_y}); opened local page: {}; viewport settled at x 0, y 0",
         raster_width,
         raster_height,
         browser_session_feedback_excerpt(&second.display().to_string())
@@ -8955,6 +8966,15 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    assert!(current_href.contains(&format!("id={}", payload.id)));
+    assert!(current_href.contains("action=current"));
+    assert!(current_href.contains("viewport_x=0"));
+    assert!(current_href.contains("viewport_y=0"));
+    assert!(html.contains(&format!(
+        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
 }
 
 #[tokio::test]
@@ -9435,7 +9455,9 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(!html.contains("data-browser-action-feedback"));
-    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
     assert!(
         html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );

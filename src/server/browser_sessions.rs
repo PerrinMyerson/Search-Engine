@@ -16360,8 +16360,10 @@ fn set_browser_click_feedback(
             target,
         );
         web_session.action_feedback = Some(format!(
-            "{label}; opened {scope}: {}",
-            browser_session_feedback_excerpt(target)
+            "{label}; opened {scope}: {}; viewport settled at x {}, y {}",
+            browser_session_feedback_excerpt(target),
+            web_session.viewport_x,
+            web_session.viewport_y,
         ));
         return;
     } else if before != after {
