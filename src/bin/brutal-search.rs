@@ -2111,6 +2111,14 @@ fn web_storage_compaction_snapshot_readiness_lines(
         .result_log_before
         .duplicate_entries
         .saturating_sub(report.result_log_projected_after.duplicate_entries);
+    let cache_removed_entries = report
+        .cache_before
+        .entries
+        .saturating_sub(report.cache_projected_after.entries);
+    let result_log_removed_entries = report
+        .result_log_before
+        .entries
+        .saturating_sub(report.result_log_projected_after.entries);
     let status = if report.skipped {
         "skipped"
     } else if zero_removal {
@@ -2137,12 +2145,22 @@ fn web_storage_compaction_snapshot_readiness_lines(
             report.cache_projected_after.bytes
         ),
         format!("web_storage_snapshot_cache_removable_bytes: {cache_removed_bytes}"),
+        format!(
+            "web_storage_snapshot_cache_retained_rows: {}",
+            report.cache_projected_after.entries
+        ),
+        format!("web_storage_snapshot_cache_removable_rows: {cache_removed_entries}"),
         format!("web_storage_snapshot_cache_removable_duplicates: {cache_removed_duplicates}"),
         format!(
             "web_storage_snapshot_result_log_retained_bytes: {}",
             report.result_log_projected_after.bytes
         ),
         format!("web_storage_snapshot_result_log_removable_bytes: {result_log_removed_bytes}"),
+        format!(
+            "web_storage_snapshot_result_log_retained_rows: {}",
+            report.result_log_projected_after.entries
+        ),
+        format!("web_storage_snapshot_result_log_removable_rows: {result_log_removed_entries}"),
         format!(
             "web_storage_snapshot_result_log_removable_duplicates: {result_log_removed_duplicates}"
         ),
@@ -4166,9 +4184,13 @@ mod tests {
 
         assert!(lines.contains(&"web_storage_snapshot_cache_retained_bytes: 80".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_cache_removable_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_retained_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_rows: 2".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_cache_removable_duplicates: 2".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_result_log_retained_bytes: 70".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_result_log_removable_bytes: 20".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_retained_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_removable_rows: 1".to_owned()));
         assert!(
             lines.contains(&"web_storage_snapshot_result_log_removable_duplicates: 1".to_owned())
         );
