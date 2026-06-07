@@ -1227,6 +1227,7 @@ enum FlexDirection {
     Row,
     RowReverse,
     Column,
+    ColumnReverse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1704,12 +1705,20 @@ impl ComputedStyle {
     }
 
     fn child_layout_with_grid_columns(&self, grid_columns: Option<usize>) -> ChildLayout {
-        let flex_column = matches!(self.display, Display::Flex | Display::InlineFlex)
-            && self.flex_direction == FlexDirection::Column;
+        let flex_container = matches!(self.display, Display::Flex | Display::InlineFlex);
+        let flex_column = flex_container
+            && matches!(
+                self.flex_direction,
+                FlexDirection::Column | FlexDirection::ColumnReverse
+            );
         let flex_row = matches!(self.display, Display::Flex | Display::InlineFlex) && !flex_column;
         ChildLayout {
             row_items: self.display.lays_out_children_in_row() && !flex_column,
-            reverse_items: self.flex_direction == FlexDirection::RowReverse,
+            flex_items: flex_container,
+            reverse_items: matches!(
+                self.flex_direction,
+                FlexDirection::RowReverse | FlexDirection::ColumnReverse
+            ),
             row_gap: if flex_column {
                 Some(self.row_gap.unwrap_or(0))
             } else {
@@ -1728,6 +1737,7 @@ impl ComputedStyle {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ChildLayout {
     row_items: bool,
+    flex_items: bool,
     reverse_items: bool,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
@@ -13988,7 +13998,8 @@ fn parse_css_flex_direction(value: &str) -> Option<FlexDirection> {
         match token.trim().to_ascii_lowercase().as_str() {
             "row" => Some(FlexDirection::Row),
             "row-reverse" => Some(FlexDirection::RowReverse),
-            "column" | "column-reverse" => Some(FlexDirection::Column),
+            "column" => Some(FlexDirection::Column),
+            "column-reverse" => Some(FlexDirection::ColumnReverse),
             _ => None,
         }
     })
@@ -15976,7 +15987,7 @@ fn render_children(
     {
         renderer.push_fixed_space_width(justification.leading_space, None);
     }
-    let mut child_sequence: Vec<usize> = if child_layout.row_items {
+    let mut child_sequence: Vec<usize> = if child_layout.row_items || child_layout.flex_items {
         node.children
             .iter()
             .copied()
