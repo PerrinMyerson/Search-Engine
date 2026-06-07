@@ -8996,6 +8996,32 @@ fn viewport_hit_testing_prefers_topmost_fixed_background_over_scrolled_text() {
         &[245, 245, 245, 255],
         "raster should show the fixed header background at the viewport click coordinate"
     );
+    let cell_start_x = raster_options
+        .padding_x
+        .saturating_add(click_x.saturating_mul(raster_options.cell_width));
+    let cell_end_x = cell_start_x
+        .saturating_add(raster_options.cell_width)
+        .min(rgba.width);
+    let cell_start_y = raster_options.padding_y;
+    let cell_end_y = cell_start_y
+        .saturating_add(raster_options.cell_height)
+        .min(rgba.height);
+    let dark_overlay_pixels = (cell_start_y..cell_end_y)
+        .flat_map(|y| (cell_start_x..cell_end_x).map(move |x| (x, y)))
+        .filter(|(x, y)| {
+            let index = y
+                .saturating_mul(rgba.width)
+                .saturating_add(*x)
+                .saturating_mul(4);
+            rgba.pixels[index] < 64
+                && rgba.pixels[index.saturating_add(1)] < 64
+                && rgba.pixels[index.saturating_add(2)] < 64
+        })
+        .count();
+    assert_eq!(
+        dark_overlay_pixels, 0,
+        "fixed background should paint above lower-layer scrolled link text ink"
+    );
 }
 
 #[test]

@@ -5670,12 +5670,6 @@ pub fn rasterize_render(
     let background = 255u8;
     let mut pixels = vec![background; pixel_count];
     for (command_index, command) in render.display_list.iter().enumerate() {
-        if matches!(
-            command,
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
-        ) {
-            continue;
-        }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         let command_bounds = display_command_bounds_for_viewport(
@@ -5689,7 +5683,17 @@ pub fn rasterize_render(
             continue;
         };
         match command {
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {
+                draw_raster_text_command(
+                    &mut pixels,
+                    width,
+                    command,
+                    render,
+                    command_index,
+                    viewport,
+                    options,
+                );
+            }
             DisplayCommand::Rect {
                 x: _,
                 y: _,
@@ -6016,17 +6020,6 @@ pub fn rasterize_render(
             }
         }
     }
-    for (command_index, command) in render.display_list.iter().enumerate() {
-        draw_raster_text_command(
-            &mut pixels,
-            width,
-            command,
-            render,
-            command_index,
-            viewport,
-            options,
-        );
-    }
     if raster_viewport_needs_readable_context(render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
@@ -6117,16 +6110,59 @@ pub fn rasterize_render_rgba(
     render: &BrowserRender,
     options: BrowserRasterOptions,
 ) -> Result<BrowserRgbaRaster> {
-    let raster = rasterize_render(render, options)?;
-    let mut rgba = BrowserRgbaRaster::from_grayscale(&raster);
+    ensure!(
+        options.cell_width > GLYPH_WIDTH,
+        "cell_width must be at least {}",
+        GLYPH_WIDTH + 1
+    );
+    ensure!(
+        options.cell_height > GLYPH_HEIGHT,
+        "cell_height must be at least {}",
+        GLYPH_HEIGHT + 1
+    );
+    if let Some(viewport_width) = options.viewport_width {
+        ensure!(
+            viewport_width > 0,
+            "viewport_width must be greater than zero"
+        );
+    }
+    if let Some(viewport_height) = options.viewport_height {
+        ensure!(
+            viewport_height > 0,
+            "viewport_height must be greater than zero"
+        );
+    }
+
     let viewport = effective_raster_viewport(render, options);
+    let text_width = viewport
+        .width
+        .checked_mul(options.cell_width)
+        .context("raster width overflow")?;
+    let text_height = viewport
+        .height
+        .checked_mul(options.cell_height)
+        .context("raster height overflow")?;
+    let width = text_width
+        .checked_add(options.padding_x.saturating_mul(2))
+        .context("raster padded width overflow")?;
+    let height = text_height
+        .checked_add(options.padding_y.saturating_mul(2))
+        .context("raster padded height overflow")?;
+    let pixel_count = width.checked_mul(height).context("raster pixel overflow")?;
+    ensure!(
+        pixel_count <= options.max_pixels,
+        "raster would allocate {pixel_count} pixels, over max {}",
+        options.max_pixels
+    );
+
+    let background = [255u8, 255u8, 255u8, 255u8];
+    let mut rgba = BrowserRgbaRaster {
+        width,
+        height,
+        background,
+        pixels: vec![255u8; pixel_count.saturating_mul(4)],
+    };
     for (command_index, command) in render.display_list.iter().enumerate() {
-        if matches!(
-            command,
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
-        ) {
-            continue;
-        }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         let command_bounds = display_command_bounds_for_viewport(
@@ -6140,6 +6176,17 @@ pub fn rasterize_render_rgba(
             continue;
         };
         match command {
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {
+                draw_rgba_text_command(
+                    &mut rgba.pixels,
+                    rgba.width,
+                    command,
+                    render,
+                    command_index,
+                    viewport,
+                    options,
+                );
+            }
             DisplayCommand::Image {
                 x,
                 y,
@@ -6359,19 +6406,7 @@ pub fn rasterize_render_rgba(
                     [*red, *green, *blue, 255],
                 );
             }
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
         }
-    }
-    for (command_index, command) in render.display_list.iter().enumerate() {
-        draw_rgba_text_command(
-            &mut rgba.pixels,
-            rgba.width,
-            command,
-            render,
-            command_index,
-            viewport,
-            options,
-        );
     }
     if raster_viewport_needs_readable_context(render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
@@ -6477,7 +6512,9 @@ pub fn browser_text_viewport(
             continue;
         };
         match command {
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {}
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {
+                draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
+            }
             DisplayCommand::Rect { .. } | DisplayCommand::ColorRect { .. } => {
                 fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '#')
             }
@@ -6494,9 +6531,6 @@ pub fn browser_text_viewport(
                 fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '@');
             }
         }
-    }
-    for (command_index, command) in render.display_list.iter().enumerate() {
-        draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
     }
     if text_viewport_needs_readable_context(&cells, render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
