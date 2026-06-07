@@ -6335,6 +6335,7 @@ async fn apply_browser_action(
                 })?;
                 reset_viewport_after_navigation(web_session);
                 clear_browser_find_active_line(web_session);
+                set_browser_reload_feedback(web_session);
             }
         }
         BrowserSessionAction::Link(index) => {
@@ -16483,6 +16484,16 @@ fn set_browser_history_navigation_feedback(
     } else {
         web_session.action_feedback = Some(format!("{label}; no navigation; viewport preserved"));
     }
+}
+
+fn set_browser_reload_feedback(web_session: &mut BrowserWebSession) {
+    let target = current_session_source(web_session).unwrap_or_else(|| "current page".to_owned());
+    web_session.action_feedback = Some(format!(
+        "Reloaded page: {}; viewport settled at x {}, y {}",
+        browser_session_feedback_excerpt(&target),
+        web_session.viewport_x,
+        web_session.viewport_y,
+    ));
 }
 
 fn set_browser_link_pending_navigation_feedback(
