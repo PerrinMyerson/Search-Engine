@@ -1759,6 +1759,17 @@ fn web_storage_export_readiness_lines(
         Some(age_secs) if stale_secs > 0 && age_secs > stale_secs => "stale",
         Some(_) => "fresh",
     };
+    let compaction_reason = if summary.duplicate_row_bytes > 0 {
+        "duplicate-bytes"
+    } else if replay_missing_query_buckets > 0 {
+        "replay-misses"
+    } else if provider_buckets > 1 {
+        "multiple-providers"
+    } else if staleness_status == "stale" {
+        "stale-cache"
+    } else {
+        "zero-removal"
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -1790,6 +1801,10 @@ fn web_storage_export_readiness_lines(
             oldest_age_secs
                 .map(|age_secs| age_secs.to_string())
                 .unwrap_or_else(|| "unknown".to_owned())
+        ),
+        format!(
+            "web_storage_compaction_decision: report_only=true reason={compaction_reason} duplicate_row_bytes={} missing_query_buckets={replay_missing_query_buckets} provider_buckets={provider_buckets} staleness_status={staleness_status}",
+            summary.duplicate_row_bytes
         ),
         format!("web_storage_provider_buckets: {provider_buckets}"),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
@@ -3463,6 +3478,9 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_replay_staleness: status=fresh report_only=true newest_age_secs=0 oldest_age_secs=100 stale_after_secs=60".to_owned()
         ));
+        assert!(ready_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=duplicate-bytes duplicate_row_bytes=40 missing_query_buckets=0 provider_buckets=1 staleness_status=fresh".to_owned()
+        ));
         assert!(ready_lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
@@ -3472,15 +3490,20 @@ mod tests {
 
         let mut partial_summary = ready_summary.clone();
         partial_summary.incomplete_result_rows = 1;
+        partial_summary.duplicate_entries = 0;
+        partial_summary.duplicate_row_bytes = 0;
         let partial_lines = web_storage_export_readiness_lines(&[], &partial_summary, 200, 60);
         assert!(partial_lines.contains(
-            &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=1".to_owned()
+            &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=0".to_owned()
         ));
         assert!(partial_lines.contains(
             &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
         ));
         assert!(partial_lines.contains(
             &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
+        ));
+        assert!(partial_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=zero-removal duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=0 staleness_status=unknown".to_owned()
         ));
 
         let mut empty_summary = ready_summary;
@@ -3542,10 +3565,83 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_staleness: status=stale report_only=true newest_age_secs=100 oldest_age_secs=110 stale_after_secs=60".to_owned()
         ));
+        assert!(lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=replay-misses duplicate_row_bytes=0 missing_query_buckets=2 provider_buckets=1 staleness_status=stale".to_owned()
+        ));
         assert!(lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
         assert!(lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk staleness_status=stale newest_age_secs=100 stale_after_secs=60 retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_compaction_decision_reports_provider_and_staleness_reasons() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 5,
+            duplicate_entries: 0,
+            unique_row_bytes: 210,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let provider_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                provider_count: 2,
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            130,
+            60,
+        );
+        assert!(provider_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=multiple-providers duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=2 staleness_status=fresh".to_owned()
+        ));
+
+        let stale_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                provider_count: 1,
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            300,
+            60,
+        );
+        assert!(stale_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=stale-cache duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=1 staleness_status=stale".to_owned()
         ));
     }
 
