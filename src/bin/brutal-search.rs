@@ -1122,9 +1122,22 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_frontier_failed_projected_removed: {}",
             projected_failed_removed
         ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_zero_removal: {}",
+            projected_failed_removed == 0
+        ));
         if projected_failed_removed > 0 {
             lines.push(
                 "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
+                    .to_owned(),
+            );
+            lines.push(
+                "crawl_storage_frontier_apply_guard: report-only; stats does not mutate frontier.bin, run a dedicated frontier compaction apply path only after projected_removed is nonzero"
+                    .to_owned(),
+            );
+        } else {
+            lines.push(
+                "crawl_storage_frontier_apply_guard: zero-removal; frontier compaction apply would be pointless because all failed records are retained"
                     .to_owned(),
             );
         }
@@ -2336,7 +2349,9 @@ mod tests {
             "crawl_storage_frontier_failed_projected_after: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
         )));
         assert!(lines.contains(&"crawl_storage_frontier_failed_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_zero_removal: false".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_apply_guard: report-only; stats does not mutate frontier.bin, run a dedicated frontier compaction apply path only after projected_removed is nonzero".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_entries: 4".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_unique_entries: 3".to_owned()));
@@ -2344,6 +2359,46 @@ mod tests {
         assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_after: 3".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_removed: 1".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned()));
+    }
+
+    #[test]
+    fn crawl_storage_frontier_apply_guard_reports_zero_removal() {
+        let stats = IndexStorageStats {
+            total_bytes: 80,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+            }),
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+
+        let lines = crawl_storage_pressure_summary_lines(&stats);
+
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_projected_after: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_projected_removed: 0".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_zero_removal: true".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_apply_guard: zero-removal; frontier compaction apply would be pointless because all failed records are retained".to_owned()));
+        assert!(!lines.iter().any(|line| {
+            line == "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
+        }));
     }
 
     #[test]
