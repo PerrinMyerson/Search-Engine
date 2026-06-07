@@ -13989,21 +13989,33 @@ fn render_browser_session_surface_action_feedback(payload: &BrowserSessionPayloa
 
 fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
     let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
-    let left_href =
-        browser_session_action_href(&payload.id, "scroll", &[("dx", "-1".to_owned())], payload);
+    let horizontal_step = if payload.max_scroll_x == 0 {
+        0
+    } else {
+        (payload.width.max(1) / 2).max(1)
+    };
+    let left_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", format!("-{horizontal_step}"))],
+        payload,
+    );
     let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
     let line_up_href = browser_session_action_href(&payload.id, "line-up", &[], payload);
     let line_down_href = browser_session_action_href(&payload.id, "line-down", &[], payload);
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
-    let right_href =
-        browser_session_action_href(&payload.id, "scroll", &[("dx", "1".to_owned())], payload);
+    let right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", horizontal_step.to_string())],
+        payload,
+    );
     let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
     let can_scroll_left = payload.viewport_x > 0;
     let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
-    let horizontal_step = if payload.max_scroll_x == 0 { 0 } else { 8 };
     let vertical_step = if payload.max_scroll_y == 0 {
         0
     } else {
