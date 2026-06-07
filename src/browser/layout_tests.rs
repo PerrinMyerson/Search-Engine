@@ -8131,6 +8131,205 @@ fn overflow_block_clip_keeps_adjacent_scroll_slices_and_hit_geometry_stable() {
 }
 
 #[test]
+fn overflow_hidden_flex_item_clips_media_and_hit_geometry_after_adjacent_scroll() {
+    let image_url = "mem://overflow-flex-item-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![32, 144, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><head><style>
+              .lead {{ height: 24px; }}
+              .row {{
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                background: rgb(244, 244, 244);
+              }}
+              .media-link {{
+                display: flex;
+                overflow: hidden;
+                width: 112px;
+                height: 36px;
+                background: rgb(232, 232, 232);
+              }}
+              .copy {{
+                background: rgb(238, 238, 238);
+                white-space: nowrap;
+              }}
+              .tail {{ height: 96px; }}
+            </style></head><body>
+              <p class="lead">Intro copy before the media row.</p>
+              <section class="row">
+                <a class="media-link" href="/media"><img src="{image_url}" style="width:224px;height:12px" alt=""></a>
+                <a class="copy" href="/copy">Adjacent card copy</a>
+              </section>
+              <p class="tail">Trailing copy keeps adjacent scroll slices available.</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://overflow-flex-item-clip",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render overflow-hidden flex item fixture");
+    let render = profiled.render;
+
+    let media_underlay = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 232 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("overflow-hidden row item should paint a clipped media underlay");
+    let (image_index, image_bounds) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => {
+                Some((index, (*x, *y, *width, *height)))
+            }
+            _ => None,
+        })
+        .expect("decoded image should render inside clipped flex item");
+    let copy_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Adjacent card") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("adjacent linked copy should render beside clipped media");
+
+    assert_eq!(image_bounds.0, media_underlay.0);
+    assert_eq!(image_bounds.1, media_underlay.1);
+    assert_eq!(
+        image_bounds.2, media_underlay.2,
+        "row item overflow should clip oversized media width to the card box"
+    );
+    assert!(
+        image_bounds.3 < media_underlay.3,
+        "fixture should leave visible card underlay below the clipped media"
+    );
+    assert!(
+        render.hit_targets[image_index].source_bounds.is_some(),
+        "clipped media should retain source bounds for viewport hit geometry"
+    );
+    assert!(
+        copy_text.0 >= media_underlay.0 + media_underlay.2 + 1,
+        "adjacent linked text should remain outside the clipped media card"
+    );
+
+    let media_target = hit_test_target_node(&render, image_bounds.0, image_bounds.1)
+        .expect("visible clipped media should remain hittable");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, media_target).as_deref(),
+        Some("/media")
+    );
+    assert_ne!(
+        hit_test_target_node(&render, image_bounds.0 + image_bounds.2 + 1, image_bounds.1),
+        Some(media_target),
+        "clipped-away media columns should not keep the media link hit target"
+    );
+
+    let first_viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: media_underlay.1.saturating_sub(1),
+            width: 48,
+            height: 5,
+        },
+        None,
+    );
+    let second_viewport =
+        browser_document_viewport_after_scroll(&render, first_viewport.viewport, 0, 1);
+    assert_eq!(
+        second_viewport.viewport.y,
+        first_viewport.viewport.y.saturating_add(1)
+    );
+    assert!(second_viewport.max_scroll_y > 0);
+
+    for viewport in [first_viewport.viewport, second_viewport.viewport] {
+        let local_y = image_bounds.1.saturating_sub(viewport.y);
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, viewport, image_bounds.0, local_y),
+            Some(media_target),
+            "viewport hit testing should stay aligned with clipped media after scroll"
+        );
+        let rgba = rasterize_render_rgba(
+            &render,
+            BrowserRasterOptions {
+                viewport_y: Some(viewport.y),
+                viewport_width: Some(48),
+                viewport_height: Some(5),
+                ..BrowserRasterOptions::default()
+            },
+        )
+        .expect("rasterize clipped flex-item viewport");
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [244, 244, 244, 255]),
+            "adjacent viewport slice should retain row background"
+        );
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [232, 232, 232, 255]),
+            "adjacent viewport slice should retain clipped card underlay"
+        );
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [32, 144, 220, 255]),
+            "adjacent viewport slice should retain clipped decoded media color"
+        );
+    }
+}
+
+#[test]
 fn fixed_visuals_do_not_extend_scroll_extent_but_paint_in_scrolled_viewport() {
     let image_url = "mem://fixed-scroll-extent-image".to_owned();
     let decoded = DecodedImage {

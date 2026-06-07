@@ -16729,12 +16729,56 @@ fn render_node(
             } else {
                 None
             };
-            let table_cell_flow = is_table_layout_cell_for_flow(element, &style);
-            let text_background_entered = if block_flow || table_cell_flow {
-                None
+            let row_item_overflow_clip_entered = if is_row_item && style.overflow.clips() {
+                match overflow_clip_height {
+                    Some(clip_height) => {
+                        let remaining_width = renderer
+                            .available_width()
+                            .saturating_sub(renderer.current_inline_width())
+                            .max(1);
+                        let clip_width = style.positioned_outer_width(remaining_width);
+                        let clip_x = renderer
+                            .box_x()
+                            .saturating_add(renderer.current_inline_width());
+                        let clip_y = renderer.current_row();
+                        let clip_height = clip_height
+                            .saturating_add(style.padding.top)
+                            .saturating_add(style.padding.bottom)
+                            .max(1);
+                        let clip_bounds = DisplayCommandBounds {
+                            x: clip_x,
+                            y: clip_y,
+                            width: clip_width.max(1),
+                            height: clip_height,
+                        };
+                        renderer.enter_clip(clip_bounds);
+                        if let Some(shade) = style.background_shade
+                            && renderer.paint_visible()
+                            && let Some(command) = renderer.clipped_rect_command(
+                                clip_bounds.x,
+                                clip_bounds.y,
+                                clip_bounds.width,
+                                clip_bounds.height,
+                                shade,
+                            )
+                        {
+                            let target = renderer.node_hit_target(Some(node_id));
+                            renderer.push_underlay_command(command, target);
+                        }
+                        Some(clip_bounds)
+                    }
+                    None => None,
+                }
             } else {
-                style.background_shade
+                None
             };
+            let table_cell_flow = is_table_layout_cell_for_flow(element, &style);
+            let text_background_entered =
+                if block_flow || table_cell_flow || row_item_overflow_clip_entered.is_some() {
+                    None
+                } else {
+                    style.background_shade
+                };
             if let Some(background_shade) = text_background_entered {
                 renderer.enter_text_background_shade(background_shade);
             }
@@ -16854,6 +16898,10 @@ fn render_node(
                 );
             }
 
+            if let Some(clip_bounds) = row_item_overflow_clip_entered {
+                renderer.cap_inline_replaced_height(clip_bounds.height);
+                renderer.exit_clip();
+            }
             if positioning_context_entered {
                 renderer.exit_positioning_context();
             }
@@ -21191,6 +21239,12 @@ impl FlowRenderer {
 
     fn current_inline_width(&self) -> usize {
         self.current_width
+    }
+
+    fn cap_inline_replaced_height(&mut self, height: usize) {
+        if self.inline_replaced_height > 0 {
+            self.inline_replaced_height = self.inline_replaced_height.min(height.max(1));
+        }
     }
 
     fn box_x(&self) -> usize {
