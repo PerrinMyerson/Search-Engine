@@ -2829,6 +2829,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains("replayDeferredClickAfterPartial();"));
     assert!(!html.contains("Visual viewport update timed out; opening full page..."));
+    assert!(html.contains("const settledViewportMessage = () =>"));
+    assert!(html.contains(
+        r#"Viewport settled at x ${numberData("viewportX")}, y ${numberData("viewportY")}."#
+    ));
+    assert!(html.contains("setViewportFeedback(settledViewportMessage());"));
     assert!(html.contains("window.history.pushState(null"));
     assert!(html.contains("const syncViewportHistory"));
     assert!(html.contains("window.history.replaceState(null"));

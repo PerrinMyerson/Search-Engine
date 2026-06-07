@@ -11361,6 +11361,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.focus({ preventScroll: true });
     replayDeferredClickAfterPartial();
   };
+  const settledViewportMessage = () => `Viewport settled at x ${numberData("viewportX")}, y ${numberData("viewportY")}.`;
   const syncViewportHistory = () => {
     if (!window.history || typeof window.history.replaceState !== "function") {
       return;
@@ -11416,7 +11417,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         throw new Error("viewport partial response missing required fragments");
       }
       syncViewportHistory();
-      setViewportFeedback("Viewport settled.");
+      setViewportFeedback(settledViewportMessage());
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
