@@ -2171,8 +2171,16 @@ fn selected_background_alias_url(element: &ElementData) -> Option<&str> {
     candidates
         .iter()
         .copied()
-        .find(|url| !is_lazy_image_placeholder_src(url))
-        .or_else(|| candidates.into_iter().next())
+        .find(|url| {
+            !is_lazy_image_placeholder_src(url)
+                && !background_image_candidate_clearly_unsupported(url)
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .find(|url| !background_image_candidate_clearly_unsupported(url))
+        })
 }
 
 fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
