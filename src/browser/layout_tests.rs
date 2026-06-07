@@ -8866,6 +8866,139 @@ fn fixed_descendant_escapes_overflow_clip_and_keeps_scrolled_hit_geometry() {
 }
 
 #[test]
+fn viewport_hit_testing_prefers_topmost_fixed_background_over_scrolled_text() {
+    let image_url = "mem://fixed-hit-topmost-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![120],
+        rgb_pixels: Some(vec![30, 120, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <a href="/fixed" style="display:block; position:fixed; top:0; width:192px; height:24px; background:rgb(245,245,245); color:rgb(0,0,0)">Nav</a>
+              <p style="height:24px">Lead copy above the product link.</p>
+              <a href="/under" style="display:block; background:rgb(238,238,238)">Underlying product link</a>
+              <img src="{image_url}" width="256" height="48" alt="">
+              <p style="height:96px">Trailing copy keeps the viewport scrollable.</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://fixed-hit-topmost",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render fixed topmost hit fixture");
+    let render = profiled.render;
+
+    let fixed_background_index = render
+        .display_list
+        .iter()
+        .position(|command| matches!(command, DisplayCommand::Rect { shade: 245, .. }))
+        .expect("fixed header background should paint");
+    let (underlying_text_index, underlying_text) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|command| match command {
+            (index, DisplayCommand::Text { x, y, text })
+            | (index, DisplayCommand::StyledText { x, y, text, .. })
+                if text == "Underlying product link" =>
+            {
+                Some((index, (*x, *y, text.chars().count())))
+            }
+            _ => None,
+        })
+        .expect("underlying link text should render in document flow");
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: underlying_text.1,
+            width: 32,
+            height: 5,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, underlying_text.1);
+    assert!(viewport.max_scroll_y > 0);
+
+    let fixed_bounds = display_command_bounds_for_viewport(
+        &render.display_list[fixed_background_index],
+        raster_viewport_from_state(viewport.viewport),
+        display_command_viewport_fixed(&render, fixed_background_index),
+        display_command_viewport_sticky_top(&render, fixed_background_index),
+    );
+    let click_x = underlying_text.0.saturating_add(12);
+    assert!(
+        fixed_bounds.contains(click_x, viewport.viewport.y),
+        "fixed background should cover the same viewport coordinate as underlying text"
+    );
+    assert!(
+        click_x < underlying_text.0.saturating_add(underlying_text.2),
+        "fixture click should land inside the underlying linked text command"
+    );
+
+    let direct_underlying = render.hit_targets[underlying_text_index]
+        .target_at_column(click_x.saturating_sub(underlying_text.0))
+        .expect("underlying text command should carry the link hit target");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, direct_underlying).as_deref(),
+        Some("/under")
+    );
+    let viewport_target = hit_test_target_node_in_viewport(&render, viewport.viewport, click_x, 0)
+        .expect("viewport hit should resolve the painted topmost target");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, viewport_target).as_deref(),
+        Some("/fixed"),
+        "viewport hit testing should prefer the painted fixed background over underlying text"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize fixed topmost hit slice");
+    let pixel_x = raster_options
+        .padding_x
+        .saturating_add(click_x.saturating_mul(raster_options.cell_width));
+    let pixel_y = raster_options.padding_y;
+    let index = pixel_y
+        .saturating_mul(rgba.width)
+        .saturating_add(pixel_x)
+        .saturating_mul(4);
+    assert_eq!(
+        &rgba.pixels[index..index.saturating_add(4)],
+        &[245, 245, 245, 255],
+        "raster should show the fixed header background at the viewport click coordinate"
+    );
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
