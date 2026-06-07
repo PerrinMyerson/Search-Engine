@@ -6089,6 +6089,91 @@ fn sparse_visual_viewports_prioritize_meaningful_document_flow_text() {
 }
 
 #[test]
+fn raster_context_overlay_preserves_mixed_scroll_slice_with_visible_body_text() {
+    let render = BrowserRender {
+        source: "mem://mixed-scroll-raster-context".to_owned(),
+        title: String::new(),
+        viewport_width: 40,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![DisplayHitTarget::default(); 4],
+        display_list: vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 4,
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 22,
+                y: 1,
+                text: "Readable body copy beside media".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Injected context should stay offscreen".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Trailing context copy".to_owned(),
+            },
+        ],
+        text: "Readable body copy beside media\nInjected context should stay offscreen\nTrailing context copy"
+            .to_owned(),
+    };
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(40),
+        viewport_height: Some(4),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render(&render, raster_options)
+        .expect("rasterize mixed scroll slice with visible body text");
+    let pixel =
+        |x: usize, y: usize| raster.pixels[y.saturating_mul(raster.width).saturating_add(x)];
+
+    let media_empty_row_pixel = pixel(
+        raster_options.padding_x.saturating_add(2),
+        raster_options
+            .padding_y
+            .saturating_add(3usize.saturating_mul(raster_options.cell_height))
+            .saturating_add(2),
+    );
+    assert_eq!(
+        media_empty_row_pixel, 0,
+        "offscreen context text should not be injected into a mixed slice that already has visible body text"
+    );
+    let body_text_has_ink = (raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height)
+        ..raster_options
+            .padding_y
+            .saturating_add(2usize.saturating_mul(raster_options.cell_height))
+            .min(raster.height))
+        .any(|y| {
+            (raster_options
+                .padding_x
+                .saturating_add(22usize.saturating_mul(raster_options.cell_width))
+                ..raster.width)
+                .any(|x| pixel(x, y) == 0)
+        });
+    assert!(
+        body_text_has_ink,
+        "visible body text beside media should remain in the raster slice"
+    );
+}
+
+#[test]
 fn pinned_headers_do_not_suppress_visual_viewport_body_context() {
     let render = render_html(
         "mem://pinned-header-readable-body-context",
