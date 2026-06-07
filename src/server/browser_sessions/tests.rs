@@ -10196,13 +10196,13 @@ async fn browser_session_registry_edits_and_submits_forms() {
     assert!(payload.source.contains("q=rust+browser"));
     assert!(payload.source.contains("kind=docs"));
     assert!(payload.source.contains("fast=on"));
-    assert_eq!(
-        payload.action_feedback.as_deref(),
-        Some("Submitted form 0; navigated")
-    );
+    let action_feedback = payload.action_feedback.as_deref().unwrap();
+    assert!(action_feedback.starts_with("Submitted form 0; opened local page: "));
+    assert!(action_feedback.contains("result.html"));
+    assert!(action_feedback.ends_with("; viewport settled at x 0, y 0"));
     let html = render_browser_session_page(&payload, "");
     assert!(html.contains(r#"data-browser-action-feedback"#));
-    assert!(html.contains("Submitted form 0; navigated"));
+    assert!(html.contains("Submitted form 0; opened local page: "));
 }
 
 #[tokio::test]
@@ -10587,10 +10587,10 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert!(payload.source.contains("q=rust+browser"));
     assert!(payload.source.contains("fast=on"));
     assert!(payload.source.contains("commit=yes"));
-    assert_eq!(
-        payload.action_feedback.as_deref(),
-        Some("Activated form 0 control 3; navigated")
-    );
+    let action_feedback = payload.action_feedback.as_deref().unwrap();
+    assert!(action_feedback.starts_with("Activated form 0 control 3; opened local page: "));
+    assert!(action_feedback.contains("result.html"));
+    assert!(action_feedback.ends_with("; viewport settled at x 0, y 0"));
 }
 
 #[tokio::test]
@@ -10946,10 +10946,10 @@ async fn browser_session_registry_focuses_types_and_submits_forms() {
     assert!(payload.source.contains("q=old+browser"));
     assert!(payload.source.contains("kind=docs"));
     assert!(payload.source.contains("fast=on"));
-    assert_eq!(
-        payload.action_feedback.as_deref(),
-        Some("Submitted focused form; navigated")
-    );
+    let action_feedback = payload.action_feedback.as_deref().unwrap();
+    assert!(action_feedback.starts_with("Submitted focused form; opened local page: "));
+    assert!(action_feedback.contains("result.html"));
+    assert!(action_feedback.ends_with("; viewport settled at x 0, y 0"));
 }
 
 #[tokio::test]
