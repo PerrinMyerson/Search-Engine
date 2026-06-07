@@ -10318,7 +10318,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
-.browser-chrome-status [data-browser-chrome-action-feedback] {{ max-width: min(28vw, 260px); }}
+.browser-chrome-status [data-browser-chrome-action-feedback],
+.browser-chrome-status [data-browser-chrome-scroll-feedback],
+.browser-chrome-status [data-browser-chrome-click-feedback] {{ max-width: min(28vw, 260px); }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
@@ -13885,6 +13887,22 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         let _ = write!(
             status,
             r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback title="{feedback_attr}">{feedback}</span>"#,
+            feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
+        );
+    }
+    if let Some(feedback) = browser_session_scroll_feedback_text(payload) {
+        let _ = write!(
+            status,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback title="{feedback_attr}">{feedback}</span>"#,
+            feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
+        );
+    }
+    if let Some(feedback) = browser_session_click_feedback_text(payload) {
+        let _ = write!(
+            status,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback title="{feedback_attr}">{feedback}</span>"#,
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
