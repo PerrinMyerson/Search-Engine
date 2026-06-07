@@ -12982,6 +12982,10 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
+    assert!(topbar_html.contains(&format!(
+        r#"<input type="hidden" name="source" value="{}">"#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
     assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));

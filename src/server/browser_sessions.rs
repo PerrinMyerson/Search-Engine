@@ -10447,6 +10447,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_x" value="{viewport_x}">
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
+{address_source_input}
 <input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>
 </form>
@@ -10488,6 +10489,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         width = payload.width,
         height = payload.height,
         max_bytes = payload.max_bytes,
+        address_source_input = browser_session_source_hidden_input(&payload.source),
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         viewport_status = viewport_status,
@@ -16069,13 +16071,7 @@ fn browser_session_select_option_links(control: &BrowserSessionFormControlPayloa
 }
 
 fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> String {
-    let source_input =
-        browser_safe_source_param(&payload.source).map_or_else(String::new, |source| {
-            format!(
-                r#"<input type="hidden" name="source" value="{source}">"#,
-                source = html_escape::encode_double_quoted_attribute(source),
-            )
-        });
+    let source_input = browser_session_source_hidden_input(&payload.source);
     format!(
         r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">{source_input}"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
@@ -16087,6 +16083,15 @@ fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> Stri
         max_bytes = payload.max_bytes,
         source_input = source_input,
     )
+}
+
+fn browser_session_source_hidden_input(source: &str) -> String {
+    browser_safe_source_param(source).map_or_else(String::new, |source| {
+        format!(
+            r#"<input type="hidden" name="source" value="{source}">"#,
+            source = html_escape::encode_double_quoted_attribute(source),
+        )
+    })
 }
 
 fn browser_form_control_label(control: &BrowserSessionFormControlPayload) -> String {
