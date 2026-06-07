@@ -4232,12 +4232,46 @@ fn hit_test_nearby_text_target_node_for_viewport(
     x: usize,
     y: usize,
 ) -> Option<usize> {
+    hit_test_nearby_text_target_node_for_viewport_matching(
+        render,
+        viewport,
+        x,
+        y,
+        |render, command_index| {
+            display_command_viewport_fixed(render, command_index)
+                || display_command_viewport_sticky_top(render, command_index).is_some()
+        },
+    )
+    .or_else(|| {
+        hit_test_nearby_text_target_node_for_viewport_matching(
+            render,
+            viewport,
+            x,
+            y,
+            |render, command_index| {
+                !display_command_viewport_fixed(render, command_index)
+                    && display_command_viewport_sticky_top(render, command_index).is_none()
+            },
+        )
+    })
+}
+
+fn hit_test_nearby_text_target_node_for_viewport_matching(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+    mut include: impl FnMut(&BrowserRender, usize) -> bool,
+) -> Option<usize> {
     render
         .display_list
         .iter()
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if !include(render, command_index) {
+                return None;
+            }
             if !matches!(
                 command,
                 DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
