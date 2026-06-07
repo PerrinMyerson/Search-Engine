@@ -2205,7 +2205,18 @@ fn background_image_set_candidate_density_milli(candidate: &str) -> Option<usize
 }
 
 fn parse_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
-    let density = descriptor.strip_suffix('x')?.parse::<f64>().ok()?;
+    let descriptor = descriptor.trim().to_ascii_lowercase();
+    let density = if let Some(density) = descriptor.strip_suffix('x') {
+        density.parse::<f64>().ok()?
+    } else if let Some(density) = descriptor.strip_suffix("dppx") {
+        density.parse::<f64>().ok()?
+    } else if let Some(dpi) = descriptor.strip_suffix("dpi") {
+        dpi.parse::<f64>().ok()? / 96.0
+    } else if let Some(dpcm) = descriptor.strip_suffix("dpcm") {
+        dpcm.parse::<f64>().ok()? * 2.54 / 96.0
+    } else {
+        return None;
+    };
     (density.is_finite() && density > 0.0).then(|| (density * 1000.0).round() as usize)
 }
 
