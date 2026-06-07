@@ -8707,6 +8707,165 @@ fn fixed_auto_layer_paints_above_later_media_and_keeps_scrolled_hit_geometry() {
 }
 
 #[test]
+fn fixed_descendant_escapes_overflow_clip_and_keeps_scrolled_hit_geometry() {
+    let image_url = "mem://fixed-overflow-escape-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![120],
+        rgb_pixels: Some(vec![30, 120, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <p style="height:48px">Lead copy before the clipped card.</p>
+              <section style="height:12px; overflow:hidden; background:rgb(230,230,230)">
+                <a href="/fixed" style="display:block; position:fixed; top:0; height:24px; width:192px; background:rgb(245,245,245); color:rgb(0,0,0)">Fixed escape</a>
+                <img src="{image_url}" width="256" height="48" alt="">
+              </section>
+              <p style="height:96px">Trailing copy keeps the page scrollable.</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://fixed-overflow-escape",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render fixed overflow escape fixture");
+    let render = profiled.render;
+
+    let fixed_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 245 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("fixed descendant background should escape the ancestor overflow clip");
+    let (fixed_text_index, fixed_text) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "Fixed escape" =>
+            {
+                Some((index, (*x, *y)))
+            }
+            _ => None,
+        })
+        .expect("fixed descendant text should escape the ancestor overflow clip");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("normal-flow media should remain clipped inside the overflow card");
+
+    assert_eq!(fixed_background.0, 0);
+    assert_eq!(fixed_background.1, 0);
+    assert!(fixed_background.2 >= 24);
+    assert!(
+        image_bounds.1 > fixed_background.1,
+        "normal-flow media should stay in the clipped card's document flow"
+    );
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: image_bounds.1.saturating_sub(1),
+            width: 32,
+            height: 5,
+        },
+        None,
+    );
+    assert!(viewport.viewport.y > 0);
+    assert!(viewport.max_scroll_y > 0);
+
+    let fixed_bounds = display_command_bounds_for_viewport(
+        &render.display_list[fixed_text_index],
+        raster_viewport_from_state(viewport.viewport),
+        display_command_viewport_fixed(&render, fixed_text_index),
+        display_command_viewport_sticky_top(&render, fixed_text_index),
+    );
+    assert_eq!(
+        fixed_bounds.y,
+        viewport.viewport.y.saturating_add(fixed_text.1),
+        "fixed descendant should project to the scrolled viewport top"
+    );
+    let fixed_target = hit_test_target_node_in_viewport(
+        &render,
+        viewport.viewport,
+        fixed_bounds.x,
+        fixed_bounds.y.saturating_sub(viewport.viewport.y),
+    )
+    .expect("viewport hit on escaped fixed descendant should resolve");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, fixed_target).as_deref(),
+        Some("/fixed")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize fixed overflow escape viewport");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let fixed_background_x = raster_options
+        .padding_x
+        .saturating_add(18usize.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(fixed_background_x, raster_options.padding_y),
+        &[245, 245, 245, 255],
+        "escaped fixed background should paint at the viewport top"
+    );
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
