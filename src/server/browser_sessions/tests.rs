@@ -3545,6 +3545,45 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(html.contains(">Pin current</a>"));
     assert!(html.contains(">Pin</a>"));
     assert!(html.contains(">Close tab</a>"));
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    let duplicate_href = browser_session_action_href(
+        &payload.id,
+        "duplicate-session",
+        &[("session", payload.id.clone())],
+        &payload,
+    );
+    let pin_current_href = browser_session_action_href(
+        &payload.id,
+        "pin-tab",
+        &[("session", payload.id.clone())],
+        &payload,
+    );
+    let close_current_href = browser_session_action_href(
+        &payload.id,
+        "close-session",
+        &[("close_id", payload.id.clone())],
+        &payload,
+    );
+    assert!(topbar_html.contains(r#"data-browser-chrome-tab-actions"#));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-duplicate-tab>Duplicate tab</a>"#,
+        html_escape::encode_double_quoted_attribute(&duplicate_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-pin-tab>Pin current</a>"#,
+        html_escape::encode_double_quoted_attribute(&pin_current_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-close-tab>Close tab</a>"#,
+        html_escape::encode_double_quoted_attribute(&close_current_href)
+    )));
+    assert!(!topbar_html.contains(">Move left</a>"));
+    assert!(!topbar_html.contains(">Close others</a>"));
+    assert!(duplicate_href.contains(&format!("id={}", payload.id)));
+    assert!(duplicate_href.contains("action=duplicate-session"));
+    assert!(duplicate_href.contains("source="));
+    assert!(duplicate_href.contains("max_bytes="));
     assert!(html.contains(">Search</a>"));
     assert!(!html.contains(">Prev tab</a>"));
     assert!(!html.contains(">Next tab</a>"));
