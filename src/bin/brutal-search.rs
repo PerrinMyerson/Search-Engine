@@ -862,6 +862,8 @@ struct WebStorageArtifactStats {
     bytes: u64,
     entries: usize,
     result_rows: usize,
+    durable_result_rows: usize,
+    incomplete_result_rows: usize,
     unique_entries: usize,
     duplicate_entries: usize,
     unique_row_bytes: u64,
@@ -878,6 +880,8 @@ struct WebStoragePressureSummary {
     bytes: u64,
     entries: usize,
     result_rows: usize,
+    durable_result_rows: usize,
+    incomplete_result_rows: usize,
     unique_entries: usize,
     duplicate_entries: usize,
     unique_row_bytes: u64,
@@ -1000,6 +1004,14 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         println!(
             "web_storage_artifact_result_rows: {} {}",
             artifact.name, artifact.result_rows
+        );
+        println!(
+            "web_storage_artifact_durable_result_rows: {} {}",
+            artifact.name, artifact.durable_result_rows
+        );
+        println!(
+            "web_storage_artifact_incomplete_result_rows: {} {}",
+            artifact.name, artifact.incomplete_result_rows
         );
         println!(
             "web_storage_artifact_unique_entries: {} {}",
@@ -1591,11 +1603,13 @@ fn web_storage_pressure_summary_lines(
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
     let mut lines = vec![
         format!(
-            "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
             summary.artifact_count,
             summary.bytes,
             summary.entries,
             summary.result_rows,
+            summary.durable_result_rows,
+            summary.incomplete_result_rows,
             summary.unique_entries,
             summary.duplicate_entries,
             summary.duplicate_row_bytes,
@@ -1606,6 +1620,14 @@ fn web_storage_pressure_summary_lines(
         format!("web_storage_pressure_bytes: {}", summary.bytes),
         format!("web_storage_pressure_entries: {}", summary.entries),
         format!("web_storage_pressure_result_rows: {}", summary.result_rows),
+        format!(
+            "web_storage_pressure_durable_result_rows: {}",
+            summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_pressure_incomplete_result_rows: {}",
+            summary.incomplete_result_rows
+        ),
         format!(
             "web_storage_pressure_unique_entries: {}",
             summary.unique_entries
@@ -1680,6 +1702,14 @@ fn web_storage_pressure_summary(
         }),
         entries: artifacts.iter().map(|artifact| artifact.entries).sum(),
         result_rows: artifacts.iter().map(|artifact| artifact.result_rows).sum(),
+        durable_result_rows: artifacts
+            .iter()
+            .map(|artifact| artifact.durable_result_rows)
+            .sum(),
+        incomplete_result_rows: artifacts
+            .iter()
+            .map(|artifact| artifact.incomplete_result_rows)
+            .sum(),
         unique_entries: artifacts
             .iter()
             .map(|artifact| artifact.unique_entries)
@@ -2051,6 +2081,8 @@ fn collect_web_storage_artifact_stats(
         bytes,
         entries: 0,
         result_rows: 0,
+        durable_result_rows: 0,
+        incomplete_result_rows: 0,
         unique_entries: 0,
         duplicate_entries: 0,
         unique_row_bytes: 0,
@@ -2079,9 +2111,12 @@ fn collect_web_storage_artifact_stats(
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
-        stats.result_rows = stats
-            .result_rows
-            .saturating_add(web_storage_result_row_count(name, &value));
+        let durability = web_storage_result_row_durability(name, &value);
+        stats.result_rows = stats.result_rows.saturating_add(durability.total);
+        stats.durable_result_rows = stats.durable_result_rows.saturating_add(durability.durable);
+        stats.incomplete_result_rows = stats
+            .incomplete_result_rows
+            .saturating_add(durability.incomplete);
         if let Some(key) = web_storage_unique_key(name, &value) {
             if unique_keys.insert(key) {
                 stats.unique_entries += 1;
@@ -2121,16 +2156,81 @@ fn collect_web_storage_artifact_stats(
     Ok(stats)
 }
 
-fn web_storage_result_row_count(name: &str, value: &serde_json::Value) -> usize {
+#[derive(Debug, Clone, Copy, Default)]
+struct WebStorageResultRowDurability {
+    total: usize,
+    durable: usize,
+    incomplete: usize,
+}
+
+fn web_storage_result_row_durability(
+    name: &str,
+    value: &serde_json::Value,
+) -> WebStorageResultRowDurability {
     match name {
-        "web-cache.jsonl" => value
-            .get("results")
-            .and_then(|value| value.as_array())
-            .map(Vec::len)
-            .unwrap_or(0),
-        "brave-results.jsonl" => 1,
-        _ => 0,
+        "web-cache.jsonl" => {
+            let Some(results) = value.get("results").and_then(|value| value.as_array()) else {
+                return WebStorageResultRowDurability::default();
+            };
+            let has_entry_metadata = json_string_present(value, "normalized_query")
+                && json_string_present(value, "provider")
+                && value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64())
+                    .is_some();
+            let durable = results
+                .iter()
+                .filter(|result| {
+                    has_entry_metadata
+                        && json_string_present(result, "url")
+                        && result
+                            .get("title")
+                            .and_then(|value| value.as_str())
+                            .is_some()
+                        && result
+                            .get("snippet")
+                            .and_then(|value| value.as_str())
+                            .is_some()
+                })
+                .count();
+            WebStorageResultRowDurability {
+                total: results.len(),
+                durable,
+                incomplete: results.len().saturating_sub(durable),
+            }
+        }
+        "brave-results.jsonl" => {
+            let durable = json_string_present(value, "normalized_query")
+                && json_string_present(value, "provider")
+                && json_string_present(value, "url")
+                && value
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && value
+                    .get("snippet")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64())
+                    .is_some()
+                && value.get("rank").and_then(|value| value.as_u64()).is_some();
+            WebStorageResultRowDurability {
+                total: 1,
+                durable: usize::from(durable),
+                incomplete: usize::from(!durable),
+            }
+        }
+        _ => WebStorageResultRowDurability::default(),
     }
+}
+
+fn json_string_present(value: &serde_json::Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.is_empty())
 }
 
 fn web_storage_unique_key(name: &str, value: &serde_json::Value) -> Option<String> {
@@ -2404,6 +2504,8 @@ mod tests {
                     bytes: 48,
                     entries: 2,
                     result_rows: 0,
+                    durable_result_rows: 0,
+                    incomplete_result_rows: 0,
                     unique_entries: 0,
                     duplicate_entries: 0,
                     unique_row_bytes: 0,
@@ -2418,6 +2520,8 @@ mod tests {
                     bytes: 24,
                     entries: 1,
                     result_rows: 1,
+                    durable_result_rows: 0,
+                    incomplete_result_rows: 1,
                     unique_entries: 0,
                     duplicate_entries: 0,
                     unique_row_bytes: 0,
@@ -2590,6 +2694,8 @@ mod tests {
             bytes: 300,
             entries: 30,
             result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2640,6 +2746,8 @@ mod tests {
             bytes: 300,
             entries: 30,
             result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2704,6 +2812,8 @@ mod tests {
             bytes: 300,
             entries: 30,
             result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2753,6 +2863,8 @@ mod tests {
             bytes: 100,
             entries: 10,
             result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
             unique_entries: 10,
             duplicate_entries: 0,
             unique_row_bytes: 100,
@@ -2800,6 +2912,8 @@ mod tests {
             bytes: 300,
             entries: 30,
             result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2846,6 +2960,8 @@ mod tests {
             bytes: 100,
             entries: 10,
             result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
             unique_entries: 10,
             duplicate_entries: 0,
             unique_row_bytes: 100,
@@ -2922,12 +3038,16 @@ mod tests {
         assert_eq!(cache_stats.entries, 3);
         assert!(cache_stats.bytes > 147);
         assert_eq!(cache_stats.result_rows, 4);
+        assert_eq!(cache_stats.durable_result_rows, 0);
+        assert_eq!(cache_stats.incomplete_result_rows, 4);
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(cache_stats.query_count, 2);
         assert_eq!(cache_stats.max_entries_per_query, 2);
         assert_eq!(log_stats.entries, 3);
         assert_eq!(log_stats.result_rows, 3);
+        assert_eq!(log_stats.durable_result_rows, 0);
+        assert_eq!(log_stats.incomplete_result_rows, 3);
         assert_eq!(log_stats.bytes, 321);
         assert_eq!(log_stats.unique_entries, 2);
         assert_eq!(log_stats.duplicate_entries, 1);
@@ -2942,6 +3062,8 @@ mod tests {
             bytes: 120,
             entries: 3,
             result_rows: 4,
+            durable_result_rows: 4,
+            incomplete_result_rows: 0,
             unique_entries: 2,
             duplicate_entries: 1,
             unique_row_bytes: 80,
@@ -2956,6 +3078,8 @@ mod tests {
             bytes: 4096,
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            durable_result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            incomplete_result_rows: 0,
             unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             duplicate_entries: 0,
             unique_row_bytes: 4096,
@@ -2970,6 +3094,8 @@ mod tests {
             bytes: 80,
             entries: 2,
             result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 80,
@@ -3011,6 +3137,8 @@ mod tests {
             bytes: 120,
             entries: 2,
             result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 120,
@@ -3025,6 +3153,8 @@ mod tests {
             bytes: 90,
             entries: 2,
             result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 90,
@@ -3052,6 +3182,8 @@ mod tests {
                     bytes: 120,
                     entries: 3,
                     result_rows: 4,
+                    durable_result_rows: 4,
+                    incomplete_result_rows: 0,
                     unique_entries: 2,
                     duplicate_entries: 1,
                     unique_row_bytes: 80,
@@ -3066,6 +3198,8 @@ mod tests {
                     bytes: 90,
                     entries: 2,
                     result_rows: 2,
+                    durable_result_rows: 2,
+                    incomplete_result_rows: 0,
                     unique_entries: 2,
                     duplicate_entries: 0,
                     unique_row_bytes: 90,
@@ -3081,10 +3215,12 @@ mod tests {
         );
 
         assert!(lines.contains(
-            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 result_rows=6 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 result_rows=6 durable_result_rows=6 incomplete_result_rows=0 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
         ));
         assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_durable_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_incomplete_result_rows: 0".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_unique_entries: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_after: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
@@ -3099,6 +3235,40 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
         ));
+    }
+
+    #[test]
+    fn web_storage_stats_report_durable_and_incomplete_result_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"complete\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet\"}]}\n{\"normalized_query\":\"partial\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"complete\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"partial\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"fetched_at_unix\":110}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines =
+            web_storage_pressure_summary_lines(&[cache_stats.clone(), log_stats.clone()], 120, 60);
+
+        assert_eq!(cache_stats.result_rows, 2);
+        assert_eq!(cache_stats.durable_result_rows, 1);
+        assert_eq!(cache_stats.incomplete_result_rows, 1);
+        assert_eq!(log_stats.result_rows, 2);
+        assert_eq!(log_stats.durable_result_rows, 1);
+        assert_eq!(log_stats.incomplete_result_rows, 1);
+        assert!(lines.contains(&"web_storage_pressure_result_rows: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_durable_result_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_incomplete_result_rows: 2".to_owned()));
     }
 
     #[test]
