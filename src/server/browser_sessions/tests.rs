@@ -11454,7 +11454,10 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
-    assert!(topbar_html.contains(r#"<summary>Actions</summary>"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-action-list"#));
+    assert!(
+        topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
+    );
     assert!(topbar_html.contains(&format!(
         r#">x {}/{} · y {}/{}<"#,
         payload.viewport_x, payload.max_scroll_x, payload.viewport_y, payload.max_scroll_y
@@ -11473,11 +11476,16 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         !topbar_html.contains(r#"data-browser-shell-render title="visual pending">visual pending"#)
     );
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
     let image_href = browser_session_action_href(&payload.id, "load-images", &[], &payload);
     assert!(current_href.contains(&format!("id={session_id}")));
     assert!(current_href.contains("action=current"));
     assert!(current_href.contains("viewport_y=2"));
     assert!(current_href.contains("max_bytes=2097152"));
+    assert!(reload_href.contains(&format!("id={session_id}")));
+    assert!(reload_href.contains("action=reload"));
+    assert!(reload_href.contains("viewport_y=2"));
+    assert!(reload_href.contains("max_bytes=2097152"));
     assert!(image_href.contains(&format!("id={session_id}")));
     assert!(image_href.contains("action=load-images"));
     assert!(image_href.contains("viewport_y=2"));
@@ -11485,6 +11493,10 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(&format!(
         r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-reload-action>Reload</a>"#,
+        html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(!topbar_html.contains(r#">Read</a>"#));
     assert!(topbar_html.contains(&format!(
@@ -13107,7 +13119,10 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
-    assert!(topbar_html.contains(r#"<summary>Actions</summary>"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-action-list"#));
+    assert!(
+        topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
+    );
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
@@ -13133,9 +13148,14 @@ async fn browser_session_page_renders_form_controls() {
         r#"class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>"#
     ));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
     assert!(topbar_html.contains(&format!(
         r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
         html_escape::encode_double_quoted_attribute(&current_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-reload-action>Reload</a>"#,
+        html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(!topbar_html.contains(">Read</a>"));
     assert!(!topbar_html.contains(">Images</a>"));

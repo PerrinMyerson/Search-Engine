@@ -10043,7 +10043,7 @@ fn render_browser_session_page_with_diagnostics(
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary>Actions</summary><div class="browser-chrome-action-list"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}">Reload</a>{chrome_image_action}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div></details>"#,
         current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         chrome_image_action = chrome_image_action,
