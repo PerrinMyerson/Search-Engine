@@ -2308,6 +2308,22 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(">Bottom</a>"));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
+    assert!(html.contains(r#"data-browser-scroll-step-form"#));
+    assert!(html.contains(r#"<input type="hidden" name="action" value="scroll">"#));
+    assert!(html.contains(&format!(
+        r#"<input type="hidden" name="id" value="{}">"#,
+        payload.id
+    )));
+    assert!(html.contains(r#"<input type="hidden" name="width" value="40">"#));
+    assert!(html.contains(r#"<input type="hidden" name="height" value="16">"#));
+    assert!(html.contains(r#"<input type="hidden" name="viewport_x" value="0">"#));
+    assert!(html.contains(r#"<input type="hidden" name="viewport_y" value="0">"#));
+    assert!(
+        html.contains(r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="8""#)
+    );
+    assert!(
+        html.contains(r#"<input id="browser-scroll-step-dy" type="number" name="dy" value="8""#)
+    );
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(r#"aria-label="Manual viewport scroll controls; x 0 of "#));
     assert!(html.contains(r#"data-scroll-x="0""#));
@@ -2410,7 +2426,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
 
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(!html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
     assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
     ));
@@ -3180,6 +3198,22 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#">Page up</a>"#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
     assert!(html.contains(r#"data-scroll-y-state="at bottom""#));
+    assert!(html.contains(r#"data-browser-scroll-step-form"#));
+    assert!(html.contains(&format!(
+        r#"<input type="hidden" name="id" value="{}">"#,
+        payload.id
+    )));
+    assert!(html.contains(r#"<input type="hidden" name="viewport_x" value="12">"#));
+    assert!(html.contains(&format!(
+        r#"<input type="hidden" name="viewport_y" value="{}">"#,
+        payload.max_scroll_y
+    )));
+    assert!(
+        html.contains(r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="8""#)
+    );
+    assert!(
+        html.contains(r#"<input id="browser-scroll-step-dy" type="number" name="dy" value="8""#)
+    );
     let response = browser_session_api_response(&state_export, &payload);
     let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
     assert!(
@@ -3235,13 +3269,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, back_href) = registry.apply_target(&overshoot_jump).await.unwrap();
     assert_eq!(payload.viewport_x, payload.max_scroll_x);
     assert_eq!(payload.viewport_y, payload.max_scroll_y);
-    let expected_moved_feedback = format!(
-        "Viewport moved to x {}, y {}.",
+    let expected_settled_feedback = format!(
+        "Viewport settled at x {}, y {}.",
         payload.max_scroll_x, payload.max_scroll_y
     );
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some(expected_moved_feedback.as_str())
+        Some(expected_settled_feedback.as_str())
     );
     let current_summary = payload
         .sessions
@@ -3284,15 +3318,19 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let (payload, _) = registry.apply_target(&same_jump).await.unwrap();
     assert_eq!(payload.viewport_x, payload.max_scroll_x);
     assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    let expected_settled_feedback = format!(
+        "Viewport settled at x {}, y {}.",
+        payload.max_scroll_x, payload.max_scroll_y
+    );
     assert_eq!(
         payload.action_feedback.as_deref(),
-        Some("Viewport is already at that position.")
+        Some(expected_settled_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, &back_href);
     assert!(!html.contains("data-browser-action-feedback"));
-    assert!(html.contains(
-        r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Viewport is already at that position.</span>"#
-    ));
+    assert!(html.contains(&format!(
+        r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{expected_settled_feedback}</span>"#
+    )));
 
     let line_down_noop = RequestTarget {
         path: "/browser".to_owned(),
