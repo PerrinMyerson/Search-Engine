@@ -9865,7 +9865,7 @@ fn browser_session_find_highlighting_escapes_viewport_text() {
 
 #[test]
 fn browser_session_action_href_preserves_session_and_viewport() {
-    let payload = BrowserSessionPayload {
+    let mut payload = BrowserSessionPayload {
         id: "s7".to_owned(),
         back_href: "/search?q=cat".to_owned(),
         title: "Example".to_owned(),
@@ -9991,6 +9991,42 @@ fn browser_session_action_href_preserves_session_and_viewport() {
     assert!(sessions_html.contains(
         r#"<input type="hidden" name="source" value="https://example.com"><input type="text" inputmode="url""#
     ));
+
+    payload.viewport_image = Some(BrowserSessionViewportImagePayload {
+        data_url: "data:image/png;base64,ZmFrZQ==".to_owned(),
+        width: 120,
+        height: 80,
+    });
+    let shell_html = render_browser_session_viewport_image_shell(&payload);
+    let scroll_href = browser_session_action_href(&payload.id, "scroll", &[], &payload);
+    let click_href = browser_session_action_href(&payload.id, "click-at", &[], &payload);
+    assert!(shell_html.contains(&format!(
+        r#"data-browser-scroll-action-url="{}""#,
+        html_escape::encode_double_quoted_attribute(&scroll_href)
+    )));
+    assert!(shell_html.contains(&format!(
+        r#"data-browser-click-action-url="{}""#,
+        html_escape::encode_double_quoted_attribute(&click_href)
+    )));
+    assert!(shell_html.contains(r#"data-viewport-x="12""#));
+    assert!(shell_html.contains(r#"data-viewport-y="7""#));
+    assert!(shell_html.contains(r#"data-max-bytes="1048576""#));
+    assert!(shell_html.contains(r#"source=https%3A%2F%2Fexample.com"#));
+
+    payload.viewport_image = None;
+    payload.fast_scroll = true;
+    let fast_scroll_shell_html = render_browser_session_viewport_image_shell(&payload);
+    assert!(fast_scroll_shell_html.contains(r#"data-browser-fast-scroll"#));
+    assert!(fast_scroll_shell_html.contains(&format!(
+        r#"data-browser-scroll-action-url="{}""#,
+        html_escape::encode_double_quoted_attribute(&scroll_href)
+    )));
+    assert!(fast_scroll_shell_html.contains(&format!(
+        r#"data-browser-click-action-url="{}""#,
+        html_escape::encode_double_quoted_attribute(&click_href)
+    )));
+    assert!(fast_scroll_shell_html.contains(r#"data-viewport-x="12""#));
+    assert!(fast_scroll_shell_html.contains(r#"data-viewport-y="7""#));
 }
 
 #[test]
