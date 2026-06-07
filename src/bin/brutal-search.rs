@@ -46,6 +46,7 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
     "crawl-docs.jsonl",
     "web-cache.jsonl",
     "brave-results.jsonl",
+    "browser-documents.jsonl",
     "bench-status.json",
 ];
 const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
@@ -840,6 +841,12 @@ struct IndexStorageStats {
     total_bytes: u64,
     artifacts: Vec<IndexStorageArtifact>,
     web_artifacts: Vec<WebStorageArtifactStats>,
+    browser_document_bytes: u64,
+    browser_document_rows: usize,
+    browser_document_unique_rows: usize,
+    browser_document_duplicate_rows: usize,
+    browser_document_unique_row_bytes: u64,
+    browser_document_duplicate_row_bytes: u64,
     crawl_frontier_bytes: u64,
     crawl_frontier_stats: Option<FrontierStats>,
     crawl_snapshot_bytes: u64,
@@ -884,6 +891,12 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         total_bytes: 0,
         artifacts: Vec::new(),
         web_artifacts: Vec::new(),
+        browser_document_bytes: 0,
+        browser_document_rows: 0,
+        browser_document_unique_rows: 0,
+        browser_document_duplicate_rows: 0,
+        browser_document_unique_row_bytes: 0,
+        browser_document_duplicate_row_bytes: 0,
         crawl_frontier_bytes: 0,
         crawl_frontier_stats: None,
         crawl_snapshot_bytes: 0,
@@ -920,6 +933,15 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
                 stats.crawl_snapshot_unique_entries = snapshot.unique_entries;
                 stats.crawl_snapshot_duplicate_entries = snapshot.duplicate_entries;
             }
+            "browser-documents.jsonl" => {
+                let documents = browser_document_artifact_stats(&path)?;
+                stats.browser_document_bytes = bytes;
+                stats.browser_document_rows = documents.rows;
+                stats.browser_document_unique_rows = documents.unique_rows;
+                stats.browser_document_duplicate_rows = documents.duplicate_rows;
+                stats.browser_document_unique_row_bytes = documents.unique_row_bytes;
+                stats.browser_document_duplicate_row_bytes = documents.duplicate_row_bytes;
+            }
             _ => {}
         }
         if matches!(*name, "web-cache.jsonl" | "brave-results.jsonl") {
@@ -942,6 +964,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         );
     }
     for line in crawl_storage_pressure_summary_lines(&stats) {
+        println!("{line}");
+    }
+    for line in browser_document_storage_pressure_summary_lines(&stats) {
         println!("{line}");
     }
     for line in web_storage_retention_config_lines(web_storage_retention_config()) {
@@ -1112,6 +1137,74 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
     lines
 }
 
+fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String> {
+    if stats.browser_document_bytes == 0 && stats.browser_document_rows == 0 {
+        return Vec::new();
+    }
+
+    let zero_removal = stats.browser_document_duplicate_rows == 0
+        && stats.browser_document_duplicate_row_bytes == 0;
+    let mut lines = vec![
+        format!(
+            "browser_document_storage_summary: bytes={} rows={} unique_rows={} duplicate_rows={} projected_rows_after={} projected_rows_removed={} projected_row_bytes_after={} projected_row_bytes_removed={} zero_removal={}",
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_row_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            zero_removal
+        ),
+        format!(
+            "browser_document_storage_bytes: {}",
+            stats.browser_document_bytes
+        ),
+        format!(
+            "browser_document_storage_rows: {}",
+            stats.browser_document_rows
+        ),
+        format!(
+            "browser_document_storage_unique_rows: {}",
+            stats.browser_document_unique_rows
+        ),
+        format!(
+            "browser_document_storage_duplicate_rows: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "browser_document_storage_projected_rows_after: {}",
+            stats.browser_document_unique_rows
+        ),
+        format!(
+            "browser_document_storage_projected_rows_removed: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "browser_document_storage_projected_row_bytes_after: {}",
+            stats.browser_document_unique_row_bytes
+        ),
+        format!(
+            "browser_document_storage_projected_row_bytes_removed: {}",
+            stats.browser_document_duplicate_row_bytes
+        ),
+        format!("browser_document_storage_zero_removal: {zero_removal}"),
+    ];
+    if zero_removal {
+        lines.push(
+            "browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing"
+                .to_owned(),
+        );
+    } else {
+        lines.push(
+            "browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data"
+                .to_owned(),
+        );
+    }
+    lines
+}
+
 fn storage_pressure_rollup_lines(
     stats: &IndexStorageStats,
     web_summary: &WebStoragePressureSummary,
@@ -1122,6 +1215,7 @@ fn storage_pressure_rollup_lines(
     let core_bytes = stats
         .total_bytes
         .saturating_sub(crawl_bytes)
+        .saturating_sub(stats.browser_document_bytes)
         .saturating_sub(web_summary.bytes);
     let frontier_records = stats
         .crawl_frontier_stats
@@ -1130,10 +1224,11 @@ fn storage_pressure_rollup_lines(
         .unwrap_or(0);
     vec![
         format!(
-            "storage_pressure_summary: total_bytes={} core_index_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_duplicates={} snapshot_entries={} frontier_records={}",
+            "storage_pressure_summary: total_bytes={} core_index_bytes={} web_bytes={} browser_document_bytes={} crawl_bytes={} web_entries={} web_duplicates={} snapshot_entries={} frontier_records={}",
             stats.total_bytes,
             core_bytes,
             web_summary.bytes,
+            stats.browser_document_bytes,
             crawl_bytes,
             web_summary.entries,
             web_summary.duplicate_entries,
@@ -1143,6 +1238,10 @@ fn storage_pressure_rollup_lines(
         format!("storage_pressure_total_bytes: {}", stats.total_bytes),
         format!("storage_pressure_core_index_bytes: {core_bytes}"),
         format!("storage_pressure_web_bytes: {}", web_summary.bytes),
+        format!(
+            "storage_pressure_browser_document_bytes: {}",
+            stats.browser_document_bytes
+        ),
         format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
     ]
 }
@@ -1166,10 +1265,13 @@ fn storage_snapshot_readiness_lines(
     };
     let mut lines = vec![
         format!(
-            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_result_rows={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} browser_document_bytes={} browser_document_rows={} browser_document_duplicates={} crawl_bytes={} web_entries={} web_result_rows={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
             status,
             stats.total_bytes,
             web_summary.bytes,
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_duplicate_rows,
             crawl_bytes,
             web_summary.entries,
             web_summary.result_rows,
@@ -1181,6 +1283,14 @@ fn storage_snapshot_readiness_lines(
             frontier_records
         ),
         format!("storage_snapshot_status: {status}"),
+        format!(
+            "storage_snapshot_browser_document_rows: {}",
+            stats.browser_document_rows
+        ),
+        format!(
+            "storage_snapshot_browser_document_duplicates: {}",
+            stats.browser_document_duplicate_rows
+        ),
         format!(
             "storage_snapshot_web_suggested_dry_runs: {}",
             web_summary.suggested_dry_runs
@@ -1201,6 +1311,78 @@ struct CrawlSnapshotArtifactStats {
     entries: usize,
     unique_entries: usize,
     duplicate_entries: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrowserDocumentArtifactStats {
+    rows: usize,
+    unique_rows: usize,
+    duplicate_rows: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
+}
+
+fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifactStats> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open browser document jsonl artifact {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut rows = 0usize;
+    let mut unique_rows = 0usize;
+    let mut duplicate_rows = 0usize;
+    let mut unique_row_bytes = 0u64;
+    let mut duplicate_row_bytes = 0u64;
+    let mut keys = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line
+            .with_context(|| format!("read browser document jsonl artifact {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        rows = rows.saturating_add(1);
+        let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+            format!("decode browser document jsonl artifact {}", path.display())
+        })?;
+        if let Some(key) = browser_document_storage_key(&value) {
+            if keys.insert(key) {
+                unique_rows = unique_rows.saturating_add(1);
+                unique_row_bytes = unique_row_bytes.saturating_add(row_bytes);
+            } else {
+                duplicate_rows = duplicate_rows.saturating_add(1);
+                duplicate_row_bytes = duplicate_row_bytes.saturating_add(row_bytes);
+            }
+        } else {
+            unique_rows = unique_rows.saturating_add(1);
+            unique_row_bytes = unique_row_bytes.saturating_add(row_bytes);
+        }
+    }
+
+    Ok(BrowserDocumentArtifactStats {
+        rows,
+        unique_rows,
+        duplicate_rows,
+        unique_row_bytes,
+        duplicate_row_bytes,
+    })
+}
+
+fn browser_document_storage_key(value: &serde_json::Value) -> Option<String> {
+    let url = first_json_string(
+        value,
+        &["url", "document_url", "source", "target", "final_url"],
+    )?;
+    let session = first_json_string(value, &["session_id", "session", "tab_id", "tab"]);
+    Some(match session {
+        Some(session) => format!("{session}\0{url}"),
+        None => url.to_owned(),
+    })
+}
+
+fn first_json_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|value| value.as_str()))
+        .filter(|value| !value.is_empty())
 }
 
 fn crawl_snapshot_artifact_stats(path: &Path) -> Result<CrawlSnapshotArtifactStats> {
@@ -2087,6 +2269,12 @@ mod tests {
         assert_eq!(stats.total_bytes, 0);
         assert!(stats.artifacts.is_empty());
         assert!(stats.web_artifacts.is_empty());
+        assert_eq!(stats.browser_document_bytes, 0);
+        assert_eq!(stats.browser_document_rows, 0);
+        assert_eq!(stats.browser_document_unique_rows, 0);
+        assert_eq!(stats.browser_document_duplicate_rows, 0);
+        assert_eq!(stats.browser_document_unique_row_bytes, 0);
+        assert_eq!(stats.browser_document_duplicate_row_bytes, 0);
         assert_eq!(stats.crawl_frontier_bytes, 0);
         assert!(stats.crawl_frontier_stats.is_none());
         assert_eq!(stats.crawl_snapshot_bytes, 0);
@@ -2101,6 +2289,12 @@ mod tests {
             total_bytes: 170,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
             crawl_frontier_bytes: 50,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -2158,6 +2352,12 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 3,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -2189,10 +2389,11 @@ mod tests {
         let lines = storage_pressure_rollup_lines(&stats, &web_summary);
 
         assert!(lines.contains(&"storage_pressure_total_bytes: 1000".to_owned()));
-        assert!(lines.contains(&"storage_pressure_core_index_bytes: 400".to_owned()));
+        assert!(lines.contains(&"storage_pressure_core_index_bytes: 350".to_owned()));
         assert!(lines.contains(&"storage_pressure_web_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_pressure_browser_document_bytes: 50".to_owned()));
         assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
-        assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=400 web_bytes=300 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
     }
 
     #[test]
@@ -2201,6 +2402,12 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
             crawl_frontier_bytes: 80,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -2231,8 +2438,10 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_result_rows=45 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 browser_document_bytes=50 browser_document_rows=3 browser_document_duplicates=1 crawl_bytes=200 web_entries=30 web_result_rows=45 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_rows: 3".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_duplicates: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
         assert!(lines.contains(
@@ -2246,6 +2455,12 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
@@ -2269,14 +2484,45 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_result_rows=12 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 browser_document_bytes=25 browser_document_rows=1 browser_document_duplicates=0 crawl_bytes=100 web_entries=10 web_result_rows=12 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_duplicates: 0".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
         assert!(
             !lines
                 .iter()
                 .any(|line| line.starts_with("storage_snapshot_cleanup_hint:"))
         );
+    }
+
+    #[test]
+    fn browser_document_storage_pressure_reports_zero_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 2);
+        assert_eq!(stats.browser_document_unique_rows, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 0);
+        assert!(lines.contains(&format!(
+            "browser_document_storage_bytes: {}",
+            stats.browser_document_bytes
+        )));
+        assert!(lines.contains(&"browser_document_storage_rows: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_unique_rows: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_duplicate_rows: 0".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 0".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_zero_removal: true".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing".to_owned()));
     }
 
     #[test]
