@@ -869,6 +869,7 @@ struct WebStorageArtifactStats {
     unique_row_bytes: u64,
     duplicate_row_bytes: u64,
     query_count: usize,
+    provider_count: usize,
     max_entries_per_query: usize,
     oldest_fetched_at_unix: Option<u64>,
     newest_fetched_at_unix: Option<u64>,
@@ -1024,6 +1025,10 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         println!(
             "web_storage_artifact_queries: {} {}",
             artifact.name, artifact.query_count
+        );
+        println!(
+            "web_storage_artifact_providers: {} {}",
+            artifact.name, artifact.provider_count
         );
         println!(
             "web_storage_artifact_max_entries_per_query: {} {}",
@@ -1715,6 +1720,11 @@ fn web_storage_export_readiness_lines(
         .find(|artifact| artifact.name == "brave-results.jsonl")
         .map(|artifact| artifact.query_count)
         .unwrap_or(0);
+    let provider_buckets = artifacts
+        .iter()
+        .map(|artifact| artifact.provider_count)
+        .max()
+        .unwrap_or(0);
     let replay_missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
     let status = if summary.result_rows == 0 {
         "empty"
@@ -1750,6 +1760,7 @@ fn web_storage_export_readiness_lines(
         format!(
             "web_storage_replay_query_coverage: report_only=true cache_query_buckets={cache_query_buckets} result_log_query_buckets={result_log_query_buckets} missing_query_buckets={replay_missing_query_buckets}"
         ),
+        format!("web_storage_provider_buckets: {provider_buckets}"),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
         format!("web_storage_replay_missing_query_buckets: {replay_missing_query_buckets}"),
         format!("web_storage_replayable_result_rows: {cache_replayable_result_rows}"),
@@ -2168,12 +2179,14 @@ fn collect_web_storage_artifact_stats(
         unique_row_bytes: 0,
         duplicate_row_bytes: 0,
         query_count: 0,
+        provider_count: 0,
         max_entries_per_query: 0,
         oldest_fetched_at_unix: None,
         newest_fetched_at_unix: None,
     };
     let mut unique_keys = std::collections::HashSet::new();
     let mut query_counts = HashMap::new();
+    let mut providers = std::collections::HashSet::new();
 
     for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
         let line = line.with_context(|| {
@@ -2213,6 +2226,13 @@ fn collect_web_storage_artifact_stats(
         {
             *query_counts.entry(query.to_owned()).or_insert(0usize) += 1;
         }
+        if let Some(provider) = value
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .filter(|provider| !provider.is_empty())
+        {
+            providers.insert(provider.to_owned());
+        }
         let Some(fetched_at_unix) = value
             .get("fetched_at_unix")
             .and_then(|value| value.as_u64())
@@ -2231,6 +2251,7 @@ fn collect_web_storage_artifact_stats(
         );
     }
     stats.query_count = query_counts.len();
+    stats.provider_count = providers.len();
     stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
 
     Ok(stats)
@@ -2591,6 +2612,7 @@ mod tests {
                     unique_row_bytes: 0,
                     duplicate_row_bytes: 0,
                     query_count: 0,
+                    provider_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -2607,6 +2629,7 @@ mod tests {
                     unique_row_bytes: 0,
                     duplicate_row_bytes: 0,
                     query_count: 0,
+                    provider_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(130),
                     newest_fetched_at_unix: Some(130),
@@ -3123,6 +3146,7 @@ mod tests {
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(cache_stats.query_count, 2);
+        assert_eq!(cache_stats.provider_count, 0);
         assert_eq!(cache_stats.max_entries_per_query, 2);
         assert_eq!(log_stats.entries, 3);
         assert_eq!(log_stats.result_rows, 3);
@@ -3132,6 +3156,7 @@ mod tests {
         assert_eq!(log_stats.unique_entries, 2);
         assert_eq!(log_stats.duplicate_entries, 1);
         assert_eq!(log_stats.query_count, 1);
+        assert_eq!(log_stats.provider_count, 1);
         assert_eq!(log_stats.max_entries_per_query, 3);
     }
 
@@ -3149,6 +3174,7 @@ mod tests {
             unique_row_bytes: 80,
             duplicate_row_bytes: 40,
             query_count: 2,
+            provider_count: 1,
             max_entries_per_query: 2,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3165,6 +3191,7 @@ mod tests {
             unique_row_bytes: 4096,
             duplicate_row_bytes: 0,
             query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3181,6 +3208,7 @@ mod tests {
             unique_row_bytes: 80,
             duplicate_row_bytes: 0,
             query_count: 2,
+            provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3224,6 +3252,7 @@ mod tests {
             unique_row_bytes: 120,
             duplicate_row_bytes: 0,
             query_count: 2,
+            provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
             newest_fetched_at_unix: Some(120),
@@ -3240,6 +3269,7 @@ mod tests {
             unique_row_bytes: 90,
             duplicate_row_bytes: 0,
             query_count: 2,
+            provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(190),
             newest_fetched_at_unix: Some(200),
@@ -3269,6 +3299,7 @@ mod tests {
                     unique_row_bytes: 80,
                     duplicate_row_bytes: 40,
                     query_count: 2,
+                    provider_count: 1,
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -3285,6 +3316,7 @@ mod tests {
                     unique_row_bytes: 90,
                     duplicate_row_bytes: 0,
                     query_count: 2,
+                    provider_count: 1,
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
                     newest_fetched_at_unix: Some(200),
@@ -3357,6 +3389,7 @@ mod tests {
                     unique_row_bytes: 80,
                     duplicate_row_bytes: 40,
                     query_count: 2,
+                    provider_count: 1,
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
                     newest_fetched_at_unix: Some(120),
@@ -3373,6 +3406,7 @@ mod tests {
                     unique_row_bytes: 90,
                     duplicate_row_bytes: 0,
                     query_count: 2,
+                    provider_count: 1,
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
                     newest_fetched_at_unix: Some(200),
@@ -3393,6 +3427,7 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
         ));
+        assert!(ready_lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(ready_lines.contains(
@@ -3449,6 +3484,7 @@ mod tests {
                 unique_row_bytes: 90,
                 duplicate_row_bytes: 0,
                 query_count: 2,
+                provider_count: 1,
                 max_entries_per_query: 1,
                 oldest_fetched_at_unix: Some(190),
                 newest_fetched_at_unix: Some(200),
@@ -3462,6 +3498,7 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
         ));
+        assert!(lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
         assert!(lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
