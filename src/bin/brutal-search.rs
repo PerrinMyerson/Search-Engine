@@ -51,6 +51,7 @@ const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
 ];
 const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
 const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
+const WEB_STORAGE_QUERY_EXAMPLE_LIMIT: usize = 3;
 const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
@@ -869,6 +870,7 @@ struct WebStorageArtifactStats {
     unique_row_bytes: u64,
     duplicate_row_bytes: u64,
     query_count: usize,
+    query_examples: Vec<String>,
     provider_count: usize,
     max_entries_per_query: usize,
     oldest_fetched_at_unix: Option<u64>,
@@ -1724,6 +1726,7 @@ fn web_storage_export_readiness_lines(
         .find(|artifact| artifact.name == "brave-results.jsonl")
         .map(|artifact| artifact.query_count)
         .unwrap_or(0);
+    let replay_missing_query_examples = web_storage_replay_missing_query_examples(artifacts);
     let provider_buckets = artifacts
         .iter()
         .map(|artifact| artifact.provider_count)
@@ -1794,6 +1797,10 @@ fn web_storage_export_readiness_lines(
             "web_storage_replay_query_coverage: report_only=true cache_query_buckets={cache_query_buckets} result_log_query_buckets={result_log_query_buckets} missing_query_buckets={replay_missing_query_buckets}"
         ),
         format!(
+            "web_storage_replay_missing_query_examples: report_only=true limit={WEB_STORAGE_QUERY_EXAMPLE_LIMIT} examples={}",
+            web_storage_format_query_examples(&replay_missing_query_examples)
+        ),
+        format!(
             "web_storage_replay_staleness: status={staleness_status} report_only=true newest_age_secs={} oldest_age_secs={} stale_after_secs={stale_secs}",
             newest_age_secs
                 .map(|age_secs| age_secs.to_string())
@@ -1825,6 +1832,42 @@ fn web_storage_export_readiness_lines(
         ),
         "web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned(),
     ]
+}
+
+fn web_storage_replay_missing_query_examples(artifacts: &[WebStorageArtifactStats]) -> Vec<String> {
+    let cache_queries = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.query_examples.as_slice())
+        .unwrap_or(&[]);
+    let result_log_queries = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.query_examples.as_slice())
+        .unwrap_or(&[]);
+    let cache_queries = cache_queries
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut examples = result_log_queries
+        .iter()
+        .filter(|query| !cache_queries.contains(query.as_str()))
+        .take(WEB_STORAGE_QUERY_EXAMPLE_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
+    examples.sort();
+    examples
+}
+
+fn web_storage_format_query_examples(examples: &[String]) -> String {
+    if examples.is_empty() {
+        return "none".to_owned();
+    }
+    examples
+        .iter()
+        .map(|query| query.replace(|ch: char| ch.is_whitespace() || ch == ',', "_"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn web_storage_pressure_summary(
@@ -2225,6 +2268,7 @@ fn collect_web_storage_artifact_stats(
         unique_row_bytes: 0,
         duplicate_row_bytes: 0,
         query_count: 0,
+        query_examples: Vec::new(),
         provider_count: 0,
         max_entries_per_query: 0,
         oldest_fetched_at_unix: None,
@@ -2296,7 +2340,11 @@ fn collect_web_storage_artifact_stats(
                 .map_or(fetched_at_unix, |newest| newest.max(fetched_at_unix)),
         );
     }
+    let mut query_examples = query_counts.keys().cloned().collect::<Vec<_>>();
+    query_examples.sort();
+    query_examples.truncate(WEB_STORAGE_QUERY_EXAMPLE_LIMIT);
     stats.query_count = query_counts.len();
+    stats.query_examples = query_examples;
     stats.provider_count = providers.len();
     stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
 
@@ -2658,6 +2706,7 @@ mod tests {
                     unique_row_bytes: 0,
                     duplicate_row_bytes: 0,
                     query_count: 0,
+                    query_examples: Vec::new(),
                     provider_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(100),
@@ -2675,6 +2724,7 @@ mod tests {
                     unique_row_bytes: 0,
                     duplicate_row_bytes: 0,
                     query_count: 0,
+                    query_examples: Vec::new(),
                     provider_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(130),
@@ -3192,6 +3242,10 @@ mod tests {
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(cache_stats.query_count, 2);
+        assert_eq!(
+            cache_stats.query_examples,
+            vec!["one".to_owned(), "two".to_owned()]
+        );
         assert_eq!(cache_stats.provider_count, 0);
         assert_eq!(cache_stats.max_entries_per_query, 2);
         assert_eq!(log_stats.entries, 3);
@@ -3202,6 +3256,7 @@ mod tests {
         assert_eq!(log_stats.unique_entries, 2);
         assert_eq!(log_stats.duplicate_entries, 1);
         assert_eq!(log_stats.query_count, 1);
+        assert_eq!(log_stats.query_examples, vec!["one".to_owned()]);
         assert_eq!(log_stats.provider_count, 1);
         assert_eq!(log_stats.max_entries_per_query, 3);
     }
@@ -3220,6 +3275,7 @@ mod tests {
             unique_row_bytes: 80,
             duplicate_row_bytes: 40,
             query_count: 2,
+            query_examples: Vec::new(),
             provider_count: 1,
             max_entries_per_query: 2,
             oldest_fetched_at_unix: Some(100),
@@ -3237,6 +3293,7 @@ mod tests {
             unique_row_bytes: 4096,
             duplicate_row_bytes: 0,
             query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            query_examples: Vec::new(),
             provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -3254,6 +3311,7 @@ mod tests {
             unique_row_bytes: 80,
             duplicate_row_bytes: 0,
             query_count: 2,
+            query_examples: Vec::new(),
             provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -3298,6 +3356,7 @@ mod tests {
             unique_row_bytes: 120,
             duplicate_row_bytes: 0,
             query_count: 2,
+            query_examples: Vec::new(),
             provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -3315,6 +3374,7 @@ mod tests {
             unique_row_bytes: 90,
             duplicate_row_bytes: 0,
             query_count: 2,
+            query_examples: Vec::new(),
             provider_count: 1,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(190),
@@ -3345,6 +3405,7 @@ mod tests {
                     unique_row_bytes: 80,
                     duplicate_row_bytes: 40,
                     query_count: 2,
+                    query_examples: Vec::new(),
                     provider_count: 1,
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
@@ -3362,6 +3423,7 @@ mod tests {
                     unique_row_bytes: 90,
                     duplicate_row_bytes: 0,
                     query_count: 2,
+                    query_examples: Vec::new(),
                     provider_count: 1,
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
@@ -3435,6 +3497,7 @@ mod tests {
                     unique_row_bytes: 80,
                     duplicate_row_bytes: 40,
                     query_count: 2,
+                    query_examples: vec!["one".to_owned(), "two".to_owned()],
                     provider_count: 1,
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
@@ -3452,6 +3515,7 @@ mod tests {
                     unique_row_bytes: 90,
                     duplicate_row_bytes: 0,
                     query_count: 2,
+                    query_examples: vec!["one".to_owned(), "two".to_owned()],
                     provider_count: 1,
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
@@ -3474,6 +3538,9 @@ mod tests {
         ));
         assert!(ready_lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=none".to_owned()
         ));
         assert!(ready_lines.contains(
             &"web_storage_replay_staleness: status=fresh report_only=true newest_age_secs=0 oldest_age_secs=100 stale_after_secs=60".to_owned()
@@ -3501,6 +3568,9 @@ mod tests {
         ));
         assert!(partial_lines.contains(
             &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
+        ));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=none".to_owned()
         ));
         assert!(partial_lines.contains(
             &"web_storage_compaction_decision: report_only=true reason=zero-removal duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=0 staleness_status=unknown".to_owned()
@@ -3546,6 +3616,7 @@ mod tests {
                 unique_row_bytes: 90,
                 duplicate_row_bytes: 0,
                 query_count: 2,
+                query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
                 provider_count: 1,
                 max_entries_per_query: 1,
                 oldest_fetched_at_unix: Some(190),
@@ -3561,6 +3632,9 @@ mod tests {
         ));
         assert!(lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=cached_only,result_only".to_owned()
         ));
         assert!(lines.contains(
             &"web_storage_replay_staleness: status=stale report_only=true newest_age_secs=100 oldest_age_secs=110 stale_after_secs=60".to_owned()
@@ -3605,6 +3679,7 @@ mod tests {
                 unique_row_bytes: 120,
                 duplicate_row_bytes: 0,
                 query_count: 2,
+                query_examples: Vec::new(),
                 provider_count: 2,
                 max_entries_per_query: 2,
                 oldest_fetched_at_unix: Some(100),
@@ -3631,6 +3706,7 @@ mod tests {
                 unique_row_bytes: 120,
                 duplicate_row_bytes: 0,
                 query_count: 2,
+                query_examples: Vec::new(),
                 provider_count: 1,
                 max_entries_per_query: 2,
                 oldest_fetched_at_unix: Some(100),
