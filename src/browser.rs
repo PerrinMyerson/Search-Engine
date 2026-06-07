@@ -16372,6 +16372,12 @@ fn render_node(
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
             }
+            let fixed_clip_escape_entered = if viewport_fixed_entered {
+                renderer.enter_unclipped();
+                true
+            } else {
+                false
+            };
             let viewport_sticky_top_entered = if style.position == Position::Sticky {
                 style
                     .vertical_projection_offset(Some(default_vertical_dimension_basis()))
@@ -16423,6 +16429,9 @@ fn render_node(
                 }
                 if paint_layer_z_index.is_some() {
                     renderer.exit_positive_z_layer();
+                }
+                if fixed_clip_escape_entered {
+                    renderer.exit_unclipped();
                 }
                 if viewport_fixed_entered {
                     renderer.exit_viewport_fixed();
@@ -19571,6 +19580,15 @@ impl FlowRenderer {
     }
 
     fn exit_clip(&mut self) {
+        self.active_clip = self.clip_stack.pop().unwrap_or(None);
+    }
+
+    fn enter_unclipped(&mut self) {
+        self.clip_stack.push(self.active_clip);
+        self.active_clip = None;
+    }
+
+    fn exit_unclipped(&mut self) {
         self.active_clip = self.clip_stack.pop().unwrap_or(None);
     }
 
