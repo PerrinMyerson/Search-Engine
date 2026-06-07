@@ -13128,6 +13128,15 @@ async fn browser_session_page_renders_form_controls() {
         r#"<input type="hidden" name="source" value="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
+    assert!(html.contains(&format!(
+        r#"<div class="meta" data-browser-current-location title="{}">"#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(&format!(
+        r#"value="{}" title="{}" aria-label="Address""#,
+        html_escape::encode_double_quoted_attribute(&payload.source),
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
     assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
