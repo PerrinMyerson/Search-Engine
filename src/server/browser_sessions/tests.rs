@@ -2659,6 +2659,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-viewport-y="4""#));
     assert!(html.contains(r#"data-viewport-width="40""#));
     assert!(html.contains(r#"data-viewport-height="16""#));
+    assert!(html.contains(&format!(r#"data-max-bytes="{}""#, payload.max_bytes)));
     assert!(html.contains(r#"data-page-source=""#));
     assert!(html.contains(r#"data-raster-width=""#));
     assert!(html.contains(r#"data-raster-height=""#));
@@ -2800,6 +2801,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(
         html.contains(r#"url.searchParams.set("height", String(numberData("viewportHeight")))"#)
     );
+    assert!(html.contains(r#"url.searchParams.set("max_bytes", shell.dataset.maxBytes)"#));
     assert!(html.contains(r#"url.searchParams.set("source", shell.dataset.pageSource)"#));
     assert!(html.contains(r#"shell.addEventListener("mousemove""#));
     assert!(html.contains(r#"shell.addEventListener("mouseleave""#));
@@ -2922,6 +2924,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const syncViewportHistory"));
     assert!(html.contains("window.history.replaceState(null"));
     assert!(html.contains(r#"currentUrl.searchParams.set("action", "current")"#));
+    assert!(
+        html.contains(
+            r#"currentUrl.searchParams.set("width", String(numberData("viewportWidth")))"#
+        )
+    );
+    assert!(html.contains(
+        r#"currentUrl.searchParams.set("height", String(numberData("viewportHeight")))"#
+    ));
+    assert!(html.contains(r#"currentUrl.searchParams.set("max_bytes", shell.dataset.maxBytes)"#));
+    assert!(html.contains(r#"currentUrl.searchParams.set("source", shell.dataset.pageSource)"#));
     assert!(html.contains(r#"currentUrl.searchParams.delete("dx")"#));
     assert!(html.contains(r#"currentUrl.searchParams.delete("partial")"#));
     assert!(html.contains("document.write(html)"));
