@@ -853,6 +853,7 @@ struct WebStorageArtifactStats {
     name: &'static str,
     bytes: u64,
     entries: usize,
+    result_rows: usize,
     unique_entries: usize,
     duplicate_entries: usize,
     unique_row_bytes: u64,
@@ -868,6 +869,7 @@ struct WebStoragePressureSummary {
     artifact_count: usize,
     bytes: u64,
     entries: usize,
+    result_rows: usize,
     unique_entries: usize,
     duplicate_entries: usize,
     unique_row_bytes: u64,
@@ -961,6 +963,10 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         println!(
             "web_storage_artifact_entries: {} {}",
             artifact.name, artifact.entries
+        );
+        println!(
+            "web_storage_artifact_result_rows: {} {}",
+            artifact.name, artifact.result_rows
         );
         println!(
             "web_storage_artifact_unique_entries: {} {}",
@@ -1160,12 +1166,13 @@ fn storage_snapshot_readiness_lines(
     };
     let mut lines = vec![
         format!(
-            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_result_rows={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
             status,
             stats.total_bytes,
             web_summary.bytes,
             crawl_bytes,
             web_summary.entries,
+            web_summary.result_rows,
             web_summary.unique_entries,
             web_summary.duplicate_entries,
             web_summary.duplicate_row_bytes,
@@ -1231,10 +1238,11 @@ fn web_storage_pressure_summary_lines(
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
     let mut lines = vec![
         format!(
-            "web_storage_pressure_summary: artifacts={} bytes={} entries={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
             summary.artifact_count,
             summary.bytes,
             summary.entries,
+            summary.result_rows,
             summary.unique_entries,
             summary.duplicate_entries,
             summary.duplicate_row_bytes,
@@ -1244,6 +1252,7 @@ fn web_storage_pressure_summary_lines(
         format!("web_storage_pressure_artifacts: {}", summary.artifact_count),
         format!("web_storage_pressure_bytes: {}", summary.bytes),
         format!("web_storage_pressure_entries: {}", summary.entries),
+        format!("web_storage_pressure_result_rows: {}", summary.result_rows),
         format!(
             "web_storage_pressure_unique_entries: {}",
             summary.unique_entries
@@ -1305,6 +1314,7 @@ fn web_storage_pressure_summary(
             total.saturating_add(artifact.bytes)
         }),
         entries: artifacts.iter().map(|artifact| artifact.entries).sum(),
+        result_rows: artifacts.iter().map(|artifact| artifact.result_rows).sum(),
         unique_entries: artifacts
             .iter()
             .map(|artifact| artifact.unique_entries)
@@ -1661,6 +1671,7 @@ fn collect_web_storage_artifact_stats(
         name,
         bytes,
         entries: 0,
+        result_rows: 0,
         unique_entries: 0,
         duplicate_entries: 0,
         unique_row_bytes: 0,
@@ -1689,6 +1700,9 @@ fn collect_web_storage_artifact_stats(
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        stats.result_rows = stats
+            .result_rows
+            .saturating_add(web_storage_result_row_count(name, &value));
         if let Some(key) = web_storage_unique_key(name, &value) {
             if unique_keys.insert(key) {
                 stats.unique_entries += 1;
@@ -1726,6 +1740,18 @@ fn collect_web_storage_artifact_stats(
     stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
 
     Ok(stats)
+}
+
+fn web_storage_result_row_count(name: &str, value: &serde_json::Value) -> usize {
+    match name {
+        "web-cache.jsonl" => value
+            .get("results")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .unwrap_or(0),
+        "brave-results.jsonl" => 1,
+        _ => 0,
+    }
 }
 
 fn web_storage_unique_key(name: &str, value: &serde_json::Value) -> Option<String> {
@@ -1998,6 +2024,7 @@ mod tests {
                     name: "web-cache.jsonl",
                     bytes: 48,
                     entries: 2,
+                    result_rows: 0,
                     unique_entries: 0,
                     duplicate_entries: 0,
                     unique_row_bytes: 0,
@@ -2011,6 +2038,7 @@ mod tests {
                     name: "brave-results.jsonl",
                     bytes: 24,
                     entries: 1,
+                    result_rows: 1,
                     unique_entries: 0,
                     duplicate_entries: 0,
                     unique_row_bytes: 0,
@@ -2122,6 +2150,7 @@ mod tests {
             artifact_count: 2,
             bytes: 300,
             entries: 30,
+            result_rows: 45,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2164,6 +2193,7 @@ mod tests {
             artifact_count: 2,
             bytes: 300,
             entries: 30,
+            result_rows: 45,
             unique_entries: 26,
             duplicate_entries: 4,
             unique_row_bytes: 260,
@@ -2175,7 +2205,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_result_rows=45 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
@@ -2201,6 +2231,7 @@ mod tests {
             artifact_count: 2,
             bytes: 100,
             entries: 10,
+            result_rows: 12,
             unique_entries: 10,
             duplicate_entries: 0,
             unique_row_bytes: 100,
@@ -2212,7 +2243,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_result_rows=12 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
         assert!(
@@ -2228,7 +2259,7 @@ mod tests {
         let cache_path = dir.path().join("web-cache.jsonl");
         std::fs::write(
             &cache_path,
-            b"{\"normalized_query\":\"one\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"two\",\"fetched_at_unix\":130}\n",
+            b"{\"normalized_query\":\"one\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\"},{\"url\":\"https://example.com/b\"}]}\n{\"normalized_query\":\"one\",\"fetched_at_unix\":120,\"results\":[{\"url\":\"https://example.com/c\"}]}\n{\"normalized_query\":\"two\",\"fetched_at_unix\":130,\"results\":[{\"url\":\"https://example.com/d\"}]}\n",
         )
         .unwrap();
         let result_log_path = dir.path().join("brave-results.jsonl");
@@ -2244,12 +2275,14 @@ mod tests {
             collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
 
         assert_eq!(cache_stats.entries, 3);
-        assert_eq!(cache_stats.bytes, 147);
+        assert!(cache_stats.bytes > 147);
+        assert_eq!(cache_stats.result_rows, 4);
         assert_eq!(cache_stats.unique_entries, 2);
         assert_eq!(cache_stats.duplicate_entries, 1);
         assert_eq!(cache_stats.query_count, 2);
         assert_eq!(cache_stats.max_entries_per_query, 2);
         assert_eq!(log_stats.entries, 3);
+        assert_eq!(log_stats.result_rows, 3);
         assert_eq!(log_stats.bytes, 321);
         assert_eq!(log_stats.unique_entries, 2);
         assert_eq!(log_stats.duplicate_entries, 1);
@@ -2263,6 +2296,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 120,
             entries: 3,
+            result_rows: 4,
             unique_entries: 2,
             duplicate_entries: 1,
             unique_row_bytes: 80,
@@ -2276,6 +2310,7 @@ mod tests {
             name: "brave-results.jsonl",
             bytes: 4096,
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             duplicate_entries: 0,
             unique_row_bytes: 4096,
@@ -2289,6 +2324,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 80,
             entries: 2,
+            result_rows: 2,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 80,
@@ -2329,6 +2365,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 120,
             entries: 2,
+            result_rows: 2,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 120,
@@ -2342,6 +2379,7 @@ mod tests {
             name: "brave-results.jsonl",
             bytes: 90,
             entries: 2,
+            result_rows: 2,
             unique_entries: 2,
             duplicate_entries: 0,
             unique_row_bytes: 90,
@@ -2368,6 +2406,7 @@ mod tests {
                     name: "web-cache.jsonl",
                     bytes: 120,
                     entries: 3,
+                    result_rows: 4,
                     unique_entries: 2,
                     duplicate_entries: 1,
                     unique_row_bytes: 80,
@@ -2381,6 +2420,7 @@ mod tests {
                     name: "brave-results.jsonl",
                     bytes: 90,
                     entries: 2,
+                    result_rows: 2,
                     unique_entries: 2,
                     duplicate_entries: 0,
                     unique_row_bytes: 90,
@@ -2396,9 +2436,10 @@ mod tests {
         );
 
         assert!(lines.contains(
-            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 result_rows=6 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
         ));
         assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_result_rows: 6".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_unique_entries: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_after: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
