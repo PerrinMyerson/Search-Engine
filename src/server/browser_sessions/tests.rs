@@ -2354,9 +2354,23 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
     assert!(html.contains(">Bottom</a>"));
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
+    let controls_html = &html[controls_tray_index..debug_index];
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-actions"#));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="top" data-browser-chrome-scroll-disabled="Already at top">Top</span>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="page-up" data-browser-chrome-scroll-disabled="Already at top">Page up</span>"#
+    ));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(html.contains(r#"data-browser-scroll-step-form"#));
+    assert!(!topbar_html.contains(r#"data-browser-scroll-step-form"#));
+    assert!(controls_html.contains(r#"data-browser-scroll-step-form"#));
     assert!(html.contains(r#"<input type="hidden" name="action" value="scroll">"#));
     assert!(html.contains(&format!(
         r#"<input type="hidden" name="id" value="{}">"#,
@@ -2406,6 +2420,24 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-scroll-y-state="at top""#));
     assert!(html.contains("Scroll x 0/"));
     assert!(html.contains(">Page down</a>"));
+    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], &payload);
+    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], &payload);
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-scroll-action="page-down">Page down</a>"#,
+        html_escape::encode_double_quoted_attribute(&page_down_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-scroll-action="bottom">Bottom</a>"#,
+        html_escape::encode_double_quoted_attribute(&bottom_href)
+    )));
+    assert!(page_down_href.contains(&format!("id={}", payload.id)));
+    assert!(page_down_href.contains("action=page-down"));
+    assert!(page_down_href.contains("width=40"));
+    assert!(page_down_href.contains("height=16"));
+    assert!(page_down_href.contains("viewport_x=0"));
+    assert!(page_down_href.contains("viewport_y=0"));
+    assert!(page_down_href.contains("max_bytes="));
+    assert!(page_down_href.contains("source="));
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
         params: vec![
@@ -3266,6 +3298,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some(expected_bottom_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, &back_href);
+    let bottom_topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    let bottom_top_href = browser_session_action_href(&payload.id, "top", &[], &payload);
+    let bottom_page_up_href = browser_session_action_href(&payload.id, "page-up", &[], &payload);
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Page down</span>"#
     ));
@@ -3274,6 +3310,20 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#">Top</a>"#));
     assert!(html.contains(r#">Page up</a>"#));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-scroll-action="top">Top</a>"#,
+        html_escape::encode_double_quoted_attribute(&bottom_top_href)
+    )));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-scroll-action="page-up">Page up</a>"#,
+        html_escape::encode_double_quoted_attribute(&bottom_page_up_href)
+    )));
+    assert!(bottom_topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="page-down" data-browser-chrome-scroll-disabled="Already at bottom">Page down</span>"#
+    ));
+    assert!(bottom_topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="bottom" data-browser-chrome-scroll-disabled="Already at bottom">Bottom</span>"#
+    ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
     assert!(html.contains(r#"data-scroll-y-state="at bottom""#));
     assert!(html.contains(r#"data-browser-scroll-step-form"#));

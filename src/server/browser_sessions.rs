@@ -10041,6 +10041,43 @@ fn render_browser_session_page_with_diagnostics(
     );
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
+    let chrome_top_href = browser_session_action_href(&payload.id, "top", &[], payload);
+    let chrome_page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
+    let chrome_page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
+    let chrome_bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
+    let can_scroll_up = payload.viewport_y > 0;
+    let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
+    let chrome_scroll_actions = format!(
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-scroll-actions>{top}{page_up}{page_down}{bottom}</div>"#,
+        top = browser_chrome_scroll_action(
+            can_scroll_up,
+            "Top",
+            &chrome_top_href,
+            "top",
+            "Already at top"
+        ),
+        page_up = browser_chrome_scroll_action(
+            can_scroll_up,
+            "Page up",
+            &chrome_page_up_href,
+            "page-up",
+            "Already at top"
+        ),
+        page_down = browser_chrome_scroll_action(
+            can_scroll_down,
+            "Page down",
+            &chrome_page_down_href,
+            "page-down",
+            "Already at bottom"
+        ),
+        bottom = browser_chrome_scroll_action(
+            can_scroll_down,
+            "Bottom",
+            &chrome_bottom_href,
+            "bottom",
+            "Already at bottom"
+        ),
+    );
     let keyboard_controls_script = render_browser_session_keyboard_controls_script(&reload_href);
     let duplicate_href = browser_session_action_href(
         &payload.id,
@@ -10185,10 +10222,11 @@ fn render_browser_session_page_with_diagnostics(
     chrome_tab_actions.push_str("</div>");
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         chrome_image_action = chrome_image_action,
+        chrome_scroll_actions = chrome_scroll_actions,
         chrome_tab_actions = chrome_tab_actions,
     );
     let diagnostics_href = browser_session_action_href(
@@ -10274,6 +10312,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-actions > summary::marker {{ color: #5d636b; }}
 .browser-chrome-action-list {{ position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; min-width: 132px; padding: 6px; border: 1px solid #c6cbd2; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(25,26,28,0.12); }}
 .browser-chrome-action-list a {{ justify-content: flex-start; width: 100%; }}
+.browser-chrome-scroll-actions {{ display: grid; gap: 4px; border-top: 1px solid #eef0f3; margin-top: 2px; padding-top: 5px; }}
+.browser-chrome-scroll-actions span {{ width: 100%; justify-content: flex-start; color: #8a929d; background: #eef0f3; }}
 .browser-chrome-tab-actions {{ display: grid; gap: 4px; border-top: 1px solid #eef0f3; margin-top: 2px; padding-top: 5px; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
@@ -16355,6 +16395,29 @@ fn nav_control(enabled: bool, label: &str, href: &str) -> String {
             label = html_escape::encode_text(label),
         )
     }
+}
+
+fn browser_chrome_scroll_action(
+    enabled: bool,
+    label: &str,
+    href: &str,
+    action: &str,
+    disabled_reason: &str,
+) -> String {
+    if enabled {
+        return format!(
+            r#"<a href="{href}" data-browser-chrome-scroll-action="{action}">{label}</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+            action = html_escape::encode_double_quoted_attribute(action),
+            label = html_escape::encode_text(label),
+        );
+    }
+    format!(
+        r#"<span aria-disabled="true" title="{reason}" data-browser-chrome-scroll-action="{action}" data-browser-chrome-scroll-disabled="{reason}">{label}</span>"#,
+        reason = html_escape::encode_double_quoted_attribute(disabled_reason),
+        action = html_escape::encode_double_quoted_attribute(action),
+        label = html_escape::encode_text(label),
+    )
 }
 
 fn scroll_nav_control(enabled: bool, label: &str, href: &str, disabled_reason: &str) -> String {
