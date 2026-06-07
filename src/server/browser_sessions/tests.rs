@@ -65,6 +65,34 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "First");
     assert!(!payload.can_back);
     assert!(payload.can_forward);
+    let expected_back_feedback = format!(
+        "Went back; opened local page: {}; viewport settled at x 0, y 0",
+        browser_session_feedback_excerpt(&first.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_back_feedback.as_str())
+    );
+
+    let forward = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "forward".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&forward).await.unwrap();
+    assert_eq!(payload.title, "Second");
+    assert!(payload.can_back);
+    assert!(!payload.can_forward);
+    let expected_forward_feedback = format!(
+        "Went forward; opened local page: {}; viewport settled at x 0, y 0",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_forward_feedback.as_str())
+    );
 }
 
 #[tokio::test]
