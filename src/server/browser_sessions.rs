@@ -10042,6 +10042,12 @@ fn render_browser_session_page_with_diagnostics(
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
+    let chrome_actions = format!(
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary>Actions</summary><div class="browser-chrome-action-list"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}">Reload</a>{chrome_image_action}</div></details>"#,
+        current_href = html_escape::encode_double_quoted_attribute(&current_href),
+        reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        chrome_image_action = chrome_image_action,
+    );
     let keyboard_controls_script = render_browser_session_keyboard_controls_script(&reload_href);
     let duplicate_href = browser_session_action_href(
         &payload.id,
@@ -10237,6 +10243,11 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-row {{ display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 5px; align-items: center; }}
 .browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
 .browser-primary-nav a, .browser-primary-nav span {{ min-width: 28px; min-height: 26px; justify-content: center; padding: 0 6px; font-size: 11px; white-space: nowrap; }}
+.browser-chrome-actions {{ position: relative; margin: 0; }}
+.browser-chrome-actions > summary {{ min-height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 700; white-space: nowrap; }}
+.browser-chrome-actions > summary::marker {{ color: #5d636b; }}
+.browser-chrome-action-list {{ position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; min-width: 132px; padding: 6px; border: 1px solid #c6cbd2; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(25,26,28,0.12); }}
+.browser-chrome-action-list a {{ justify-content: flex-start; width: 100%; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
@@ -10449,7 +10460,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <main>
 <header class="browser-topbar">
 <div class="browser-chrome-row" data-browser-chrome>
-<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}<a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}">Reload</a>{chrome_image_action}</nav>
+<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
@@ -10493,9 +10504,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         back_control = back_control,
         forward_control = forward_control,
-        current_href = html_escape::encode_double_quoted_attribute(&current_href),
-        reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
-        chrome_image_action = chrome_image_action,
+        chrome_actions = chrome_actions,
         keyboard_controls_script = keyboard_controls_script,
         width = payload.width,
         height = payload.height,
