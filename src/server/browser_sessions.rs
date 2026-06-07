@@ -10285,6 +10285,10 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
 .viewport-scroll-controls[data-scroll-pending="true"] a {{ cursor: wait; opacity: 0.72; }}
+.viewport-scroll-step {{ display: inline-flex; flex-wrap: nowrap; gap: 6px; align-items: center; min-width: 0; }}
+.viewport-scroll-step input[type="number"] {{ width: 72px; height: 32px; border: 1px solid #b7bdc5; border-radius: 6px; padding: 0 8px; font-size: 12px; background: #fff; }}
+.viewport-scroll-step button {{ min-height: 32px; border: 1px solid #2457d6; border-radius: 6px; padding: 0 10px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }}
+.viewport-scroll-step label {{ color: #3a3f45; font-size: 12px; font-weight: 800; }}
 .viewport-scroll-feedback {{ color: #5d636b; border-color: transparent !important; background: transparent !important; }}
 .viewport-command-strip {{ display: grid; gap: 8px; border: 1px solid #d3d8df; border-radius: 6px; padding: 10px 12px; margin: 10px 0 12px; background: #fff; }}
 .viewport-command-row {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
@@ -13999,12 +14003,22 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
+    let horizontal_step = if payload.max_scroll_x == 0 { 0 } else { 8 };
+    let vertical_step = if payload.max_scroll_y == 0 {
+        0
+    } else {
+        payload.height.max(1) / 2
+    }
+    .max((payload.max_scroll_y > 0) as usize);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}">{top}{left}{page_up}{line_up}{line_down}{page_down}{right}{bottom}<form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
         max_x = payload.max_scroll_x,
         max_y = payload.max_scroll_y,
+        common = browser_session_common_hidden_inputs(payload),
+        horizontal_step = horizontal_step,
+        vertical_step = vertical_step,
         can_scroll_left = can_scroll_left,
         can_scroll_right = can_scroll_right,
         can_scroll_up = can_scroll_up,
@@ -14275,6 +14289,7 @@ fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Opti
     browser_session_action_feedback_text(payload).filter(|feedback| {
         feedback.starts_with("Moved visual viewport")
             || feedback.starts_with("Viewport moved")
+            || feedback.starts_with("Viewport settled")
             || feedback.starts_with("Viewport is already")
             || feedback.starts_with("Already at")
     })
