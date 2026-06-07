@@ -1764,6 +1764,11 @@ fn web_storage_export_readiness_lines(
         .find(|artifact| artifact.name == "brave-results.jsonl")
         .map(|artifact| artifact.unique_entries)
         .unwrap_or(0);
+    let result_log_durable_result_rows = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
     let result_log_query_buckets = artifacts
         .iter()
         .find(|artifact| artifact.name == "brave-results.jsonl")
@@ -1825,6 +1830,10 @@ fn web_storage_export_readiness_lines(
         ),
         format!(
             "web_storage_replay_readiness: status={replay_status} report_only=true cache_query_buckets={cache_query_buckets} replayable_result_rows={cache_replayable_result_rows} result_log_unique_urls={result_log_unique_urls}"
+        ),
+        format!(
+            "web_storage_result_log_only_rows: report_only=true durable_result_rows={result_log_durable_result_rows} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={}",
+            result_log_durable_result_rows.saturating_sub(cache_replayable_result_rows)
         ),
         format!(
             "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} staleness_status={staleness_status} newest_age_secs={} stale_after_secs={stale_secs} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
@@ -3695,6 +3704,7 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
         ));
+        assert!(lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=4 result_log_only_rows=0".to_owned()));
         assert!(lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(lines.contains(&"web_storage_export_unique_result_urls: 2".to_owned()));
         assert!(lines.contains(&"web_storage_export_durable_result_rows: 6".to_owned()));
@@ -3774,6 +3784,7 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
         ));
+        assert!(ready_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=4 result_log_only_rows=0".to_owned()));
         assert!(ready_lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready staleness_status=fresh newest_age_secs=0 stale_after_secs=60 retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
         ));
@@ -3810,6 +3821,7 @@ mod tests {
         assert!(partial_lines.contains(
             &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
         ));
+        assert!(partial_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=0 replayable_result_rows=0 result_log_only_rows=0".to_owned()));
         assert!(partial_lines.contains(
             &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
         ));
@@ -3875,6 +3887,7 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
         ));
+        assert!(lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=0 result_log_only_rows=2".to_owned()));
         assert!(lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
         ));
