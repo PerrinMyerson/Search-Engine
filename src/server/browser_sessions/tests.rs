@@ -93,6 +93,26 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_forward_feedback.as_str())
     );
+
+    let reload = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "reload".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&reload).await.unwrap();
+    assert_eq!(payload.title, "Second");
+    assert!(payload.can_back);
+    assert!(!payload.can_forward);
+    let expected_reload_feedback = format!(
+        "Reloaded page: {}; viewport settled at x 0, y 0",
+        browser_session_feedback_excerpt(&second.display().to_string())
+    );
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some(expected_reload_feedback.as_str())
+    );
 }
 
 #[tokio::test]
