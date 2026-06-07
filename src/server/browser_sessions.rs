@@ -10028,7 +10028,9 @@ fn render_browser_session_page_with_diagnostics(
         "Forward",
         &browser_session_action_href(&payload.id, "forward", &[], payload),
     );
+    let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
+    let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let keyboard_controls_script = render_browser_session_keyboard_controls_script(&reload_href);
     let duplicate_href = browser_session_action_href(
         &payload.id,
@@ -10225,7 +10227,9 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-primary-nav {{ margin-bottom: 0; flex-wrap: nowrap; }}
 .browser-primary-nav a, .browser-primary-nav span {{ min-width: 28px; min-height: 26px; justify-content: center; padding: 0 6px; font-size: 11px; white-space: nowrap; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
-.browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 96px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
+.browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
+.browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
+.browser-chrome-status [data-browser-chrome-action-feedback] {{ max-width: min(28vw, 260px); }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
@@ -10430,7 +10434,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <main>
 <header class="browser-topbar">
 <div class="browser-chrome-row" data-browser-chrome>
-<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}<a href="{reload_href}">Reload</a></nav>
+<nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}<a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}">Reload</a>{chrome_image_action}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
@@ -10473,7 +10477,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         back_control = back_control,
         forward_control = forward_control,
+        current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        chrome_image_action = chrome_image_action,
         keyboard_controls_script = keyboard_controls_script,
         width = payload.width,
         height = payload.height,
@@ -13737,12 +13743,14 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     let has_image_state = image_state.is_some();
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         width = payload.width,
         height = payload.height,
         x = payload.viewport_x,
         y = payload.viewport_y,
+        max_x = payload.max_scroll_x,
+        max_y = payload.max_scroll_y,
         raster = html_escape::encode_text(&raster_label),
         raster_title = html_escape::encode_double_quoted_attribute(&raster_title),
     );
@@ -13770,7 +13778,32 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
             r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
         );
     }
+    if let Some(feedback) = browser_session_chrome_feedback_text(payload) {
+        let _ = write!(
+            status,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback title="{feedback_attr}">{feedback}</span>"#,
+            feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
+        );
+    }
     status
+}
+
+fn render_browser_session_chrome_image_action(payload: &BrowserSessionPayload) -> String {
+    let Some(href) = browser_session_resource_action_urls(payload).load_images else {
+        return String::new();
+    };
+    format!(
+        r#"<a class="browser-chrome-tool" href="{href}" data-browser-resource-action data-browser-chrome-images-action data-browser-resource-status="Loading images...">Images</a>"#,
+        href = html_escape::encode_double_quoted_attribute(&href),
+    )
+}
+
+fn browser_session_chrome_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    browser_session_action_feedback_text(payload).filter(|feedback| {
+        browser_session_scroll_feedback_text(payload) != Some(*feedback)
+            && browser_session_click_feedback_text(payload) != Some(*feedback)
+    })
 }
 
 fn browser_session_chrome_image_state(

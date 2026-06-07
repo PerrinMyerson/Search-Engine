@@ -11250,6 +11250,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
+    assert!(topbar_html.contains(&format!(
+        r#">x {}/{} · y {}/{}<"#,
+        payload.viewport_x, payload.max_scroll_x, payload.viewport_y, payload.max_scroll_y
+    )));
     assert!(topbar_html.contains(&format!(
         r#"title="viewport {}x{} at {},{}""#,
         payload.width, payload.height, payload.viewport_x, payload.viewport_y
@@ -11263,8 +11268,25 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(
         !topbar_html.contains(r#"data-browser-shell-render title="visual pending">visual pending"#)
     );
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let image_href = browser_session_action_href(&payload.id, "load-images", &[], &payload);
+    assert!(current_href.contains(&format!("id={session_id}")));
+    assert!(current_href.contains("action=current"));
+    assert!(current_href.contains("viewport_y=2"));
+    assert!(current_href.contains("max_bytes=2097152"));
+    assert!(image_href.contains(&format!("id={session_id}")));
+    assert!(image_href.contains("action=load-images"));
+    assert!(image_href.contains("viewport_y=2"));
+    assert!(image_href.contains("max_bytes=2097152"));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
     assert!(!topbar_html.contains(r#">Read</a>"#));
-    assert!(!topbar_html.contains(r#">Images</a>"#));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-resource-action data-browser-chrome-images-action data-browser-resource-status="Loading images...">Images</a>"#,
+        html_escape::encode_double_quoted_attribute(&image_href)
+    )));
     assert!(topbar_html.contains(r#"data-browser-shell-images"#));
     assert!(topbar_html.contains(r#">1 image in Tools</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-make-visual-action"#));
@@ -12884,6 +12906,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-render"#));
     assert!(html.contains(
         r#".browser-chrome-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;"#
@@ -12899,6 +12922,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(
         r#"class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>"#
     ));
+    let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
+        html_escape::encode_double_quoted_attribute(&current_href)
+    )));
     assert!(!topbar_html.contains(">Read</a>"));
     assert!(!topbar_html.contains(">Images</a>"));
     assert!(!topbar_html.contains(">Make readable</a>"));
