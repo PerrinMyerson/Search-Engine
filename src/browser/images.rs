@@ -5398,7 +5398,8 @@ pub(super) fn lazy_width_template_render_source(
         return None;
     }
     let width = selected_lazy_template_width(element, desired_width)?;
-    Some(template.replace("{width}", &width.to_string()))
+    let source = template.replace("{width}", &width.to_string());
+    (!image_source_clearly_unsupported(&source)).then_some(source)
 }
 
 fn selected_lazy_template_width(
