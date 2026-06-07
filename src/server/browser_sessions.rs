@@ -16207,6 +16207,9 @@ fn browser_session_new_session_href<T: BrowserSessionHrefSource>(url: &str, sour
     query.append_pair("viewport_x", &source.viewport_x().to_string());
     query.append_pair("viewport_y", &source.viewport_y().to_string());
     query.append_pair("max_bytes", &source.max_bytes().to_string());
+    if let Some(source) = browser_safe_source_param(source.source()) {
+        query.append_pair("source", source);
+    }
     format!("/browser?{}", query.finish())
 }
 
