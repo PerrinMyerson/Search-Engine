@@ -2069,6 +2069,21 @@ fn push_selected_background_alias_resource(
             return;
         }
     }
+
+    if let Some(url) = element
+        .style
+        .as_deref()
+        .and_then(selected_background_image_url_from_style_attr)
+    {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            url,
+        );
+    }
 }
 
 fn selected_background_image_url_from_attr_value(value: &str) -> Option<&str> {
@@ -2098,6 +2113,22 @@ fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
     background_image_urls_from_attr_layer(value)
         .into_iter()
         .find(|url| !background_image_candidate_clearly_unsupported(url))
+}
+
+fn selected_background_image_url_from_style_attr(style: &str) -> Option<&str> {
+    let mut selected = None;
+    for declaration in split_css_top_level_semicolons(style) {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let property = property.trim();
+        if property.eq_ignore_ascii_case("background")
+            || property.eq_ignore_ascii_case("background-image")
+        {
+            selected = selected_background_image_url_from_attr_value(value);
+        }
+    }
+    selected
 }
 
 fn push_background_alias_resources(
@@ -2131,6 +2162,22 @@ fn push_background_alias_resources(
             );
             return;
         }
+    }
+
+    if let Some(url) = element
+        .style
+        .as_deref()
+        .and_then(selected_background_image_url_from_style_attr)
+    {
+        push_resource(
+            resources,
+            source,
+            element,
+            "background_image",
+            &element.tag,
+            url,
+        );
+        return;
     }
 
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
@@ -2193,6 +2240,35 @@ fn background_image_urls_from_attr_layer(value: &str) -> Vec<&str> {
         return Vec::new();
     }
     vec![value]
+}
+
+fn split_css_top_level_semicolons(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut start = 0usize;
+    for (index, byte) in input.as_bytes().iter().enumerate() {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if start <= input.len() {
+        parts.push(input[start..].trim());
+    }
+    parts
 }
 
 fn background_image_set_candidate_url(candidate: &str) -> Option<&str> {

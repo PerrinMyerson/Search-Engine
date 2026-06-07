@@ -4517,6 +4517,12 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
         )
         .and_then(background_image_attr_source)
     })
+    .or_else(|| {
+        element
+            .style
+            .as_deref()
+            .and_then(background_image_style_attr_source)
+    })
 }
 
 fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
@@ -4666,6 +4672,51 @@ fn background_image_layer_source(value: &str) -> Option<String> {
         return None;
     }
     Some(url.to_owned())
+}
+
+fn background_image_style_attr_source(style: &str) -> Option<String> {
+    let mut selected = None;
+    for declaration in split_css_top_level_semicolons_with_quotes(style) {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let property = property.trim();
+        if property.eq_ignore_ascii_case("background")
+            || property.eq_ignore_ascii_case("background-image")
+        {
+            selected = background_image_attr_source(value);
+        }
+    }
+    selected
+}
+
+fn split_css_top_level_semicolons_with_quotes(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut start = 0usize;
+    for (index, byte) in input.as_bytes().iter().enumerate() {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                parts.push(input[start..index].trim());
+                start = index.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    if start <= input.len() {
+        parts.push(input[start..].trim());
+    }
+    parts
 }
 
 fn background_image_set_attr_source(value: &str) -> Option<String> {
