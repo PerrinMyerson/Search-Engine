@@ -1770,7 +1770,10 @@ fn web_storage_export_readiness_lines(
             "web_storage_replay_readiness: status={replay_status} report_only=true cache_query_buckets={cache_query_buckets} replayable_result_rows={cache_replayable_result_rows} result_log_unique_urls={result_log_unique_urls}"
         ),
         format!(
-            "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
+            "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} staleness_status={staleness_status} newest_age_secs={} stale_after_secs={stale_secs} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
+            newest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
             summary.unique_row_bytes,
             summary.duplicate_row_bytes,
             summary.unique_entries,
@@ -3452,7 +3455,7 @@ mod tests {
             &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
         ));
         assert!(ready_lines.contains(
-            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready staleness_status=fresh newest_age_secs=0 stale_after_secs=60 retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
         ));
         assert!(ready_lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
@@ -3542,7 +3545,7 @@ mod tests {
         assert!(lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
         assert!(lines.contains(
-            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk staleness_status=stale newest_age_secs=100 stale_after_secs=60 retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
         ));
     }
 
