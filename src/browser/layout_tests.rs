@@ -9556,6 +9556,125 @@ fn viewport_nearby_hit_testing_prefers_pinned_link_box_after_scroll() {
 }
 
 #[test]
+fn viewport_nearby_hit_testing_prefers_pinned_text_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://nearby-fixed-text-hit-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 3,
+                target_node: Some(42),
+            }])
+            .with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 5,
+                target_node: Some(7),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 1,
+                y: 0,
+                text: "Pin".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 1,
+                y: 4,
+                text: "Under".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Under\nFooter".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 2,
+            width: 8,
+            height: 4,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 2);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 0),
+        Some(42),
+        "the pinned text should be exactly hittable at the viewport top"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 2),
+        Some(7),
+        "the lower scrolled text should remain exactly hittable on its visible row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 1),
+        Some(42),
+        "nearby viewport text fallback should prefer pinned text over lower scrolled text"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize nearby fixed text slice");
+    let row_has_ink = |cell_y: usize| {
+        let start_y = raster_options
+            .padding_y
+            .saturating_add(cell_y.saturating_mul(raster_options.cell_height));
+        let end_y = start_y
+            .saturating_add(raster_options.cell_height)
+            .min(rgba.height);
+        (start_y..end_y).any(|y| {
+            (raster_options.padding_x
+                ..raster_options
+                    .padding_x
+                    .saturating_add(6usize.saturating_mul(raster_options.cell_width))
+                    .min(rgba.width))
+                .any(|x| {
+                    let index = y
+                        .saturating_mul(rgba.width)
+                        .saturating_add(x)
+                        .saturating_mul(4);
+                    rgba.pixels[index] == 0
+                        && rgba.pixels[index.saturating_add(1)] == 0
+                        && rgba.pixels[index.saturating_add(2)] == 0
+                })
+        })
+    };
+    assert!(
+        row_has_ink(0),
+        "pinned text should render at the top of the scrolled viewport"
+    );
+    assert!(
+        row_has_ink(2),
+        "lower scrolled text should remain rendered in the same viewport slice"
+    );
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
