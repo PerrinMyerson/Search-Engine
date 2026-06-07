@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
@@ -844,6 +844,8 @@ struct IndexStorageStats {
     crawl_frontier_stats: Option<FrontierStats>,
     crawl_snapshot_bytes: u64,
     crawl_snapshot_entries: usize,
+    crawl_snapshot_unique_entries: usize,
+    crawl_snapshot_duplicate_entries: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -879,6 +881,8 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         crawl_frontier_stats: None,
         crawl_snapshot_bytes: 0,
         crawl_snapshot_entries: 0,
+        crawl_snapshot_unique_entries: 0,
+        crawl_snapshot_duplicate_entries: 0,
     };
 
     for name in INDEX_STORAGE_ARTIFACTS {
@@ -904,7 +908,10 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
             }
             "crawl-docs.jsonl" => {
                 stats.crawl_snapshot_bytes = bytes;
-                stats.crawl_snapshot_entries = count_jsonl_entries(&path)?;
+                let snapshot = crawl_snapshot_artifact_stats(&path)?;
+                stats.crawl_snapshot_entries = snapshot.entries;
+                stats.crawl_snapshot_unique_entries = snapshot.unique_entries;
+                stats.crawl_snapshot_duplicate_entries = snapshot.duplicate_entries;
             }
             _ => {}
         }
@@ -1023,6 +1030,22 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_snapshot_entries: {}",
             stats.crawl_snapshot_entries
         ),
+        format!(
+            "crawl_storage_snapshot_unique_entries: {}",
+            stats.crawl_snapshot_unique_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_duplicate_entries: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_projected_entries_after: {}",
+            stats.crawl_snapshot_unique_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_projected_entries_removed: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
     ];
     if let Some(frontier) = &stats.crawl_frontier_stats {
         lines.push(format!(
@@ -1053,6 +1076,11 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_frontier_failed_record_cap: {}",
             DEFAULT_MAX_FAILED_FRONTIER_RECORDS
         ));
+    }
+    if stats.crawl_snapshot_duplicate_entries > 0 {
+        lines.push(
+            "crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned(),
+        );
     }
     lines
 }
@@ -1137,19 +1165,38 @@ fn storage_snapshot_readiness_lines(
     lines
 }
 
-fn count_jsonl_entries(path: &Path) -> Result<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrawlSnapshotArtifactStats {
+    entries: usize,
+    unique_entries: usize,
+    duplicate_entries: usize,
+}
+
+fn crawl_snapshot_artifact_stats(path: &Path) -> Result<CrawlSnapshotArtifactStats> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("open index storage jsonl artifact {}", path.display()))?;
     let reader = std::io::BufReader::new(file);
     let mut entries = 0usize;
+    let mut urls = HashSet::new();
     for line in reader.lines() {
         let line =
             line.with_context(|| format!("read index storage jsonl artifact {}", path.display()))?;
         if !line.trim().is_empty() {
             entries = entries.saturating_add(1);
+            let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+                format!("decode crawl snapshot jsonl artifact {}", path.display())
+            })?;
+            if let Some(url) = value.get("url").and_then(|url| url.as_str()) {
+                urls.insert(url.to_owned());
+            }
         }
     }
-    Ok(entries)
+    let unique_entries = urls.len();
+    Ok(CrawlSnapshotArtifactStats {
+        entries,
+        unique_entries,
+        duplicate_entries: entries.saturating_sub(unique_entries),
+    })
 }
 
 fn web_storage_pressure_summary_lines(
@@ -1877,6 +1924,8 @@ mod tests {
         );
         assert_eq!(stats.crawl_snapshot_bytes, 65);
         assert_eq!(stats.crawl_snapshot_entries, 2);
+        assert_eq!(stats.crawl_snapshot_unique_entries, 2);
+        assert_eq!(stats.crawl_snapshot_duplicate_entries, 0);
         assert_eq!(
             stats.web_artifacts,
             vec![
@@ -1919,6 +1968,8 @@ mod tests {
         assert!(stats.crawl_frontier_stats.is_none());
         assert_eq!(stats.crawl_snapshot_bytes, 0);
         assert_eq!(stats.crawl_snapshot_entries, 0);
+        assert_eq!(stats.crawl_snapshot_unique_entries, 0);
+        assert_eq!(stats.crawl_snapshot_duplicate_entries, 0);
     }
 
     #[test]
@@ -1937,13 +1988,15 @@ mod tests {
                 total: 15,
             }),
             crawl_snapshot_bytes: 120,
-            crawl_snapshot_entries: 3,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 3,
+            crawl_snapshot_duplicate_entries: 1,
         };
 
         let lines = crawl_storage_pressure_summary_lines(&stats);
 
         assert!(lines.contains(
-            &"crawl_storage_pressure_summary: retained_bytes=170 frontier_bytes=50 snapshot_bytes=120 snapshot_entries=3".to_owned()
+            &"crawl_storage_pressure_summary: retained_bytes=170 frontier_bytes=50 snapshot_bytes=120 snapshot_entries=4".to_owned()
         ));
         assert!(lines.contains(&"crawl_storage_retained_bytes: 170".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_bytes: 50".to_owned()));
@@ -1957,7 +2010,12 @@ mod tests {
             "crawl_storage_frontier_failed_record_cap: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
         )));
         assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
-        assert!(lines.contains(&"crawl_storage_snapshot_entries: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_entries: 4".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_unique_entries: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_duplicate_entries: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_after: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_removed: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned()));
     }
 
     #[test]
@@ -1977,6 +2035,8 @@ mod tests {
             }),
             crawl_snapshot_bytes: 200,
             crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
         };
         let web_summary = WebStoragePressureSummary {
             artifact_count: 2,
@@ -2014,6 +2074,8 @@ mod tests {
             }),
             crawl_snapshot_bytes: 120,
             crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
         };
         let web_summary = WebStoragePressureSummary {
             artifact_count: 2,
@@ -2046,6 +2108,8 @@ mod tests {
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
             crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
         };
         let web_summary = WebStoragePressureSummary {
             artifact_count: 2,
