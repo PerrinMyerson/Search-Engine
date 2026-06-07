@@ -6861,6 +6861,10 @@ async fn apply_browser_action(
                 })?;
             web_session.resource_report = Some(browser_session_resource_report_from_images(report));
             normalize_browser_session_viewport(web_session);
+            web_session.action_feedback = Some(format!(
+                "Loaded images; viewport settled at x {}, y {}.",
+                web_session.viewport_x, web_session.viewport_y,
+            ));
         }
         BrowserSessionAction::ClearResourceReport => {
             web_session.resource_report = None;
