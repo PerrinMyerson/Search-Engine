@@ -11453,6 +11453,8 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
+    assert!(topbar_html.contains(r#"<summary>Actions</summary>"#));
     assert!(topbar_html.contains(&format!(
         r#">x {}/{} · y {}/{}<"#,
         payload.viewport_x, payload.max_scroll_x, payload.viewport_y, payload.max_scroll_y
@@ -13104,6 +13106,8 @@ async fn browser_session_page_renders_form_controls() {
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
+    assert!(topbar_html.contains(r#"<summary>Actions</summary>"#));
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
