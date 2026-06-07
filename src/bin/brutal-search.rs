@@ -983,6 +983,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in storage_budget_pressure_lines(&stats, &web_summary, retention_config) {
         println!("{line}");
     }
+    for line in storage_cleanup_readiness_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
     for line in storage_snapshot_readiness_lines(&stats, &web_summary) {
         println!("{line}");
     }
@@ -1310,6 +1313,85 @@ fn storage_budget_pressure_lines(
     ]
 }
 
+fn storage_cleanup_readiness_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let frontier_failed_removable_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let known_removable_row_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let removable_rows = web_summary
+        .duplicate_entries
+        .saturating_add(stats.browser_document_duplicate_rows)
+        .saturating_add(stats.crawl_snapshot_duplicate_entries)
+        .saturating_add(frontier_failed_removable_records);
+    let retained_bytes = stats.total_bytes.saturating_sub(known_removable_row_bytes);
+    let safe_to_clean = removable_rows > 0 || known_removable_row_bytes > 0;
+    let status = if safe_to_clean {
+        "cleanup-available"
+    } else {
+        "zero-removal"
+    };
+
+    let mut lines = vec![
+        format!(
+            "storage_cleanup_readiness: status={} report_mode=report-only retained_bytes={} known_removable_row_bytes={} removable_rows={} web_removable_rows={} browser_document_removable_rows={} snapshot_removable_rows={} frontier_failed_removable_records={}",
+            status,
+            retained_bytes,
+            known_removable_row_bytes,
+            removable_rows,
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries,
+            frontier_failed_removable_records
+        ),
+        format!("storage_cleanup_status: {status}"),
+        "storage_cleanup_report_mode: report-only".to_owned(),
+        format!("storage_cleanup_safe_to_clean: {safe_to_clean}"),
+        format!("storage_cleanup_pointless: {}", !safe_to_clean),
+        format!("storage_cleanup_retained_bytes: {retained_bytes}"),
+        format!(
+            "storage_cleanup_known_removable_row_bytes: {}",
+            known_removable_row_bytes
+        ),
+        format!("storage_cleanup_removable_rows: {removable_rows}"),
+        format!(
+            "storage_cleanup_web_removable_rows: {}",
+            web_summary.duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_browser_document_removable_rows: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "storage_cleanup_snapshot_removable_rows: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_frontier_failed_removable_records: {}",
+            frontier_failed_removable_records
+        ),
+        "storage_cleanup_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned(),
+    ];
+    if safe_to_clean {
+        lines.push(
+            "storage_cleanup_note: cleanup candidates exist; review component dry-run output before applying any rewrite"
+                .to_owned(),
+        );
+    } else {
+        lines.push(
+            "storage_cleanup_note: cleanup would be pointless because all tracked storage rows are retained"
+                .to_owned(),
+        );
+    }
+    lines
+}
+
 fn storage_core_index_bytes(
     stats: &IndexStorageStats,
     web_summary: &WebStoragePressureSummary,
@@ -1322,6 +1404,12 @@ fn storage_core_index_bytes(
         .saturating_sub(crawl_bytes)
         .saturating_sub(stats.browser_document_bytes)
         .saturating_sub(web_summary.bytes)
+}
+
+fn frontier_failed_projected_removed(frontier: &FrontierStats) -> usize {
+    frontier
+        .failed
+        .saturating_sub(frontier.failed.min(DEFAULT_MAX_FAILED_FRONTIER_RECORDS))
 }
 
 fn index_storage_budget_bytes() -> u64 {
@@ -2583,6 +2671,102 @@ mod tests {
         assert!(lines.contains(&"storage_budget_crawl_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_budget_report_mode: report-only".to_owned()));
         assert!(lines.contains(&"storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned()));
+    }
+
+    #[test]
+    fn storage_cleanup_readiness_reports_safe_and_pointless_cleanup() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_cleanup_readiness: status=cleanup-available report_mode=report-only retained_bytes=945 known_removable_row_bytes=55 removable_rows=8 web_removable_rows=4 browser_document_removable_rows=1 snapshot_removable_rows=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_safe_to_clean: true".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_pointless: false".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_web_removable_rows: 4".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_browser_document_removable_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_snapshot_removable_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_frontier_failed_removable_records: 2".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            }),
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = storage_cleanup_readiness_lines(&clean_stats, &clean_web_summary);
+
+        assert!(clean_lines.contains(&"storage_cleanup_readiness: status=zero-removal report_mode=report-only retained_bytes=700 known_removable_row_bytes=0 removable_rows=0 web_removable_rows=0 browser_document_removable_rows=0 snapshot_removable_rows=0 frontier_failed_removable_records=0".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_safe_to_clean: false".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_pointless: true".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_note: cleanup would be pointless because all tracked storage rows are retained".to_owned()));
     }
 
     #[test]
