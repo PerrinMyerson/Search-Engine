@@ -2121,7 +2121,9 @@ fn push_background_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        for url in supported_srcset_candidate_urls(srcset) {
+        if let Some(url) =
+            selected_supported_srcset_candidate(srcset, background_image_sizes_attr(element), 0)
+        {
             push_resource(
                 resources,
                 source,
@@ -2130,6 +2132,7 @@ fn push_background_alias_resources(
                 &element.tag,
                 &url,
             );
+            return;
         }
     }
 }
@@ -2394,11 +2397,15 @@ const BACKGROUND_IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
 
 const BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-bgset",
+    "data-bg-set",
     "data-background-srcset",
+    "data-background-set",
     "data-backgroundsrcset",
     "data-lazy-bgset",
+    "data-lazy-bg-set",
     "data-lazybgset",
     "data-lazy-background-srcset",
+    "data-lazy-background-set",
     "data-lazybackgroundsrcset",
 ];
 
