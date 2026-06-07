@@ -1535,7 +1535,8 @@ struct ComputedStyle {
     visibility: Option<Visibility>,
     opacity: PaintOpacity,
     animation_reveals_opacity: bool,
-    overflow: Overflow,
+    overflow_x: Overflow,
+    overflow_y: Overflow,
     flex_direction: FlexDirection,
     flex_wrap: bool,
     flex_basis: Option<CssDimension>,
@@ -1733,6 +1734,10 @@ impl ComputedStyle {
             wrap_items: flex_row && self.flex_wrap,
         }
     }
+
+    fn clips_overflow(&self) -> bool {
+        self.overflow_x.clips() || self.overflow_y.clips()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1776,7 +1781,8 @@ struct CssDeclarations {
     visibility: Option<Visibility>,
     opacity: Option<PaintOpacity>,
     animation_reveals_opacity: Option<bool>,
-    overflow: Option<Overflow>,
+    overflow_x: Option<Overflow>,
+    overflow_y: Option<Overflow>,
     position: Option<Position>,
     position_top: Option<CssPositionOffset>,
     position_bottom: Option<CssPositionOffset>,
@@ -7443,13 +7449,12 @@ fn draw_raster_text_run(
             .saturating_mul(options.cell_height),
     );
     for ch in text.chars() {
-        let advance = raster_glyph_advance(ch, options.cell_width);
         let glyph_end = cursor_x.saturating_add(options.cell_width);
         if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
             draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
         }
-        cursor_x = cursor_x.saturating_add(advance);
+        cursor_x = cursor_x.saturating_add(raster_text_document_advance(options.cell_width));
     }
 }
 
@@ -7476,14 +7481,17 @@ fn draw_rgba_text_run(
             .saturating_mul(options.cell_height),
     );
     for ch in text.chars() {
-        let advance = raster_glyph_advance(ch, options.cell_width);
         let glyph_end = cursor_x.saturating_add(options.cell_width);
         if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
             let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
             draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
         }
-        cursor_x = cursor_x.saturating_add(advance);
+        cursor_x = cursor_x.saturating_add(raster_text_document_advance(options.cell_width));
     }
+}
+
+fn raster_text_document_advance(cell_width: usize) -> usize {
+    cell_width.max(1)
 }
 
 fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
@@ -13570,8 +13578,17 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.animation_reveals_opacity = parse_css_animation_reveals_opacity(value)
                     .or(declarations.animation_reveals_opacity);
             }
-            "overflow" | "overflow-x" | "overflow-y" | "overflow-inline" | "overflow-block" => {
-                declarations.overflow = parse_css_overflow(value).or(declarations.overflow);
+            "overflow" => {
+                if let Some(overflow) = parse_css_overflow(value) {
+                    declarations.overflow_x = Some(overflow);
+                    declarations.overflow_y = Some(overflow);
+                }
+            }
+            "overflow-x" | "overflow-inline" => {
+                declarations.overflow_x = parse_css_overflow(value).or(declarations.overflow_x);
+            }
+            "overflow-y" | "overflow-block" => {
+                declarations.overflow_y = parse_css_overflow(value).or(declarations.overflow_y);
             }
             "position" => {
                 declarations.position = parse_css_position(value).or(declarations.position);
@@ -16755,18 +16772,32 @@ fn render_node(
                 (None, Some(max_height)) => Some(max_height),
                 (None, None) => None,
             };
-            let overflow_clip_entered = if block_flow && style.overflow.clips() {
-                let clip_x = renderer.box_x().saturating_sub(padding.left);
-                let clip_y = side_start_y;
-                let clip_width = renderer
-                    .available_width()
-                    .saturating_add(padding.left)
-                    .saturating_add(padding.right);
-                let clip_height = overflow_clip_height.map(|height| {
-                    height
-                        .saturating_add(padding.top)
-                        .saturating_add(padding.bottom)
-                });
+            let overflow_clip_entered = if block_flow && style.clips_overflow() {
+                let clips_x = style.overflow_x.clips();
+                let clips_y = style.overflow_y.clips();
+                let clip_x = if clips_x {
+                    renderer.box_x().saturating_sub(padding.left)
+                } else {
+                    0
+                };
+                let clip_y = if clips_y { side_start_y } else { 0 };
+                let clip_width = if clips_x {
+                    renderer
+                        .available_width()
+                        .saturating_add(padding.left)
+                        .saturating_add(padding.right)
+                } else {
+                    usize::MAX
+                };
+                let clip_height = clips_y
+                    .then(|| {
+                        overflow_clip_height.map(|height| {
+                            height
+                                .saturating_add(padding.top)
+                                .saturating_add(padding.bottom)
+                        })
+                    })
+                    .flatten();
                 renderer.enter_clip(DisplayCommandBounds {
                     x: clip_x,
                     y: clip_y,
@@ -16777,7 +16808,7 @@ fn render_node(
             } else {
                 None
             };
-            let row_item_overflow_clip_entered = if is_row_item && style.overflow.clips() {
+            let row_item_overflow_clip_entered = if is_row_item && style.clips_overflow() {
                 match overflow_clip_height {
                     Some(clip_height) => {
                         let remaining_width = renderer
@@ -17900,7 +17931,8 @@ fn computed_style(
             visibility: None,
             opacity: PaintOpacity::Opaque,
             animation_reveals_opacity: false,
-            overflow: Overflow::Visible,
+            overflow_x: Overflow::Visible,
+            overflow_y: Overflow::Visible,
             flex_direction: FlexDirection::Row,
             flex_wrap: false,
             flex_basis: None,
@@ -17956,7 +17988,8 @@ fn computed_style(
     let mut visibility = None;
     let mut opacity = PaintOpacity::Opaque;
     let mut animation_reveals_opacity = false;
-    let mut overflow = Overflow::Visible;
+    let mut overflow_x = Overflow::Visible;
+    let mut overflow_y = Overflow::Visible;
     let mut flex_direction = FlexDirection::Row;
     let mut flex_wrap = false;
     let mut flex_basis = None;
@@ -18010,7 +18043,8 @@ fn computed_style(
     let mut visibility_specificity = 0u32;
     let mut opacity_specificity = 0u32;
     let mut animation_reveals_opacity_specificity = 0u32;
-    let mut overflow_specificity = 0u32;
+    let mut overflow_x_specificity = 0u32;
+    let mut overflow_y_specificity = 0u32;
     let mut flex_direction_specificity = 0u32;
     let mut flex_wrap_specificity = 0u32;
     let mut flex_basis_specificity = 0u32;
@@ -18136,11 +18170,17 @@ fn computed_style(
                 animation_reveals_opacity = rule_animation_reveals_opacity;
                 animation_reveals_opacity_specificity = rule_specificity;
             }
-            if let Some(rule_overflow) = rule.declarations.overflow
-                && rule_specificity >= overflow_specificity
+            if let Some(rule_overflow_x) = rule.declarations.overflow_x
+                && rule_specificity >= overflow_x_specificity
             {
-                overflow = rule_overflow;
-                overflow_specificity = rule_specificity;
+                overflow_x = rule_overflow_x;
+                overflow_x_specificity = rule_specificity;
+            }
+            if let Some(rule_overflow_y) = rule.declarations.overflow_y
+                && rule_specificity >= overflow_y_specificity
+            {
+                overflow_y = rule_overflow_y;
+                overflow_y_specificity = rule_specificity;
             }
             if let Some(rule_flex_direction) = rule.declarations.flex_direction
                 && rule_specificity >= flex_direction_specificity
@@ -18423,8 +18463,11 @@ fn computed_style(
         if let Some(inline_animation_reveals_opacity) = inline.animation_reveals_opacity {
             animation_reveals_opacity = inline_animation_reveals_opacity;
         }
-        if let Some(inline_overflow) = inline.overflow {
-            overflow = inline_overflow;
+        if let Some(inline_overflow_x) = inline.overflow_x {
+            overflow_x = inline_overflow_x;
+        }
+        if let Some(inline_overflow_y) = inline.overflow_y {
+            overflow_y = inline_overflow_y;
         }
         if let Some(inline_flex_direction) = inline.flex_direction {
             flex_direction = inline_flex_direction;
@@ -18564,7 +18607,8 @@ fn computed_style(
         visibility,
         opacity,
         animation_reveals_opacity,
-        overflow,
+        overflow_x,
+        overflow_y,
         flex_direction,
         flex_wrap,
         flex_basis,

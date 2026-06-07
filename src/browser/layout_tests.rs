@@ -3210,7 +3210,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     let uppercase_top_y = raster_options.padding_y.saturating_add(2);
     let uppercase_top_start_x = raster_options
         .padding_x
-        .saturating_add(raster_glyph_advance('a', raster_options.cell_width));
+        .saturating_add(raster_text_document_advance(raster_options.cell_width));
     let uppercase_top_has_ink = (uppercase_top_start_x
         ..uppercase_top_start_x.saturating_add(raster_options.cell_width))
         .any(|x| {
@@ -3262,7 +3262,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         .saturating_add(raster_options.padding_x.saturating_add(6));
     let readable_m_start_x = raster_options
         .padding_x
-        .saturating_add(raster_glyph_advance('i', raster_options.cell_width));
+        .saturating_add(raster_text_document_advance(raster_options.cell_width));
     let readable_m_has_ink = (raster_options.padding_y
         ..raster_options
             .padding_y
@@ -3279,7 +3279,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         .padding_x
         .saturating_add(raster_options.cell_width)
         .saturating_add(1);
-    assert!(raster_options.padding_x.saturating_add(6) < monospace_m_left);
+    assert_eq!(readable_m_start_x, monospace_m_left.saturating_sub(1));
     assert_eq!(density_raster.pixels[old_cramped_m_pixel], 255);
     assert!(readable_m_has_ink);
     assert_eq!(
@@ -8128,6 +8128,201 @@ fn overflow_block_clip_keeps_adjacent_scroll_slices_and_hit_geometry_stable() {
             "adjacent scrolled raster should retain decoded image color"
         );
     }
+}
+
+#[test]
+fn css_overflow_y_hidden_preserves_horizontal_scrolled_link_media_hit_geometry() {
+    let image_url = "mem://overflow-y-axis-card-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![120],
+        rgb_pixels: Some(vec![40, 120, 210]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <p style="height:24px">Lead copy before the carousel.</p>
+              <section style="height:36px; overflow-y:hidden; background:rgb(240,240,240)">
+                <a href="/wide" style="display:block; white-space:nowrap; background:rgb(230,230,230)">
+                  <img src="{image_url}" width="16" height="12" alt="">
+                  WideLinkedCardKeepsScrollingHorizontallyAcrossTheViewportRailTargetToken
+                </a>
+                <p style="height:72px">Hidden vertical overflow should not paint.</p>
+              </section>
+              <p>After clipped carousel</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://overflow-y-axis-card",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 64,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render overflow-y axis card fixture");
+    let render = profiled.render;
+
+    let section_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade: 240,
+                ..
+            } => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("overflow-y section background should paint");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("linked image should remain in the display list");
+    let link_label = "TargetToken";
+    let (link_text_index, link_text, link_text_column) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains(link_label) =>
+            {
+                let offset = text.find(link_label)?;
+                Some((
+                    index,
+                    (x.saturating_add(offset), *y, link_label.chars().count()),
+                    offset,
+                ))
+            }
+            _ => None,
+        })
+        .expect("horizontally shifted linked text should remain visible");
+    assert!(
+        image_bounds.0 < section_background.0.saturating_add(section_background.2),
+        "fixture should keep the mixed media visible at the start of the wide link"
+    );
+    assert!(
+        link_text.0.saturating_add(link_text.2) > section_background.2,
+        "overflow-y:hidden should not horizontally clip wide linked text"
+    );
+    assert!(
+        render
+            .display_list
+            .iter()
+            .filter_map(display_command_text)
+            .all(|text| !text.contains("Hidden vertical overflow")),
+        "overflow-y:hidden should still clip vertical overflow text"
+    );
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: link_text.0.saturating_sub(4),
+            y: image_bounds.1,
+            width: 24,
+            height: 3,
+        },
+        None,
+    );
+    assert!(viewport.max_scroll_x > 0);
+    assert!(viewport.max_scroll_y > 0);
+    let local_text_x = link_text.0.saturating_sub(viewport.viewport.x);
+    let local_text_y = link_text.1.saturating_sub(viewport.viewport.y);
+    let target =
+        hit_test_target_node_in_viewport(&render, viewport.viewport, local_text_x, local_text_y)
+            .expect("scrolled viewport hit should resolve shifted linked text");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, target).as_deref(),
+        Some("/wide")
+    );
+    let direct_link = render.hit_targets[link_text_index]
+        .target_at_column(link_text_column)
+        .expect("visible linked text should retain its target run");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, direct_link).as_deref(),
+        Some("/wide")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_x: Some(viewport.viewport.x),
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize overflow-y axis slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let text_start_x = raster_options.padding_x.saturating_add(
+        link_text
+            .0
+            .saturating_sub(viewport.viewport.x)
+            .saturating_mul(raster_options.cell_width),
+    );
+    let visible_text_cells = link_text.2.min(
+        viewport
+            .viewport
+            .x
+            .saturating_add(viewport.viewport.width)
+            .saturating_sub(link_text.0),
+    );
+    let text_end_x = text_start_x
+        .saturating_add(visible_text_cells.saturating_mul(raster_options.cell_width))
+        .min(rgba.width);
+    let text_cell_y = raster_options
+        .padding_y
+        .saturating_add(local_text_y.saturating_mul(raster_options.cell_height));
+    let text_cell_has_ink = (text_cell_y
+        ..text_cell_y
+            .saturating_add(raster_options.cell_height)
+            .min(rgba.height))
+        .flat_map(|y| (text_start_x..text_end_x).map(move |x| (x, y)))
+        .any(|(x, y)| {
+            let pixel = pixel(x, y);
+            pixel[0] < 64 && pixel[1] < 64 && pixel[2] < 64 && pixel[3] == 255
+        });
+    assert!(
+        text_cell_has_ink,
+        "scrolled raster should show the horizontally overflowing linked text"
+    );
 }
 
 #[test]
