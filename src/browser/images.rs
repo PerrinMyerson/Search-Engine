@@ -349,7 +349,8 @@ fn is_svg_bytes(bytes: &[u8]) -> bool {
         return false;
     };
     let prefix = prefix.trim_start_matches('\u{feff}').trim_start();
-    prefix.starts_with("<svg") || (prefix.starts_with("<?xml") && prefix.contains("<svg"))
+    prefix.starts_with("<svg")
+        || ((prefix.starts_with("<?xml") || prefix.starts_with("<!--")) && prefix.contains("<svg"))
 }
 
 fn decode_data_url(url: &str) -> Option<(String, Vec<u8>)> {
