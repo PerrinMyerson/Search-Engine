@@ -2052,6 +2052,22 @@ fn web_storage_compaction_snapshot_readiness_lines(
     let projected_removed_bytes = before_bytes.saturating_sub(projected_bytes);
     let projected_removed_duplicates = web_storage_compaction_projected_removed_duplicates(report);
     let zero_removal = web_storage_compaction_zero_removal(report);
+    let cache_removed_bytes = report
+        .cache_before
+        .bytes
+        .saturating_sub(report.cache_projected_after.bytes);
+    let result_log_removed_bytes = report
+        .result_log_before
+        .bytes
+        .saturating_sub(report.result_log_projected_after.bytes);
+    let cache_removed_duplicates = report
+        .cache_before
+        .duplicate_entries
+        .saturating_sub(report.cache_projected_after.duplicate_entries);
+    let result_log_removed_duplicates = report
+        .result_log_before
+        .duplicate_entries
+        .saturating_sub(report.result_log_projected_after.duplicate_entries);
     let status = if report.skipped {
         "skipped"
     } else if zero_removal {
@@ -2073,6 +2089,26 @@ fn web_storage_compaction_snapshot_readiness_lines(
         format!("web_storage_snapshot_retained_bytes: {projected_bytes}"),
         format!("web_storage_snapshot_removable_bytes: {projected_removed_bytes}"),
         format!("web_storage_snapshot_removable_duplicates: {projected_removed_duplicates}"),
+        format!(
+            "web_storage_snapshot_cache_retained_bytes: {}",
+            report.cache_projected_after.bytes
+        ),
+        format!("web_storage_snapshot_cache_removable_bytes: {cache_removed_bytes}"),
+        format!("web_storage_snapshot_cache_removable_duplicates: {cache_removed_duplicates}"),
+        format!(
+            "web_storage_snapshot_result_log_retained_bytes: {}",
+            report.result_log_projected_after.bytes
+        ),
+        format!("web_storage_snapshot_result_log_removable_bytes: {result_log_removed_bytes}"),
+        format!(
+            "web_storage_snapshot_result_log_removable_duplicates: {result_log_removed_duplicates}"
+        ),
+        format!(
+            "web_storage_snapshot_cleanup_scope: report-only dry_run={} cache_path={} result_log_path={}",
+            report.dry_run,
+            report.cache_path.display(),
+            report.result_log_path.display()
+        ),
         format!("web_storage_snapshot_zero_removal: {zero_removal}"),
     ]
 }
@@ -3928,6 +3964,64 @@ mod tests {
         assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 60".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 3".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_zero_removal: false".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_reports_artifact_cleanup_split() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_cache_retained_bytes: 80".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_duplicates: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_retained_bytes: 70".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_removable_bytes: 20".to_owned()));
+        assert!(
+            lines.contains(&"web_storage_snapshot_result_log_removable_duplicates: 1".to_owned())
+        );
+        assert!(lines.contains(&"web_storage_snapshot_cleanup_scope: report-only dry_run=true cache_path=web-cache.jsonl result_log_path=brave-results.jsonl".to_owned()));
     }
 
     #[test]
