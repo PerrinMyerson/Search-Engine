@@ -866,6 +866,7 @@ struct WebStoragePressureSummary {
     artifact_count: usize,
     bytes: u64,
     entries: usize,
+    unique_entries: usize,
     duplicate_entries: usize,
     max_entries_per_query: usize,
     stale_artifacts: usize,
@@ -1139,11 +1140,13 @@ fn storage_snapshot_readiness_lines(
     };
     let mut lines = vec![
         format!(
-            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_duplicates={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_unique_entries={} web_duplicates={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
             status,
             stats.total_bytes,
             web_summary.bytes,
             crawl_bytes,
+            web_summary.entries,
+            web_summary.unique_entries,
             web_summary.duplicate_entries,
             web_summary.suggested_dry_runs,
             stats.crawl_snapshot_entries,
@@ -1207,10 +1210,11 @@ fn web_storage_pressure_summary_lines(
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
     let mut lines = vec![
         format!(
-            "web_storage_pressure_summary: artifacts={} bytes={} entries={} duplicates={} stale_artifacts={} suggested_dry_runs={}",
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} unique_entries={} duplicates={} stale_artifacts={} suggested_dry_runs={}",
             summary.artifact_count,
             summary.bytes,
             summary.entries,
+            summary.unique_entries,
             summary.duplicate_entries,
             summary.stale_artifacts,
             summary.suggested_dry_runs
@@ -1218,6 +1222,18 @@ fn web_storage_pressure_summary_lines(
         format!("web_storage_pressure_artifacts: {}", summary.artifact_count),
         format!("web_storage_pressure_bytes: {}", summary.bytes),
         format!("web_storage_pressure_entries: {}", summary.entries),
+        format!(
+            "web_storage_pressure_unique_entries: {}",
+            summary.unique_entries
+        ),
+        format!(
+            "web_storage_pressure_projected_entries_after: {}",
+            summary.unique_entries
+        ),
+        format!(
+            "web_storage_pressure_projected_entries_removed: {}",
+            summary.duplicate_entries
+        ),
         format!(
             "web_storage_pressure_duplicate_entries: {}",
             summary.duplicate_entries
@@ -1255,6 +1271,10 @@ fn web_storage_pressure_summary(
             total.saturating_add(artifact.bytes)
         }),
         entries: artifacts.iter().map(|artifact| artifact.entries).sum(),
+        unique_entries: artifacts
+            .iter()
+            .map(|artifact| artifact.unique_entries)
+            .sum(),
         duplicate_entries: artifacts
             .iter()
             .map(|artifact| artifact.duplicate_entries)
@@ -2042,6 +2062,7 @@ mod tests {
             artifact_count: 2,
             bytes: 300,
             entries: 30,
+            unique_entries: 26,
             duplicate_entries: 4,
             max_entries_per_query: 3,
             stale_artifacts: 1,
@@ -2081,6 +2102,7 @@ mod tests {
             artifact_count: 2,
             bytes: 300,
             entries: 30,
+            unique_entries: 26,
             duplicate_entries: 4,
             max_entries_per_query: 3,
             stale_artifacts: 1,
@@ -2089,7 +2111,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_duplicates=4 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_unique_entries=26 web_duplicates=4 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
@@ -2115,6 +2137,7 @@ mod tests {
             artifact_count: 2,
             bytes: 100,
             entries: 10,
+            unique_entries: 10,
             duplicate_entries: 0,
             max_entries_per_query: 1,
             stale_artifacts: 0,
@@ -2123,7 +2146,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_duplicates=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_unique_entries=10 web_duplicates=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
         assert!(
@@ -2293,9 +2316,12 @@ mod tests {
         );
 
         assert!(lines.contains(
-            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 duplicates=1 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 unique_entries=4 duplicates=1 stale_artifacts=1 suggested_dry_runs=1".to_owned()
         ));
         assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_unique_entries: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_entries_after: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
         assert!(lines.contains(
