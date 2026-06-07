@@ -2881,6 +2881,181 @@ fn css_align_items_flex_end_keeps_flex_media_link_hit_after_adjacent_scroll() {
 }
 
 #[test]
+fn css_align_items_baseline_keeps_media_link_hit_geometry_after_adjacent_scroll() {
+    let image_url = "mem://align-items-baseline-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![118],
+        rgb_pixels: Some(vec![208, 96, 48]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><head><style>
+              .lead {{ height: 24px; }}
+              .card {{
+                display: flex;
+                align-items: baseline;
+                gap: 8px;
+                background: rgb(241, 241, 241);
+              }}
+              .cta {{ background: rgb(232, 232, 232); }}
+              .tail {{ height: 96px; }}
+            </style></head><body>
+              <p class="lead">Intro copy before the baseline media row.</p>
+              <section class="card">
+                <img src="{image_url}" width="24" height="36" alt="">
+                <a class="cta" href="/baseline">Open baseline details</a>
+              </section>
+              <p class="tail">Trailing copy keeps adjacent viewport scroll meaningful.</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://align-items-baseline-row",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render align-items baseline flex row");
+    let render = profiled.render;
+
+    let card_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == 241 => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("card background should paint");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image should render in baseline row");
+    let (link_command_index, link) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Open baseline") =>
+            {
+                Some((index, (*x, *y)))
+            }
+            _ => None,
+        })
+        .expect("link text should render beside baseline image");
+
+    assert_eq!(image_bounds.1, card_background.1);
+    assert_eq!(
+        link.1,
+        image_bounds
+            .1
+            .saturating_add(image_bounds.3.saturating_sub(1)),
+        "align-items:baseline should align one-row link baseline with the replaced image bottom"
+    );
+    assert!(link.0 > image_bounds.0.saturating_add(image_bounds.2));
+    let link_target = render
+        .hit_targets
+        .get(link_command_index)
+        .and_then(|target| target.target_at_column(0))
+        .expect("baseline visual link command should carry the anchor hit target");
+    assert_eq!(
+        hit_test_text_target_node(&render, link.0, link.1),
+        Some(link_target),
+        "visual text hit testing should use the baseline-aligned link row"
+    );
+
+    let first_viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: image_bounds
+                .1
+                .saturating_add(image_bounds.3.saturating_sub(3)),
+            width: 48,
+            height: 5,
+        },
+        None,
+    );
+    let second_viewport =
+        browser_document_viewport_after_scroll(&render, first_viewport.viewport, 0, 1);
+    assert_eq!(
+        second_viewport.viewport.y,
+        first_viewport.viewport.y.saturating_add(1)
+    );
+    assert!(second_viewport.max_scroll_y > 0);
+    let local_link_y = link.1.saturating_sub(second_viewport.viewport.y);
+    let viewport_target =
+        hit_test_target_node_in_viewport(&render, second_viewport.viewport, link.0, local_link_y)
+            .expect("viewport hit testing should hit the baseline-aligned visual link row");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, viewport_target),
+        anchor_href_for_node(&page_state.dom, link_target),
+        "viewport hit testing should resolve the same anchor as the baseline visual text row"
+    );
+
+    for viewport_y in [first_viewport.viewport.y, second_viewport.viewport.y] {
+        let rgba = rasterize_render_rgba(
+            &render,
+            BrowserRasterOptions {
+                viewport_y: Some(viewport_y),
+                viewport_width: Some(48),
+                viewport_height: Some(5),
+                ..BrowserRasterOptions::default()
+            },
+        )
+        .expect("rasterize adjacent baseline viewport");
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [241, 241, 241, 255]),
+            "adjacent scrolled raster should retain the baseline card underlay"
+        );
+        assert!(
+            rgba.pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel == [208, 96, 48, 255]),
+            "adjacent scrolled raster should retain decoded image color"
+        );
+    }
+}
+
+#[test]
 fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
     let render = render_html(
         "mem://font-size-scale",
