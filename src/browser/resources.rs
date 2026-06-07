@@ -1375,6 +1375,7 @@ fn content_type_for_path(path: &Path) -> Option<&'static str> {
         Some("pjpeg") | Some("pjp") => Some("image/pjpeg"),
         Some("gif") => Some("image/gif"),
         Some("webp") => Some("image/webp"),
+        Some("bmp") | Some("dib") => Some("image/bmp"),
         Some("ico") => Some("image/x-icon"),
         Some("mp4") => Some("video/mp4"),
         Some("webm") => Some("video/webm"),
@@ -2738,7 +2739,18 @@ fn url_likely_supported_image(url: &str) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "svg" | "png" | "jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp" | "webp" | "gif"
+                "svg"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "jpe"
+                    | "jfif"
+                    | "pjpeg"
+                    | "pjp"
+                    | "webp"
+                    | "gif"
+                    | "bmp"
+                    | "dib"
             )
         })
 }

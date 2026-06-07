@@ -244,14 +244,12 @@ fn image_extension_from_url(url: &str) -> Option<String> {
 fn unsupported_image_extension(extension: &str) -> bool {
     matches!(
         extension,
-        "avif" | "avifs" | "heic" | "heif" | "bmp" | "ico" | "tif" | "tiff"
+        "avif" | "avifs" | "heic" | "heif" | "ico" | "tif" | "tiff"
     )
 }
 
 fn unsupported_image_signature(bytes: &[u8]) -> Option<&'static str> {
-    if matches!(bytes, [b'B', b'M', ..]) {
-        Some("image/bmp")
-    } else if matches!(bytes, [0, 0, 1, 0, ..]) {
+    if matches!(bytes, [0, 0, 1, 0, ..]) {
         Some("image/x-icon")
     } else if matches!(bytes, [b'I', b'I', b'*', 0, ..] | [b'M', b'M', 0, b'*', ..]) {
         Some("image/tiff")
@@ -308,6 +306,7 @@ fn decode_image_bytes_with_svg_base(
         | "image/x-jpg" => decode_jpeg(bytes),
         "webp" | "image/webp" | "image/x-webp" => decode_webp(bytes),
         "gif" | "image/gif" => decode_gif(bytes),
+        "bmp" | "dib" | "image/bmp" | "image/x-bmp" | "image/x-ms-bmp" => decode_bmp(bytes),
         _ => None,
     }
 }
@@ -321,6 +320,8 @@ fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
         decode_webp(bytes)
     } else if is_gif_bytes(bytes) {
         decode_gif(bytes)
+    } else if is_bmp_bytes(bytes) {
+        decode_bmp(bytes)
     } else if is_svg_bytes(bytes) {
         decode_simple_svg(bytes, None)
     } else {
@@ -342,6 +343,10 @@ fn is_webp_bytes(bytes: &[u8]) -> bool {
 
 fn is_gif_bytes(bytes: &[u8]) -> bool {
     matches!(bytes, [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..])
+}
+
+fn is_bmp_bytes(bytes: &[u8]) -> bool {
+    matches!(bytes, [b'B', b'M', ..])
 }
 
 fn is_svg_bytes(bytes: &[u8]) -> bool {
@@ -1620,6 +1625,39 @@ fn decode_webp(bytes: &[u8]) -> Option<DecodedImage> {
         return None;
     }
     let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).ok()?;
+    let (width, height) = decoder.dimensions();
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_DECODED_IMAGE_SIDE
+        || height > MAX_DECODED_IMAGE_SIDE
+    {
+        return None;
+    }
+    let total_bytes = decoder.total_bytes();
+    if total_bytes == 0 || total_bytes > MAX_WEBP_DECODED_BYTES {
+        return None;
+    }
+    let color_type = decoder.color_type();
+    let mut decoded = vec![0u8; usize::try_from(total_bytes).ok()?];
+    decoder.read_image(&mut decoded).ok()?;
+    let pixel_count = width.checked_mul(height)?;
+    let pixels = image_pixels_to_grayscale(&decoded, color_type, pixel_count)?;
+    let rgb_pixels = image_pixels_to_rgb(&decoded, color_type, pixel_count)?;
+    Some(DecodedImage {
+        width,
+        height,
+        pixels,
+        rgb_pixels: Some(rgb_pixels),
+    })
+}
+
+fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
+    if !is_bmp_bytes(bytes) {
+        return None;
+    }
+    let decoder = image::codecs::bmp::BmpDecoder::new(Cursor::new(bytes)).ok()?;
     let (width, height) = decoder.dimensions();
     let width = usize::try_from(width).ok()?;
     let height = usize::try_from(height).ok()?;
@@ -6419,6 +6457,9 @@ pub(super) fn image_mime_type_supported(source_type: &str) -> bool {
             | "image/webp"
             | "image/x-webp"
             | "image/gif"
+            | "image/bmp"
+            | "image/x-bmp"
+            | "image/x-ms-bmp"
     )
 }
 
