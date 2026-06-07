@@ -12404,6 +12404,150 @@ async fn image_webp_srcset_aliases_attach_selected_visible_rgb_images() {
 }
 
 #[tokio::test]
+async fn image_webp_src_aliases_attach_selected_visible_rgb_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.webp");
+    let picture = dir.path().join("picture.webp");
+    fs::write(&hero, tiny_test_webp_bytes()).unwrap();
+    fs::write(&picture, tiny_test_webp_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before webp src aliases</p>
+            <img src="/assets/loading.gif" data-src-webp="hero.webp" alt="WebP src alias hero" width="80" height="24">
+            <picture>
+                <source type="image/webp" data-webp-src="picture.webp">
+                <img src="/assets/blank.gif" alt="WebP src alias picture" width="80" height="24">
+            </picture>
+            <p>After webp src aliases</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let hero_url = hero.display().to_string();
+    let picture_url = picture.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url.contains("loading.gif")
+                || fetch.resource.url.contains("blank.gif"))
+    );
+
+    for (resolved, url, initiator) in [
+        (hero_url.as_str(), "hero.webp", "img"),
+        (picture_url.as_str(), "picture.webp", "source"),
+    ] {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "image");
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_hash.is_some());
+        assert!(fetch.decoded_color_hash.is_some());
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    }
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.contains("loading.gif")
+                || fetch.resource.url.contains("blank.gif"))
+    );
+
+    let mut decoded_hashes = Vec::new();
+    for (resolved, url) in [
+        (hero_url.as_str(), "hero.webp"),
+        (picture_url.as_str(), "picture.webp"),
+    ] {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, "image");
+        assert_eq!(fetch.resource.initiator, "img");
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        decoded_hashes.push((
+            resolved.to_owned(),
+            fetch.decoded_hash.clone().unwrap(),
+            fetch.decoded_color_hash.clone().unwrap(),
+        ));
+    }
+
+    let render = render_session.current().unwrap();
+    assert!(render.text.contains("Before webp src aliases"));
+    assert!(render.text.contains("After webp src aliases"));
+    for (resolved, decoded_hash, color_hash) in decoded_hashes {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.pixel_hash == decoded_hash)
+            .unwrap();
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(color_hash.as_str())
+        );
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            )
+        }));
+    }
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 245 && pixel[1] < 245 && pixel[2] < 245 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_foreground_sources_decode_real_page_file_aliases_in_color() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
