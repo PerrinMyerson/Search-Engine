@@ -10531,6 +10531,12 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
                 width: 3,
                 height: 2,
             },
+            BrowserViewportRect {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 1,
+            },
         ]
     );
     assert_eq!(frame.report.frame.raster_viewport_x, Some(1));
@@ -10673,6 +10679,30 @@ fn fixed_overlay_scroll_frame_invalidates_shifted_previous_pixels_and_hit_geomet
     assert_eq!(frame.report.viewport.viewport.y, 1);
     assert_eq!(frame.report.viewport.scroll_delta_y, 1);
     assert!(!frame.report.viewport.full_repaint);
+    assert_eq!(
+        frame.report.viewport.invalidated_regions,
+        vec![
+            BrowserViewportRect {
+                x: 0,
+                y: 3,
+                width: 6,
+                height: 1,
+            },
+            BrowserViewportRect {
+                x: 0,
+                y: 1,
+                width: 4,
+                height: 1,
+            },
+            BrowserViewportRect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 1,
+            },
+        ],
+        "document viewport invalidations should include normal scroll and fixed current/previous cells"
+    );
     assert_eq!(
         frame
             .report
@@ -10840,12 +10870,20 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
     assert_eq!(first.scroll_delta_y, 1);
     assert_eq!(
         first.invalidated_regions,
-        vec![BrowserViewportRect {
-            x: 0,
-            y: 3,
-            width: 10,
-            height: 1,
-        },]
+        vec![
+            BrowserViewportRect {
+                x: 0,
+                y: 3,
+                width: 10,
+                height: 1,
+            },
+            BrowserViewportRect {
+                x: 0,
+                y: 0,
+                width: 3,
+                height: 1,
+            },
+        ]
     );
 
     let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
