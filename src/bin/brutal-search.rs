@@ -1700,6 +1700,11 @@ fn web_storage_export_readiness_lines(
         .find(|artifact| artifact.name == "web-cache.jsonl")
         .map(|artifact| artifact.query_count)
         .unwrap_or(0);
+    let cache_replayable_result_rows = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
     let result_log_unique_urls = artifacts
         .iter()
         .find(|artifact| artifact.name == "brave-results.jsonl")
@@ -1712,6 +1717,13 @@ fn web_storage_export_readiness_lines(
     } else {
         "partial"
     };
+    let replay_status = if cache_replayable_result_rows > 0 {
+        "ready"
+    } else if result_log_unique_urls > 0 {
+        "miss-risk"
+    } else {
+        "empty"
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -1719,7 +1731,11 @@ fn web_storage_export_readiness_lines(
             summary.incomplete_result_rows,
             summary.duplicate_entries
         ),
+        format!(
+            "web_storage_replay_readiness: status={replay_status} report_only=true cache_query_buckets={cache_query_buckets} replayable_result_rows={cache_replayable_result_rows} result_log_unique_urls={result_log_unique_urls}"
+        ),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
+        format!("web_storage_replayable_result_rows: {cache_replayable_result_rows}"),
         format!("web_storage_export_unique_result_urls: {result_log_unique_urls}"),
         format!(
             "web_storage_export_durable_result_rows: {}",
@@ -3280,6 +3296,10 @@ mod tests {
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
         assert!(lines.contains(&"web_storage_export_cache_query_buckets: 2".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(lines.contains(&"web_storage_export_unique_result_urls: 2".to_owned()));
         assert!(lines.contains(&"web_storage_export_durable_result_rows: 6".to_owned()));
         assert!(lines.contains(&"web_storage_export_incomplete_result_rows: 0".to_owned()));
@@ -3348,6 +3368,10 @@ mod tests {
             &"web_storage_export_readiness: status=ready report_only=true cache_query_buckets=2 unique_result_urls=2 durable_result_rows=6 incomplete_result_rows=0 duplicate_rows=1".to_owned()
         ));
         assert!(ready_lines.contains(
+            &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
+        assert!(ready_lines.contains(
             &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
         ));
 
@@ -3357,6 +3381,9 @@ mod tests {
         assert!(partial_lines.contains(
             &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=1".to_owned()
         ));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
+        ));
 
         let mut empty_summary = ready_summary;
         empty_summary.result_rows = 0;
@@ -3365,6 +3392,48 @@ mod tests {
         let empty_lines = web_storage_export_readiness_lines(&[], &empty_summary);
         assert!(empty_lines.contains(
             &"web_storage_export_readiness: status=empty report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=0 incomplete_result_rows=0 duplicate_rows=1".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_replay_readiness_flags_result_log_only_state() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 90,
+            entries: 2,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "brave-results.jsonl",
+                bytes: 90,
+                entries: 2,
+                result_rows: 2,
+                durable_result_rows: 2,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 0,
+                unique_row_bytes: 90,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                max_entries_per_query: 1,
+                oldest_fetched_at_unix: Some(190),
+                newest_fetched_at_unix: Some(200),
+            }],
+            &summary,
+        );
+
+        assert!(lines.contains(
+            &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
         ));
     }
 
