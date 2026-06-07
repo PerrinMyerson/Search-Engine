@@ -6786,8 +6786,8 @@ fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
             (0, 0, "Before"),
             (0, 1, "Overlay"),
             (0, 1, "After"),
-            (0, 2, "Pinned"),
             (0, 2, "Tail"),
+            (0, 2, "Pinned"),
         ]
     );
 }
@@ -8540,6 +8540,170 @@ fn sticky_zero_z_index_background_paints_above_later_image_in_scrolled_rgba_view
             .saturating_add(10usize.saturating_mul(raster_options.cell_width)))
         .any(|x| pixel(x, text_y) == &[0, 0, 0, 255]);
     assert!(sticky_text_has_ink);
+}
+
+#[test]
+fn fixed_auto_layer_paints_above_later_media_and_keeps_scrolled_hit_geometry() {
+    let image_url = "mem://fixed-auto-layer-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![120],
+        rgb_pixels: Some(vec![30, 120, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><body>
+              <a href="/nav" style="display:block; position:fixed; top:0; height:24px; width:192px; background:rgb(245,245,245); color:rgb(0,0,0)">Pinned nav</a>
+              <img src="{image_url}" width="256" height="72" alt="">
+              <p style="height:96px">Scrollable body copy below the media.</p>
+            </body></html>
+            "#
+    );
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://fixed-auto-layer",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 32,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render fixed auto layer overlap fixture");
+    let render = profiled.render;
+
+    let paint_order = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image { url, .. } if url.as_deref() == Some(image_url.as_str()) => {
+                Some("image".to_owned())
+            }
+            DisplayCommand::Rect { shade, .. } if *shade == 245 => Some("fixed-bg".to_owned()),
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                if text == "Pinned nav" =>
+            {
+                Some("fixed-text".to_owned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paint_order,
+        vec!["image", "fixed-bg", "fixed-text"],
+        "fixed positioned content without explicit z-index should paint above later flow media"
+    );
+
+    let (fixed_text_index, fixed_text) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "Pinned nav" =>
+            {
+                Some((index, (*x, *y)))
+            }
+            _ => None,
+        })
+        .expect("fixed link text should render");
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("later image should render below fixed layer in source flow");
+    assert_eq!(image_bounds.0, 0);
+    assert_eq!(image_bounds.1, 0);
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 2,
+            width: 32,
+            height: 5,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 2);
+    let fixed_bounds = display_command_bounds_for_viewport(
+        &render.display_list[fixed_text_index],
+        raster_viewport_from_state(viewport.viewport),
+        display_command_viewport_fixed(&render, fixed_text_index),
+        display_command_viewport_sticky_top(&render, fixed_text_index),
+    );
+    assert_eq!(
+        fixed_bounds.y,
+        viewport.viewport.y.saturating_add(fixed_text.1),
+        "fixed text bounds should project to the scrolled viewport top"
+    );
+    let fixed_target = hit_test_target_node_in_viewport(
+        &render,
+        viewport.viewport,
+        fixed_bounds.x,
+        fixed_bounds.y.saturating_sub(viewport.viewport.y),
+    )
+    .expect("viewport hit on fixed link should resolve after scroll");
+    assert_eq!(
+        anchor_href_for_node(&page_state.dom, fixed_target).as_deref(),
+        Some("/nav")
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize fixed auto layer slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let fixed_background_x = raster_options
+        .padding_x
+        .saturating_add(18usize.saturating_mul(raster_options.cell_width));
+    assert_eq!(
+        pixel(fixed_background_x, raster_options.padding_y),
+        &[245, 245, 245, 255],
+        "fixed background should cover later image pixels at the viewport top"
+    );
+    let image_y = raster_options
+        .padding_y
+        .saturating_add(3usize.saturating_mul(raster_options.cell_height));
+    assert_eq!(
+        pixel(raster_options.padding_x, image_y),
+        &[30, 120, 220, 255],
+        "scrolled viewport should still show the later decoded image below the fixed layer"
+    );
 }
 
 #[test]

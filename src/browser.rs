@@ -16382,10 +16382,16 @@ fn render_node(
             if let Some(sticky_top) = viewport_sticky_top_entered {
                 renderer.enter_viewport_sticky(sticky_top);
             }
-            let positive_z_layer_entered =
-                style.position != Position::Static && style.z_index_specified;
-            if positive_z_layer_entered {
-                renderer.enter_positive_z_layer(style.z_index);
+            let paint_layer_z_index =
+                if style.position != Position::Static && style.z_index_specified {
+                    Some(style.z_index)
+                } else if matches!(style.position, Position::Fixed | Position::Sticky) {
+                    Some(0)
+                } else {
+                    None
+                };
+            if let Some(z_index) = paint_layer_z_index {
+                renderer.enter_positive_z_layer(z_index);
             }
             let link_text_entered = element.tag == "a"
                 && element
@@ -16415,7 +16421,7 @@ fn render_node(
                 if let Some(snapshot) = out_of_flow_entered.take() {
                     renderer.exit_out_of_flow(snapshot);
                 }
-                if positive_z_layer_entered {
+                if paint_layer_z_index.is_some() {
                     renderer.exit_positive_z_layer();
                 }
                 if viewport_fixed_entered {
