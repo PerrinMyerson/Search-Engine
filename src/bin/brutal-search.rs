@@ -1081,6 +1081,22 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_frontier_failed_record_cap: {}",
             DEFAULT_MAX_FAILED_FRONTIER_RECORDS
         ));
+        let projected_failed_after = frontier.failed.min(DEFAULT_MAX_FAILED_FRONTIER_RECORDS);
+        let projected_failed_removed = frontier.failed.saturating_sub(projected_failed_after);
+        lines.push(format!(
+            "crawl_storage_frontier_failed_projected_after: {}",
+            projected_failed_after
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_projected_removed: {}",
+            projected_failed_removed
+        ));
+        if projected_failed_removed > 0 {
+            lines.push(
+                "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
+                    .to_owned(),
+            );
+        }
     }
     if stats.crawl_snapshot_duplicate_entries > 0 {
         lines.push(
@@ -2036,9 +2052,9 @@ mod tests {
                 queued: 1,
                 fetching: 2,
                 fetched: 3,
-                failed: 4,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
                 deferred: 5,
-                total: 15,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 13,
             }),
             crawl_snapshot_bytes: 120,
             crawl_snapshot_entries: 4,
@@ -2053,15 +2069,26 @@ mod tests {
         ));
         assert!(lines.contains(&"crawl_storage_retained_bytes: 170".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_bytes: 50".to_owned()));
-        assert!(lines.contains(&"crawl_storage_frontier_records: 15".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_records: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 13
+        )));
         assert!(lines.contains(&"crawl_storage_frontier_queued: 1".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_fetching: 2".to_owned()));
         assert!(lines.contains(&"crawl_storage_frontier_fetched: 3".to_owned()));
-        assert!(lines.contains(&"crawl_storage_frontier_failed: 4".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2
+        )));
         assert!(lines.contains(&"crawl_storage_frontier_deferred: 5".to_owned()));
         assert!(lines.contains(&format!(
             "crawl_storage_frontier_failed_record_cap: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
         )));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_projected_after: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_entries: 4".to_owned()));
         assert!(lines.contains(&"crawl_storage_snapshot_unique_entries: 3".to_owned()));
