@@ -2318,9 +2318,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"<input type="hidden" name="height" value="16">"#));
     assert!(html.contains(r#"<input type="hidden" name="viewport_x" value="0">"#));
     assert!(html.contains(r#"<input type="hidden" name="viewport_y" value="0">"#));
-    assert!(
-        html.contains(r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="8""#)
-    );
+    let expected_horizontal_step = (payload.width.max(1) / 2).max(1);
+    assert!(html.contains(&format!(
+        r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="{expected_horizontal_step}""#
+    )));
     assert!(
         html.contains(r#"<input id="browser-scroll-step-dy" type="number" name="dy" value="8""#)
     );
@@ -2336,7 +2337,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
     ));
-    assert!(html.contains(r#">Right</a>"#));
+    let right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", expected_horizontal_step.to_string())],
+        &payload,
+    );
+    assert!(html.contains(&format!(
+        r#"href="{}">Right</a>"#,
+        html_escape::encode_double_quoted_attribute(&right_href)
+    )));
     assert!(html.contains(r#"data-browser-viewport-page-controls"#));
     assert!(html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Page up</span>"#
@@ -2467,10 +2477,18 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#">Reload page</a>"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
-    let page_left_href =
-        browser_session_action_href(&payload.id, "scroll", &[("dx", "-1".to_owned())], &payload);
-    let page_right_href =
-        browser_session_action_href(&payload.id, "scroll", &[("dx", "1".to_owned())], &payload);
+    let page_left_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", format!("-{expected_horizontal_step}"))],
+        &payload,
+    );
+    let page_right_href = browser_session_action_href(
+        &payload.id,
+        "scroll",
+        &[("dx", expected_horizontal_step.to_string())],
+        &payload,
+    );
     let top_href = browser_session_action_href(&payload.id, "top", &[], &payload);
     let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], &payload);
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], &payload);
@@ -3208,9 +3226,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"<input type="hidden" name="viewport_y" value="{}">"#,
         payload.max_scroll_y
     )));
-    assert!(
-        html.contains(r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="8""#)
-    );
+    let expected_horizontal_step = (payload.width.max(1) / 2).max(1);
+    assert!(html.contains(&format!(
+        r#"<input id="browser-scroll-step-dx" type="number" name="dx" value="{expected_horizontal_step}""#
+    )));
     assert!(
         html.contains(r#"<input id="browser-scroll-step-dy" type="number" name="dy" value="8""#)
     );
