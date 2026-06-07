@@ -1365,6 +1365,21 @@ fn storage_cleanup_readiness_lines(
     } else {
         "zero-removal"
     };
+    let web_cleanup_useful = web_summary.duplicate_entries > 0
+        || web_summary.duplicate_row_bytes > 0
+        || web_summary.suggested_dry_runs > 0;
+    let component_cleanup_useful = stats.browser_document_duplicate_rows > 0
+        || stats.crawl_snapshot_duplicate_entries > 0
+        || frontier_failed_removable_records > 0;
+    let next_action = if !safe_to_clean {
+        "cleanup-pointless; all tracked rows are retained"
+    } else if web_cleanup_useful {
+        "run web compaction dry-run first; web-cache/brave-results have removable duplicate pressure"
+    } else if component_cleanup_useful {
+        "inspect browser-document, crawl-snapshot, and frontier dry-run reports before any apply"
+    } else {
+        "review component reports before any apply"
+    };
 
     let mut lines = vec![
         format!(
@@ -1404,6 +1419,25 @@ fn storage_cleanup_readiness_lines(
             "storage_cleanup_frontier_failed_removable_records: {}",
             frontier_failed_removable_records
         ),
+        format!(
+            "storage_cleanup_web_reason: duplicate_rows={} duplicate_row_bytes={} suggested_dry_runs={}",
+            web_summary.duplicate_entries,
+            web_summary.duplicate_row_bytes,
+            web_summary.suggested_dry_runs
+        ),
+        format!(
+            "storage_cleanup_browser_document_reason: duplicate_rows={} duplicate_row_bytes={}",
+            stats.browser_document_duplicate_rows, stats.browser_document_duplicate_row_bytes
+        ),
+        format!(
+            "storage_cleanup_snapshot_reason: duplicate_rows={}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_frontier_reason: failed_removable_records={}",
+            frontier_failed_removable_records
+        ),
+        format!("storage_cleanup_next_action: report-only; {next_action}"),
         "storage_cleanup_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned(),
     ];
     if safe_to_clean {
@@ -3172,6 +3206,110 @@ mod tests {
         assert!(clean_lines.contains(&"storage_cleanup_safe_to_clean: false".to_owned()));
         assert!(clean_lines.contains(&"storage_cleanup_pointless: true".to_owned()));
         assert!(clean_lines.contains(&"storage_cleanup_note: cleanup would be pointless because all tracked storage rows are retained".to_owned()));
+    }
+
+    #[test]
+    fn storage_cleanup_readiness_reports_component_reasons() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_cleanup_web_reason: duplicate_rows=4 duplicate_row_bytes=40 suggested_dry_runs=1".to_owned()));
+        assert!(
+            lines.contains(
+                &"storage_cleanup_browser_document_reason: duplicate_rows=1 duplicate_row_bytes=15"
+                    .to_owned()
+            )
+        );
+        assert!(lines.contains(&"storage_cleanup_snapshot_reason: duplicate_rows=1".to_owned()));
+        assert!(
+            lines.contains(
+                &"storage_cleanup_frontier_reason: failed_removable_records=2".to_owned()
+            )
+        );
+        assert!(lines.contains(&"storage_cleanup_next_action: report-only; run web compaction dry-run first; web-cache/brave-results have removable duplicate pressure".to_owned()));
+
+        let component_only_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 25,
+            browser_document_rows: 2,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 20,
+            browser_document_duplicate_row_bytes: 5,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            }),
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 3,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let component_only_lines =
+            storage_cleanup_readiness_lines(&component_only_stats, &clean_web_summary);
+
+        assert!(component_only_lines.contains(&"storage_cleanup_next_action: report-only; inspect browser-document, crawl-snapshot, and frontier dry-run reports before any apply".to_owned()));
     }
 
     #[test]
