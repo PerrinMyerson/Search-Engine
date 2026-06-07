@@ -1889,13 +1889,47 @@ fn push_image_alias_resources(
         }
     }
 
-    for attr_name in IMAGE_SRC_ALIAS_ATTRS {
-        if let Some(url) = element.attrs.get(*attr_name).map(String::as_str)
-            && !url.trim().is_empty()
-        {
-            push_resource(resources, source, element, "image", &element.tag, url);
-        }
+    if let Some(url) = selected_image_alias_url(element) {
+        push_resource(resources, source, element, "image", &element.tag, url);
     }
+}
+
+fn selected_image_alias_url(element: &ElementData) -> Option<&str> {
+    let candidates = IMAGE_SRC_ALIAS_ATTRS
+        .iter()
+        .filter_map(|attr_name| {
+            element
+                .attrs
+                .get(*attr_name)
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .copied()
+        .find(|url| {
+            !is_lazy_image_placeholder_src(url)
+                && image_alias_url_supported(url, element.type_hint.as_deref())
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .find(|url| image_alias_url_supported(url, element.type_hint.as_deref()))
+        })
+}
+
+fn image_alias_url_supported(url: &str, type_hint: Option<&str>) -> bool {
+    let url = url.trim();
+    if url
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        return !srcset_candidate_clearly_unsupported(url);
+    }
+    type_hint.is_some_and(image_mime_type_supported) || !srcset_candidate_clearly_unsupported(url)
 }
 
 const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
