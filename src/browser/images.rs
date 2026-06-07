@@ -5253,7 +5253,7 @@ fn lazy_image_render_source(
         })
         .or_else(|| lazy_width_template_render_source(element, desired_width))
         .or_else(|| {
-            first_non_empty_attr(
+            first_preferred_image_source_attr(
                 element,
                 &[
                     "data-src",
@@ -5444,6 +5444,38 @@ fn first_non_empty_attr<'a>(element: &'a ElementData, attr_names: &[&str]) -> Op
         }
         .filter(|value| !value.trim().is_empty())
     })
+}
+
+fn first_preferred_image_source_attr<'a>(
+    element: &'a ElementData,
+    attr_names: &[&str],
+) -> Option<&'a str> {
+    let candidates = attr_names
+        .iter()
+        .filter_map(|attr_name| {
+            element
+                .attrs
+                .get(*attr_name)
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .copied()
+        .find(|value| {
+            !is_lazy_image_placeholder_src(value)
+                && !srcset_candidate_clearly_unsupported_for_type(
+                    value,
+                    element.type_hint.as_deref(),
+                )
+        })
+        .or_else(|| {
+            candidates.iter().copied().find(|value| {
+                !srcset_candidate_clearly_unsupported_for_type(value, element.type_hint.as_deref())
+            })
+        })
 }
 
 pub(super) fn image_sizes_attr(element: &ElementData) -> Option<&str> {
