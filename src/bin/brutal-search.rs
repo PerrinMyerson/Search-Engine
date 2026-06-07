@@ -855,6 +855,8 @@ struct WebStorageArtifactStats {
     entries: usize,
     unique_entries: usize,
     duplicate_entries: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
     query_count: usize,
     max_entries_per_query: usize,
     oldest_fetched_at_unix: Option<u64>,
@@ -868,6 +870,8 @@ struct WebStoragePressureSummary {
     entries: usize,
     unique_entries: usize,
     duplicate_entries: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
     max_entries_per_query: usize,
     stale_artifacts: usize,
     suggested_dry_runs: usize,
@@ -1140,7 +1144,7 @@ fn storage_snapshot_readiness_lines(
     };
     let mut lines = vec![
         format!(
-            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_unique_entries={} web_duplicates={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} crawl_bytes={} web_entries={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
             status,
             stats.total_bytes,
             web_summary.bytes,
@@ -1148,6 +1152,7 @@ fn storage_snapshot_readiness_lines(
             web_summary.entries,
             web_summary.unique_entries,
             web_summary.duplicate_entries,
+            web_summary.duplicate_row_bytes,
             web_summary.suggested_dry_runs,
             stats.crawl_snapshot_entries,
             frontier_records
@@ -1210,12 +1215,13 @@ fn web_storage_pressure_summary_lines(
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
     let mut lines = vec![
         format!(
-            "web_storage_pressure_summary: artifacts={} bytes={} entries={} unique_entries={} duplicates={} stale_artifacts={} suggested_dry_runs={}",
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
             summary.artifact_count,
             summary.bytes,
             summary.entries,
             summary.unique_entries,
             summary.duplicate_entries,
+            summary.duplicate_row_bytes,
             summary.stale_artifacts,
             summary.suggested_dry_runs
         ),
@@ -1235,8 +1241,20 @@ fn web_storage_pressure_summary_lines(
             summary.duplicate_entries
         ),
         format!(
+            "web_storage_pressure_projected_row_bytes_after: {}",
+            summary.unique_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_projected_row_bytes_removed: {}",
+            summary.duplicate_row_bytes
+        ),
+        format!(
             "web_storage_pressure_duplicate_entries: {}",
             summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_pressure_duplicate_row_bytes: {}",
+            summary.duplicate_row_bytes
         ),
         format!(
             "web_storage_pressure_max_entries_per_query: {}",
@@ -1279,6 +1297,12 @@ fn web_storage_pressure_summary(
             .iter()
             .map(|artifact| artifact.duplicate_entries)
             .sum(),
+        unique_row_bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.unique_row_bytes)
+        }),
+        duplicate_row_bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.duplicate_row_bytes)
+        }),
         max_entries_per_query: artifacts
             .iter()
             .map(|artifact| artifact.max_entries_per_query)
@@ -1623,6 +1647,8 @@ fn collect_web_storage_artifact_stats(
         entries: 0,
         unique_entries: 0,
         duplicate_entries: 0,
+        unique_row_bytes: 0,
+        duplicate_row_bytes: 0,
         query_count: 0,
         max_entries_per_query: 0,
         oldest_fetched_at_unix: None,
@@ -1643,14 +1669,17 @@ fn collect_web_storage_artifact_stats(
             continue;
         }
         stats.entries += 1;
+        let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
         if let Some(key) = web_storage_unique_key(name, &value) {
             if unique_keys.insert(key) {
                 stats.unique_entries += 1;
+                stats.unique_row_bytes = stats.unique_row_bytes.saturating_add(row_bytes);
             } else {
                 stats.duplicate_entries += 1;
+                stats.duplicate_row_bytes = stats.duplicate_row_bytes.saturating_add(row_bytes);
             }
         }
         if let Some(query) = value
@@ -1955,6 +1984,8 @@ mod tests {
                     entries: 2,
                     unique_entries: 0,
                     duplicate_entries: 0,
+                    unique_row_bytes: 0,
+                    duplicate_row_bytes: 0,
                     query_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(100),
@@ -1966,6 +1997,8 @@ mod tests {
                     entries: 1,
                     unique_entries: 0,
                     duplicate_entries: 0,
+                    unique_row_bytes: 0,
+                    duplicate_row_bytes: 0,
                     query_count: 0,
                     max_entries_per_query: 0,
                     oldest_fetched_at_unix: Some(130),
@@ -2064,6 +2097,8 @@ mod tests {
             entries: 30,
             unique_entries: 26,
             duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
             max_entries_per_query: 3,
             stale_artifacts: 1,
             suggested_dry_runs: 1,
@@ -2104,6 +2139,8 @@ mod tests {
             entries: 30,
             unique_entries: 26,
             duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
             max_entries_per_query: 3,
             stale_artifacts: 1,
             suggested_dry_runs: 1,
@@ -2111,7 +2148,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_unique_entries=26 web_duplicates=4 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 crawl_bytes=200 web_entries=30 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
@@ -2139,6 +2176,8 @@ mod tests {
             entries: 10,
             unique_entries: 10,
             duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
             max_entries_per_query: 1,
             stale_artifacts: 0,
             suggested_dry_runs: 0,
@@ -2146,7 +2185,7 @@ mod tests {
 
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_unique_entries=10 web_duplicates=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 crawl_bytes=100 web_entries=10 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
         assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
         assert!(
@@ -2199,6 +2238,8 @@ mod tests {
             entries: 3,
             unique_entries: 2,
             duplicate_entries: 1,
+            unique_row_bytes: 80,
+            duplicate_row_bytes: 40,
             query_count: 2,
             max_entries_per_query: 2,
             oldest_fetched_at_unix: Some(100),
@@ -2210,6 +2251,8 @@ mod tests {
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             duplicate_entries: 0,
+            unique_row_bytes: 4096,
+            duplicate_row_bytes: 0,
             query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -2221,6 +2264,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            unique_row_bytes: 80,
+            duplicate_row_bytes: 0,
             query_count: 2,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -2259,6 +2304,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            unique_row_bytes: 120,
+            duplicate_row_bytes: 0,
             query_count: 2,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(100),
@@ -2270,6 +2317,8 @@ mod tests {
             entries: 2,
             unique_entries: 2,
             duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
             query_count: 2,
             max_entries_per_query: 1,
             oldest_fetched_at_unix: Some(190),
@@ -2294,6 +2343,8 @@ mod tests {
                     entries: 3,
                     unique_entries: 2,
                     duplicate_entries: 1,
+                    unique_row_bytes: 80,
+                    duplicate_row_bytes: 40,
                     query_count: 2,
                     max_entries_per_query: 2,
                     oldest_fetched_at_unix: Some(100),
@@ -2305,6 +2356,8 @@ mod tests {
                     entries: 2,
                     unique_entries: 2,
                     duplicate_entries: 0,
+                    unique_row_bytes: 90,
+                    duplicate_row_bytes: 0,
                     query_count: 2,
                     max_entries_per_query: 1,
                     oldest_fetched_at_unix: Some(190),
@@ -2316,12 +2369,15 @@ mod tests {
         );
 
         assert!(lines.contains(
-            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 unique_entries=4 duplicates=1 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
         ));
         assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_unique_entries: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_after: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_after: 170".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_removed: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_duplicate_row_bytes: 40".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
         assert!(lines.contains(
