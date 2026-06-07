@@ -9952,6 +9952,38 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         target.param("source").as_deref(),
         Some("https://example.com")
     );
+
+    let new_session_href = browser_session_new_session_href("https://example.com/next", &payload);
+    let new_session_target = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(new_session_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+
+    assert_eq!(
+        new_session_target.param("url").as_deref(),
+        Some("https://example.com/next")
+    );
+    assert_eq!(
+        new_session_target.param("from").as_deref(),
+        Some("/search?q=cat")
+    );
+    assert_eq!(new_session_target.param("width").as_deref(), Some("90"));
+    assert_eq!(new_session_target.param("height").as_deref(), Some("30"));
+    assert_eq!(
+        new_session_target.param("viewport_x").as_deref(),
+        Some("12")
+    );
+    assert_eq!(new_session_target.param("viewport_y").as_deref(), Some("7"));
+    assert_eq!(
+        new_session_target.param("max_bytes").as_deref(),
+        Some("1048576")
+    );
+    assert_eq!(
+        new_session_target.param("source").as_deref(),
+        Some("https://example.com")
+    );
 }
 
 #[test]
@@ -10041,6 +10073,20 @@ fn browser_session_action_state_strips_unsafe_source() {
     assert!(hidden.contains(r#"name="viewport_y" value="7""#));
     assert!(!hidden.contains(r#"name="source""#));
     assert!(!hidden.contains("javascript:"));
+
+    let new_session_href = browser_session_new_session_href("https://example.com/next", &payload);
+    let new_session_target = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(new_session_href.trim_start_matches("/browser?").as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+    };
+    assert_eq!(
+        new_session_target.param("url").as_deref(),
+        Some("https://example.com/next")
+    );
+    assert!(new_session_target.param("source").is_none());
+    assert!(!new_session_href.contains("javascript"));
 }
 
 #[test]
