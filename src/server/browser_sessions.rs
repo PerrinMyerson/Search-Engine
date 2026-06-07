@@ -10041,13 +10041,6 @@ fn render_browser_session_page_with_diagnostics(
     );
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
-    let chrome_image_action = render_browser_session_chrome_image_action(payload);
-    let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div></details>"#,
-        current_href = html_escape::encode_double_quoted_attribute(&current_href),
-        reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
-        chrome_image_action = chrome_image_action,
-    );
     let keyboard_controls_script = render_browser_session_keyboard_controls_script(&reload_href);
     let duplicate_href = browser_session_action_href(
         &payload.id,
@@ -10167,6 +10160,37 @@ fn render_browser_session_page_with_diagnostics(
         "Restore tab",
         restore_tab_href,
     );
+    let mut chrome_tab_actions = String::new();
+    let _ = write!(
+        chrome_tab_actions,
+        r#"<div class="browser-chrome-tab-actions" data-browser-chrome-tab-actions><a href="{duplicate_href}" data-browser-chrome-duplicate-tab>Duplicate tab</a><a href="{pin_current_href}" data-browser-chrome-pin-tab>{pin_current_label}</a>"#,
+        duplicate_href = html_escape::encode_double_quoted_attribute(&duplicate_href),
+        pin_current_href = html_escape::encode_double_quoted_attribute(&pin_current_href),
+        pin_current_label = html_escape::encode_text(pin_current_label),
+    );
+    if payload.sessions.len() > 1 {
+        let _ = write!(
+            chrome_tab_actions,
+            r#"<a href="{close_current_href}" data-browser-chrome-close-tab>Close tab</a>"#,
+            close_current_href = html_escape::encode_double_quoted_attribute(&close_current_href),
+        );
+    }
+    if !payload.closed_sessions.is_empty() {
+        let _ = write!(
+            chrome_tab_actions,
+            r#"<a href="{restore_tab_href}" data-browser-chrome-restore-tab>Restore tab</a>"#,
+            restore_tab_href = html_escape::encode_double_quoted_attribute(restore_tab_href),
+        );
+    }
+    chrome_tab_actions.push_str("</div>");
+    let chrome_image_action = render_browser_session_chrome_image_action(payload);
+    let chrome_actions = format!(
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_tab_actions}</div></details>"#,
+        current_href = html_escape::encode_double_quoted_attribute(&current_href),
+        reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        chrome_image_action = chrome_image_action,
+        chrome_tab_actions = chrome_tab_actions,
+    );
     let diagnostics_href = browser_session_action_href(
         &payload.id,
         "current",
@@ -10250,6 +10274,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-actions > summary::marker {{ color: #5d636b; }}
 .browser-chrome-action-list {{ position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; min-width: 132px; padding: 6px; border: 1px solid #c6cbd2; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(25,26,28,0.12); }}
 .browser-chrome-action-list a {{ justify-content: flex-start; width: 100%; }}
+.browser-chrome-tab-actions {{ display: grid; gap: 4px; border-top: 1px solid #eef0f3; margin-top: 2px; padding-top: 5px; }}
 .browser-chrome-status {{ display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 4px; align-items: center; min-width: 0; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
