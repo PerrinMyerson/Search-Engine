@@ -2520,6 +2520,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
     assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback title="Moved visual viewport to x 8, y 4.">Moved visual viewport to x 8, y 4.</span>"#
+    ));
+    assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
     ));
     assert!(html.contains(">Top</a>"));
@@ -9633,6 +9636,9 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert!(!html.contains("data-browser-action-feedback"));
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback title="Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved">Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved</span>"#
     ));
     assert!(
         html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
