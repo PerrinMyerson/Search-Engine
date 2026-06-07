@@ -4088,9 +4088,11 @@ fn hit_test_target_node_in_viewport(
     {
         return target_node;
     }
-    hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y).or_else(|| {
-        hit_test_nearby_visual_target_node_for_viewport(render, viewport, page_x, page_y)
-    })
+    hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
+        .or_else(|| hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y))
+        .or_else(|| {
+            hit_test_nearby_normal_visual_target_node_for_viewport(render, viewport, page_x, page_y)
+        })
 }
 
 fn viewport_local_point_to_page(
@@ -4372,12 +4374,62 @@ fn hit_test_nearby_visual_target_node_for_viewport(
     x: usize,
     y: usize,
 ) -> Option<usize> {
+    hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, x, y)
+        .or_else(|| hit_test_nearby_normal_visual_target_node_for_viewport(render, viewport, x, y))
+}
+
+fn hit_test_nearby_pinned_visual_target_node_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    hit_test_nearby_visual_target_node_for_viewport_matching(
+        render,
+        viewport,
+        x,
+        y,
+        |render, command_index| {
+            display_command_viewport_fixed(render, command_index)
+                || display_command_viewport_sticky_top(render, command_index).is_some()
+        },
+    )
+}
+
+fn hit_test_nearby_normal_visual_target_node_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<usize> {
+    hit_test_nearby_visual_target_node_for_viewport_matching(
+        render,
+        viewport,
+        x,
+        y,
+        |render, command_index| {
+            !display_command_viewport_fixed(render, command_index)
+                && display_command_viewport_sticky_top(render, command_index).is_none()
+        },
+    )
+}
+
+fn hit_test_nearby_visual_target_node_for_viewport_matching(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+    mut include: impl FnMut(&BrowserRender, usize) -> bool,
+) -> Option<usize> {
     render
         .display_list
         .iter()
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if !include(render, command_index) {
+                return None;
+            }
             if matches!(
                 command,
                 DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
