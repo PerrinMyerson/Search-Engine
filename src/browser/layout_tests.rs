@@ -9427,6 +9427,135 @@ fn viewport_hit_testing_blocks_scrolled_link_under_topmost_fixed_background() {
 }
 
 #[test]
+fn viewport_nearby_hit_testing_prefers_pinned_link_box_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://nearby-fixed-hit-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(42)).with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 5,
+                target_node: Some(7),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 1,
+                shade: 244,
+                red: 244,
+                green: 244,
+                blue: 244,
+            },
+            DisplayCommand::Text {
+                x: 1,
+                y: 4,
+                text: "Under".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Under\nFooter".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 2,
+            width: 8,
+            height: 4,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 2);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 2),
+        Some(7),
+        "the scrolled link should remain exactly hittable on its visible text row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 1),
+        Some(42),
+        "nearby viewport fallback should prefer the pinned link box over lower scrolled text"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize nearby fixed hit slice");
+    let pixel = |cell_x: usize, cell_y: usize| {
+        let x = raster_options
+            .padding_x
+            .saturating_add(cell_x.saturating_mul(raster_options.cell_width));
+        let y = raster_options
+            .padding_y
+            .saturating_add(cell_y.saturating_mul(raster_options.cell_height));
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(2, 0),
+        &[244, 244, 244, 255],
+        "pinned link box should paint at the top of the scrolled viewport"
+    );
+    let under_text_has_ink = (raster_options
+        .padding_y
+        .saturating_add(2usize.saturating_mul(raster_options.cell_height))
+        ..raster_options
+            .padding_y
+            .saturating_add(3usize.saturating_mul(raster_options.cell_height))
+            .min(rgba.height))
+        .any(|y| {
+            (raster_options
+                .padding_x
+                .saturating_add(raster_options.cell_width)
+                ..raster_options
+                    .padding_x
+                    .saturating_add(6usize.saturating_mul(raster_options.cell_width))
+                    .min(rgba.width))
+                .any(|x| {
+                    let index = y
+                        .saturating_mul(rgba.width)
+                        .saturating_add(x)
+                        .saturating_mul(4);
+                    rgba.pixels[index] == 0
+                        && rgba.pixels[index.saturating_add(1)] == 0
+                        && rgba.pixels[index.saturating_add(2)] == 0
+                })
+        });
+    assert!(
+        under_text_has_ink,
+        "scrolled lower link text should still render in the same viewport slice"
+    );
+}
+
+#[test]
 fn css_floating_images_wrap_following_text_rows() {
     let render = render_html(
         "mem://image-floats",
