@@ -2217,6 +2217,25 @@ fn push_background_alias_resources(
     source: &str,
     element: &ElementData,
 ) {
+    for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
+        let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
+            continue;
+        };
+        if let Some(url) =
+            selected_supported_srcset_candidate(srcset, background_image_sizes_attr(element), 0)
+        {
+            push_resource(
+                resources,
+                source,
+                element,
+                "background_image",
+                &element.tag,
+                &url,
+            );
+            return;
+        }
+    }
+
     if let Some(url) = background_width_template_render_source(element) {
         push_resource(
             resources,
@@ -2255,25 +2274,6 @@ fn push_background_alias_resources(
             url,
         );
         return;
-    }
-
-    for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
-        let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
-            continue;
-        };
-        if let Some(url) =
-            selected_supported_srcset_candidate(srcset, background_image_sizes_attr(element), 0)
-        {
-            push_resource(
-                resources,
-                source,
-                element,
-                "background_image",
-                &element.tag,
-                &url,
-            );
-            return;
-        }
     }
 }
 
