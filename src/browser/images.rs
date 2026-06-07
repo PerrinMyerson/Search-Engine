@@ -6174,6 +6174,15 @@ fn media_feature_matches(feature: &str, viewport_width_css_px: usize) -> Option<
     if name.trim() == "orientation" {
         return media_orientation_feature_matches(value);
     }
+    if let Some(resolution) = parse_media_resolution_feature(value) {
+        const SCREEN_DENSITY_DPPX: f64 = 1.0;
+        return match name.trim() {
+            "min-resolution" => Some(SCREEN_DENSITY_DPPX >= resolution),
+            "max-resolution" => Some(SCREEN_DENSITY_DPPX <= resolution),
+            "resolution" => Some((SCREEN_DENSITY_DPPX - resolution).abs() < f64::EPSILON),
+            _ => None,
+        };
+    }
     let width = parse_css_pixel_dimension(value)?;
     let viewport_width = viewport_width_css_px as f64;
     match name.trim() {
@@ -6182,6 +6191,20 @@ fn media_feature_matches(feature: &str, viewport_width_css_px: usize) -> Option<
         "width" => Some((viewport_width - width).abs() < f64::EPSILON),
         _ => None,
     }
+}
+
+fn parse_media_resolution_feature(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let resolution = if let Some(dppx) = strip_ascii_case_suffix(value, "dppx") {
+        dppx.trim().parse::<f64>().ok()?
+    } else if let Some(dpi) = strip_ascii_case_suffix(value, "dpi") {
+        dpi.trim().parse::<f64>().ok()? / 96.0
+    } else if let Some(dpcm) = strip_ascii_case_suffix(value, "dpcm") {
+        dpcm.trim().parse::<f64>().ok()? * 2.54 / 96.0
+    } else {
+        return None;
+    };
+    (resolution.is_finite() && resolution > 0.0).then_some(resolution)
 }
 
 fn media_orientation_feature_matches(value: &str) -> Option<bool> {
