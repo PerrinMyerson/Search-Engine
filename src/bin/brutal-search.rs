@@ -53,6 +53,7 @@ const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
 const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
 const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -969,13 +970,17 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in browser_document_storage_pressure_summary_lines(&stats) {
         println!("{line}");
     }
-    for line in web_storage_retention_config_lines(web_storage_retention_config()) {
+    let retention_config = web_storage_retention_config();
+    for line in web_storage_retention_config_lines(retention_config) {
         println!("{line}");
     }
     let now = unix_now();
     let stale_secs = web_storage_stale_threshold_secs();
     let web_summary = web_storage_pressure_summary(&stats.web_artifacts, now, stale_secs);
     for line in storage_pressure_rollup_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in storage_budget_pressure_lines(&stats, &web_summary, retention_config) {
         println!("{line}");
     }
     for line in storage_snapshot_readiness_lines(&stats, &web_summary) {
@@ -1225,11 +1230,7 @@ fn storage_pressure_rollup_lines(
     let crawl_bytes = stats
         .crawl_frontier_bytes
         .saturating_add(stats.crawl_snapshot_bytes);
-    let core_bytes = stats
-        .total_bytes
-        .saturating_sub(crawl_bytes)
-        .saturating_sub(stats.browser_document_bytes)
-        .saturating_sub(web_summary.bytes);
+    let core_bytes = storage_core_index_bytes(stats, web_summary);
     let frontier_records = stats
         .crawl_frontier_stats
         .as_ref()
@@ -1257,6 +1258,75 @@ fn storage_pressure_rollup_lines(
         ),
         format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
     ]
+}
+
+fn storage_budget_pressure_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    retention_config: WebStorageRetentionConfig,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let core_bytes = storage_core_index_bytes(stats, web_summary);
+    let budget_bytes = index_storage_budget_bytes();
+    let remaining_bytes = budget_bytes.saturating_sub(stats.total_bytes);
+    let status = if stats.total_bytes > budget_bytes {
+        "over-budget"
+    } else {
+        "within-budget"
+    };
+    let web_budget_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+
+    vec![
+        format!(
+            "storage_budget_summary: status={} total_bytes={} budget_bytes={} remaining_bytes={} core_index_bytes={} web_bytes={} web_budget_bytes={} browser_document_bytes={} crawl_bytes={}",
+            status,
+            stats.total_bytes,
+            budget_bytes,
+            remaining_bytes,
+            core_bytes,
+            web_summary.bytes,
+            web_budget_bytes,
+            stats.browser_document_bytes,
+            crawl_bytes
+        ),
+        format!("storage_budget_status: {status}"),
+        format!("storage_budget_total_bytes: {}", stats.total_bytes),
+        format!("storage_budget_bytes: {budget_bytes}"),
+        format!("storage_budget_remaining_bytes: {remaining_bytes}"),
+        format!("storage_budget_core_index_bytes: {core_bytes}"),
+        format!("storage_budget_web_bytes: {}", web_summary.bytes),
+        format!("storage_budget_web_budget_bytes: {web_budget_bytes}"),
+        format!(
+            "storage_budget_browser_document_bytes: {}",
+            stats.browser_document_bytes
+        ),
+        format!("storage_budget_crawl_bytes: {crawl_bytes}"),
+        "storage_budget_report_mode: report-only".to_owned(),
+        "storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
+    ]
+}
+
+fn storage_core_index_bytes(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> u64 {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    stats
+        .total_bytes
+        .saturating_sub(crawl_bytes)
+        .saturating_sub(stats.browser_document_bytes)
+        .saturating_sub(web_summary.bytes)
+}
+
+fn index_storage_budget_bytes() -> u64 {
+    web_storage_env_u64("BRUTAL_INDEX_STORAGE_BUDGET_BYTES")
+        .unwrap_or(DEFAULT_INDEX_STORAGE_BUDGET_BYTES)
 }
 
 fn storage_snapshot_readiness_lines(
@@ -2449,6 +2519,70 @@ mod tests {
         assert!(lines.contains(&"storage_pressure_browser_document_bytes: 50".to_owned()));
         assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
+    }
+
+    #[test]
+    fn storage_budget_pressure_reports_component_bytes_without_mutation() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 3,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+        let retention_config = WebStorageRetentionConfig {
+            cache_max_entries: 10,
+            cache_max_bytes: 200,
+            result_log_max_entries: 20,
+            result_log_max_bytes: 250,
+            result_log_max_entries_per_query: 0,
+        };
+
+        let lines = storage_budget_pressure_lines(&stats, &web_summary, retention_config);
+
+        assert!(lines.contains(&format!(
+            "storage_budget_summary: status=within-budget total_bytes=1000 budget_bytes={} remaining_bytes={} core_index_bytes=350 web_bytes=300 web_budget_bytes=450 browser_document_bytes=50 crawl_bytes=300",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES - 1_000
+        )));
+        assert!(lines.contains(&"storage_budget_status: within-budget".to_owned()));
+        assert!(lines.contains(&"storage_budget_core_index_bytes: 350".to_owned()));
+        assert!(lines.contains(&"storage_budget_web_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_budget_web_budget_bytes: 450".to_owned()));
+        assert!(lines.contains(&"storage_budget_browser_document_bytes: 50".to_owned()));
+        assert!(lines.contains(&"storage_budget_crawl_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_budget_report_mode: report-only".to_owned()));
+        assert!(lines.contains(&"storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned()));
     }
 
     #[test]
