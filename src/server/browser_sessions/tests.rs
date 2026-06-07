@@ -2887,6 +2887,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Moving visual viewport down..."));
     assert!(html.contains("Refreshing visual viewport..."));
     assert!(html.contains("const queuedViewportTarget"));
+    assert!(html.contains("const normalizePendingScrollDelta = (target) =>"));
+    assert!(html.contains("pendingScrollDx = target.dx"));
+    assert!(html.contains("pendingScrollDy = target.dy"));
+    assert!(html.contains("normalizePendingScrollDelta(queued);"));
+    assert!(html.contains("normalizePendingScrollDelta(pending);"));
     assert!(html.contains(
         "const url = stampCurrentViewportUrl(new URL(shell.dataset.scrollUrl, window.location.href));"
     ));
