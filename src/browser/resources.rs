@@ -15,8 +15,9 @@ use super::images::{
     ImageDecodeDiagnostic, background_image_sizes_attr, background_width_template_render_source,
     image_decode_diagnostic, image_mime_type_supported, image_render_source, image_sizes_attr,
     is_lazy_image_placeholder_src, lazy_width_template_render_source,
-    selected_supported_srcset_candidate, srcset_candidate_clearly_unsupported,
-    srcset_candidate_urls, supported_srcset_candidate_urls,
+    selected_supported_srcset_candidate, selected_supported_srcset_candidate_for_type,
+    srcset_candidate_clearly_unsupported, srcset_candidate_urls, supported_srcset_candidate_urls,
+    supported_srcset_candidate_urls_for_type,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
@@ -1648,7 +1649,9 @@ fn push_picture_source_image_resources(
                 &url,
             );
         } else {
-            for url in supported_srcset_candidate_urls(srcset) {
+            for url in
+                supported_srcset_candidate_urls_for_type(srcset, element.type_hint.as_deref())
+            {
                 push_resource(
                     resources,
                     source,
@@ -1706,7 +1709,7 @@ fn push_picture_source_image_resources(
 }
 
 fn picture_source_alias_url_should_skip(element: &ElementData, url: &str) -> bool {
-    if srcset_candidate_clearly_unsupported(url) {
+    if picture_source_url_clearly_unsupported(element, url) {
         return true;
     }
     if !is_lazy_image_placeholder_src(url) {
@@ -1720,8 +1723,23 @@ fn picture_source_alias_url_should_skip(element: &ElementData, url: &str) -> boo
         !other.is_empty()
             && other != url
             && !is_lazy_image_placeholder_src(other)
-            && !srcset_candidate_clearly_unsupported(other)
+            && !picture_source_url_clearly_unsupported(element, other)
     })
+}
+
+fn picture_source_url_clearly_unsupported(element: &ElementData, url: &str) -> bool {
+    if !url
+        .trim()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        && element
+            .type_hint
+            .as_deref()
+            .is_some_and(image_mime_type_supported)
+    {
+        return false;
+    }
+    srcset_candidate_clearly_unsupported(url)
 }
 
 fn selected_picture_source_srcset_candidate(
@@ -1731,13 +1749,23 @@ fn selected_picture_source_srcset_candidate(
     srcset: &str,
 ) -> Option<String> {
     if let Some(sizes) = image_resource_sizes_attr(element)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
+        && let Some(url) = selected_supported_srcset_candidate_for_type(
+            srcset,
+            Some(sizes.as_str()),
+            0,
+            element.type_hint.as_deref(),
+        )
     {
         return Some(url);
     }
     let fallback = picture_source_fallback_img(dom, node_id)?;
     if let Some(sizes) = image_resource_sizes_attr(fallback)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
+        && let Some(url) = selected_supported_srcset_candidate_for_type(
+            srcset,
+            Some(sizes.as_str()),
+            0,
+            element.type_hint.as_deref(),
+        )
     {
         return Some(url);
     }
@@ -1746,7 +1774,12 @@ fn selected_picture_source_srcset_candidate(
         .get("width")
         .and_then(|width| parse_image_resource_dimension_attr(width))?;
     let fallback_size = format!("{width}px");
-    selected_supported_srcset_candidate(srcset, Some(fallback_size.as_str()), usize::MAX)
+    selected_supported_srcset_candidate_for_type(
+        srcset,
+        Some(fallback_size.as_str()),
+        usize::MAX,
+        element.type_hint.as_deref(),
+    )
 }
 
 fn picture_source_fallback_img(dom: &Dom, node_id: usize) -> Option<&ElementData> {

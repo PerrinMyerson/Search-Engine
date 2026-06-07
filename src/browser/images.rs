@@ -4875,6 +4875,7 @@ fn css_quoted_url(value: &str) -> Option<&str> {
 struct PictureSourceSet<'a> {
     srcset: &'a str,
     sizes: Option<&'a str>,
+    type_hint: Option<&'a str>,
 }
 
 fn picture_source_srcset(
@@ -5115,6 +5116,7 @@ fn picture_source_attr<'a>(
             return Some(PictureSourceSet {
                 srcset,
                 sizes: image_sizes_attr(element),
+                type_hint: element.type_hint.as_deref(),
             });
         }
     }
@@ -5137,7 +5139,10 @@ fn picture_source_first_renderable_attr<'a>(
         if srcset.is_empty()
             || is_empty_picture_placeholder_source(element, srcset)
             || is_lazy_image_placeholder_src(srcset)
-            || srcset_all_candidates_clearly_unsupported(srcset)
+            || srcset_all_candidates_clearly_unsupported_for_type(
+                srcset,
+                element.type_hint.as_deref(),
+            )
         {
             return None;
         }
@@ -5157,7 +5162,11 @@ fn lazy_image_render_source(
             picture_source_lazy_srcset(dom, node_id, viewport_width_css_px).and_then(|source| {
                 let source_target_width =
                     source_srcset_target_width(source.sizes, element, viewport_width_css_px);
-                choose_srcset_candidate(source.srcset, source_target_width)
+                choose_srcset_candidate_for_type(
+                    source.srcset,
+                    source_target_width,
+                    source.type_hint,
+                )
             })
         })
         .or_else(|| {
@@ -6401,11 +6410,19 @@ struct SrcsetCandidate {
 }
 
 fn choose_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option<String> {
+    choose_srcset_candidate_for_type(srcset, desired_width, None)
+}
+
+fn choose_srcset_candidate_for_type(
+    srcset: &str,
+    desired_width: Option<usize>,
+    type_hint: Option<&str>,
+) -> Option<String> {
     let candidates = parse_srcset_candidates(srcset);
     if candidates.is_empty() {
         return None;
     }
-    let candidates = supported_srcset_candidates(&candidates);
+    let candidates = supported_srcset_candidates_for_type(&candidates, type_hint);
 
     let width_candidates = candidates
         .iter()
@@ -6483,6 +6500,20 @@ pub(super) fn selected_supported_srcset_candidate(
     (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
 }
 
+pub(super) fn selected_supported_srcset_candidate_for_type(
+    srcset: &str,
+    sizes: Option<&str>,
+    viewport_width_css_px: usize,
+    type_hint: Option<&str>,
+) -> Option<String> {
+    let candidate = choose_srcset_candidate_for_type(
+        srcset,
+        srcset_target_width_from_sizes(sizes, viewport_width_css_px),
+        type_hint,
+    )?;
+    (!srcset_candidate_clearly_unsupported_for_type(&candidate, type_hint)).then_some(candidate)
+}
+
 pub(super) fn supported_srcset_candidate_urls(srcset: &str) -> Vec<String> {
     let candidates = parse_srcset_candidates(srcset);
     supported_srcset_candidates(&candidates)
@@ -6491,10 +6522,30 @@ pub(super) fn supported_srcset_candidate_urls(srcset: &str) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn supported_srcset_candidate_urls_for_type(
+    srcset: &str,
+    type_hint: Option<&str>,
+) -> Vec<String> {
+    let candidates = parse_srcset_candidates(srcset);
+    supported_srcset_candidates_for_type(&candidates, type_hint)
+        .into_iter()
+        .map(|candidate| candidate.url.clone())
+        .collect()
+}
+
 fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCandidate> {
+    supported_srcset_candidates_for_type(candidates, None)
+}
+
+fn supported_srcset_candidates_for_type<'a>(
+    candidates: &'a [SrcsetCandidate],
+    type_hint: Option<&str>,
+) -> Vec<&'a SrcsetCandidate> {
     let supported = candidates
         .iter()
-        .filter(|candidate| !srcset_candidate_clearly_unsupported(&candidate.url))
+        .filter(|candidate| {
+            !srcset_candidate_clearly_unsupported_for_type(&candidate.url, type_hint)
+        })
         .collect::<Vec<_>>();
     if supported.is_empty() {
         candidates.iter().collect()
@@ -6511,15 +6562,22 @@ fn supported_srcset_candidates(candidates: &[SrcsetCandidate]) -> Vec<&SrcsetCan
     }
 }
 
-fn srcset_all_candidates_clearly_unsupported(srcset: &str) -> bool {
+fn srcset_all_candidates_clearly_unsupported_for_type(
+    srcset: &str,
+    type_hint: Option<&str>,
+) -> bool {
     let candidates = parse_srcset_candidates(srcset);
     !candidates.is_empty()
-        && candidates
-            .iter()
-            .all(|candidate| srcset_candidate_clearly_unsupported(&candidate.url))
+        && candidates.iter().all(|candidate| {
+            srcset_candidate_clearly_unsupported_for_type(&candidate.url, type_hint)
+        })
 }
 
 pub(super) fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
+    srcset_candidate_clearly_unsupported_for_type(url, None)
+}
+
+fn srcset_candidate_clearly_unsupported_for_type(url: &str, type_hint: Option<&str>) -> bool {
     let url = url.trim();
     if let Some(metadata) = url
         .strip_prefix("data:")
@@ -6531,6 +6589,9 @@ pub(super) fn srcset_candidate_clearly_unsupported(url: &str) -> bool {
             .get(..6)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
             && !image_mime_type_supported(mime);
+    }
+    if type_hint.is_some_and(image_mime_type_supported) {
+        return false;
     }
 
     let Some(extension) = image_extension_from_url(url) else {
