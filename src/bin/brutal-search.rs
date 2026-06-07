@@ -1687,7 +1687,54 @@ fn web_storage_pressure_summary_lines(
             summary.entries.max(1)
         ));
     }
+    lines.extend(web_storage_export_readiness_lines(artifacts, &summary));
     lines
+}
+
+fn web_storage_export_readiness_lines(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let cache_query_buckets = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let result_log_unique_urls = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.unique_entries)
+        .unwrap_or(0);
+    let status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.incomplete_result_rows == 0 {
+        "ready"
+    } else {
+        "partial"
+    };
+    vec![
+        format!(
+            "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
+            summary.durable_result_rows,
+            summary.incomplete_result_rows,
+            summary.duplicate_entries
+        ),
+        format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
+        format!("web_storage_export_unique_result_urls: {result_log_unique_urls}"),
+        format!(
+            "web_storage_export_durable_result_rows: {}",
+            summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_export_incomplete_result_rows: {}",
+            summary.incomplete_result_rows
+        ),
+        format!(
+            "web_storage_export_duplicate_rows: {}",
+            summary.duplicate_entries
+        ),
+        "web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned(),
+    ]
 }
 
 fn web_storage_pressure_summary(
@@ -3232,8 +3279,92 @@ mod tests {
         assert!(lines.contains(&"web_storage_pressure_duplicate_row_bytes: 40".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_cache_query_buckets: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_unique_result_urls: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_durable_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_export_incomplete_result_rows: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_export_duplicate_rows: 1".to_owned()));
         assert!(lines.contains(
             &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_export_readiness_lines_explain_report_only_manifest() {
+        let ready_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 4,
+            duplicate_entries: 1,
+            unique_row_bytes: 170,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let ready_lines = web_storage_export_readiness_lines(
+            &[
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    bytes: 120,
+                    entries: 3,
+                    result_rows: 4,
+                    durable_result_rows: 4,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 1,
+                    unique_row_bytes: 80,
+                    duplicate_row_bytes: 40,
+                    query_count: 2,
+                    max_entries_per_query: 2,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    bytes: 90,
+                    entries: 2,
+                    result_rows: 2,
+                    durable_result_rows: 2,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 0,
+                    unique_row_bytes: 90,
+                    duplicate_row_bytes: 0,
+                    query_count: 2,
+                    max_entries_per_query: 1,
+                    oldest_fetched_at_unix: Some(190),
+                    newest_fetched_at_unix: Some(200),
+                },
+            ],
+            &ready_summary,
+        );
+
+        assert!(ready_lines.contains(
+            &"web_storage_export_readiness: status=ready report_only=true cache_query_buckets=2 unique_result_urls=2 durable_result_rows=6 incomplete_result_rows=0 duplicate_rows=1".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
+        ));
+
+        let mut partial_summary = ready_summary.clone();
+        partial_summary.incomplete_result_rows = 1;
+        let partial_lines = web_storage_export_readiness_lines(&[], &partial_summary);
+        assert!(partial_lines.contains(
+            &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=1".to_owned()
+        ));
+
+        let mut empty_summary = ready_summary;
+        empty_summary.result_rows = 0;
+        empty_summary.durable_result_rows = 0;
+        empty_summary.incomplete_result_rows = 0;
+        let empty_lines = web_storage_export_readiness_lines(&[], &empty_summary);
+        assert!(empty_lines.contains(
+            &"web_storage_export_readiness: status=empty report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=0 incomplete_result_rows=0 duplicate_rows=1".to_owned()
         ));
     }
 
