@@ -1710,6 +1710,12 @@ fn web_storage_export_readiness_lines(
         .find(|artifact| artifact.name == "brave-results.jsonl")
         .map(|artifact| artifact.unique_entries)
         .unwrap_or(0);
+    let result_log_query_buckets = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let replay_missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
     let status = if summary.result_rows == 0 {
         "empty"
     } else if summary.incomplete_result_rows == 0 {
@@ -1741,7 +1747,11 @@ fn web_storage_export_readiness_lines(
             summary.unique_entries,
             summary.duplicate_entries
         ),
+        format!(
+            "web_storage_replay_query_coverage: report_only=true cache_query_buckets={cache_query_buckets} result_log_query_buckets={result_log_query_buckets} missing_query_buckets={replay_missing_query_buckets}"
+        ),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
+        format!("web_storage_replay_missing_query_buckets: {replay_missing_query_buckets}"),
         format!("web_storage_replayable_result_rows: {cache_replayable_result_rows}"),
         format!("web_storage_export_unique_result_urls: {result_log_unique_urls}"),
         format!(
@@ -3380,6 +3390,10 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
         ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
+        ));
+        assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(ready_lines.contains(
             &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
@@ -3445,6 +3459,10 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
         ));
+        assert!(lines.contains(
+            &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
         assert!(lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
         ));
