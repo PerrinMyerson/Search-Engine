@@ -7227,6 +7227,131 @@ async fn image_thumbnail_srcset_alias_selects_visible_rgb_candidate() {
 }
 
 #[tokio::test]
+async fn image_jpeg_srcset_alias_selects_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let selected = dir.path().join("selected.jpg");
+    let oversized = dir.path().join("oversized.jpg");
+    fs::write(&selected, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(&oversized, tiny_test_jpeg_bytes()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before JPEG lazy srcset</p>
+            <img
+                src="/assets/loading.gif"
+                data-jpeg-srcset="oversized.jpg 640w, selected.jpg 80w"
+                sizes="80px"
+                width="80"
+                height="24"
+                alt="JPEG lazy srcset">
+            <p>After JPEG lazy srcset</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let selected_url = selected.display().to_string();
+    let oversized_url = oversized.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions {
+        width: 64,
+        ..BrowserRenderOptions::default()
+    });
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(!resource_report.resources.iter().any(|fetch| {
+        fetch.resource.resolved == oversized_url || fetch.resource.url.contains("loading.gif")
+    }));
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image_candidate");
+    assert_eq!(resource_fetch.resource.initiator, "img");
+    assert_eq!(resource_fetch.resource.url, "selected.jpg");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(resource_fetch.decoded_hash.is_some());
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 64,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!report.fetches.iter().any(|fetch| {
+        fetch.resource.resolved == oversized_url || fetch.resource.url.contains("loading.gif")
+    }));
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "selected.jpg");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before JPEG lazy srcset"));
+    assert!(render.text.contains("After JPEG lazy srcset"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 245 && pixel[1] < 245 && pixel[2] < 245 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_lazy_srcset_resources_use_width_for_auto_sizes() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

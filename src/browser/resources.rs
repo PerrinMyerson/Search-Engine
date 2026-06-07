@@ -1957,9 +1957,13 @@ const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
 const IMAGE_SRCSET_ALIAS_ATTRS: &[&str] = &[
     "data-srcset",
     "data-src-set",
+    "data-jpeg-srcset",
+    "data-jpg-srcset",
     "data-srcset-webp",
     "data-lazy-srcset",
     "data-lazy-src-set",
+    "data-lazy-jpeg-srcset",
+    "data-lazy-jpg-srcset",
     "data-lazy-srcset-webp",
     "data-lazy-webp-srcset",
     "data-lazysrcset",
