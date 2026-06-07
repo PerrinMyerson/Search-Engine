@@ -1692,13 +1692,17 @@ fn web_storage_pressure_summary_lines(
             summary.entries.max(1)
         ));
     }
-    lines.extend(web_storage_export_readiness_lines(artifacts, &summary));
+    lines.extend(web_storage_export_readiness_lines(
+        artifacts, &summary, now, stale_secs,
+    ));
     lines
 }
 
 fn web_storage_export_readiness_lines(
     artifacts: &[WebStorageArtifactStats],
     summary: &WebStoragePressureSummary,
+    now: u64,
+    stale_secs: u64,
 ) -> Vec<String> {
     let cache_query_buckets = artifacts
         .iter()
@@ -1740,6 +1744,21 @@ fn web_storage_export_readiness_lines(
     } else {
         "empty"
     };
+    let newest_age_secs = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.newest_fetched_at_unix)
+        .max()
+        .map(|newest| now.saturating_sub(newest));
+    let oldest_age_secs = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.oldest_fetched_at_unix)
+        .min()
+        .map(|oldest| now.saturating_sub(oldest));
+    let staleness_status = match newest_age_secs {
+        None => "unknown",
+        Some(age_secs) if stale_secs > 0 && age_secs > stale_secs => "stale",
+        Some(_) => "fresh",
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -1759,6 +1778,15 @@ fn web_storage_export_readiness_lines(
         ),
         format!(
             "web_storage_replay_query_coverage: report_only=true cache_query_buckets={cache_query_buckets} result_log_query_buckets={result_log_query_buckets} missing_query_buckets={replay_missing_query_buckets}"
+        ),
+        format!(
+            "web_storage_replay_staleness: status={staleness_status} report_only=true newest_age_secs={} oldest_age_secs={} stale_after_secs={stale_secs}",
+            newest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            oldest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
         ),
         format!("web_storage_provider_buckets: {provider_buckets}"),
         format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
@@ -3413,6 +3441,8 @@ mod tests {
                 },
             ],
             &ready_summary,
+            200,
+            60,
         );
 
         assert!(ready_lines.contains(
@@ -3427,6 +3457,9 @@ mod tests {
         assert!(ready_lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
         ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_staleness: status=fresh report_only=true newest_age_secs=0 oldest_age_secs=100 stale_after_secs=60".to_owned()
+        ));
         assert!(ready_lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
@@ -3436,19 +3469,22 @@ mod tests {
 
         let mut partial_summary = ready_summary.clone();
         partial_summary.incomplete_result_rows = 1;
-        let partial_lines = web_storage_export_readiness_lines(&[], &partial_summary);
+        let partial_lines = web_storage_export_readiness_lines(&[], &partial_summary, 200, 60);
         assert!(partial_lines.contains(
             &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=1".to_owned()
         ));
         assert!(partial_lines.contains(
             &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
         ));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
+        ));
 
         let mut empty_summary = ready_summary;
         empty_summary.result_rows = 0;
         empty_summary.durable_result_rows = 0;
         empty_summary.incomplete_result_rows = 0;
-        let empty_lines = web_storage_export_readiness_lines(&[], &empty_summary);
+        let empty_lines = web_storage_export_readiness_lines(&[], &empty_summary, 200, 60);
         assert!(empty_lines.contains(
             &"web_storage_export_readiness: status=empty report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=0 incomplete_result_rows=0 duplicate_rows=1".to_owned()
         ));
@@ -3490,6 +3526,8 @@ mod tests {
                 newest_fetched_at_unix: Some(200),
             }],
             &summary,
+            300,
+            60,
         );
 
         assert!(lines.contains(
@@ -3497,6 +3535,9 @@ mod tests {
         ));
         assert!(lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_replay_staleness: status=stale report_only=true newest_age_secs=100 oldest_age_secs=110 stale_after_secs=60".to_owned()
         ));
         assert!(lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
         assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
