@@ -1369,6 +1369,7 @@ fn content_type_for_path(path: &Path) -> Option<&'static str> {
         Some("apng") => Some("image/apng"),
         Some("png") => Some("image/png"),
         Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("jpe") => Some("image/jpe"),
         Some("jfif") => Some("image/jfif"),
         Some("pjpeg") | Some("pjp") => Some("image/pjpeg"),
         Some("gif") => Some("image/gif"),
