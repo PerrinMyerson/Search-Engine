@@ -10723,6 +10723,168 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
     );
 }
 #[test]
+fn viewport_nearby_hit_testing_respects_clipped_media_bounds_after_scroll() {
+    let image_url = "mem://clipped-hit-image".to_owned();
+    let background_url = "mem://clipped-hit-background".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![90],
+        rgb_pixels: Some(vec![40, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://clipped-media-hit-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: image_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded.clone(),
+            },
+            DecodedImageEntry {
+                url: background_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded,
+            },
+        ],
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(41)).with_source_bounds(Some(DisplaySourceBounds {
+                x: 0,
+                y: 2,
+                width: 4,
+                height: 2,
+            })),
+            DisplayHitTarget::node(Some(42)).with_source_bounds(Some(DisplaySourceBounds {
+                x: 3,
+                y: 2,
+                width: 4,
+                height: 2,
+            })),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 2,
+                height: 2,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 3,
+                y: 2,
+                width: 2,
+                height: 2,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body after clipped media".to_owned(),
+            },
+        ],
+        text: "Body after clipped media".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 1,
+            width: 6,
+            height: 3,
+        },
+        None,
+    );
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 2);
+    assert_eq!(second.scroll_delta_y, 1);
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        Some(41),
+        "visible clipped image cells should remain hittable after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 4, 0),
+        Some(42),
+        "visible clipped background cells should remain hittable after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 2, 0),
+        None,
+        "nearby fallback should not click the clipped-away image columns"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 5, 0),
+        None,
+        "nearby fallback should not click the clipped-away background columns"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(second.viewport.y),
+        viewport_width: Some(second.viewport.width),
+        viewport_height: Some(second.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options)
+        .expect("rasterize clipped media hit scroll viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [40, 120, 220, 255],
+        "scrolled viewport should show the clipped image pixels"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(3)),
+            options.padding_y,
+        ),
+        [40, 120, 220, 255],
+        "scrolled viewport should show the clipped background pixels"
+    );
+}
+
+#[test]
 fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
     let image_url = "mem://rerender-dirty-image".to_owned();
     let background_url = "mem://rerender-dirty-background".to_owned();
