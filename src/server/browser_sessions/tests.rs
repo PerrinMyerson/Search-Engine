@@ -1,6 +1,36 @@
 use super::super::RequestTarget;
 use super::*;
 
+fn assert_chrome_status_flags(
+    topbar_html: &str,
+    navigation: bool,
+    scroll: bool,
+    click: bool,
+    form: bool,
+    generic_action: bool,
+) {
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-status-has-navigation="{}""#,
+        navigation
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-status-has-scroll="{}""#,
+        scroll
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-status-has-click="{}""#,
+        click
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-status-has-form="{}""#,
+        form
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-status-has-generic-action="{}""#,
+        generic_action
+    )));
+}
+
 #[tokio::test]
 async fn browser_session_registry_keeps_history_across_link_navigation() {
     let dir = tempfile::tempdir().unwrap();
@@ -82,6 +112,7 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         html_escape::encode_text(&browser_session_feedback_excerpt(&expected_feedback))
     )));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert_chrome_status_flags(topbar_html, true, false, false, false, false);
 
     let back = RequestTarget {
         path: "/browser".to_owned(),
@@ -118,6 +149,7 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         html_escape::encode_text(&browser_session_feedback_excerpt(&expected_back_feedback))
     )));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert_chrome_status_flags(topbar_html, true, false, false, false, false);
 
     let forward = RequestTarget {
         path: "/browser".to_owned(),
@@ -2625,6 +2657,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
     ));
+    assert_chrome_status_flags(topbar_html, false, true, false, false, false);
     assert!(html.contains(">Top</a>"));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
@@ -9270,6 +9303,7 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
+    assert_chrome_status_flags(topbar_html, false, false, true, false, false);
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
@@ -10888,6 +10922,7 @@ async fn browser_session_registry_activates_form_action_controls() {
         r#"data-browser-chrome-form-feedback title="Focused form 0 control 0.">Focused form 0 control 0.</span>"#
     ));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert_chrome_status_flags(topbar_html, false, false, false, true, false);
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -10911,6 +10946,7 @@ async fn browser_session_registry_activates_form_action_controls() {
         r#"data-browser-chrome-form-feedback title="Set form 0 field q.">Set form 0 field q.</span>"#
     ));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert_chrome_status_flags(topbar_html, false, false, false, true, false);
     let toggle = RequestTarget {
         path: "/browser".to_owned(),
         params: form_urlencoded::parse(
@@ -11787,7 +11823,13 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"data-browser-chrome-status"#));
     let topbar_html =
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
-    assert!(topbar_html.contains(r#"data-browser-shell-session"#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools""#
+    ));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-shell-session title="tab {}" hidden>{}</span>"#,
+        payload.id, payload.id
+    )));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
@@ -11808,8 +11850,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         r#" hidden>{}x{}</span>"#,
         payload.width, payload.height
     )));
-    assert!(topbar_html.contains(r#"data-browser-shell-render"#));
-    assert!(topbar_html.contains(r#"data-browser-shell-render title="visual "#));
+    let render_chip_start = topbar_html.find(r#"data-browser-shell-render"#).unwrap();
+    let render_chip_html = &topbar_html[render_chip_start
+        ..render_chip_start + topbar_html[render_chip_start..].find("</span>").unwrap()];
+    assert!(render_chip_html.contains(r#"data-browser-shell-render title="visual "#));
+    assert!(render_chip_html.contains(r#" hidden>"#));
     assert!(
         !topbar_html.contains(r#"data-browser-shell-render title="visual pending">visual pending"#)
     );
@@ -13499,6 +13544,9 @@ async fn browser_session_page_renders_form_controls() {
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
     assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));

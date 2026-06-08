@@ -10561,7 +10561,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input data-browser-address type="text" inputmode="url" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>
 </form>
-<div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
+<div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
 <div class="browser-location-strip" data-browser-location-strip><strong>{heading}</strong><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
 {primary_tab_strip}
@@ -10605,6 +10605,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         auto_visual_bootstrap = auto_visual_bootstrap,
         pending_load_retry = pending_load_retry,
         browser_chrome_status = render_browser_session_chrome_status(payload),
+        browser_chrome_status_attrs = browser_session_chrome_status_attrs(payload),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
         resource_quick_actions = resource_quick_actions,
@@ -13851,6 +13852,22 @@ fn browser_scroll_axis_state(
     }
 }
 
+fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload) -> String {
+    let navigation = browser_session_navigation_feedback_text(payload).is_some();
+    let scroll = browser_session_scroll_feedback_text(payload).is_some();
+    let click = browser_session_click_feedback_text(payload).is_some();
+    let form = browser_session_form_feedback_text(payload).is_some();
+    let generic_action = browser_session_chrome_feedback_text(payload).is_some();
+    format!(
+        r#" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}""#,
+        navigation = navigation,
+        scroll = scroll,
+        click = click,
+        form = form,
+        generic_action = generic_action,
+    )
+}
+
 fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
     let mut status = String::new();
     let action_urls = browser_session_resource_action_urls(payload);
@@ -13870,7 +13887,7 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     let form_state = browser_session_chrome_form_state(payload);
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span>{form_state}<span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}" hidden>{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span>{form_state}<span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}" hidden>{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         history_position = history_position,
         history_len = payload.history_len,
