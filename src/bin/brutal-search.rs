@@ -166,6 +166,10 @@ enum Command {
         #[arg(long)]
         no_daemon: bool,
     },
+    TempCleanupAudit {
+        #[arg(long, default_value = "/private/tmp")]
+        root: PathBuf,
+    },
     CompactWebCache {
         #[arg(long, default_value = ".brutal-index")]
         index: PathBuf,
@@ -477,6 +481,11 @@ async fn main() -> Result<()> {
             println!("max_authority_score: {:.4}", manifest.max_authority_score);
             println!("corpus_hash: {}", manifest.corpus_hash);
             print_index_storage_stats(index.root())?;
+        }
+        Command::TempCleanupAudit { root } => {
+            for line in temp_cleanup_audit_lines(&root)? {
+                println!("{line}");
+            }
         }
         Command::CompactWebCache {
             index,
@@ -901,6 +910,153 @@ struct WebStorageProviderGrowth {
     entries: usize,
     bytes: u64,
     result_rows: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TempCleanupClassification {
+    kind: &'static str,
+    status: &'static str,
+    cleanup_safe: bool,
+    next_action: &'static str,
+}
+
+fn temp_cleanup_classification(
+    name: &str,
+    is_git_worktree: bool,
+    git_dirty: Option<bool>,
+) -> TempCleanupClassification {
+    if name.contains("-target-") || name.ends_with("-target") {
+        return TempCleanupClassification {
+            kind: "validation-target",
+            status: "candidate",
+            cleanup_safe: true,
+            next_action: "remove-merged-target",
+        };
+    }
+
+    if is_git_worktree {
+        return match git_dirty {
+            Some(true) => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "dirty",
+                cleanup_safe: false,
+                next_action: "review-dirty-worktree",
+            },
+            Some(false) => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "clean-review-required",
+                cleanup_safe: false,
+                next_action: "unknown-review-required",
+            },
+            None => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "git-status-unavailable",
+                cleanup_safe: false,
+                next_action: "unknown-review-required",
+            },
+        };
+    }
+
+    TempCleanupClassification {
+        kind: "unknown-dir",
+        status: "review-required",
+        cleanup_safe: false,
+        next_action: "unknown-review-required",
+    }
+}
+
+fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    for entry in
+        std::fs::read_dir(root).with_context(|| format!("read temp root {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("search-engine-") {
+            continue;
+        }
+        let is_git_worktree = path.join(".git").exists();
+        let git_dirty = if is_git_worktree {
+            git_worktree_is_dirty(&path)
+        } else {
+            None
+        };
+        let classification = temp_cleanup_classification(name, is_git_worktree, git_dirty);
+        let bytes = directory_size_bytes(&path).unwrap_or(0);
+        entries.push((path, bytes, classification));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut lines = vec![
+        "storage_temp_cleanup_audit: report_only=true deletes=false mutates_brutal_index=false"
+            .to_owned(),
+        format!("storage_temp_cleanup_root: {}", root.display()),
+    ];
+    let mut safe_candidates = 0usize;
+    let mut review_required = 0usize;
+    for (path, bytes, classification) in entries {
+        if classification.cleanup_safe {
+            safe_candidates += 1;
+        } else {
+            review_required += 1;
+        }
+        lines.push(format!(
+            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} kind={} status={} cleanup_safe={} next_action={}",
+            path.display(),
+            bytes,
+            classification.kind,
+            classification.status,
+            classification.cleanup_safe,
+            classification.next_action
+        ));
+    }
+    lines.push(format!(
+        "storage_temp_cleanup_summary: safe_candidates={safe_candidates} review_required={review_required}"
+    ));
+    lines.push(
+        "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
+            .to_owned(),
+    );
+    Ok(lines)
+}
+
+fn git_worktree_is_dirty(path: &Path) -> Option<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(!output.stdout.is_empty())
+}
+
+fn directory_size_bytes(path: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("stat temp cleanup path {}", path.display()))?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path)
+                .with_context(|| format!("read temp cleanup dir {}", path.display()))?
+            {
+                stack.push(entry?.path());
+            }
+        }
+    }
+    Ok(total)
 }
 
 fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
@@ -3173,6 +3329,42 @@ mod tests {
         assert_eq!(stats.crawl_snapshot_entries, 0);
         assert_eq!(stats.crawl_snapshot_unique_entries, 0);
         assert_eq!(stats.crawl_snapshot_duplicate_entries, 0);
+    }
+
+    #[test]
+    fn storage_temp_cleanup_readiness_reports_target_and_worktree_candidates() {
+        let target = temp_cleanup_classification(
+            "search-engine-storage-temp-cleanup-audit-target-5819222",
+            false,
+            None,
+        );
+        assert_eq!(target.kind, "validation-target");
+        assert_eq!(target.status, "candidate");
+        assert!(target.cleanup_safe);
+        assert_eq!(target.next_action, "remove-merged-target");
+
+        let dirty_worktree = temp_cleanup_classification(
+            "search-engine-storage-temp-cleanup-audit-5819222",
+            true,
+            Some(true),
+        );
+        assert_eq!(dirty_worktree.kind, "source-worktree");
+        assert_eq!(dirty_worktree.status, "dirty");
+        assert!(!dirty_worktree.cleanup_safe);
+        assert_eq!(dirty_worktree.next_action, "review-dirty-worktree");
+
+        let clean_worktree =
+            temp_cleanup_classification("search-engine-image-merged-5819222", true, Some(false));
+        assert_eq!(clean_worktree.kind, "source-worktree");
+        assert_eq!(clean_worktree.status, "clean-review-required");
+        assert!(!clean_worktree.cleanup_safe);
+        assert_eq!(clean_worktree.next_action, "unknown-review-required");
+
+        let unknown = temp_cleanup_classification("search-engine-leftover-cache", false, None);
+        assert_eq!(unknown.kind, "unknown-dir");
+        assert_eq!(unknown.status, "review-required");
+        assert!(!unknown.cleanup_safe);
+        assert_eq!(unknown.next_action, "unknown-review-required");
     }
 
     #[test]
