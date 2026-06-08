@@ -8116,6 +8116,148 @@ async fn image_srcset_resources_select_sized_visible_rgb_candidate() {
 }
 
 #[tokio::test]
+async fn image_srcset_skips_unsupported_data_density_for_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let selected = dir.path().join("selected.gif");
+    fs::write(&selected, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before density srcset</p>
+            <img
+                src="/assets/fallback.gif"
+                srcset="data:image/avif;base64,AAAA 2x, selected.gif 1x"
+                width="80"
+                height="24"
+                alt="Density foreground resource">
+            <p>After density srcset</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let unsupported = "data:image/avif;base64,AAAA";
+    let selected_url = selected.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions {
+        width: 64,
+        ..BrowserRenderOptions::default()
+    });
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report.resources.iter().any(
+            |fetch| fetch.resource.url == unsupported || fetch.resource.resolved == unsupported
+        )
+    );
+
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image_candidate");
+    assert_eq!(resource_fetch.resource.initiator, "img");
+    assert_eq!(resource_fetch.resource.url, "selected.gif");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 64,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report.fetches.iter().any(
+            |fetch| fetch.resource.url == unsupported || fetch.resource.resolved == unsupported
+        )
+    );
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "selected.gif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = render_session.current().unwrap();
+    assert!(render.text.contains("Before density srcset"));
+    assert!(render.text.contains("After density srcset"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_responsive_units_calc_rem_sizes_select_visible_color_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
