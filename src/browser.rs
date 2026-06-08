@@ -4384,12 +4384,12 @@ fn hit_test_topmost_visual_layer_for_viewport_matching(
             if !include(render, command_index) {
                 return None;
             }
-            let bounds = display_command_bounds_for_viewport(
+            let bounds = display_command_exact_hit_bounds_for_viewport(
+                render,
+                command_index,
                 command,
                 viewport,
-                display_command_viewport_fixed(render, command_index),
-                display_command_viewport_sticky_top(render, command_index),
-            );
+            )?;
             if !bounds.contains(x, y) {
                 return None;
             }
@@ -4400,6 +4400,33 @@ fn hit_test_topmost_visual_layer_for_viewport_matching(
                     .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
             )
         })
+}
+
+fn display_command_exact_hit_bounds_for_viewport(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+) -> Option<DisplayCommandBounds> {
+    let viewport_fixed = display_command_viewport_fixed(render, command_index);
+    let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+    let bounds =
+        display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
+    let clipped_normal_flow_visual = render
+        .hit_targets
+        .get(command_index)
+        .is_some_and(|target| target.source_bounds.is_some())
+        && !viewport_fixed
+        && viewport_sticky_top.is_none()
+        && !matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        );
+    if clipped_normal_flow_visual {
+        intersect_display_bounds_with_viewport(bounds, viewport)
+    } else {
+        Some(bounds)
+    }
 }
 
 fn hit_test_nearby_visual_target_node_for_viewport(

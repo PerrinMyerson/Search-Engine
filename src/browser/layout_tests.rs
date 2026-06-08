@@ -10885,6 +10885,235 @@ fn viewport_nearby_hit_testing_respects_clipped_media_bounds_after_scroll() {
 }
 
 #[test]
+fn viewport_exact_hit_respects_clipped_normal_flow_stack_after_adjacent_scroll() {
+    let image_url = "mem://exact-hit-clipped-image".to_owned();
+    let background_url = "mem://exact-hit-clipped-background".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![92],
+        rgb_pixels: Some(vec![36, 128, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://exact-hit-clipped-stack".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: image_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded.clone(),
+            },
+            DecodedImageEntry {
+                url: background_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded,
+            },
+        ],
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(41)).with_source_bounds(Some(DisplaySourceBounds {
+                x: 0,
+                y: 1,
+                width: 3,
+                height: 4,
+            })),
+            DisplayHitTarget::node(Some(42)).with_source_bounds(Some(DisplaySourceBounds {
+                x: 4,
+                y: 1,
+                width: 2,
+                height: 4,
+            })),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open details".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 3,
+                height: 3,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 4,
+                y: 2,
+                width: 2,
+                height: 3,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 4,
+                text: "Open details".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 8,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 238,
+                blue: 238,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Trailing body copy".to_owned(),
+            },
+        ],
+        text: "Open details\nTrailing body copy".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 1,
+            width: 8,
+            height: 3,
+        },
+        None,
+    );
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 2);
+    assert_eq!(second.scroll_delta_y, 1);
+
+    let first_image_bounds = display_command_exact_hit_bounds_for_viewport(
+        &render,
+        0,
+        &render.display_list[0],
+        raster_viewport_from_state(first.viewport),
+    )
+    .expect("first clipped image hit bounds");
+    assert_eq!(
+        first_image_bounds,
+        DisplayCommandBounds {
+            x: 0,
+            y: 2,
+            width: 3,
+            height: 2,
+        },
+        "exact hit bounds should be clipped to the first viewport slice"
+    );
+    let second_image_bounds = display_command_exact_hit_bounds_for_viewport(
+        &render,
+        0,
+        &render.display_list[0],
+        raster_viewport_from_state(second.viewport),
+    )
+    .expect("second clipped image hit bounds");
+    assert_eq!(
+        second_image_bounds,
+        DisplayCommandBounds {
+            x: 0,
+            y: 2,
+            width: 3,
+            height: 3,
+        },
+        "exact hit bounds should expand only to the visible scrolled slice"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        Some(41),
+        "visible clipped image cells should remain exactly hittable after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 4, 0),
+        Some(42),
+        "visible clipped background cells should remain exactly hittable after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 2, 2),
+        Some(77),
+        "linked text should remain exactly hittable in the same scrolled viewport"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(second.viewport.y),
+        viewport_width: Some(second.viewport.width),
+        viewport_height: Some(second.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options)
+        .expect("rasterize clipped exact-hit stack viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [36, 128, 220, 255],
+        "scrolled raster should show the clipped image at the hit row"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(4)),
+            options.padding_y,
+        ),
+        [36, 128, 220, 255],
+        "scrolled raster should show the clipped background at the hit row"
+    );
+    let text_has_ink = (options
+        .padding_y
+        .saturating_add(options.cell_height.saturating_mul(2))
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height.saturating_mul(3))
+            .min(rgba.height))
+        .any(|y| {
+            (options.padding_x..options.padding_x.saturating_add(options.cell_width * 4))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        text_has_ink,
+        "scrolled raster should show the linked text ink in the same viewport"
+    );
+}
+
+#[test]
 fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
     let image_url = "mem://rerender-dirty-image".to_owned();
     let background_url = "mem://rerender-dirty-background".to_owned();
