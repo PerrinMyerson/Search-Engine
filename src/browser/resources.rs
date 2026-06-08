@@ -2007,6 +2007,7 @@ const IMAGE_SRC_ALIAS_ATTRS: &[&str] = &[
     "data-fullsize",
     "data-fullsizesrc",
     "data-zoom-image",
+    "data-zoom-image-url",
     "data-zoom-image-src",
     "data-zoom-src",
     "data-zoomsrc",
