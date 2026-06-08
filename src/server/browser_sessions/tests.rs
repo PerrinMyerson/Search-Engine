@@ -2520,6 +2520,29 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
     assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-layout="page line horizontal exact feedback""#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="page" aria-label="Page scroll actions""#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="line" aria-label="Line scroll actions""#
+        )
+    );
+    assert!(html.contains(
+        r#"data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions""#
+    ));
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="exact" aria-label="Exact scroll action""#
+        )
+    );
     assert!(html.contains(r#"data-browser-scroll-step-form"#));
     assert!(!topbar_html.contains(r#"data-browser-scroll-step-form"#));
     assert!(controls_html.contains(r#"data-browser-scroll-step-form"#));
@@ -2705,6 +2728,29 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-layout="page line horizontal exact feedback""#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="page" aria-label="Page scroll actions""#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="line" aria-label="Line scroll actions""#
+        )
+    );
+    assert!(html.contains(
+        r#"data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions""#
+    ));
+    assert!(
+        html.contains(
+            r#"data-browser-scroll-control-group="exact" aria-label="Exact scroll action""#
+        )
+    );
     assert!(html.contains(&format!(
         r#"<span class="viewport-state-chip">session {}</span>"#,
         payload.id
