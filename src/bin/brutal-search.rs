@@ -855,6 +855,7 @@ struct IndexStorageStats {
     web_artifacts: Vec<WebStorageArtifactStats>,
     browser_document_bytes: u64,
     browser_document_rows: usize,
+    browser_document_session_count: usize,
     browser_document_unique_rows: usize,
     browser_document_duplicate_rows: usize,
     browser_document_unique_row_bytes: u64,
@@ -1066,6 +1067,7 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         web_artifacts: Vec::new(),
         browser_document_bytes: 0,
         browser_document_rows: 0,
+        browser_document_session_count: 0,
         browser_document_unique_rows: 0,
         browser_document_duplicate_rows: 0,
         browser_document_unique_row_bytes: 0,
@@ -1110,6 +1112,7 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
                 let documents = browser_document_artifact_stats(&path)?;
                 stats.browser_document_bytes = bytes;
                 stats.browser_document_rows = documents.rows;
+                stats.browser_document_session_count = documents.session_count;
                 stats.browser_document_unique_rows = documents.unique_rows;
                 stats.browser_document_duplicate_rows = documents.duplicate_rows;
                 stats.browser_document_unique_row_bytes = documents.unique_row_bytes;
@@ -1379,6 +1382,16 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
     } else {
         "inspect-browser-document-compaction"
     };
+    let session_pressure_action =
+        if stats.browser_document_session_count > 1 && stats.browser_document_duplicate_rows > 0 {
+            "inspect-multi-session-duplicates"
+        } else if stats.browser_document_session_count > 1 {
+            "monitor-multi-session-cache"
+        } else if stats.browser_document_duplicate_rows > 0 {
+            "inspect-single-session-duplicates"
+        } else {
+            "cache-pressure-low"
+        };
     let mut lines = vec![
         format!(
             "browser_document_storage_summary: bytes={} rows={} unique_rows={} duplicate_rows={} projected_rows_after={} projected_rows_removed={} projected_row_bytes_after={} projected_row_bytes_removed={} zero_removal={}",
@@ -1399,6 +1412,18 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         format!(
             "browser_document_storage_rows: {}",
             stats.browser_document_rows
+        ),
+        format!(
+            "browser_document_storage_session_count: {}",
+            stats.browser_document_session_count
+        ),
+        format!(
+            "browser_session_cache_pressure: report_only=true sessions={} rows={} bytes={} duplicate_rows={} duplicate_row_bytes={} next_action={session_pressure_action}",
+            stats.browser_document_session_count,
+            stats.browser_document_rows,
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_duplicate_row_bytes
         ),
         format!(
             "browser_document_storage_unique_rows: {}",
@@ -1847,6 +1872,7 @@ struct CrawlSnapshotArtifactStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BrowserDocumentArtifactStats {
     rows: usize,
+    session_count: usize,
     unique_rows: usize,
     duplicate_rows: usize,
     unique_row_bytes: u64,
@@ -1863,6 +1889,7 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
     let mut unique_row_bytes = 0u64;
     let mut duplicate_row_bytes = 0u64;
     let mut keys = HashSet::new();
+    let mut sessions = HashSet::new();
 
     for line in reader.lines() {
         let line = line
@@ -1875,6 +1902,9 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
         let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
             format!("decode browser document jsonl artifact {}", path.display())
         })?;
+        if let Some(session) = browser_document_session_key(&value) {
+            sessions.insert(session.to_owned());
+        }
         if let Some(key) = browser_document_storage_key(&value) {
             if keys.insert(key) {
                 unique_rows = unique_rows.saturating_add(1);
@@ -1891,6 +1921,7 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
 
     Ok(BrowserDocumentArtifactStats {
         rows,
+        session_count: sessions.len(),
         unique_rows,
         duplicate_rows,
         unique_row_bytes,
@@ -1898,12 +1929,16 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
     })
 }
 
+fn browser_document_session_key(value: &serde_json::Value) -> Option<&str> {
+    first_json_string(value, &["session_id", "session", "tab_id", "tab"])
+}
+
 fn browser_document_storage_key(value: &serde_json::Value) -> Option<String> {
     let url = first_json_string(
         value,
         &["url", "document_url", "source", "target", "final_url"],
     )?;
-    let session = first_json_string(value, &["session_id", "session", "tab_id", "tab"]);
+    let session = browser_document_session_key(value);
     Some(match session {
         Some(session) => format!("{session}\0{url}"),
         None => url.to_owned(),
@@ -3375,6 +3410,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 0,
             browser_document_rows: 0,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 0,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
@@ -3440,6 +3476,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 0,
             browser_document_rows: 0,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 0,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
@@ -3480,6 +3517,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 0,
             browser_document_rows: 0,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 0,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
@@ -3546,6 +3584,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 3,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
@@ -3598,6 +3637,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -3643,6 +3683,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
@@ -3682,6 +3723,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -3729,6 +3771,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
@@ -3765,6 +3808,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
@@ -3810,6 +3854,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 3,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
@@ -3876,6 +3921,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -3927,6 +3973,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
@@ -3976,6 +4023,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -4033,6 +4081,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 2,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 20,
@@ -4080,6 +4129,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -4159,6 +4209,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -4214,6 +4265,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 50,
             browser_document_rows: 3,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 2,
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
@@ -4259,6 +4311,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
@@ -4298,6 +4351,7 @@ mod tests {
             web_artifacts: Vec::new(),
             browser_document_bytes: 25,
             browser_document_rows: 1,
+            browser_document_session_count: 0,
             browser_document_unique_rows: 1,
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
@@ -4337,6 +4391,31 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("storage_snapshot_cleanup_hint:"))
         );
+    }
+
+    #[test]
+    fn browser_session_cache_pressure_reports_session_counts_and_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_session_count, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert!(stats.browser_document_bytes > 0);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&"browser_document_storage_session_count: 2".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_session_cache_pressure: report_only=true sessions=2 rows=3 bytes={} duplicate_rows=1 duplicate_row_bytes={} next_action=inspect-multi-session-duplicates",
+            stats.browser_document_bytes, stats.browser_document_duplicate_row_bytes
+        )));
     }
 
     #[test]
