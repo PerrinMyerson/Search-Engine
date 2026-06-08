@@ -75,6 +75,15 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
     ));
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(&format!(
+        r#"data-browser-navigation-session="{}""#,
+        payload.id
+    )));
+    assert!(html.contains(r#"data-browser-navigation-from="/search?q=local""#));
+    assert!(html.contains(r#"data-browser-navigation-history-position="1""#));
+    assert!(html.contains(r#"data-browser-navigation-history-length="1""#));
+    assert!(html.contains(r#"aria-label="Browser session state" hidden"#));
 
     let follow = RequestTarget {
         path: "/browser".to_owned(),
@@ -113,6 +122,11 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     )));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, true, false, false, false, false);
+    assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(r#"data-browser-navigation-history-position="2""#));
+    assert!(html.contains(r#"data-browser-navigation-history-length="2""#));
+    assert!(html.contains(r#"data-browser-navigation-tab-state="active""#));
+    assert!(html.contains(r#"aria-label="Browser session state" hidden"#));
 
     let back = RequestTarget {
         path: "/browser".to_owned(),
@@ -150,6 +164,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     )));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, true, false, false, false, false);
+    assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(r#"data-browser-navigation-history-position="1""#));
+    assert!(html.contains(r#"data-browser-navigation-history-length="2""#));
+    assert!(html.contains(r#"aria-label="Browser session state" hidden"#));
 
     let forward = RequestTarget {
         path: "/browser".to_owned(),
@@ -217,6 +235,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         html_escape::encode_text(&browser_session_feedback_excerpt(&expected_reload_feedback))
     )));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
+    assert!(html.contains(r#"data-browser-navigation-history-position="2""#));
+    assert!(html.contains(r#"data-browser-navigation-history-length="2""#));
+    assert!(html.contains(r#"aria-label="Browser session state" hidden"#));
 }
 
 #[tokio::test]

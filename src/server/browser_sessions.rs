@@ -14769,11 +14769,15 @@ fn render_browser_session_navigation_state(
     };
 
     format!(
-        r#"<nav class="browser-navigation-state" data-browser-navigation-state aria-label="Browser session state">{return_target}<span>session {id}</span><span>{tab_position}</span><span>{tab_state}</span><span>history {history_position}/{history_len}</span></nav>"#,
+        r#"<nav class="browser-navigation-state" data-browser-navigation-state data-browser-navigation-session="{id_attr}" data-browser-navigation-from="{from_attr}" data-browser-navigation-tab="{tab_position_attr}" data-browser-navigation-tab-state="{tab_state_attr}" data-browser-navigation-history-position="{history_position}" data-browser-navigation-history-length="{history_len}" aria-label="Browser session state" hidden>{return_target}<span>session {id}</span><span>{tab_position}</span><span>{tab_state}</span><span>history {history_position}/{history_len}</span></nav>"#,
         return_target = return_target,
         id = html_escape::encode_text(&payload.id),
+        id_attr = html_escape::encode_double_quoted_attribute(&payload.id),
+        from_attr = html_escape::encode_double_quoted_attribute(back_href),
         tab_position = html_escape::encode_text(&tab_position),
+        tab_position_attr = html_escape::encode_double_quoted_attribute(&tab_position),
         tab_state = html_escape::encode_text(&tab_state),
+        tab_state_attr = html_escape::encode_double_quoted_attribute(&tab_state),
         history_position = history_position,
         history_len = payload.history_len,
     )
