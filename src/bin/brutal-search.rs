@@ -1821,6 +1821,22 @@ fn web_storage_export_readiness_lines(
     } else {
         "zero-removal"
     };
+    let result_log_only_rows =
+        result_log_durable_result_rows.saturating_sub(cache_replayable_result_rows);
+    let git_readiness_status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.duplicate_entries > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.incomplete_result_rows > 0
+        || summary.stale_artifacts > 0
+        || summary.suggested_dry_runs > 0
+        || replay_missing_query_buckets > 0
+        || result_log_only_rows > 0
+    {
+        "needs-review"
+    } else {
+        "ready"
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -1833,7 +1849,16 @@ fn web_storage_export_readiness_lines(
         ),
         format!(
             "web_storage_result_log_only_rows: report_only=true durable_result_rows={result_log_durable_result_rows} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={}",
-            result_log_durable_result_rows.saturating_sub(cache_replayable_result_rows)
+            result_log_only_rows
+        ),
+        format!(
+            "web_storage_export_git_readiness: report_only=true status={git_readiness_status} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} stale_artifacts={} suggested_dry_runs={}",
+            summary.unique_row_bytes,
+            summary.duplicate_row_bytes,
+            summary.unique_entries,
+            summary.duplicate_entries,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
         ),
         format!(
             "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} staleness_status={staleness_status} newest_age_secs={} stale_after_secs={stale_secs} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
@@ -3728,6 +3753,7 @@ mod tests {
         assert!(lines.contains(&"web_storage_export_durable_result_rows: 6".to_owned()));
         assert!(lines.contains(&"web_storage_export_incomplete_result_rows: 0".to_owned()));
         assert!(lines.contains(&"web_storage_export_duplicate_rows: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 replayable_result_rows=4 result_log_only_rows=0 stale_artifacts=1 suggested_dry_runs=1".to_owned()));
         assert!(lines.contains(
             &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
         ));
@@ -3803,6 +3829,7 @@ mod tests {
             &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
         ));
         assert!(ready_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=4 result_log_only_rows=0".to_owned()));
+        assert!(ready_lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 replayable_result_rows=4 result_log_only_rows=0 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
         assert!(ready_lines.contains(
             &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready staleness_status=fresh newest_age_secs=0 stale_after_secs=60 retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
         ));
@@ -3840,6 +3867,7 @@ mod tests {
             &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
         ));
         assert!(partial_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=0 replayable_result_rows=0 result_log_only_rows=0".to_owned()));
+        assert!(partial_lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=0 retained_rows=4 removable_rows=0 replayable_result_rows=0 result_log_only_rows=0 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
         assert!(partial_lines.contains(
             &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
         ));
@@ -3906,6 +3934,7 @@ mod tests {
             &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
         ));
         assert!(lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=0 result_log_only_rows=2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 replayable_result_rows=0 result_log_only_rows=2 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
         assert!(lines.contains(
             &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
         ));
