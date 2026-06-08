@@ -1218,6 +1218,11 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
 
     let zero_removal = stats.browser_document_duplicate_rows == 0
         && stats.browser_document_duplicate_row_bytes == 0;
+    let cleanup_next_action = if zero_removal {
+        "cleanup-pointless"
+    } else {
+        "inspect-browser-document-compaction"
+    };
     let mut lines = vec![
         format!(
             "browser_document_storage_summary: bytes={} rows={} unique_rows={} duplicate_rows={} projected_rows_after={} projected_rows_removed={} projected_row_bytes_after={} projected_row_bytes_removed={} zero_removal={}",
@@ -1264,6 +1269,15 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
             stats.browser_document_duplicate_row_bytes
         ),
         format!("browser_document_storage_zero_removal: {zero_removal}"),
+        format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action={cleanup_next_action} retained_rows={} removable_rows={} retained_row_bytes={} removable_row_bytes={} zero_removal={zero_removal}",
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_row_bytes,
+            stats.browser_document_duplicate_row_bytes
+        ),
+        "browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index"
+            .to_owned(),
     ];
     if zero_removal {
         lines.push(
@@ -4159,7 +4173,38 @@ mod tests {
         assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
         assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 0".to_owned()));
         assert!(lines.contains(&"browser_document_storage_zero_removal: true".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_cleanup_next_action: report_only=true action=cleanup-pointless retained_rows=2 removable_rows=0 retained_row_bytes=100 removable_row_bytes=0 zero_removal=true".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
         assert!(lines.contains(&"browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing".to_owned()));
+    }
+
+    #[test]
+    fn browser_document_storage_cleanup_next_action_reports_duplicate_pressure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_unique_rows, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 1".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_zero_removal: false".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action=inspect-browser-document-compaction retained_rows=2 removable_rows=1 retained_row_bytes={} removable_row_bytes={} zero_removal=false",
+            stats.browser_document_unique_row_bytes, stats.browser_document_duplicate_row_bytes
+        )));
+        assert!(stats.browser_document_unique_row_bytes > 0);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data".to_owned()));
     }
 
     #[test]
