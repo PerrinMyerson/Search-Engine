@@ -9262,6 +9262,14 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     );
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(&expected_feedback));
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-x="{link_x}""#)));
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-y="{link_y}""#)));
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-x="{link_x}""#)));
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
@@ -9427,6 +9435,20 @@ async fn browser_session_registry_load_images_current_and_click_preserve_scrolle
         .is_some_and(|feedback| feedback.contains(&format!(
             "mapped to DOM point x {viewport_click_x}, y {viewport_click_y} (page {link_x}, {link_y})"
         ))));
+    let html = render_browser_session_page(&payload, "/search?q=scrolled-click");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-click-x="{viewport_click_x}""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-click-y="{viewport_click_y}""#
+    )));
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-x="{link_x}""#)));
+    assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
 }
 
 #[tokio::test]

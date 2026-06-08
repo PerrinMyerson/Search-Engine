@@ -13933,9 +13933,11 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         );
     }
     if let Some(feedback) = browser_session_click_feedback_text(payload) {
+        let click_state_attrs = browser_session_click_feedback_state_attrs(feedback);
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback{click_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            click_state_attrs = click_state_attrs,
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14557,6 +14559,29 @@ fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Optio
             || feedback.starts_with("Click ")
             || feedback.starts_with("No click")
     })
+}
+
+fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
+    let Some((x, y, page_x, page_y)) = browser_session_click_feedback_points(feedback) else {
+        return String::new();
+    };
+    format!(
+        r#" data-browser-chrome-click-x="{x}" data-browser-chrome-click-y="{y}" data-browser-chrome-click-page-x="{page_x}" data-browser-chrome-click-page-y="{page_y}""#
+    )
+}
+
+fn browser_session_click_feedback_points(feedback: &str) -> Option<(usize, usize, usize, usize)> {
+    let point = feedback.split("DOM point x ").nth(1)?;
+    let (x_text, rest) = point.split_once(", y ")?;
+    let (y_text, rest) = rest.split_once(" (page ")?;
+    let (page_x_text, rest) = rest.split_once(", ")?;
+    let (page_y_text, _) = rest.split_once(')')?;
+    Some((
+        x_text.parse().ok()?,
+        y_text.parse().ok()?,
+        page_x_text.parse().ok()?,
+        page_y_text.parse().ok()?,
+    ))
 }
 
 fn render_browser_session_render_status(payload: &BrowserSessionPayload) -> String {
