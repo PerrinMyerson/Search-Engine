@@ -2704,6 +2704,26 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert_chrome_status_flags(topbar_html, false, true, false, false, false);
     assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-primary-nav-viewport-x=\"8\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-viewport-y=\"4\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-width=\"40\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-height=\"16\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
+    assert!(topbar_html.contains(&format!(
         "data-browser-chrome-status-session=\"{}\"",
         payload.id
     )));
@@ -9392,6 +9412,26 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert_chrome_status_flags(topbar_html, false, false, true, false, false);
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-primary-nav-viewport-x=\"0\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-viewport-y=\"0\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-width=\"48\""));
+    assert!(topbar_html.contains("data-browser-primary-nav-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-status-session=\"{}\"",
         payload.id
