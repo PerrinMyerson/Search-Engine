@@ -76,6 +76,12 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_feedback.as_str())
     );
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
+        html_escape::encode_double_quoted_attribute(&expected_feedback),
+        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_feedback))
+    )));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 
     let back = RequestTarget {
         path: "/browser".to_owned(),
@@ -106,6 +112,12 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_back_feedback.as_str())
     );
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
+        html_escape::encode_double_quoted_attribute(&expected_back_feedback),
+        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_back_feedback))
+    )));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 
     let forward = RequestTarget {
         path: "/browser".to_owned(),
@@ -136,6 +148,14 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_forward_feedback.as_str())
     );
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
+        html_escape::encode_double_quoted_attribute(&expected_forward_feedback),
+        html_escape::encode_text(&browser_session_feedback_excerpt(
+            &expected_forward_feedback
+        ))
+    )));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 
     let reload = RequestTarget {
         path: "/browser".to_owned(),
@@ -156,6 +176,15 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_reload_feedback.as_str())
     );
+    let html = render_browser_session_page(&payload, "/search?q=local");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
+        html_escape::encode_double_quoted_attribute(&expected_reload_feedback),
+        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_reload_feedback))
+    )));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 }
 
 #[tokio::test]
