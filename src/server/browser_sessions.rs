@@ -10613,7 +10613,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         auto_visual_bootstrap = auto_visual_bootstrap,
         pending_load_retry = pending_load_retry,
         browser_chrome_status = render_browser_session_chrome_status(payload),
-        browser_chrome_status_attrs = browser_session_chrome_status_attrs(payload),
+        browser_chrome_status_attrs = browser_session_chrome_status_attrs(payload, back_href),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
         resource_quick_actions = resource_quick_actions,
@@ -13860,14 +13860,22 @@ fn browser_scroll_axis_state(
     }
 }
 
-fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload) -> String {
+fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_href: &str) -> String {
     let navigation = browser_session_navigation_feedback_text(payload).is_some();
     let scroll = browser_session_scroll_feedback_text(payload).is_some();
     let click = browser_session_click_feedback_text(payload).is_some();
     let form = browser_session_form_feedback_text(payload).is_some();
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     format!(
-        r#" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}""#,
+        r#" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}""#,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        from = html_escape::encode_double_quoted_attribute(back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
         navigation = navigation,
         scroll = scroll,
         click = click,
