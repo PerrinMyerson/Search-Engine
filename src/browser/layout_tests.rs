@@ -10291,6 +10291,151 @@ fn rgba_raster_paints_decoded_image_color_and_preserves_grayscale_fallback() {
 }
 
 #[test]
+fn rgba_raster_preserves_decoded_image_and_background_rgb_after_scroll() {
+    let image_url = "mem://rgb-scroll-image".to_owned();
+    let background_url = "mem://rgb-scroll-background".to_owned();
+    let decoded = DecodedImage {
+        width: 2,
+        height: 3,
+        pixels: vec![64, 96, 112, 128, 144, 160],
+        rgb_pixels: Some(vec![
+            220, 0, 0, 0, 180, 0, 0, 0, 220, 220, 180, 0, 0, 180, 180, 220, 0, 180,
+        ]),
+    };
+    let image_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded.clone(),
+    };
+    let background_entry = DecodedImageEntry {
+        url: background_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let render = BrowserRender {
+        source: "mem://rgba-scroll-color".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 2,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![image_entry, background_entry],
+        hit_targets: vec![DisplayHitTarget::default(); 2],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 3,
+                shade: 220,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(2),
+                decoded_height: Some(3),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 3,
+                y: 1,
+                width: 2,
+                height: 3,
+                shade: 220,
+                url: Some(background_url),
+                decoded_width: Some(2),
+                decoded_height: Some(3),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+        ],
+        text: String::new(),
+    };
+
+    let pixel_at = |rgba: &BrowserRgbaRaster, x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        [
+            rgba.pixels[index],
+            rgba.pixels[index.saturating_add(1)],
+            rgba.pixels[index.saturating_add(2)],
+            rgba.pixels[index.saturating_add(3)],
+        ]
+    };
+    let full_options = BrowserRasterOptions::default();
+    let full = rasterize_render_rgba(&render, full_options).expect("rasterize full RGB viewport");
+    assert_eq!(
+        pixel_at(
+            &full,
+            full_options.padding_x,
+            full_options
+                .padding_y
+                .saturating_add(full_options.cell_height)
+        ),
+        [220, 0, 0, 255]
+    );
+    assert_eq!(
+        pixel_at(
+            &full,
+            full_options
+                .padding_x
+                .saturating_add(full_options.cell_width.saturating_mul(3)),
+            full_options
+                .padding_y
+                .saturating_add(full_options.cell_height)
+        ),
+        [220, 0, 0, 255]
+    );
+
+    let scrolled_options = BrowserRasterOptions {
+        viewport_y: Some(2),
+        viewport_width: Some(8),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let scrolled =
+        rasterize_render_rgba(&render, scrolled_options).expect("rasterize scrolled RGB viewport");
+    let report = rgba_raster_report(&render, &scrolled, scrolled_options);
+    assert_eq!(report.raster_viewport_y, Some(2));
+    assert_eq!(report.visible_command_count, 2);
+    assert_eq!(
+        pixel_at(
+            &scrolled,
+            scrolled_options.padding_x,
+            scrolled_options.padding_y
+        ),
+        [0, 0, 220, 255],
+        "scrolled image crop should sample the decoded blue row without grayscale conversion"
+    );
+    assert_eq!(
+        pixel_at(
+            &scrolled,
+            scrolled_options
+                .padding_x
+                .saturating_add(scrolled_options.cell_width.saturating_mul(3)),
+            scrolled_options.padding_y
+        ),
+        [0, 0, 220, 255],
+        "scrolled background image crop should preserve decoded RGB after viewport projection"
+    );
+}
+
+#[test]
 fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
     let image_url = "mem://viewport-image".to_owned();
     let decoded = DecodedImage {
