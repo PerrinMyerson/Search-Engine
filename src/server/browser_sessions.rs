@@ -10331,6 +10331,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status .viewport-state-chip {{ min-height: 20px; max-width: 112px; padding: 0 5px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }}
 .browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
 .browser-chrome-status [data-browser-chrome-action-feedback],
+.browser-chrome-status [data-browser-chrome-navigation-feedback],
 .browser-chrome-status [data-browser-chrome-scroll-feedback],
 .browser-chrome-status [data-browser-chrome-click-feedback],
 .browser-chrome-status [data-browser-chrome-form-feedback] {{ max-width: min(28vw, 260px); }}
@@ -13901,6 +13902,14 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
             r#"<span class="resource-action-status" data-browser-resource-status-output aria-live="polite"></span>"#,
         );
     }
+    if let Some(feedback) = browser_session_navigation_feedback_text(payload) {
+        let _ = write!(
+            status,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-navigation-feedback title="{feedback_attr}">{feedback}</span>"#,
+            feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
+        );
+    }
     if let Some(feedback) = browser_session_chrome_feedback_text(payload) {
         let _ = write!(
             status,
@@ -13972,9 +13981,19 @@ fn render_browser_session_chrome_image_action(payload: &BrowserSessionPayload) -
 
 fn browser_session_chrome_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
     browser_session_action_feedback_text(payload).filter(|feedback| {
-        browser_session_scroll_feedback_text(payload) != Some(*feedback)
+        browser_session_navigation_feedback_text(payload) != Some(*feedback)
+            && browser_session_scroll_feedback_text(payload) != Some(*feedback)
             && browser_session_click_feedback_text(payload) != Some(*feedback)
             && browser_session_form_feedback_text(payload) != Some(*feedback)
+    })
+}
+
+fn browser_session_navigation_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    browser_session_action_feedback_text(payload).filter(|feedback| {
+        feedback.starts_with("Opened link ")
+            || feedback.starts_with("Went back")
+            || feedback.starts_with("Went forward")
+            || feedback.starts_with("Reloaded page")
     })
 }
 
