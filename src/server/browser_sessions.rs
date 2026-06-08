@@ -10052,7 +10052,13 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-scroll-actions>{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        x = payload.viewport_x,
+        y = payload.viewport_y,
+        max_x = payload.max_scroll_x,
+        max_y = payload.max_scroll_y,
+        can_scroll_up = can_scroll_up,
+        can_scroll_down = can_scroll_down,
         top = browser_chrome_scroll_action(
             can_scroll_up,
             "Top",
