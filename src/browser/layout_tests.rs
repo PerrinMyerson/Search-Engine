@@ -12085,6 +12085,139 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
 }
 
 #[test]
+fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
+    let render = BrowserRender {
+        source: "mem://context-overlay-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 7,
+                target_node: Some(77),
+            }]),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 6,
+                shade: 224,
+                red: 232,
+                green: 240,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Readable body copy stays attached to media-heavy slices".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 8,
+                text: "Details".to_owned(),
+                shade: 0,
+            },
+        ],
+        text: "Readable body copy stays attached to media-heavy slices\nDetails".to_owned(),
+    };
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 3,
+    };
+    let current = BrowserViewportState { y: 1, ..previous };
+    let previous_viewport = raster_viewport_from_state(previous);
+    let current_viewport = raster_viewport_from_state(current);
+    let previous_overlay_rows = readable_context_overlay_viewport_rows(&render, previous_viewport);
+    let current_overlay_rows = readable_context_overlay_viewport_rows(&render, current_viewport);
+    assert_eq!(previous_overlay_rows, vec![1, 2]);
+    assert_eq!(current_overlay_rows, vec![1, 2]);
+
+    let report = browser_document_viewport(&render, current, Some(previous));
+    assert_eq!(report.viewport.y, 1);
+    assert_eq!(report.scroll_delta_y, 1);
+    assert!(!report.full_repaint);
+    for row in [0, 1, 2] {
+        assert!(
+            report.invalidated_regions.contains(&BrowserViewportRect {
+                x: 0,
+                y: row,
+                width: 8,
+                height: 1,
+            }),
+            "readable context overlay row {row} should be invalidated after adjacent scroll"
+        );
+    }
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, current, 1, 0),
+        Some(12),
+        "visible background hit geometry should remain stable after adjacent scroll"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(current.width),
+        viewport_height: Some(current.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, current, Some(previous), options)
+        .expect("render readable context overlay scroll frame");
+    let dirty_rows = frame
+        .report
+        .dirty_pixel_regions
+        .iter()
+        .map(|region| (region.viewport_y, region.viewport_height))
+        .collect::<Vec<_>>();
+    assert!(dirty_rows.contains(&(0, 1)));
+    assert!(dirty_rows.contains(&(1, 1)));
+    assert!(dirty_rows.contains(&(2, 1)));
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        &[232, 240, 248, 255],
+        "scrolled raster should retain the mixed-content background color"
+    );
+    let overlay_row = current_overlay_rows[1];
+    let overlay_y_start = options
+        .padding_y
+        .saturating_add(overlay_row.saturating_mul(options.cell_height));
+    let overlay_y_end = overlay_y_start
+        .saturating_add(options.cell_height)
+        .min(frame.raster.height);
+    let overlay_has_ink = (overlay_y_start..overlay_y_end).any(|y| {
+        (options.padding_x..options.padding_x.saturating_add(options.cell_width * 7))
+            .any(|x| pixel(x, y) == &[0, 0, 0, 255])
+    });
+    assert!(
+        overlay_has_ink,
+        "scrolled raster should redraw readable context overlay text in the current slice"
+    );
+}
+
+#[test]
 fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
     let image_url = "mem://inline-svg-context-image".to_owned();
     let decoded = DecodedImage {

@@ -5299,6 +5299,12 @@ pub fn browser_document_viewport(
                 &mut invalidated_regions,
             );
         }
+        append_viewport_readable_context_invalidated_regions(
+            render,
+            previous_state,
+            viewport_state,
+            &mut invalidated_regions,
+        );
     }
     let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
     let invalidated_area = invalidated_regions
@@ -5584,6 +5590,64 @@ fn append_viewport_positioned_invalidated_regions(
             browser_viewport_signed_delta(previous.y, current.y),
             regions,
         );
+    }
+}
+
+fn append_viewport_readable_context_invalidated_regions(
+    render: &BrowserRender,
+    previous: BrowserViewportState,
+    current: BrowserViewportState,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let current_viewport = raster_viewport_from_state(current);
+    append_viewport_readable_context_rows(
+        render,
+        current_viewport,
+        0,
+        0,
+        current.width,
+        current.height,
+        regions,
+    );
+    if previous.x == current.x && previous.y == current.y {
+        return;
+    }
+    append_viewport_readable_context_rows(
+        render,
+        raster_viewport_from_state(previous),
+        browser_viewport_signed_delta(previous.x, current.x),
+        browser_viewport_signed_delta(previous.y, current.y),
+        current.width,
+        current.height,
+        regions,
+    );
+}
+
+fn append_viewport_readable_context_rows(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    output_shift_x: isize,
+    output_shift_y: isize,
+    output_width: usize,
+    output_height: usize,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    for row in readable_context_overlay_viewport_rows(render, viewport) {
+        let Some(rect) = shift_and_clip_viewport_rect(
+            BrowserViewportRect {
+                x: 0,
+                y: row,
+                width: viewport.width,
+                height: 1,
+            },
+            output_shift_x,
+            output_shift_y,
+            output_width,
+            output_height,
+        ) else {
+            continue;
+        };
+        append_non_overlapping_viewport_rect(regions, rect);
     }
 }
 
@@ -6682,11 +6746,7 @@ pub fn rasterize_render_rgba(
             }
         }
     }
-    if raster_viewport_needs_readable_context(render, viewport)
-        && let Some(context) = nearby_visual_region_text_context(render, viewport)
-    {
-        let rows =
-            raster_text_context_overlay_rows(render, viewport, context.bounds, context.lines.len());
+    if let Some((context, rows)) = readable_context_overlay(render, viewport) {
         draw_rgba_text_context_lines(
             &mut rgba.pixels,
             rgba.width,
@@ -7098,6 +7158,28 @@ fn viewport_visual_fill_bounds(
         visible_bounds.push(visible);
     }
     visible_bounds
+}
+
+fn readable_context_overlay(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> Option<(VisualTextContext, Vec<usize>)> {
+    if !raster_viewport_needs_readable_context(render, viewport) {
+        return None;
+    }
+    let context = nearby_visual_region_text_context(render, viewport)?;
+    let rows =
+        raster_text_context_overlay_rows(render, viewport, context.bounds, context.lines.len());
+    Some((context, rows))
+}
+
+fn readable_context_overlay_viewport_rows(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> Vec<usize> {
+    readable_context_overlay(render, viewport)
+        .map(|(_, rows)| rows)
+        .unwrap_or_default()
 }
 
 fn raster_text_context_overlay_rows(
