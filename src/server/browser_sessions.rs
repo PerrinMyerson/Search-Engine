@@ -1245,7 +1245,7 @@ a:hover {{ text-decoration: underline; }}
 <body>
 <main data-browser-route-error{missing_attr} data-browser-recovery-source="{address_value}">
 <header class="browser-topbar">
-<div class="browser-chrome-row" data-browser-chrome>
+<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-toolbar-order="navigation address status">
 <nav class="toolbar browser-primary-nav" aria-label="Browser navigation"><span>Back</span><span>Forward</span><span>Reload</span></nav>
 <form class="toolbar address-bar" method="get" action="/browser"><input data-browser-address type="text" name="url" value="{address_value}" aria-label="Address"><input type="hidden" name="from" value="{back_href}">{recovery_hidden_inputs}<button type="submit">Go</button></form>
 </div>
@@ -10232,7 +10232,7 @@ fn render_browser_session_page_with_diagnostics(
     chrome_tab_actions.push_str("</div>");
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -10330,6 +10330,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-actions > summary::marker {{ color: #5d636b; }}
 .browser-chrome-action-list {{ position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; display: grid; gap: 4px; min-width: 132px; padding: 6px; border: 1px solid #c6cbd2; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(25,26,28,0.12); }}
 .browser-chrome-action-list a {{ justify-content: flex-start; width: 100%; }}
+.browser-chrome-page-actions {{ display: grid; gap: 4px; }}
 .browser-chrome-scroll-actions {{ display: grid; gap: 4px; border-top: 1px solid #eef0f3; margin-top: 2px; padding-top: 5px; }}
 .browser-chrome-scroll-actions span {{ width: 100%; justify-content: flex-start; color: #8a929d; background: #eef0f3; }}
 .browser-chrome-tab-actions {{ display: grid; gap: 4px; border-top: 1px solid #eef0f3; margin-top: 2px; padding-top: 5px; }}
@@ -10547,7 +10548,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <body>
 <main>
 <header class="browser-topbar">
-<div class="browser-chrome-row" data-browser-chrome>
+<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-toolbar-order="navigation address status">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
