@@ -14164,7 +14164,7 @@ fn render_browser_session_primary_page_state(payload: &BrowserSessionPayload) ->
     };
     let retained_pending = render_browser_session_retained_pending_status(payload);
     format!(
-        r#"<div class="browser-surface-state compact" data-browser-primary-state>{retained_pending}<span data-browser-primary-raster>{render_label}</span>{action_feedback}</div>"#,
+        r#"<div class="browser-surface-state compact" data-browser-primary-state>{retained_pending}<span data-browser-primary-raster hidden>{render_label}</span>{action_feedback}</div>"#,
         retained_pending = retained_pending,
         render_label = html_escape::encode_text(&render_label),
         action_feedback = action_feedback,
