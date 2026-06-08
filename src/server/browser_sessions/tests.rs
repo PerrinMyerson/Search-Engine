@@ -11944,7 +11944,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(html.contains(r#"<span class="viewport-command-label">Render</span>"#));
     let viewport_image = payload.viewport_image.as_ref().unwrap();
     assert!(html.contains(&format!(
-        r#"<span data-browser-primary-raster>Browser view ready: {}x{}</span>"#,
+        r#"<span data-browser-primary-raster hidden>Browser view ready: {}x{}</span>"#,
         viewport_image.width, viewport_image.height
     )));
     assert!(html.contains(&format!(
@@ -13646,6 +13646,8 @@ async fn browser_session_page_renders_form_controls() {
     let primary_html = &html[viewport_index..controls_tray_index];
     let controls_html = &html[controls_tray_index..debug_index];
     assert!(primary_html.contains(r#"<div class="viewport-status" data-browser-viewport-status>"#));
+    assert!(primary_html.contains(r#"data-browser-primary-raster hidden"#));
+    assert!(!primary_html.contains(r#"<span data-browser-primary-raster>Browser view ready"#));
     assert!(html.contains(r#".viewport-status { display: grid; gap: 5px; margin: 4px 0 8px; }"#));
     assert!(html.contains(r#".viewport-status-text span { min-height: 22px;"#));
     assert!(html.contains(
