@@ -32,6 +32,19 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "First");
     assert_eq!(payload.history_len, 1);
     assert!(!payload.can_back);
+    let html = render_browser_session_page(&payload, "/search?q=local");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-history data-browser-history-position="1" data-browser-history-length="1" title="history 1/1">history 1/1</span>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
+    ));
+    assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
 
     let follow = RequestTarget {
         path: "/browser".to_owned(),
@@ -45,6 +58,16 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "Second");
     assert_eq!(payload.history_len, 2);
     assert!(payload.can_back);
+    let html = render_browser_session_page(&payload, "/search?q=local");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-history data-browser-history-position="2" data-browser-history-length="2" title="history 2/2">history 2/2</span>"#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back">Back</a>"#));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
+    ));
     let expected_feedback = format!(
         "Opened link 1; opened local page: {}",
         browser_session_feedback_excerpt(&second.display().to_string())
@@ -65,6 +88,16 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "First");
     assert!(!payload.can_back);
     assert!(payload.can_forward);
+    let html = render_browser_session_page(&payload, "/search?q=local");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-history data-browser-history-position="1" data-browser-history-length="2" title="history 1/2">history 1/2</span>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward">Forward</a>"#));
     let expected_back_feedback = format!(
         "Went back; opened local page: {}; viewport settled at x 0, y 0",
         browser_session_feedback_excerpt(&first.display().to_string())
@@ -85,6 +118,16 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert_eq!(payload.title, "Second");
     assert!(payload.can_back);
     assert!(!payload.can_forward);
+    let html = render_browser_session_page(&payload, "/search?q=local");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-history data-browser-history-position="2" data-browser-history-length="2" title="history 2/2">history 2/2</span>"#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back">Back</a>"#));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
+    ));
     let expected_forward_feedback = format!(
         "Went forward; opened local page: {}; viewport settled at x 0, y 0",
         browser_session_feedback_excerpt(&second.display().to_string())

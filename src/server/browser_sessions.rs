@@ -10029,15 +10029,19 @@ fn render_browser_session_page_with_diagnostics(
         &remove_link_bookmarks_href,
     );
 
-    let back_control = nav_control(
+    let back_control = browser_chrome_nav_control(
         payload.can_back,
         "Back",
         &browser_session_action_href(&payload.id, "back", &[], payload),
+        "back",
+        "No back history",
     );
-    let forward_control = nav_control(
+    let forward_control = browser_chrome_nav_control(
         payload.can_forward,
         "Forward",
         &browser_session_action_href(&payload.id, "forward", &[], payload),
+        "forward",
+        "No forward history",
     );
     let current_href = browser_session_action_href(&payload.id, "current", &[], payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], payload);
@@ -13854,10 +13858,13 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     let image_state =
         browser_session_chrome_image_state(payload, action_urls.load_images.is_some());
     let has_image_state = image_state.is_some();
+    let history_position = payload.current_history_index.map_or(0, |index| index + 1);
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
+        history_position = history_position,
+        history_len = payload.history_len,
         width = payload.width,
         height = payload.height,
         x = payload.viewport_x,
@@ -16421,6 +16428,29 @@ fn nav_control(enabled: bool, label: &str, href: &str) -> String {
             label = html_escape::encode_text(label),
         )
     }
+}
+
+fn browser_chrome_nav_control(
+    enabled: bool,
+    label: &str,
+    href: &str,
+    action: &str,
+    disabled_reason: &str,
+) -> String {
+    if enabled {
+        return format!(
+            r#"<a href="{href}" data-browser-primary-nav-action="{action}">{label}</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+            action = html_escape::encode_double_quoted_attribute(action),
+            label = html_escape::encode_text(label),
+        );
+    }
+    format!(
+        r#"<span aria-disabled="true" title="{reason}" data-browser-primary-nav-action="{action}" data-browser-primary-nav-disabled="{reason}">{label}</span>"#,
+        reason = html_escape::encode_double_quoted_attribute(disabled_reason),
+        action = html_escape::encode_double_quoted_attribute(action),
+        label = html_escape::encode_text(label),
+    )
 }
 
 fn browser_chrome_scroll_action(
