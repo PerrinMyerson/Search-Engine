@@ -10586,6 +10586,155 @@ async fn image_picture_typed_extensionless_alias_selects_visible_rgb_candidate()
 }
 
 #[tokio::test]
+async fn image_picture_source_type_direct_alias_skips_unsupported_candidate_visible_rgb() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let unsupported = dir.path().join("dead.avif");
+    let placeholder = dir.path().join("placeholder.gif");
+    let hero = dir.path().join("hero.gif");
+    fs::write(&unsupported, tiny_test_gif_palette()).unwrap();
+    fs::write(&placeholder, tiny_test_gif_palette()).unwrap();
+    fs::write(&hero, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before typed fallback picture</p>
+            <picture>
+                <source
+                    type="image/avif"
+                    data-current-src="dead.avif">
+                <source
+                    type="image/gif"
+                    data-current-src="hero.gif">
+                <img src="placeholder.gif" alt="Typed fallback picture" width="80" height="24">
+            </picture>
+            <p>After typed fallback picture</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let unsupported_url = unsupported.display().to_string();
+    let placeholder_url = placeholder.display().to_string();
+    let hero_url = hero.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(!resource_report.resources.iter().any(|fetch| {
+        fetch.resource.resolved == unsupported_url
+            || fetch.resource.url == "dead.avif"
+            || fetch.resource.resolved == placeholder_url
+            || fetch.resource.url == "placeholder.gif"
+    }));
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image");
+    assert_eq!(resource_fetch.resource.initiator, "source");
+    assert_eq!(resource_fetch.resource.url, "hero.gif");
+    assert_eq!(
+        resource_fetch.resource.type_hint.as_deref(),
+        Some("image/gif")
+    );
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(resource_fetch.decoded_hash.is_some());
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!report.fetches.iter().any(|fetch| {
+        fetch.resource.resolved == unsupported_url
+            || fetch.resource.url == "dead.avif"
+            || fetch.resource.resolved == placeholder_url
+            || fetch.resource.url == "placeholder.gif"
+    }));
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "hero.gif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before typed fallback picture"));
+    assert!(render.text.contains("After typed fallback picture"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_source_coverage_uses_current_source_when_src_is_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
