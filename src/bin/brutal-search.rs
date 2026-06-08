@@ -1865,6 +1865,16 @@ fn web_storage_export_readiness_lines(
     } else {
         "ready"
     };
+    let provider_cleanup_useful = provider_buckets > 1
+        || staleness_status == "stale"
+        || summary.stale_artifacts > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.suggested_dry_runs > 0;
+    let provider_cleanup_status = if provider_cleanup_useful {
+        "needs-review"
+    } else {
+        "ready"
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -1908,6 +1918,20 @@ fn web_storage_export_readiness_lines(
         format!(
             "web_storage_provider_growth: report_only=true limit={WEB_STORAGE_PROVIDER_GROWTH_LIMIT} {}",
             web_storage_provider_growth_summary(artifacts)
+        ),
+        format!(
+            "web_storage_provider_cleanup_readiness: report_only=true status={provider_cleanup_status} provider_buckets={provider_buckets} stale_artifacts={} duplicate_row_bytes={} suggested_dry_runs={} cleanup_useful={provider_cleanup_useful}",
+            summary.stale_artifacts,
+            summary.duplicate_row_bytes,
+            summary.suggested_dry_runs
+        ),
+        format!(
+            "web_storage_provider_cleanup_hint: report_only=true {}",
+            if provider_cleanup_useful {
+                "run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present"
+            } else {
+                "cleanup would be pointless for provider/stale/duplicate pressure"
+            }
         ),
         format!(
             "web_storage_replay_staleness: status={staleness_status} report_only=true newest_age_secs={} oldest_age_secs={} stale_after_secs={stale_secs}",
@@ -4116,6 +4140,8 @@ mod tests {
         assert!(provider_lines.contains(
             &"web_storage_compaction_decision: report_only=true reason=multiple-providers duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=2 staleness_status=fresh".to_owned()
         ));
+        assert!(provider_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=2 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=true".to_owned()));
+        assert!(provider_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present".to_owned()));
 
         let stale_lines = web_storage_export_readiness_lines(
             &[WebStorageArtifactStats {
@@ -4144,6 +4170,126 @@ mod tests {
         assert!(stale_lines.contains(
             &"web_storage_compaction_decision: report_only=true reason=stale-cache duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=1 staleness_status=stale".to_owned()
         ));
+        assert!(stale_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=true".to_owned()));
+
+        let clean_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            130,
+            60,
+        );
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=ready provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=false".to_owned()));
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true cleanup would be pointless for provider/stale/duplicate pressure".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_provider_cleanup_readiness_reports_thresholds() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 4,
+            duplicate_entries: 1,
+            unique_row_bytes: 170,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 2,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+        let pressure_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 1,
+                unique_row_bytes: 80,
+                duplicate_row_bytes: 40,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 2,
+                provider_growth: vec![
+                    "brave:entries=2:bytes=80:result_rows=2".to_owned(),
+                    "cache:entries=1:bytes=40:result_rows=2".to_owned(),
+                ],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            300,
+            60,
+        );
+
+        assert!(pressure_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=2 stale_artifacts=1 duplicate_row_bytes=40 suggested_dry_runs=1 cleanup_useful=true".to_owned()));
+        assert!(pressure_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present".to_owned()));
+
+        let clean_summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 120,
+            entries: 3,
+            result_rows: 4,
+            durable_result_rows: 4,
+            incomplete_result_rows: 0,
+            unique_entries: 3,
+            duplicate_entries: 0,
+            unique_row_bytes: 120,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &clean_summary,
+            130,
+            60,
+        );
+
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=ready provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=false".to_owned()));
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true cleanup would be pointless for provider/stale/duplicate pressure".to_owned()));
     }
 
     #[test]
