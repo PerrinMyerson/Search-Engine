@@ -2446,6 +2446,18 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     let controls_html = &html[controls_tray_index..debug_index];
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-actions"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-y="0""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-max-scroll-x="{}""#,
+        payload.max_scroll_x
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-max-scroll-y="{}""#,
+        payload.max_scroll_y
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-can-scroll-up="false""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-can-scroll-down="true""#));
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="top" data-browser-chrome-scroll-disabled="Already at top">Top</span>"#
     ));
@@ -3418,6 +3430,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#">Top</a>"#));
     assert!(html.contains(r#">Page up</a>"#));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-scroll-x="12""#));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-y="{}""#,
+        payload.max_scroll_y
+    )));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-can-scroll-up="true""#));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-can-scroll-down="false""#));
     assert!(bottom_topbar_html.contains(&format!(
         r#"href="{}" data-browser-chrome-scroll-action="top">Top</a>"#,
         html_escape::encode_double_quoted_attribute(&bottom_top_href)
