@@ -13461,6 +13461,27 @@ async fn browser_session_page_renders_form_controls() {
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
+    assert!(topbar_html.contains(r#"data-browser-address-form"#));
+    assert!(topbar_html.contains(&format!(r#"data-browser-address-session="{}""#, payload.id)));
+    assert!(topbar_html.contains(r#"data-browser-address-from="/search?q=forms""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(r#"data-browser-address-viewport-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-address-viewport-y="0""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-width="{}""#,
+        payload.width
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-height="{}""#,
+        payload.height
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
