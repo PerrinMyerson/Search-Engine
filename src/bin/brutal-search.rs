@@ -1491,6 +1491,23 @@ fn storage_snapshot_readiness_lines(
         .as_ref()
         .map(|frontier| frontier.total)
         .unwrap_or(0);
+    let frontier_failed_removable_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let core_index_bytes = storage_core_index_bytes(stats, web_summary);
+    let export_needs_review = stats.total_bytes > index_storage_budget_bytes()
+        || web_summary.duplicate_entries > 0
+        || web_summary.suggested_dry_runs > 0
+        || stats.browser_document_duplicate_rows > 0
+        || stats.crawl_snapshot_duplicate_entries > 0
+        || frontier_failed_removable_records > 0;
+    let export_status = if export_needs_review {
+        "needs-review"
+    } else {
+        "ready"
+    };
     let status = if web_summary.suggested_dry_runs > 0 {
         "needs-web-compaction"
     } else {
@@ -1529,6 +1546,17 @@ fn storage_snapshot_readiness_lines(
             web_summary.suggested_dry_runs
         ),
         format!("storage_snapshot_frontier_records: {}", frontier_records),
+        format!(
+            "storage_index_export_readiness: report_only=true status={export_status} total_bytes={} core_index_bytes={core_index_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_removable_rows={} browser_document_duplicates={} snapshot_duplicates={} frontier_failed_removable_records={frontier_failed_removable_records}",
+            stats.total_bytes,
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes,
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        "storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .brutal-index contents".to_owned(),
     ];
     if web_summary.suggested_dry_runs > 0 {
         lines.push(format!(
@@ -3417,6 +3445,90 @@ mod tests {
         assert!(lines.contains(
             &"storage_snapshot_cleanup_hint: brutal-search compact-web-cache --dry-run --min-entries 30".to_owned()
         ));
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_index_export_risk() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_index_export_readiness: report_only=true status=needs-review total_bytes=1000 core_index_bytes=450 web_bytes=300 browser_document_bytes=50 crawl_bytes=200 web_removable_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(lines.contains(&"storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .brutal-index contents".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = storage_snapshot_readiness_lines(&clean_stats, &clean_web_summary);
+
+        assert!(clean_lines.contains(&"storage_index_export_readiness: report_only=true status=ready total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_removable_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_failed_removable_records=0".to_owned()));
     }
 
     #[test]
