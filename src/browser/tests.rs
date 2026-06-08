@@ -9181,6 +9181,154 @@ async fn image_css_backgrounds_selects_renderable_preload_imagesrcset_candidate(
 }
 
 #[tokio::test]
+async fn image_preload_imagesrcset_resource_prefers_selected_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let placeholder = dir.path().join("loading.gif");
+    let selected = dir.path().join("hero.gif");
+    let oversized = dir.path().join("hero-large.gif");
+    fs::write(&placeholder, tiny_test_gif_palette()).unwrap();
+    fs::write(&selected, tiny_test_gif_palette()).unwrap();
+    fs::write(&oversized, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <link rel="preload" as="image" href="loading.gif" imagesrcset="hero-large.gif 640w, hero.gif 80w" imagesizes="80px">
+        </head><body>
+            <p>Before preload image</p>
+            <img src="hero.gif" alt="Preloaded GIF" width="80" height="24">
+            <p>After preload image</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let placeholder_url = placeholder.display().to_string();
+    let selected_url = selected.display().to_string();
+    let oversized_url = oversized.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.resolved == placeholder_url
+                || fetch.resource.url == "loading.gif"
+                || fetch.resource.resolved == oversized_url
+                || fetch.resource.url == "hero-large.gif")
+    );
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image");
+    assert_eq!(resource_fetch.resource.initiator, "link");
+    assert_eq!(resource_fetch.resource.url, "hero.gif");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(resource_fetch.decoded_hash.is_some());
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.resolved == placeholder_url
+                || fetch.resource.url == "loading.gif"
+                || fetch.resource.resolved == oversized_url
+                || fetch.resource.url == "hero-large.gif")
+    );
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "link");
+    assert_eq!(fetch.resource.url, "hero.gif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before preload image"));
+    assert!(render.text.contains("After preload image"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_responsive_preload_uses_href_when_imagesrcset_candidates_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");

@@ -1491,13 +1491,17 @@ fn collect_resources_at(
                 }
             }
             "link" => {
-                if let Some(href) = element.href.as_deref().map(str::trim)
-                    && !href.is_empty()
-                {
-                    let kind = link_resource_kind(element);
-                    push_resource(resources, source, element, &kind, "link", href);
+                if link_preloads_image(element) {
+                    push_link_image_resources(resources, source, element, true, None);
+                } else {
+                    if let Some(href) = element.href.as_deref().map(str::trim)
+                        && !href.is_empty()
+                    {
+                        let kind = link_resource_kind(element);
+                        push_resource(resources, source, element, &kind, "link", href);
+                    }
+                    push_link_image_resources(resources, source, element, false, None);
                 }
-                push_link_image_resources(resources, source, element, false, None);
             }
             _ => {}
         }
@@ -2624,33 +2628,52 @@ fn push_link_image_resources(
     if !link_preloads_image(element) {
         return;
     }
-    if let Some(viewport_width_css_px) = selected_viewport_width_css_px
-        && let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str)
-        && let Some(url) = selected_supported_srcset_candidate(
-            srcset,
-            element
-                .attrs
-                .get("imagesizes")
-                .map(String::as_str)
-                .or_else(|| image_sizes_attr(element)),
-            viewport_width_css_px,
-        )
+    let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str) else {
+        if include_href
+            && let Some(href) = element.href.as_deref().map(str::trim)
+            && !href.is_empty()
+        {
+            push_resource(resources, source, element, "image", "link", href);
+        }
+        return;
+    };
+
+    let sizes = element
+        .attrs
+        .get("imagesizes")
+        .map(String::as_str)
+        .or_else(|| image_sizes_attr(element));
+    if let Some(url) =
+        selected_link_preload_srcset_candidate(srcset, sizes, selected_viewport_width_css_px)
     {
         push_resource(resources, source, element, "image", "link", &url);
         return;
     }
+
     if include_href
         && let Some(href) = element.href.as_deref().map(str::trim)
         && !href.is_empty()
     {
         push_resource(resources, source, element, "image", "link", href);
     }
-    let Some(srcset) = element.attrs.get("imagesrcset").map(String::as_str) else {
-        return;
-    };
     for url in supported_srcset_candidate_urls(srcset) {
         push_resource(resources, source, element, "image_candidate", "link", &url);
     }
+}
+
+fn selected_link_preload_srcset_candidate(
+    srcset: &str,
+    sizes: Option<&str>,
+    selected_viewport_width_css_px: Option<usize>,
+) -> Option<String> {
+    if let Some(viewport_width_css_px) = selected_viewport_width_css_px {
+        return selected_supported_srcset_candidate(srcset, sizes, viewport_width_css_px);
+    }
+    let sizes = sizes?;
+    if source_sizes_requires_viewport(sizes) {
+        return None;
+    }
+    selected_supported_srcset_candidate(srcset, Some(sizes), 0)
 }
 
 fn push_resource(
