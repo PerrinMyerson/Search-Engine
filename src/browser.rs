@@ -4084,7 +4084,7 @@ fn hit_test_target_node_in_viewport(
 ) -> Option<usize> {
     let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
     if let Some(target_node) =
-        hit_test_topmost_visual_layer_for_viewport(render, viewport, page_x, page_y)
+        hit_test_topmost_pinned_visual_layer_for_viewport(render, viewport, page_x, page_y)
     {
         return target_node;
     }
@@ -4094,6 +4094,10 @@ fn hit_test_target_node_in_viewport(
         return target_node;
     }
     hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
+        .or_else(|| {
+            hit_test_topmost_normal_visual_layer_for_viewport(render, viewport, page_x, page_y)
+                .flatten()
+        })
         .or_else(|| {
             hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
         })
@@ -4227,13 +4231,23 @@ fn hit_test_topmost_text_layer_for_viewport(
             if !bounds.contains(x, y) {
                 return None;
             }
-            Some(
-                render
-                    .hit_targets
-                    .get(command_index)
-                    .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
-            )
+            let column = x.saturating_sub(bounds.x);
+            let target_node = render
+                .hit_targets
+                .get(command_index)
+                .and_then(|target| target.target_at_column(column));
+            if target_node.is_some() || text_command_column_has_visible_ink(command, column) {
+                return Some(target_node);
+            }
+            None
         })
+}
+
+fn text_command_column_has_visible_ink(command: &DisplayCommand, column: usize) -> bool {
+    display_command_text(command)
+        .map(readable_display_text)
+        .and_then(|text| text.chars().nth(column))
+        .is_some_and(|ch| !ch.is_whitespace())
 }
 
 fn hit_test_text_target_node_for_viewport(
@@ -4322,16 +4336,23 @@ fn hit_test_nearby_text_target_node_for_viewport_matching(
             ) {
                 return None;
             }
-            let bounds = display_command_bounds_for_viewport(
+            let command_bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
                 display_command_viewport_fixed(render, command_index),
                 display_command_viewport_sticky_top(render, command_index),
             );
-            if !bounds_contains_with_tolerance(bounds, x, y, 2, 1) {
+            let visible_bounds = if display_command_viewport_fixed(render, command_index)
+                || display_command_viewport_sticky_top(render, command_index).is_some()
+            {
+                command_bounds
+            } else {
+                intersect_display_bounds_with_viewport(command_bounds, viewport)?
+            };
+            if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, 1) {
                 return None;
             }
-            let column = clamped_bounds_column(bounds, x);
+            let column = clamped_bounds_column(command_bounds, x);
             render
                 .hit_targets
                 .get(command_index)
@@ -4382,13 +4403,13 @@ fn hit_test_nearby_visual_target_node(render: &BrowserRender, x: usize, y: usize
         })
 }
 
-fn hit_test_topmost_visual_layer_for_viewport(
+fn hit_test_topmost_pinned_visual_layer_for_viewport(
     render: &BrowserRender,
     viewport: RasterViewport,
     x: usize,
     y: usize,
 ) -> Option<Option<usize>> {
-    if let Some(target) = hit_test_topmost_visual_layer_for_viewport_matching(
+    hit_test_topmost_visual_layer_for_viewport_matching(
         render,
         viewport,
         x,
@@ -4397,9 +4418,15 @@ fn hit_test_topmost_visual_layer_for_viewport(
             display_command_viewport_fixed(render, command_index)
                 || display_command_viewport_sticky_top(render, command_index).is_some()
         },
-    ) {
-        return Some(target);
-    }
+    )
+}
+
+fn hit_test_topmost_normal_visual_layer_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<Option<usize>> {
     hit_test_topmost_visual_layer_for_viewport_matching(
         render,
         viewport,
@@ -4425,6 +4452,12 @@ fn hit_test_topmost_visual_layer_for_viewport_matching(
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
             if !include(render, command_index) {
                 return None;
             }
