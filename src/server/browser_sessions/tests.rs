@@ -11856,7 +11856,10 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
-    assert!(topbar_html.contains(r#"data-browser-chrome-action-list"#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs""#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
@@ -11908,6 +11911,16 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         r#"href="{}" data-browser-resource-action data-browser-chrome-images-action data-browser-resource-status="Loading images...">Images</a>"#,
         html_escape::encode_double_quoted_attribute(&image_href)
     )));
+    let page_actions_index = topbar_html
+        .find(r#"data-browser-chrome-page-actions"#)
+        .unwrap();
+    let scroll_actions_index = topbar_html
+        .find(r#"data-browser-chrome-scroll-actions"#)
+        .unwrap();
+    let page_actions_html = &topbar_html[page_actions_index..scroll_actions_index];
+    assert!(page_actions_html.contains(r#"data-browser-chrome-current-action"#));
+    assert!(page_actions_html.contains(r#"data-browser-chrome-reload-action"#));
+    assert!(page_actions_html.contains(r#"data-browser-chrome-images-action"#));
     assert!(topbar_html.contains(r#"data-browser-shell-images"#));
     assert!(topbar_html.contains(r#">1 image in Tools</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-make-visual-action"#));
@@ -13522,9 +13535,15 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_index < location_index);
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-toolbar-order="navigation address status""#)
+    );
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
-    assert!(topbar_html.contains(r#"data-browser-chrome-action-list"#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs""#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
@@ -13597,6 +13616,15 @@ async fn browser_session_page_renders_form_controls() {
         r#"href="{}" data-browser-chrome-reload-action>Reload</a>"#,
         html_escape::encode_double_quoted_attribute(&reload_href)
     )));
+    let page_actions_index = topbar_html
+        .find(r#"data-browser-chrome-page-actions"#)
+        .unwrap();
+    let scroll_actions_index = topbar_html
+        .find(r#"data-browser-chrome-scroll-actions"#)
+        .unwrap();
+    let page_actions_html = &topbar_html[page_actions_index..scroll_actions_index];
+    assert!(page_actions_html.contains(r#"data-browser-chrome-current-action"#));
+    assert!(page_actions_html.contains(r#"data-browser-chrome-reload-action"#));
     assert!(!topbar_html.contains(">Read</a>"));
     assert!(!topbar_html.contains(">Images</a>"));
     assert!(!topbar_html.contains(">Make readable</a>"));
