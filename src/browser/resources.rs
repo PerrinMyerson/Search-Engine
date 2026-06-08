@@ -2549,6 +2549,17 @@ fn css_quoted_url(value: &str) -> Option<&str> {
 
 fn background_image_candidate_clearly_unsupported(url: &str) -> bool {
     let url = url.trim();
+    if let Some(metadata) = url
+        .strip_prefix("data:")
+        .or_else(|| url.strip_prefix("DATA:"))
+        .and_then(|payload| payload.split_once(',').map(|(metadata, _)| metadata))
+    {
+        let mime = metadata.split(';').next().unwrap_or_default();
+        return mime
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+            && !image_mime_type_supported(mime);
+    }
     let path = Url::parse(url)
         .ok()
         .map(|url| url.path().to_owned())
