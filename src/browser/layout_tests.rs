@@ -10434,6 +10434,154 @@ fn rgba_raster_preserves_decoded_image_and_background_rgb_after_scroll() {
         "scrolled background image crop should preserve decoded RGB after viewport projection"
     );
 }
+#[test]
+fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
+    let render = BrowserRender {
+        source: "mem://rgba-undecoded-scroll-placeholder".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(42)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 1,
+                width: 2,
+                height: 3,
+                shade: 180,
+                alt: None,
+                url: Some("mem://missing-photo".to_owned()),
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 3,
+                y: 1,
+                width: 2,
+                height: 3,
+                shade: 210,
+                url: Some("mem://missing-background".to_owned()),
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body after media".to_owned(),
+            },
+        ],
+        text: "Body after media".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 1,
+            width: 6,
+            height: 2,
+        },
+        None,
+    );
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 2);
+    assert_eq!(second.scroll_delta_y, 1);
+    assert_eq!(
+        second.invalidated_regions,
+        vec![BrowserViewportRect {
+            x: 0,
+            y: 1,
+            width: 6,
+            height: 1,
+        }]
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        Some(41),
+        "scrolled image placeholder should keep the image hit target aligned with visible pixels"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 3, 0),
+        Some(42),
+        "scrolled background placeholder should keep the background hit target aligned"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(99),
+        viewport_width: Some(6),
+        viewport_height: Some(2),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, second.viewport, Some(first.viewport), options)
+        .expect("render scrolled undecoded image placeholder frame");
+    assert_eq!(frame.report.frame.visible_command_count, 2);
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(2));
+    assert_eq!(
+        frame
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .map(|region| (
+                region.viewport_x,
+                region.viewport_y,
+                region.viewport_width,
+                region.viewport_height,
+            ))
+            .collect::<Vec<_>>(),
+        vec![(0, 1, 6, 1)]
+    );
+
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    assert_eq!(
+        pixel(
+            options.padding_x.saturating_add(2),
+            options.padding_y.saturating_add(2)
+        ),
+        [180, 180, 180, 255],
+        "scrolled color raster should show the undecoded image placeholder body"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(3))
+                .saturating_add(2),
+            options.padding_y.saturating_add(2),
+        ),
+        [210, 210, 210, 255],
+        "scrolled color raster should show the undecoded background placeholder body"
+    );
+}
 
 #[test]
 fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {

@@ -6368,6 +6368,7 @@ pub fn rasterize_render_rgba(
                 y,
                 width: image_width,
                 height,
+                shade,
                 url,
                 ..
             } => {
@@ -6440,6 +6441,18 @@ pub fn rasterize_render_rgba(
                         full_height,
                         &decoded,
                     );
+                } else {
+                    draw_rgba_image_placeholder(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        *shade,
+                        source_bounds,
+                        visible_bounds,
+                    );
                 }
             }
             DisplayCommand::BackgroundImage {
@@ -6447,6 +6460,7 @@ pub fn rasterize_render_rgba(
                 y,
                 width: image_width,
                 height,
+                shade,
                 url,
                 size,
                 position,
@@ -6527,6 +6541,18 @@ pub fn rasterize_render_rgba(
                         *position,
                         *repeat,
                         &decoded,
+                    );
+                } else {
+                    draw_rgba_image_placeholder(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        image_x,
+                        image_y,
+                        clipped_image_width,
+                        clipped_image_height,
+                        *shade,
+                        source_bounds,
+                        visible_bounds,
                     );
                 }
             }
@@ -8012,6 +8038,60 @@ fn fill_rgba_rect(
         for column in x..x.saturating_add(width) {
             set_rgba_pixel(pixels, raster_width, column, row, value);
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rgba_image_placeholder(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    shade: u8,
+    source_bounds: DisplayCommandBounds,
+    visible_bounds: DisplayCommandBounds,
+) {
+    fill_rgba_rect(
+        pixels,
+        raster_width,
+        x,
+        y,
+        width,
+        height,
+        [shade, shade, shade, 255],
+    );
+    let edge = [96, 96, 96, 255];
+    let original_right = source_bounds.x.saturating_add(source_bounds.width);
+    let original_bottom = source_bounds.y.saturating_add(source_bounds.height);
+    if visible_bounds.y == source_bounds.y {
+        fill_rgba_rect(pixels, raster_width, x, y, width, 1, edge);
+    }
+    if visible_bounds.y.saturating_add(visible_bounds.height) == original_bottom {
+        fill_rgba_rect(
+            pixels,
+            raster_width,
+            x,
+            y.saturating_add(height.saturating_sub(1)),
+            width,
+            1,
+            edge,
+        );
+    }
+    if visible_bounds.x == source_bounds.x {
+        fill_rgba_rect(pixels, raster_width, x, y, 1, height, edge);
+    }
+    if visible_bounds.x.saturating_add(visible_bounds.width) == original_right {
+        fill_rgba_rect(
+            pixels,
+            raster_width,
+            x.saturating_add(width.saturating_sub(1)),
+            y,
+            1,
+            height,
+            edge,
+        );
     }
 }
 
