@@ -2320,6 +2320,21 @@ fn web_storage_compaction_snapshot_readiness_lines(
     } else {
         "cleanup-pointless"
     };
+    let cache_rewrite_projected = cache_cleanup_useful;
+    let result_log_rewrite_projected = result_log_cleanup_useful;
+    let compaction_evidence_next_action = if report.skipped {
+        "cleanup-skipped-review-inputs"
+    } else if zero_removal {
+        "cleanup-pointless"
+    } else if cache_rewrite_projected && result_log_rewrite_projected {
+        "rewrite-web-cache-and-brave-results"
+    } else if cache_rewrite_projected {
+        "rewrite-web-cache"
+    } else if result_log_rewrite_projected {
+        "rewrite-brave-results"
+    } else {
+        "cleanup-pointless"
+    };
 
     vec![
         format!(
@@ -2364,6 +2379,17 @@ fn web_storage_compaction_snapshot_readiness_lines(
         ),
         format!(
             "web_storage_snapshot_cleanup_next_action: report_only=true action={cleanup_next_action} cache_cleanup_useful={cache_cleanup_useful} result_log_cleanup_useful={result_log_cleanup_useful} dry_run={} zero_removal={zero_removal}",
+            report.dry_run
+        ),
+        format!(
+            "web_storage_compaction_evidence_summary: report_only=true cache_rewrite_projected={cache_rewrite_projected} result_log_rewrite_projected={result_log_rewrite_projected} cache_retained_bytes={} cache_removable_bytes={cache_removed_bytes} cache_retained_rows={} cache_removable_rows={cache_removed_entries} cache_removable_duplicates={cache_removed_duplicates} result_log_retained_bytes={} result_log_removable_bytes={result_log_removed_bytes} result_log_retained_rows={} result_log_removable_rows={result_log_removed_entries} result_log_removable_duplicates={result_log_removed_duplicates}",
+            report.cache_projected_after.bytes,
+            report.cache_projected_after.entries,
+            report.result_log_projected_after.bytes,
+            report.result_log_projected_after.entries
+        ),
+        format!(
+            "web_storage_compaction_evidence_next_action: report_only=true action={compaction_evidence_next_action} dry_run={} zero_removal={zero_removal}",
             report.dry_run
         ),
         format!("web_storage_snapshot_zero_removal: {zero_removal}"),
@@ -4994,6 +5020,74 @@ mod tests {
         report.result_log_projected_after = report.result_log_before;
         let zero_lines = web_storage_compaction_snapshot_readiness_lines(&report);
         assert!(zero_lines.contains(&"web_storage_snapshot_cleanup_next_action: report_only=true action=cleanup-pointless cache_cleanup_useful=false result_log_cleanup_useful=false dry_run=true zero_removal=true".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_evidence_reports_artifact_rewrites() {
+        let mut report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let both_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(both_lines.contains(&"web_storage_compaction_evidence_summary: report_only=true cache_rewrite_projected=true result_log_rewrite_projected=true cache_retained_bytes=80 cache_removable_bytes=40 cache_retained_rows=2 cache_removable_rows=2 cache_removable_duplicates=2 result_log_retained_bytes=70 result_log_removable_bytes=20 result_log_retained_rows=2 result_log_removable_rows=1 result_log_removable_duplicates=1".to_owned()));
+        assert!(both_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-web-cache-and-brave-results dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let cache_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(cache_only_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-web-cache dry_run=true zero_removal=false".to_owned()));
+
+        report.cache_projected_after = report.cache_before;
+        report.result_log_projected_after = WebSearchStorageArtifactState {
+            bytes: 70,
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+        };
+        let result_log_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(result_log_only_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-brave-results dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let zero_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(zero_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=cleanup-pointless dry_run=true zero_removal=true".to_owned()));
     }
 
     #[test]
