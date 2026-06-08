@@ -4476,14 +4476,22 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
                 display_command_viewport_fixed(render, command_index),
                 display_command_viewport_sticky_top(render, command_index),
             );
-            if !bounds_contains_with_tolerance(bounds, x, y, 1, 1) {
+            let clipped = render
+                .hit_targets
+                .get(command_index)
+                .is_some_and(|target| target.source_bounds.is_some());
+            let tolerance = if clipped { 0 } else { 1 };
+            if !bounds_contains_with_tolerance(bounds, x, y, tolerance, tolerance) {
+                return None;
+            }
+            if clipped && !bounds.contains(x, y) {
                 return None;
             }
             let column = clamped_bounds_column(bounds, x);
             render
                 .hit_targets
                 .get(command_index)
-                .and_then(|target| target.target_near_column(column, 1))
+                .and_then(|target| target.target_near_column(column, tolerance))
         })
 }
 
