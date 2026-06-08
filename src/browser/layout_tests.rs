@@ -9427,6 +9427,144 @@ fn viewport_hit_testing_blocks_scrolled_link_under_topmost_fixed_background() {
 }
 
 #[test]
+fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://fixed-text-blocks-scrolled-link".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 5,
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default().with_viewport_fixed(true),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 10,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 4,
+                text: "Under".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 0,
+                text: "Panel".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 9,
+                text: "Footer keeps repeated scrolling possible".to_owned(),
+            },
+        ],
+        text: "Under\nFooter keeps repeated scrolling possible".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 4,
+            width: 10,
+            height: 3,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 4);
+    assert!(viewport.max_scroll_y > 0);
+    assert_eq!(
+        hit_test_text_target_node_for_viewport(
+            &render,
+            raster_viewport_from_state(viewport.viewport),
+            2,
+            viewport.viewport.y,
+        ),
+        Some(77),
+        "fixture should expose the lower scrolled link without topmost text blocking"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 0),
+        None,
+        "topmost fixed non-link text should block exact clicks from reaching the lower link"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 1),
+        Some(77),
+        "the lower scrolled link remains hittable below the fixed text overlay"
+    );
+
+    let next = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
+    assert_eq!(next.viewport.y, 5);
+    assert_eq!(next.scroll_delta_y, 1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, next.viewport, 2, 0),
+        None,
+        "repeated scroll should keep the fixed text blocker aligned with the viewport top"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize fixed text blocker slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        &[238, 244, 250, 255],
+        "scrolled raster should retain the lower content underlay behind the fixed text"
+    );
+    let fixed_text_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (options.padding_x.saturating_add(options.cell_width)
+                ..options
+                    .padding_x
+                    .saturating_add(6usize.saturating_mul(options.cell_width))
+                    .min(rgba.width))
+                .any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        });
+    assert!(
+        fixed_text_has_ink,
+        "fixed text overlay should be visible at the blocked click row"
+    );
+}
+
+#[test]
 fn viewport_exact_text_hit_precedes_nearby_rows_after_repeated_scroll() {
     let render = BrowserRender {
         source: "mem://exact-text-scroll-hit".to_owned(),

@@ -4088,6 +4088,11 @@ fn hit_test_target_node_in_viewport(
     {
         return target_node;
     }
+    if let Some(target_node) =
+        hit_test_topmost_text_layer_for_viewport(render, viewport, page_x, page_y)
+    {
+        return target_node;
+    }
     hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
         .or_else(|| {
             hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
@@ -4192,6 +4197,42 @@ fn hit_test_text_target_node_by_text_row(
                 .hit_targets
                 .get(command_index)
                 .and_then(|target| target.target_near_column(column, 2))
+        })
+}
+
+fn hit_test_topmost_text_layer_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<Option<usize>> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                display_command_viewport_fixed(render, command_index),
+                display_command_viewport_sticky_top(render, command_index),
+            );
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            Some(
+                render
+                    .hit_targets
+                    .get(command_index)
+                    .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
+            )
         })
 }
 
