@@ -10549,7 +10549,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <header class="browser-topbar">
 <div class="browser-chrome-row" data-browser-chrome>
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
-<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control>
+<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -10558,7 +10558,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
 {address_source_input}
-<input data-browser-address type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
+<input data-browser-address type="text" inputmode="url" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
