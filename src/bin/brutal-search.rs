@@ -1292,14 +1292,27 @@ fn storage_pressure_rollup_lines(
         .as_ref()
         .map(|frontier| frontier.total)
         .unwrap_or(0);
+    let export_needs_review = stats.total_bytes > index_storage_budget_bytes()
+        || web_summary.duplicate_entries > 0
+        || stats.browser_document_duplicate_rows > 0
+        || stats.crawl_snapshot_duplicate_entries > 0;
+    let git_export_size_class = if stats.total_bytes > index_storage_budget_bytes() {
+        "too-large-for-git-snapshot"
+    } else if export_needs_review {
+        "review-before-export"
+    } else {
+        "git-friendly"
+    };
+    let git_export_next_action = match git_export_size_class {
+        "git-friendly" => "export-metadata-only-ready",
+        "review-before-export" => "review-removable-rows-before-export",
+        "too-large-for-git-snapshot" => "reduce-or-exclude-large-artifacts-before-export",
+        _ => "review-export-readiness",
+    };
     vec![
         format!(
             "storage_git_manifest_readiness: report_only=true status={} exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_rows={} browser_document_rows={} snapshot_entries={} frontier_records={}",
-            if stats.total_bytes > index_storage_budget_bytes()
-                || web_summary.duplicate_entries > 0
-                || stats.browser_document_duplicate_rows > 0
-                || stats.crawl_snapshot_duplicate_entries > 0
-            {
+            if export_needs_review {
                 "needs-review"
             } else {
                 "ready"
@@ -1314,6 +1327,20 @@ fn storage_pressure_rollup_lines(
             frontier_records
         ),
         "storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .brutal-index contents".to_owned(),
+        format!(
+            "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.brutal-index/raw-index-data",
+            stats.total_bytes,
+            index_storage_budget_bytes(),
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes
+        ),
+        format!(
+            "storage_git_export_next_action: report_only=true action={git_export_next_action} class={git_export_size_class} removable_web_rows={} browser_document_duplicates={} snapshot_duplicates={} frontier_records={frontier_records}",
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries
+        ),
         format!(
             "storage_pressure_summary: total_bytes={} core_index_bytes={} web_bytes={} browser_document_bytes={} crawl_bytes={} web_entries={} web_duplicates={} snapshot_entries={} frontier_records={}",
             stats.total_bytes,
@@ -3386,6 +3413,134 @@ mod tests {
         let clean_lines = storage_pressure_rollup_lines(&clean_stats, &clean_web_summary);
 
         assert!(clean_lines.contains(&"storage_git_manifest_readiness: report_only=true status=ready exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_rows=10 browser_document_rows=1 snapshot_entries=2 frontier_records=0".to_owned()));
+    }
+
+    #[test]
+    fn storage_git_export_size_class_reports_component_thresholds() {
+        let review_stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let review_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let review_lines = storage_pressure_rollup_lines(&review_stats, &review_web_summary);
+        assert!(review_lines.contains(&format!(
+            "storage_git_export_size_class: report_only=true class=review-before-export total_bytes=1000 budget_bytes={} core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.brutal-index/raw-index-data",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES
+        )));
+        assert!(review_lines.contains(&"storage_git_export_next_action: report_only=true action=review-removable-rows-before-export class=review-before-export removable_web_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_records=10".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let clean_lines = storage_pressure_rollup_lines(&clean_stats, &clean_web_summary);
+        assert!(clean_lines.contains(&"storage_git_export_next_action: report_only=true action=export-metadata-only-ready class=git-friendly removable_web_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_records=0".to_owned()));
+
+        let large_stats = IndexStorageStats {
+            total_bytes: DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 50,
+            browser_document_rows: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let large_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 30,
+            durable_result_rows: 30,
+            incomplete_result_rows: 0,
+            unique_entries: 30,
+            duplicate_entries: 0,
+            unique_row_bytes: 300,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let large_lines = storage_pressure_rollup_lines(&large_stats, &large_web_summary);
+        assert!(large_lines.contains(&format!(
+            "storage_git_export_size_class: report_only=true class=too-large-for-git-snapshot total_bytes={} budget_bytes={} core_index_bytes={} web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.brutal-index/raw-index-data",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1 - 650
+        )));
+        assert!(large_lines.contains(&"storage_git_export_next_action: report_only=true action=reduce-or-exclude-large-artifacts-before-export class=too-large-for-git-snapshot removable_web_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_records=0".to_owned()));
     }
 
     #[test]
