@@ -10332,7 +10332,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status [data-browser-chrome-viewport] {{ max-width: 150px; }}
 .browser-chrome-status [data-browser-chrome-action-feedback],
 .browser-chrome-status [data-browser-chrome-scroll-feedback],
-.browser-chrome-status [data-browser-chrome-click-feedback] {{ max-width: min(28vw, 260px); }}
+.browser-chrome-status [data-browser-chrome-click-feedback],
+.browser-chrome-status [data-browser-chrome-form-feedback] {{ max-width: min(28vw, 260px); }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
@@ -13859,12 +13860,14 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         browser_session_chrome_image_state(payload, action_urls.load_images.is_some());
     let has_image_state = image_state.is_some();
     let history_position = payload.current_history_index.map_or(0, |index| index + 1);
+    let form_state = browser_session_chrome_form_state(payload);
     let _ = write!(
         status,
-        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span><span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
+        r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}">{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span>{form_state}<span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}">{raster}</span>"#,
         id = html_escape::encode_text(&payload.id),
         history_position = history_position,
         history_len = payload.history_len,
+        form_state = form_state,
         width = payload.width,
         height = payload.height,
         x = payload.viewport_x,
@@ -13922,7 +13925,39 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
     }
+    if let Some(feedback) = browser_session_form_feedback_text(payload) {
+        let _ = write!(
+            status,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-form-feedback title="{feedback_attr}">{feedback}</span>"#,
+            feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
+            feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
+        );
+    }
     status
+}
+
+fn browser_session_chrome_form_state(payload: &BrowserSessionPayload) -> String {
+    if let Some(focused) = payload.focused.as_ref() {
+        let name = if focused.name.trim().is_empty() {
+            focused.kind.as_str()
+        } else {
+            focused.name.as_str()
+        };
+        return format!(
+            r#"<span class="viewport-state-chip" data-browser-chrome-form-state data-browser-focused-form="{form}" data-browser-focused-control="{control}" title="focused {kind} {name}">focused {name}</span>"#,
+            form = focused.form_index,
+            control = focused.control_index,
+            kind = html_escape::encode_double_quoted_attribute(&focused.kind),
+            name = html_escape::encode_text(&browser_session_feedback_excerpt(name)),
+        );
+    }
+    if payload.form_count > 0 {
+        return format!(
+            r#"<span class="viewport-state-chip" data-browser-chrome-form-state data-browser-form-count="{count}" title="{count} form controls available">forms {count}</span>"#,
+            count = payload.form_count,
+        );
+    }
+    String::new()
 }
 
 fn render_browser_session_chrome_image_action(payload: &BrowserSessionPayload) -> String {
@@ -13939,6 +13974,26 @@ fn browser_session_chrome_feedback_text(payload: &BrowserSessionPayload) -> Opti
     browser_session_action_feedback_text(payload).filter(|feedback| {
         browser_session_scroll_feedback_text(payload) != Some(*feedback)
             && browser_session_click_feedback_text(payload) != Some(*feedback)
+            && browser_session_form_feedback_text(payload) != Some(*feedback)
+    })
+}
+
+fn browser_session_form_feedback_text(payload: &BrowserSessionPayload) -> Option<&str> {
+    browser_session_action_feedback_text(payload).filter(|feedback| {
+        feedback.starts_with("Set form ")
+            || feedback.starts_with("Selected ")
+            || feedback.starts_with("Toggled form ")
+            || feedback.starts_with("Activated form ")
+            || feedback.starts_with("Submitted form ")
+            || feedback.starts_with("Focused form ")
+            || feedback.starts_with("Focused next control")
+            || feedback.starts_with("Focused previous control")
+            || feedback.starts_with("Typed ")
+            || feedback.starts_with("Deleted ")
+            || feedback.starts_with("Cleared focused input")
+            || feedback.starts_with("Submitted focused form")
+            || feedback.starts_with("Toggled focused form ")
+            || feedback.starts_with("Chose ")
     })
 }
 

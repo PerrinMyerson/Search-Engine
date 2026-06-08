@@ -10738,7 +10738,15 @@ async fn browser_session_registry_activates_form_action_controls() {
             ("max_bytes".to_owned(), "12345".to_owned()),
         ],
     };
-    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+    let html = render_browser_session_page(&payload, &back_href);
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-form-state data-browser-form-count="1" title="1 form controls available">forms 1</span>"#
+    ));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-form-feedback"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-status"#));
     assert_eq!(payload.forms[0].controls[2].kind, "reset");
     assert_eq!(payload.forms[0].controls[3].kind, "submit");
     assert!(
@@ -10773,12 +10781,43 @@ async fn browser_session_registry_activates_form_action_controls() {
         .activate_url
         .as_deref()
         .unwrap();
+    assert!(activate_submit_href.contains(&format!("id={}", payload.id)));
     assert!(activate_submit_href.contains("from=%2Fsearch%3Fq%3Dform-actions"));
+    assert!(activate_submit_href.contains("source="));
     assert!(activate_submit_href.contains("width=77"));
     assert!(activate_submit_href.contains(&format!("height={}", payload.height)));
     assert!(activate_submit_href.contains("viewport_x=0"));
     assert!(activate_submit_href.contains("viewport_y=0"));
     assert!(activate_submit_href.contains(&format!("max_bytes={}", payload.max_bytes)));
+    let focus = RequestTarget {
+        path: "/browser".to_owned(),
+        params: form_urlencoded::parse(
+            payload.forms[0].controls[0]
+                .focus_url
+                .as_deref()
+                .unwrap()
+                .trim_start_matches("/browser?")
+                .as_bytes(),
+        )
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect(),
+    };
+    let (payload, back_href) = registry.apply_target(&focus).await.unwrap();
+    assert_eq!(payload.focused.as_ref().unwrap().name, "q");
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Focused form 0 control 0.")
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-form-state data-browser-focused-form="0" data-browser-focused-control="0" title="focused text q">focused q</span>"#
+    ));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-form-feedback title="Focused form 0 control 0.">Focused form 0 control 0.</span>"#
+    ));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -10795,6 +10834,13 @@ async fn browser_session_registry_activates_form_action_controls() {
         payload.action_feedback.as_deref(),
         Some("Set form 0 field q.")
     );
+    let html = render_browser_session_page(&payload, "");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-form-feedback title="Set form 0 field q.">Set form 0 field q.</span>"#
+    ));
+    assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     let toggle = RequestTarget {
         path: "/browser".to_owned(),
         params: form_urlencoded::parse(
@@ -10837,6 +10883,12 @@ async fn browser_session_registry_activates_form_action_controls() {
         payload.action_feedback.as_deref(),
         Some("Activated form 0 control 2; no navigation; viewport preserved")
     );
+    let html = render_browser_session_page(&payload, "");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-form-feedback title="Activated form 0 control 2; no navigation; viewport preserved">Activated form 0 control 2; no navigation; viewport preserved</span>"#
+    ));
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -10925,6 +10977,11 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert!(action_feedback.starts_with("Activated form 0 control 3; opened local page: "));
     assert!(action_feedback.contains("result.html"));
     assert!(action_feedback.ends_with("; viewport settled at x 0, y 0"));
+    let html = render_browser_session_page(&payload, "");
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-feedback"#));
+    assert!(topbar_html.contains("Activated form 0 control 3; opened local page: "));
 }
 
 #[tokio::test]
