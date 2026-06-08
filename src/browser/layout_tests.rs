@@ -10036,6 +10036,130 @@ fn css_background_image_set_selects_supported_layer_fallback() {
             ))
     );
 }
+#[test]
+fn stylesheet_media_class_background_image_paints_visible_raster_and_hit_box() {
+    let background_url = "mem://stylesheet-class-background".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![30, 150, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: background_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let html = format!(
+        r#"
+            <html><head><style>
+              @media screen {{
+                .hero-card {{
+                  width: 16px;
+                  height: 16px;
+                  background-image: url({background_url});
+                  background-size: contain;
+                  background-position: right top;
+                  background-repeat: no-repeat;
+                }}
+              }}
+            </style></head><body>
+              <section class="hero-card">Hero Copy</section>
+              <p>After card</p>
+            </body></html>
+            "#
+    );
+    let render = render_html_prepared_with_inputs(
+        "mem://stylesheet-class-background-page",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 8,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render stylesheet media class background fixture");
+
+    let background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::BackgroundImage {
+                x,
+                y,
+                width,
+                height,
+                url,
+                decoded_width,
+                decoded_height,
+                size,
+                position,
+                repeat,
+                ..
+            } => Some((
+                (*x, *y, *width, *height),
+                url.as_deref(),
+                (*decoded_width, *decoded_height),
+                *size,
+                *position,
+                *repeat,
+            )),
+            _ => None,
+        })
+        .expect("stylesheet class background should create a BackgroundImage command");
+    assert_eq!(background.0, (0, 1, 2, 2));
+    assert_eq!(background.1, Some(background_url.as_str()));
+    assert_eq!(background.2, (Some(1), Some(1)));
+    assert_eq!(background.3, BackgroundImageSize::Contain);
+    assert_eq!(
+        background.4,
+        BackgroundImagePosition {
+            x_percent: 100,
+            y_percent: 0,
+        }
+    );
+    assert_eq!(background.5, BackgroundImageRepeat::NoRepeat);
+    assert!(
+        hit_test_target_node(&render, 0, 1).is_some(),
+        "class background image should keep the section hit box visible"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(4),
+        viewport_height: Some(3),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize stylesheet class background viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let sample_y = raster_options
+        .padding_y
+        .saturating_add(background.0.1.saturating_mul(raster_options.cell_height));
+    assert_eq!(
+        pixel(raster_options.padding_x, sample_y),
+        [30, 150, 220, 255],
+        "stylesheet class background should paint decoded RGB pixels in the viewport"
+    );
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.visible_command_count, 3);
+}
 
 #[test]
 fn decoded_image_and_background_downscale_with_area_samples() {
