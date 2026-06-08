@@ -9427,6 +9427,151 @@ fn viewport_hit_testing_blocks_scrolled_link_under_topmost_fixed_background() {
 }
 
 #[test]
+fn viewport_exact_text_hit_precedes_nearby_rows_after_repeated_scroll() {
+    let render = BrowserRender {
+        source: "mem://exact-text-scroll-hit".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 3,
+                target_node: Some(31),
+            }]),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 3,
+                target_node: Some(42),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 4,
+                y: 4,
+                width: 3,
+                height: 2,
+                shade: 236,
+                red: 232,
+                green: 240,
+                blue: 248,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 4,
+                text: "Top".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 5,
+                text: "Low".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 9,
+                text: "Footer keeps the viewport scrollable".to_owned(),
+            },
+        ],
+        text: "Top\nLow\nFooter keeps the viewport scrollable".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 10,
+        height: 2,
+    };
+    let first = browser_document_viewport_after_scroll(&render, start, 0, 1);
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(first.viewport.y, 4);
+    assert_eq!(second.viewport.y, 5);
+    assert_eq!(first.scroll_delta_y, 1);
+    assert_eq!(second.scroll_delta_y, 1);
+    assert!(second.max_scroll_y >= second.viewport.y);
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 0),
+        Some(31),
+        "exact viewport text hit should win over a nearby later row after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 1),
+        Some(42),
+        "the adjacent lower row should remain exactly hittable in the same slice"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        Some(42),
+        "repeated scroll should keep the lower row click target aligned"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(first.viewport.width),
+        viewport_height: Some(first.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, first.viewport, Some(start), options)
+        .expect("render exact text hit scroll frame");
+    assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(4));
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(5usize.saturating_mul(options.cell_width)),
+            options.padding_y
+        ),
+        &[232, 240, 248, 255],
+        "scrolled raster should retain the background beside the exact text row"
+    );
+    let row_has_ink = |cell_y: usize| {
+        let start_y = options
+            .padding_y
+            .saturating_add(cell_y.saturating_mul(options.cell_height));
+        let end_y = start_y
+            .saturating_add(options.cell_height)
+            .min(frame.raster.height);
+        (start_y..end_y).any(|y| {
+            (options.padding_x.saturating_add(options.cell_width)
+                ..options
+                    .padding_x
+                    .saturating_add(4usize.saturating_mul(options.cell_width))
+                    .min(frame.raster.width))
+                .any(|x| pixel(x, y) == &[0, 0, 0, 255])
+        })
+    };
+    assert!(
+        row_has_ink(0),
+        "top link row should paint in the first slice"
+    );
+    assert!(
+        row_has_ink(1),
+        "lower link row should paint in the first slice"
+    );
+}
+
+#[test]
 fn viewport_nearby_hit_testing_prefers_pinned_link_box_after_scroll() {
     let render = BrowserRender {
         source: "mem://nearby-fixed-hit-scroll".to_owned(),

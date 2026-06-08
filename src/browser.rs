@@ -4088,7 +4088,10 @@ fn hit_test_target_node_in_viewport(
     {
         return target_node;
     }
-    hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
+    hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
+        .or_else(|| {
+            hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
+        })
         .or_else(|| hit_test_nearby_text_target_node_for_viewport(render, viewport, page_x, page_y))
         .or_else(|| {
             hit_test_nearby_normal_visual_target_node_for_viewport(render, viewport, page_x, page_y)
