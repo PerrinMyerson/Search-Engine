@@ -10582,6 +10582,190 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
         "scrolled color raster should show the undecoded background placeholder body"
     );
 }
+#[test]
+fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
+    let image_url = "mem://rerender-dirty-image".to_owned();
+    let background_url = "mem://rerender-dirty-background".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![40, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://media-rerender-dirty".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: image_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded.clone(),
+            },
+            DecodedImageEntry {
+                url: background_url.clone(),
+                width: decoded.width,
+                height: decoded.height,
+                pixel_hash: decoded.pixel_hash(),
+                image: decoded,
+            },
+        ],
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(71)),
+            DisplayHitTarget::node(Some(72)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 2,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 4,
+                y: 2,
+                width: 2,
+                height: 2,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 0,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body after media".to_owned(),
+            },
+        ],
+        text: "Intro\nBody after media".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 2,
+        width: 8,
+        height: 3,
+    };
+    let report = browser_document_viewport(&render, viewport, Some(viewport));
+    assert_eq!(report.scroll_delta_x, 0);
+    assert_eq!(report.scroll_delta_y, 0);
+    assert!(!report.full_repaint);
+    assert_eq!(
+        report.invalidated_regions,
+        vec![
+            BrowserViewportRect {
+                x: 1,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            BrowserViewportRect {
+                x: 4,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        ],
+        "same-viewport media rerender should dirty visible image/background cells"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport, 1, 0),
+        Some(71),
+        "image hit target should stay aligned with the dirty media slice"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport, 4, 0),
+        Some(72),
+        "background image hit target should stay aligned with the dirty media slice"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(99),
+        viewport_width: Some(viewport.width),
+        viewport_height: Some(viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frame = browser_viewport_frame(&render, viewport, Some(viewport), options)
+        .expect("render same-viewport media rerender frame");
+    assert_eq!(frame.report.frame.raster_viewport_y, Some(viewport.y));
+    assert_eq!(
+        frame
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .map(|region| (
+                region.viewport_x,
+                region.viewport_y,
+                region.viewport_width,
+                region.viewport_height,
+            ))
+            .collect::<Vec<_>>(),
+        vec![(1, 0, 2, 2), (4, 0, 2, 2)]
+    );
+
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width)
+                .saturating_add(2),
+            options.padding_y.saturating_add(2),
+        ),
+        [40, 120, 220, 255],
+        "image-loaded same-viewport rerender should expose updated decoded pixels"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(4))
+                .saturating_add(2),
+            options.padding_y.saturating_add(2),
+        ),
+        [40, 120, 220, 255],
+        "background-loaded same-viewport rerender should expose updated decoded pixels"
+    );
+}
 
 #[test]
 fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {

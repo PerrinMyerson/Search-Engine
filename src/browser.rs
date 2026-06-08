@@ -5244,16 +5244,21 @@ pub fn browser_document_viewport(
         layout_box_visibility(render, viewport);
     let (mut invalidated_regions, full_repaint) =
         browser_viewport_invalidated_regions(previous, viewport_state);
-    if !full_repaint
-        && let Some(previous_state) = previous
-        && (previous_state.x != viewport_state.x || previous_state.y != viewport_state.y)
-    {
-        append_viewport_positioned_invalidated_regions(
-            render,
-            previous_state,
-            viewport_state,
-            &mut invalidated_regions,
-        );
+    if !full_repaint && let Some(previous_state) = previous {
+        if previous_state.x != viewport_state.x || previous_state.y != viewport_state.y {
+            append_viewport_positioned_invalidated_regions(
+                render,
+                previous_state,
+                viewport_state,
+                &mut invalidated_regions,
+            );
+        } else {
+            append_viewport_media_invalidated_regions(
+                render,
+                viewport_state,
+                &mut invalidated_regions,
+            );
+        }
     }
     let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
     let invalidated_area = invalidated_regions
@@ -5477,6 +5482,33 @@ fn browser_viewport_invalidated_regions(
     }
 
     (regions, false)
+}
+
+fn append_viewport_media_invalidated_regions(
+    render: &BrowserRender,
+    current: BrowserViewportState,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let viewport = raster_viewport_from_state(current);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !matches!(
+            command,
+            DisplayCommand::Image { .. } | DisplayCommand::BackgroundImage { .. }
+        ) {
+            continue;
+        }
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        append_display_command_viewport_dirty_region(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+            0,
+            0,
+            regions,
+        );
+    }
 }
 
 fn append_viewport_positioned_invalidated_regions(
