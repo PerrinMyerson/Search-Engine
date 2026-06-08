@@ -9691,6 +9691,142 @@ fn viewport_fixed_text_whitespace_does_not_block_scrolled_link_hit() {
 }
 
 #[test]
+fn viewport_normal_flow_overlay_blocks_link_only_while_visible_after_adjacent_scroll() {
+    let render = BrowserRender {
+        source: "mem://normal-overlay-scroll-hit".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "OpenLink".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 10,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 4,
+                text: "OpenLink".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 4,
+                height: 1,
+                shade: 192,
+                red: 220,
+                green: 64,
+                blue: 64,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body row after overlay".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer keeps scrolling available".to_owned(),
+            },
+        ],
+        text: "OpenLink\nBody row after overlay\nFooter keeps scrolling available".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 4,
+            width: 10,
+            height: 3,
+        },
+        None,
+    );
+    assert_eq!(first.viewport.y, 4);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 2, 0),
+        None,
+        "later normal-flow overlay should block linked text under its painted cells"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 6, 0),
+        Some(77),
+        "uncovered linked text should remain exactly hittable in the same viewport slice"
+    );
+
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 5);
+    assert_eq!(second.scroll_delta_y, 1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 6, 0),
+        None,
+        "the linked row should stop resolving once it has scrolled out of the viewport"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(first.viewport.y),
+        viewport_width: Some(first.viewport.width),
+        viewport_height: Some(first.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize normal overlay slice");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        &[220, 64, 64, 255],
+        "raster should show the later normal-flow overlay at the blocked hit cell"
+    );
+    let link_cell_start = options
+        .padding_x
+        .saturating_add(6usize.saturating_mul(options.cell_width));
+    let link_cell_end = link_cell_start
+        .saturating_add(options.cell_width)
+        .min(rgba.width);
+    let link_row_end = options
+        .padding_y
+        .saturating_add(options.cell_height)
+        .min(rgba.height);
+    let uncovered_link_has_ink = (options.padding_y..link_row_end)
+        .any(|y| (link_cell_start..link_cell_end).any(|x| pixel(x, y) == &[0, 0, 0, 255]));
+    assert!(
+        uncovered_link_has_ink,
+        "raster should retain visible linked text outside the overlay"
+    );
+}
+
+#[test]
 fn viewport_exact_text_hit_precedes_nearby_rows_after_repeated_scroll() {
     let render = BrowserRender {
         source: "mem://exact-text-scroll-hit".to_owned(),

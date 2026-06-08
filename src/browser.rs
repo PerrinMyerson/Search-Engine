@@ -4089,15 +4089,16 @@ fn hit_test_target_node_in_viewport(
         return target_node;
     }
     if let Some(target_node) =
-        hit_test_topmost_text_layer_for_viewport(render, viewport, page_x, page_y)
+        hit_test_topmost_pinned_text_layer_for_viewport(render, viewport, page_x, page_y)
+    {
+        return target_node;
+    }
+    if let Some(target_node) =
+        hit_test_topmost_normal_layer_for_viewport(render, viewport, page_x, page_y)
     {
         return target_node;
     }
     hit_test_text_target_node_for_viewport(render, viewport, page_x, page_y)
-        .or_else(|| {
-            hit_test_topmost_normal_visual_layer_for_viewport(render, viewport, page_x, page_y)
-                .flatten()
-        })
         .or_else(|| {
             hit_test_nearby_pinned_visual_target_node_for_viewport(render, viewport, page_x, page_y)
         })
@@ -4204,7 +4205,7 @@ fn hit_test_text_target_node_by_text_row(
         })
 }
 
-fn hit_test_topmost_text_layer_for_viewport(
+fn hit_test_topmost_pinned_text_layer_for_viewport(
     render: &BrowserRender,
     viewport: RasterViewport,
     x: usize,
@@ -4216,6 +4217,11 @@ fn hit_test_topmost_text_layer_for_viewport(
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if !display_command_viewport_fixed(render, command_index)
+                && display_command_viewport_sticky_top(render, command_index).is_none()
+            {
+                return None;
+            }
             if !matches!(
                 command,
                 DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
@@ -4248,6 +4254,61 @@ fn text_command_column_has_visible_ink(command: &DisplayCommand, column: usize) 
         .map(readable_display_text)
         .and_then(|text| text.chars().nth(column))
         .is_some_and(|ch| !ch.is_whitespace())
+}
+
+fn hit_test_topmost_normal_layer_for_viewport(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    x: usize,
+    y: usize,
+) -> Option<Option<usize>> {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(command_index, command)| {
+            if display_command_viewport_fixed(render, command_index)
+                || display_command_viewport_sticky_top(render, command_index).is_some()
+            {
+                return None;
+            }
+            if matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                let bounds = display_command_bounds_for_viewport(command, viewport, false, None);
+                let visible_bounds = intersect_display_bounds_with_viewport(bounds, viewport)?;
+                if !visible_bounds.contains(x, y) {
+                    return None;
+                }
+                let column = x.saturating_sub(bounds.x);
+                let target_node = render
+                    .hit_targets
+                    .get(command_index)
+                    .and_then(|target| target.target_at_column(column));
+                if target_node.is_some() || text_command_column_has_visible_ink(command, column) {
+                    return Some(target_node);
+                }
+                return None;
+            }
+
+            let bounds = display_command_exact_hit_bounds_for_viewport(
+                render,
+                command_index,
+                command,
+                viewport,
+            )?;
+            if !bounds.contains(x, y) {
+                return None;
+            }
+            Some(
+                render
+                    .hit_targets
+                    .get(command_index)
+                    .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
+            )
+        })
 }
 
 fn hit_test_text_target_node_for_viewport(
