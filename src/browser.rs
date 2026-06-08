@@ -13182,7 +13182,15 @@ fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
             break;
         }
         if bytes[index] == b'@' {
-            index = skip_css_at_rule(css, index);
+            if let Some(open_brace) = find_css_rule_open_brace(css, index)
+                && css_at_rule_allows_nested_style_rules(&css[index..open_brace])
+                && let Some(close_brace) = find_matching_css_brace(css, open_brace)
+            {
+                blocks.extend(top_level_css_rule_blocks(&css[open_brace + 1..close_brace]));
+                index = close_brace + 1;
+            } else {
+                index = skip_css_at_rule(css, index);
+            }
             continue;
         }
         let selector_start = index;
@@ -13199,6 +13207,17 @@ fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
         index = close_brace + 1;
     }
     blocks
+}
+
+fn css_at_rule_allows_nested_style_rules(rule_header: &str) -> bool {
+    let name = rule_header
+        .trim_start()
+        .trim_start_matches('@')
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "media" | "supports" | "container" | "layer")
 }
 
 fn skip_css_whitespace(bytes: &[u8], mut index: usize) -> usize {
