@@ -11986,6 +11986,159 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
 }
 
 #[test]
+fn clamped_bottom_raster_slice_keeps_media_text_and_hits_aligned() {
+    let image_url = "mem://clamped-bottom-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![90],
+        rgb_pixels: Some(vec![40, 120, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://clamped-bottom-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Details".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 4,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 5,
+                text: "Details".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Intro\nDetails\nFooter".to_owned(),
+    };
+
+    let near_bottom = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 8,
+        height: 3,
+    };
+    let bottom = browser_document_viewport_after_scroll(&render, near_bottom, 0, 99);
+    assert_eq!(bottom.viewport.y, 4);
+    assert_eq!(bottom.max_scroll_y, 4);
+    assert_eq!(bottom.scroll_delta_y, 1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, bottom.viewport, 1, 0),
+        Some(41),
+        "clamped bottom image should remain hittable in the visible slice"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, bottom.viewport, 2, 1),
+        Some(77),
+        "clamped bottom linked text should remain hittable at its visible row"
+    );
+
+    let clamped_again = browser_document_viewport_after_scroll(&render, bottom.viewport, 0, 1);
+    assert_eq!(clamped_again.viewport.y, bottom.viewport.y);
+    assert_eq!(clamped_again.scroll_delta_y, 0);
+    assert!(!clamped_again.full_repaint);
+    assert_eq!(
+        clamped_again.invalidated_regions,
+        vec![BrowserViewportRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        }],
+        "same-viewport bottom clamp should only dirty visible media cells"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(99),
+        viewport_width: Some(bottom.viewport.width),
+        viewport_height: Some(bottom.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, raster_options).expect("rasterize clamped bottom slice");
+    let report = rgba_raster_report(&render, &rgba, raster_options);
+    assert_eq!(report.raster_viewport_y, Some(bottom.viewport.y));
+    assert_eq!(report.raster_viewport_height, Some(bottom.viewport.height));
+    assert_eq!(report.visible_command_count, bottom.visible_command_count);
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    assert_eq!(
+        pixel(raster_options.padding_x, raster_options.padding_y),
+        &[40, 120, 220, 255],
+        "clamped raster should show the decoded image at the bottom slice top"
+    );
+    let link_cell_start = raster_options
+        .padding_x
+        .saturating_add(2usize.saturating_mul(raster_options.cell_width));
+    let link_cell_end = link_cell_start
+        .saturating_add(raster_options.cell_width)
+        .min(rgba.width);
+    let link_row_start = raster_options
+        .padding_y
+        .saturating_add(raster_options.cell_height);
+    let link_row_end = link_row_start
+        .saturating_add(raster_options.cell_height)
+        .min(rgba.height);
+    let link_has_ink = (link_row_start..link_row_end)
+        .any(|y| (link_cell_start..link_cell_end).any(|x| pixel(x, y) == &[0, 0, 0, 255]));
+    assert!(
+        link_has_ink,
+        "clamped raster should keep linked text ink aligned with hit geometry"
+    );
+}
+
+#[test]
 fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://flow-only-scroll-height",

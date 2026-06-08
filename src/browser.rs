@@ -5222,13 +5222,21 @@ fn effective_raster_viewport(
         .viewport_height
         .unwrap_or_else(|| full_height.saturating_sub(requested_y).max(1))
         .max(1);
-    let x = requested_x.min(full_width.saturating_sub(width));
-    let y = requested_y.min(full_height.saturating_sub(height));
+    let viewport = clamp_browser_viewport_state(
+        full_width,
+        full_height,
+        normalize_browser_viewport_state(BrowserViewportState {
+            x: requested_x,
+            y: requested_y,
+            width,
+            height,
+        }),
+    );
     RasterViewport {
-        x,
-        y,
-        width,
-        height,
+        x: viewport.x,
+        y: viewport.y,
+        width: viewport.width,
+        height: viewport.height,
         active,
     }
 }
