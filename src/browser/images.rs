@@ -5387,11 +5387,17 @@ pub(super) fn lazy_width_template_render_source(
             "data-img-src",
             "data-imgsrc",
             "data-product-image",
+            "data-product-image-url",
             "data-product-src",
             "data-productsrc",
             "data-gallery-image",
+            "data-gallery-image-url",
             "data-gallery-src",
             "data-gallerysrc",
+            "data-zoom-image",
+            "data-zoom-image-url",
+            "data-zoom-src",
+            "data-zoomsrc",
         ],
     )?;
     if !template.contains("{width}") {
