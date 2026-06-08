@@ -6281,6 +6281,125 @@ async fn image_bmp_mime_decodes_visible_rgb_candidate() {
 }
 
 #[tokio::test]
+async fn image_background_bmp_resource_attaches_visible_rgb_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.bmp");
+    fs::write(&hero, tiny_test_bmp_rgb()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before BMP background</p>
+            <section data-bg-src="hero.bmp">BMP background hero</section>
+            <p>After BMP background</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let hero_url = hero.display().to_string();
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "background_image");
+    assert_eq!(resource_fetch.resource.initiator, "section");
+    assert_eq!(resource_fetch.resource.url, "hero.bmp");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/bmp"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(resource_fetch.diagnostic.as_deref(), Some("image_decoded"));
+    assert!(resource_fetch.decoded_hash.is_some());
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "background_image");
+    assert_eq!(fetch.resource.initiator, "section");
+    assert_eq!(fetch.resource.url, "hero.bmp");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/bmp"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before BMP background"));
+    assert!(render.text.contains("After BMP background"));
+    let rendered = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_resource_bundle_decodes_replaced_media_image_resources() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
