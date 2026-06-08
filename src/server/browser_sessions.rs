@@ -10222,7 +10222,15 @@ fn render_browser_session_page_with_diagnostics(
     chrome_tab_actions.push_str("</div>");
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(back_href),
+        source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
         current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
         chrome_image_action = chrome_image_action,
