@@ -8035,7 +8035,6 @@ fn draw_decoded_image_region_rgba(
         || full_height == 0
         || decoded.width == 0
         || decoded.height == 0
-        || !decoded_image_has_rgb(decoded)
     {
         return;
     }
@@ -8053,21 +8052,19 @@ fn draw_decoded_image_region_rgba(
                 decoded.width,
                 full_width,
             );
-            let Some(rgb) = averaged_decoded_image_rgb_sample(
+            let rgba = averaged_decoded_image_rgba_sample(
                 decoded,
                 source_x_start,
                 source_x_end,
                 source_y_start,
                 source_y_end,
-            ) else {
-                continue;
-            };
+            );
             set_rgba_pixel(
                 pixels,
                 raster_width,
                 x.saturating_add(column),
                 y.saturating_add(row),
-                [rgb[0], rgb[1], rgb[2], 255],
+                rgba,
             );
         }
     }
@@ -8151,7 +8148,6 @@ fn draw_background_image_region_rgba(
         || container_height == 0
         || decoded.width == 0
         || decoded.height == 0
-        || !decoded_image_has_rgb(decoded)
     {
         return;
     }
@@ -8188,21 +8184,19 @@ fn draw_background_image_region_rgba(
                 decoded.width,
                 tile_width,
             );
-            let Some(rgb) = averaged_decoded_image_rgb_sample(
+            let rgba = averaged_decoded_image_rgba_sample(
                 decoded,
                 source_x_start,
                 source_x_end,
                 source_y_start,
                 source_y_end,
-            ) else {
-                continue;
-            };
+            );
             set_rgba_pixel(
                 pixels,
                 raster_width,
                 x.saturating_add(column),
                 y.saturating_add(row),
-                [rgb[0], rgb[1], rgb[2], 255],
+                rgba,
             );
         }
     }
@@ -8293,6 +8287,21 @@ fn decoded_image_has_rgb(decoded: &DecodedImage) -> bool {
                 .saturating_mul(decoded.height)
                 .saturating_mul(3)
     })
+}
+
+fn averaged_decoded_image_rgba_sample(
+    decoded: &DecodedImage,
+    start_x: usize,
+    end_x: usize,
+    start_y: usize,
+    end_y: usize,
+) -> [u8; 4] {
+    if let Some(rgb) = averaged_decoded_image_rgb_sample(decoded, start_x, end_x, start_y, end_y) {
+        [rgb[0], rgb[1], rgb[2], 255]
+    } else {
+        let shade = averaged_decoded_image_sample(decoded, start_x, end_x, start_y, end_y);
+        [shade, shade, shade, 255]
+    }
 }
 
 fn scaled_sample_range(
