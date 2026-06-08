@@ -1081,6 +1081,23 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
         return Vec::new();
     }
 
+    let frontier_failed_projected_removed = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let snapshot_cleanup_useful = stats.crawl_snapshot_duplicate_entries > 0;
+    let frontier_cleanup_useful = frontier_failed_projected_removed > 0;
+    let cleanup_next_action = if snapshot_cleanup_useful && frontier_cleanup_useful {
+        "inspect-crawl-snapshot-and-frontier-dry-runs"
+    } else if snapshot_cleanup_useful {
+        "inspect-crawl-snapshot-compaction"
+    } else if frontier_cleanup_useful {
+        "inspect-frontier-compaction"
+    } else {
+        "cleanup-pointless"
+    };
+
     let mut lines = vec![
         format!(
             "crawl_storage_pressure_summary: retained_bytes={} frontier_bytes={} snapshot_bytes={} snapshot_entries={}",
@@ -1149,7 +1166,7 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             DEFAULT_MAX_FAILED_FRONTIER_RECORDS
         ));
         let projected_failed_after = frontier.failed.min(DEFAULT_MAX_FAILED_FRONTIER_RECORDS);
-        let projected_failed_removed = frontier.failed.saturating_sub(projected_failed_after);
+        let projected_failed_removed = frontier_failed_projected_removed;
         lines.push(format!(
             "crawl_storage_frontier_failed_projected_after: {}",
             projected_failed_after
@@ -1183,6 +1200,14 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             "crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned(),
         );
     }
+    lines.push(format!(
+        "storage_crawl_cleanup_next_action: report_only=true action={cleanup_next_action} snapshot_cleanup_useful={snapshot_cleanup_useful} frontier_cleanup_useful={frontier_cleanup_useful} snapshot_duplicate_rows={} frontier_failed_removable_records={frontier_failed_projected_removed}",
+        stats.crawl_snapshot_duplicate_entries
+    ));
+    lines.push(
+        "storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .brutal-index"
+            .to_owned(),
+    );
     lines
 }
 
@@ -3159,6 +3184,72 @@ mod tests {
         assert!(!lines.iter().any(|line| {
             line == "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
         }));
+    }
+
+    #[test]
+    fn crawl_storage_cleanup_next_action_reports_snapshot_and_frontier_pressure() {
+        let mut stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 3,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+
+        let both_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(both_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-crawl-snapshot-and-frontier-dry-runs snapshot_cleanup_useful=true frontier_cleanup_useful=true snapshot_duplicate_rows=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(both_lines.contains(&"storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .brutal-index".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+        });
+        let snapshot_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(snapshot_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-crawl-snapshot-compaction snapshot_cleanup_useful=true frontier_cleanup_useful=false snapshot_duplicate_rows=1 frontier_failed_removable_records=0".to_owned()));
+
+        stats.crawl_snapshot_duplicate_entries = 0;
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+        });
+        let frontier_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(frontier_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-frontier-compaction snapshot_cleanup_useful=false frontier_cleanup_useful=true snapshot_duplicate_rows=0 frontier_failed_removable_records=2".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+        });
+        let zero_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(zero_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=cleanup-pointless snapshot_cleanup_useful=false frontier_cleanup_useful=false snapshot_duplicate_rows=0 frontier_failed_removable_records=0".to_owned()));
     }
 
     #[test]
