@@ -5252,6 +5252,11 @@ pub fn browser_document_viewport(
                 viewport_state,
                 &mut invalidated_regions,
             );
+            append_viewport_media_invalidated_regions(
+                render,
+                viewport_state,
+                &mut invalidated_regions,
+            );
         } else {
             append_viewport_media_invalidated_regions(
                 render,

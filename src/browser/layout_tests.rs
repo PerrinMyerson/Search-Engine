@@ -10633,12 +10633,27 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
     assert_eq!(second.scroll_delta_y, 1);
     assert_eq!(
         second.invalidated_regions,
-        vec![BrowserViewportRect {
-            x: 0,
-            y: 1,
-            width: 6,
-            height: 1,
-        }]
+        vec![
+            BrowserViewportRect {
+                x: 0,
+                y: 1,
+                width: 6,
+                height: 1,
+            },
+            BrowserViewportRect {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+            BrowserViewportRect {
+                x: 3,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+        ],
+        "adjacent scroll should dirty the new scroll band and still-visible media slices"
     );
 
     assert_eq!(
@@ -10674,7 +10689,8 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
                 region.viewport_height,
             ))
             .collect::<Vec<_>>(),
-        vec![(0, 1, 6, 1)]
+        vec![(0, 1, 6, 1), (0, 0, 2, 1), (3, 0, 2, 1)],
+        "frame dirty regions should preserve media cells that remain visible across the scroll"
     );
 
     let pixel = |x: usize, y: usize| -> [u8; 4] {
