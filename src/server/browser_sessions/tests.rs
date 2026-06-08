@@ -2347,6 +2347,22 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(r#"data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-chrome-status"#));
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(&format!(r#"data-browser-action-session="{}""#, payload.id)));
+    assert!(topbar_html.contains(r#"data-browser-action-from="/search?q=wide""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-action-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(r#"data-browser-action-viewport-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-action-viewport-y="0""#));
+    assert!(topbar_html.contains(r#"data-browser-action-width="40""#));
+    assert!(topbar_html.contains(r#"data-browser-action-height="16""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-action-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(
         html.contains(
             r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
@@ -2354,8 +2370,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
     assert!(html.contains(">Bottom</a>"));
-    let topbar_html =
-        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     let controls_html = &html[controls_tray_index..debug_index];
@@ -2516,6 +2530,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
 
     let html = render_browser_session_page(&payload, &back_href);
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
@@ -2531,6 +2547,23 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(">Page down</a>"));
     assert!(html.contains(">Left</a>"));
     assert!(html.contains(">Right</a>"));
+    assert!(topbar_html.contains(&format!(r#"data-browser-action-session="{}""#, payload.id)));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-action-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-action-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(r#"data-browser-action-viewport-x="8""#));
+    assert!(topbar_html.contains(r#"data-browser-action-viewport-y="4""#));
+    assert!(topbar_html.contains(r#"data-browser-action-width="40""#));
+    assert!(topbar_html.contains(r#"data-browser-action-height="16""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-action-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains(&format!(
