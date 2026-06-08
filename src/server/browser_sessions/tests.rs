@@ -2703,6 +2703,26 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
     ));
     assert_chrome_status_flags(topbar_html, false, true, false, false, false);
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-status-viewport-x=\"8\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-viewport-y=\"4\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-width=\"40\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-height=\"16\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(html.contains(">Top</a>"));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
@@ -9372,6 +9392,26 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert_chrome_status_flags(topbar_html, false, false, true, false, false);
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-status-viewport-x=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-viewport-y=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-width=\"48\""));
+    assert!(topbar_html.contains("data-browser-chrome-status-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
