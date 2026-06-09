@@ -432,6 +432,20 @@ pub struct BrowserVisibleLayoutBox {
     pub visible_height: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserVisibleDisplayCommand {
+    pub command_index: usize,
+    pub kind: String,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub visible_x: usize,
+    pub visible_y: usize,
+    pub visible_width: usize,
+    pub visible_height: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserViewportState {
     pub x: usize,
@@ -465,6 +479,8 @@ pub struct BrowserDocumentViewportReport {
     pub display_command_count: usize,
     pub visible_command_count: usize,
     pub culled_command_count: usize,
+    #[serde(default)]
+    pub visible_commands: Vec<BrowserVisibleDisplayCommand>,
     pub layout_box_count: usize,
     pub visible_layout_box_count: usize,
     pub culled_layout_box_count: usize,
@@ -5329,23 +5345,53 @@ fn display_command_bounds_for_viewport(
 }
 
 fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) -> (usize, usize) {
-    let visible = render
+    let visible = visible_display_commands(render, viewport).len();
+    (visible, render.display_list.len().saturating_sub(visible))
+}
+
+fn visible_display_commands(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> Vec<BrowserVisibleDisplayCommand> {
+    render
         .display_list
         .iter()
         .enumerate()
-        .filter(|(command_index, command)| {
-            let viewport_fixed = display_command_viewport_fixed(render, *command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, *command_index);
+        .filter_map(|(command_index, command)| {
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
             let command_bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
                 viewport_fixed,
                 viewport_sticky_top,
             );
-            intersect_display_bounds_with_viewport(command_bounds, viewport).is_some()
+            let visible_bounds = intersect_display_bounds_with_viewport(command_bounds, viewport)?;
+            Some(BrowserVisibleDisplayCommand {
+                command_index,
+                kind: display_command_kind(command).to_owned(),
+                x: command_bounds.x,
+                y: command_bounds.y,
+                width: command_bounds.width,
+                height: command_bounds.height,
+                visible_x: visible_bounds.x.saturating_sub(viewport.x),
+                visible_y: visible_bounds.y.saturating_sub(viewport.y),
+                visible_width: visible_bounds.width,
+                visible_height: visible_bounds.height,
+            })
         })
-        .count();
-    (visible, render.display_list.len().saturating_sub(visible))
+        .collect()
+}
+
+fn display_command_kind(command: &DisplayCommand) -> &'static str {
+    match command {
+        DisplayCommand::Text { .. } => "Text",
+        DisplayCommand::StyledText { .. } => "StyledText",
+        DisplayCommand::Rect { .. } => "Rect",
+        DisplayCommand::ColorRect { .. } => "ColorRect",
+        DisplayCommand::Image { .. } => "Image",
+        DisplayCommand::BackgroundImage { .. } => "BackgroundImage",
+    }
 }
 
 fn layout_box_visibility(
@@ -5422,7 +5468,12 @@ pub fn browser_document_viewport(
         )
     });
     let viewport = raster_viewport_from_state(viewport_state);
-    let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    let visible_commands = visible_display_commands(render, viewport);
+    let visible_command_count = visible_commands.len();
+    let culled_command_count = render
+        .display_list
+        .len()
+        .saturating_sub(visible_command_count);
     let (visible_layout_box_count, culled_layout_box_count, visible_layout_boxes) =
         layout_box_visibility(render, viewport);
     let (mut invalidated_regions, full_repaint) =
@@ -5477,6 +5528,7 @@ pub fn browser_document_viewport(
         display_command_count: render.display_list.len(),
         visible_command_count,
         culled_command_count,
+        visible_commands,
         layout_box_count: render.layout_boxes.len(),
         visible_layout_box_count,
         culled_layout_box_count,
