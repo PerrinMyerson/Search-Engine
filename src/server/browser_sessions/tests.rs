@@ -3557,6 +3557,17 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-y")"#));
     assert!(html.contains("const stampCurrentViewportUrl"));
     assert!(html.contains("const syncChromeViewportState = () =>"));
+    assert!(html.contains("const browserActionFromLink = (link) =>"));
+    assert!(html.contains("const markBrowserActionPending = (link) =>"));
+    assert!(html.contains(r#"link.dataset.browserChromeActionPending = "true""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromePendingState = "pending""#));
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromePendingViewportX = String(numberData("viewportX"))"#
+    ));
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromePendingSource = shell.dataset.pageSource || """#
+    ));
+    assert!(html.contains(r#"a[data-browser-primary-nav-action], a[data-browser-chrome-current-action], a[data-browser-chrome-reload-action], a[data-browser-chrome-images-action]"#));
     assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY)"#));
@@ -3839,6 +3850,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#"status.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains(r#"status.dataset.browserViewportPendingState = "idle""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromePendingState = "idle""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeClickPendingState = "idle""#));
     assert!(
         html.contains(
             r#"status.dataset.browserViewportCurrentX = String(numberData("viewportX"))"#
@@ -9842,6 +9855,13 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "submitting""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeClickPendingState = "pending""#));
+    assert!(
+        html.contains(r#"topStatus.dataset.browserChromeClickPendingPageX = String(point.pageX)"#)
+    );
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromeClickPendingViewportX = String(numberData("viewportX"))"#
+    ));
     assert!(
         html.contains(r#"shell.dataset.clickPreservedViewportX = String(numberData("viewportX"))"#)
     );
