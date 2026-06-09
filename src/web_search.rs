@@ -1028,6 +1028,32 @@ struct WebResultArtifactDurabilityStats {
     query_buckets: usize,
 }
 
+pub fn durable_web_result_provider_commit_line(
+    provider_result_rows: usize,
+    displayed_result_rows: usize,
+    durable_result_rows: usize,
+    replayable_cache_rows: usize,
+    durable_result_log_rows: usize,
+) -> String {
+    let persistence_gap_rows = provider_result_rows.saturating_sub(durable_result_rows);
+    let display_limited_rows = provider_result_rows.saturating_sub(displayed_result_rows);
+    let survives_restart =
+        durable_result_log_rows >= durable_result_rows && durable_result_rows > 0;
+    let next_action = if persistence_gap_rows > 0 {
+        "inspect-provider-result-persistence-gap"
+    } else if !survives_restart && durable_result_rows > 0 {
+        "inspect-result-log-retention-before-display"
+    } else if display_limited_rows > 0 {
+        "provider-results-durable-before-display-limit"
+    } else {
+        "provider-results-durable"
+    };
+
+    format!(
+        "durable_web_result_provider_commit: report_only=true provider_result_rows={provider_result_rows} displayed_result_rows={displayed_result_rows} display_limited_rows={display_limited_rows} durable_result_rows={durable_result_rows} replayable_cache_rows={replayable_cache_rows} durable_result_log_rows={durable_result_log_rows} persistence_gap_rows={persistence_gap_rows} survives_restart={survives_restart} commit_order=before-display github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action={next_action}"
+    )
+}
+
 pub fn durable_web_result_commit_report_lines(
     cache_path: &Path,
     result_log_path: &Path,
@@ -1048,20 +1074,26 @@ pub fn durable_web_result_commit_report_lines(
         "no-durable-web-results"
     };
 
-    Ok(vec![format!(
-        "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
-        cache.entries,
-        cache.bytes,
-        cache.durable_rows,
-        result_log.entries,
-        result_log.bytes,
-        result_log.durable_rows,
-        cache
-            .duplicate_rows
-            .saturating_add(result_log.duplicate_rows),
-        cache.query_buckets,
-        result_log.query_buckets,
-    )])
+    let duplicate_rows = cache
+        .duplicate_rows
+        .saturating_add(result_log.duplicate_rows);
+    Ok(vec![
+        format!(
+            "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
+            cache.entries,
+            cache.bytes,
+            cache.durable_rows,
+            result_log.entries,
+            result_log.bytes,
+            result_log.durable_rows,
+            cache.query_buckets,
+            result_log.query_buckets,
+        ),
+        format!(
+            "durable_web_result_prune_boundary: report_only=true mutates_files=false duplicate_rows={duplicate_rows} cache_duplicate_rows={} result_log_duplicate_rows={} result_log_only_rows={result_log_only_rows} safe_to_prune_after_dry_run={prune_safe_after_dry_run} preserve_artifacts=web-cache.jsonl,brave-results.jsonl preserve_secrets=false next_action={next_action}",
+            cache.duplicate_rows, result_log.duplicate_rows,
+        ),
+    ])
 }
 
 fn collect_web_result_artifact_durability(
@@ -2120,6 +2152,15 @@ mod tests {
         ));
         assert!(line.contains("prune_safe_after_dry_run=true"));
         assert!(line.contains("next_action=dry-run-compact-duplicate-durable-rows"));
+        let prune_line = &lines[1];
+        assert!(prune_line.starts_with("durable_web_result_prune_boundary: report_only=true"));
+        assert!(prune_line.contains("mutates_files=false"));
+        assert!(prune_line.contains("duplicate_rows=1"));
+        assert!(prune_line.contains("cache_duplicate_rows=1"));
+        assert!(prune_line.contains("result_log_duplicate_rows=0"));
+        assert!(prune_line.contains("safe_to_prune_after_dry_run=true"));
+        assert!(prune_line.contains("preserve_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(prune_line.contains("preserve_secrets=false"));
     }
 
     #[test]
@@ -2180,6 +2221,25 @@ mod tests {
         assert!(lines.contains("https://example.com/provider-one"));
         assert!(lines.contains("https://example.com/provider-two"));
         assert!(lines.contains("https://example.com/provider-three"));
+        let commit_line = durable_web_result_provider_commit_line(
+            provider_results.len(),
+            displayed_results.len(),
+            storage_results.len(),
+            0,
+            lines.lines().count(),
+        );
+        assert!(commit_line.starts_with("durable_web_result_provider_commit: report_only=true"));
+        assert!(commit_line.contains("provider_result_rows=3"));
+        assert!(commit_line.contains("displayed_result_rows=1"));
+        assert!(commit_line.contains("display_limited_rows=2"));
+        assert!(commit_line.contains("durable_result_rows=3"));
+        assert!(commit_line.contains("durable_result_log_rows=3"));
+        assert!(commit_line.contains("persistence_gap_rows=0"));
+        assert!(commit_line.contains("survives_restart=true"));
+        assert!(commit_line.contains("commit_order=before-display"));
+        assert!(commit_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(commit_line.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(commit_line.contains("next_action=provider-results-durable-before-display-limit"));
     }
 
     #[test]
