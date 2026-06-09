@@ -2664,6 +2664,27 @@ fn web_storage_export_readiness_lines(
         "stale" => "refresh stale replay cache before relying on local results",
         _ => "inspect web replay state",
     };
+    let local_replay_status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.duplicate_entries > 0 {
+        "duplicate-pressure"
+    } else if cache_replayable_result_rows > 0 && result_log_only_rows == 0 {
+        "ready"
+    } else if cache_replayable_result_rows > 0 && result_log_only_rows > 0 {
+        "partial"
+    } else if result_log_durable_result_rows > 0 {
+        "result-log-only"
+    } else {
+        "needs-review"
+    };
+    let local_replay_next_action = match local_replay_status {
+        "ready" => "repeat-search-uses-local-cache",
+        "partial" => "backfill-result-log-only-replay-rows",
+        "result-log-only" => "rebuild-web-cache-replay",
+        "duplicate-pressure" => "inspect-duplicate-replay-rows",
+        "empty" => "no-local-web-results",
+        _ => "inspect-local-web-replay-state",
+    };
     vec![
         format!(
             "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
@@ -2681,6 +2702,10 @@ fn web_storage_export_readiness_lines(
         format!(
             "web_storage_replay_restore_readiness: report_only=true status={replay_restore_status} avoid_brave_call={replay_restore_can_avoid_brave_call} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} staleness_status={staleness_status} action={}",
             replay_restore_action.replace(' ', "-")
+        ),
+        format!(
+            "web_storage_local_replay_visibility: report_only=true status={local_replay_status} cache_rows={cache_replayable_result_rows} result_log_rows={result_log_durable_result_rows} result_log_only_rows={result_log_only_rows} cache_query_buckets={cache_query_buckets} missing_query_buckets={replay_missing_query_buckets} duplicate_rows={} provider_buckets={provider_buckets} next_action={local_replay_next_action}",
+            summary.duplicate_entries
         ),
         format!(
             "brave_web_result_retention: report_only=true status={retention_status} retained_local_rows={} replayable_cache_rows={cache_replayable_result_rows} durable_result_log_rows={result_log_durable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} unique_result_urls={result_log_unique_urls} retained_bytes={} removable_bytes={} next_action={retention_next_action}",
@@ -6073,6 +6098,47 @@ mod tests {
         assert!(lines.contains(&"web_storage_replay_restore_readiness: report_only=true status=durable-only avoid_brave_call=false replayable_result_rows=0 result_log_only_rows=2 missing_query_buckets=2 staleness_status=stale action=export-or-rebuild-replay-cache-before-another-Brave-call".to_owned()));
         assert!(lines.contains(
             &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=cached_only,result_only".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_local_replay_visibility_reports_source_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\",\"fetched_at_unix\":110}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta duplicate\",\"fetched_at_unix\":120}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 130, 60);
+        let lines = web_storage_export_readiness_lines(&artifacts, &summary, 130, 60);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_local_replay_visibility: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("cache_rows=1")
+                && line.contains("result_log_rows=3")
+                && line.contains("result_log_only_rows=2")
+                && line.contains("cache_query_buckets=1")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("duplicate_rows=1")
+                && line.contains("provider_buckets=1")
+                && line.contains("next_action=inspect-duplicate-replay-rows")
+        }));
+        assert!(lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()
         ));
     }
 
