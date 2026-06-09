@@ -12326,6 +12326,121 @@ fn consecutive_scroll_frame_sequence_keeps_media_link_and_hits_aligned() {
 }
 
 #[test]
+fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://viewport-text-hit-continuity".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Intro row".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 5,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 12,
+                height: 1,
+                shade: 230,
+                red: 230,
+                green: 242,
+                blue: 238,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer keeps scrolling available".to_owned(),
+            },
+        ],
+        text: "Intro row\nOpen\nFooter keeps scrolling available".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 12,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, viewport, None);
+    assert_eq!(report.viewport.y, 5);
+    assert_eq!(report.visible_command_count, 2);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 1, 0),
+        Some(77),
+        "visible linked text should be hittable in its painted viewport row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 1, 1),
+        None,
+        "nearby fallback should not keep the link hittable in the next raster row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize scrolled hit slice");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let link_x = options.padding_x.saturating_add(options.cell_width);
+    let link_row_end = options
+        .padding_y
+        .saturating_add(options.cell_height)
+        .min(rgba.height);
+    let link_has_ink = (options.padding_y..link_row_end).any(|y| {
+        (link_x..link_x.saturating_add(options.cell_width)).any(|x| pixel(x, y) == [0, 0, 0, 255])
+    });
+    assert!(
+        link_has_ink,
+        "raster should paint linked text in the top viewport row"
+    );
+    assert_eq!(
+        pixel(
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [230, 242, 238, 255],
+        "second viewport row should show the non-link background, not stale link ink"
+    );
+}
+
+#[test]
 fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://flow-only-scroll-height",
