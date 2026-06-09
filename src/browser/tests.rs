@@ -9591,6 +9591,117 @@ async fn image_extensionless_generic_svg_resource_sniffs_visible_rgb_candidate()
 }
 
 #[tokio::test]
+async fn redirected_extensionless_svg_without_content_type_sniffs_and_attaches_color() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let svg_bytes = br#"<?xml version="1.0"?><svg width="3" height="2" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="2" fill="red"/><rect x="1" width="1" height="2" fill="lime"/><rect x="2" width="1" height="2" fill="blue"/></svg>"#.to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /svg-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /svg-final-resource\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /svg-final-resource ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    svg_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&svg_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = br#"<html><body><p>Before redirected SVG</p><img src="/svg-redirect" alt="Redirected SVG" width="30" height="20"><p>After redirected SVG</p></body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let original_url = format!("http://{addr}/svg-redirect");
+    let final_url = format!("http://{addr}/svg-final-resource");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "/svg-redirect");
+    assert_eq!(fetch.resource.resolved, original_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(fetch.content_type, None);
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/svg+xml"));
+    assert_eq!(fetch.decoded_width, Some(3));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert!(fetch.decoded_hash.is_some());
+    assert!(fetch.decoded_color_hash.is_some());
+    assert_eq!(fetch.decoded_color_bytes, Some(18));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before redirected SVG"));
+    assert!(render.text.contains("After redirected SVG"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == original_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, decoded_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_ref().map(Vec::len),
+        fetch.decoded_color_bytes
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &original_url && hash == &decoded_hash
+        )
+    }));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
