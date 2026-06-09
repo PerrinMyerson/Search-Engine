@@ -10052,9 +10052,15 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(back_href),
+        source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
         x = payload.viewport_x,
         y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
         max_x = payload.max_scroll_x,
         max_y = payload.max_scroll_y,
         can_scroll_up = can_scroll_up,
@@ -10232,7 +10238,7 @@ fn render_browser_session_page_with_diagnostics(
     chrome_tab_actions.push_str("</div>");
     let chrome_image_action = render_browser_session_chrome_image_action(payload);
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
