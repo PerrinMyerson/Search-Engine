@@ -3130,6 +3130,19 @@ fn web_storage_export_readiness_lines(
         "empty" => "no-local-web-results-retained",
         _ => "inspect-web-result-retention",
     };
+    let restart_survives = result_log_durable_result_rows > 0;
+    let prune_safe_after_dry_run = summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0;
+    let restart_next_action = if summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-durable-result-metadata"
+    } else if result_log_only_rows > 0 || replay_missing_query_buckets > 0 {
+        "backfill-web-cache-replay-before-prune"
+    } else if prune_safe_after_dry_run {
+        "dry-run-compact-duplicate-durable-rows"
+    } else if restart_survives {
+        "durable-retention-ready"
+    } else {
+        "no-durable-brave-results"
+    };
     let replay_restore_action = match replay_restore_status {
         "ready" => "cache replay can avoid a Brave call",
         "empty" => "no durable web results are available for replay",
@@ -3185,6 +3198,12 @@ fn web_storage_export_readiness_lines(
             "brave_web_result_retention: report_only=true status={retention_status} retained_local_rows={} replayable_cache_rows={cache_replayable_result_rows} durable_result_log_rows={result_log_durable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} unique_result_urls={result_log_unique_urls} retained_bytes={} removable_bytes={} next_action={retention_next_action}",
             summary.durable_result_rows,
             summary.unique_row_bytes,
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "durable_brave_restart_retention: report_only=true survives_restart={restart_survives} durable_result_log_rows={result_log_durable_result_rows} replayable_cache_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} retained_bytes={} duplicate_rows={} duplicate_row_bytes={} durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={restart_next_action}",
+            summary.unique_row_bytes,
+            summary.duplicate_entries,
             summary.duplicate_row_bytes
         ),
         format!(
@@ -7055,6 +7074,8 @@ mod tests {
         )
         .unwrap();
 
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
         let cache_stats =
             collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
         let log_stats =
@@ -7063,6 +7084,8 @@ mod tests {
         let summary = web_storage_pressure_summary(&artifacts, 130, 60);
         let lines = web_storage_export_readiness_lines(&artifacts, &summary, 130, 60);
 
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
         assert!(lines.iter().any(|line| {
             line.starts_with("web_storage_local_replay_visibility: report_only=true")
                 && line.contains("status=duplicate-pressure")
@@ -7078,6 +7101,19 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()
         ));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_brave_restart_retention: report_only=true")
+                && line.contains("survives_restart=true")
+                && line.contains("durable_result_log_rows=3")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("result_log_only_rows=2")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+                && line.contains("prune_safe_after_dry_run=true")
+                && line.contains("next_action=backfill-web-cache-replay-before-prune")
+        }));
     }
 
     #[test]
