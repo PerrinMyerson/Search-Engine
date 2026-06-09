@@ -58,6 +58,7 @@ const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const BROWSER_DOCUMENT_LARGE_ROW_BYTES: u64 = 64 * 1024;
 const TEMP_CLEANUP_OLD_TARGET_SECS: u64 = 24 * 60 * 60;
+const INDEX_ARTIFACT_HIGH_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -1209,6 +1210,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
             artifact.name, artifact.bytes
         );
     }
+    for line in index_artifact_storage_pressure_lines(&stats) {
+        println!("{line}");
+    }
     for line in crawl_storage_pressure_summary_lines(&stats) {
         println!("{line}");
     }
@@ -1300,6 +1304,36 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn index_artifact_storage_pressure_lines(stats: &IndexStorageStats) -> Vec<String> {
+    if stats.total_bytes == 0 && stats.artifacts.is_empty() {
+        return Vec::new();
+    }
+
+    let largest = stats.artifacts.iter().max_by_key(|artifact| artifact.bytes);
+    let largest_component = largest.map(|artifact| artifact.name).unwrap_or("none");
+    let largest_component_bytes = largest.map(|artifact| artifact.bytes).unwrap_or(0);
+    let high_growth_component_count = stats
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES)
+        .count();
+    let next_action = if high_growth_component_count > 1 {
+        "inspect-index-artifact-growth"
+    } else if high_growth_component_count == 1 {
+        "inspect-largest-index-artifact"
+    } else {
+        "index-pressure-low"
+    };
+
+    vec![
+        format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes={} largest_component={largest_component} largest_component_bytes={largest_component_bytes} high_growth_component_count={high_growth_component_count} high_growth_threshold_bytes={INDEX_ARTIFACT_HIGH_GROWTH_BYTES} next_action={next_action}",
+            stats.total_bytes
+        ),
+        "index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .brutal-index artifacts".to_owned(),
+    ]
 }
 
 fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String> {
@@ -3618,6 +3652,56 @@ mod tests {
             temp_cleanup_age_pressure_next_action(0, 0, 0),
             "cleanup-low"
         );
+    }
+
+    #[test]
+    fn index_artifact_storage_pressure_reports_largest_components() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docs.bin"), b"docs").unwrap();
+        let postings_path = dir.path().join("postings.bin");
+        let postings = std::fs::File::create(&postings_path).unwrap();
+        postings.set_len(INDEX_ARTIFACT_HIGH_GROWTH_BYTES).unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = index_artifact_storage_pressure_lines(&stats);
+
+        assert_eq!(stats.total_bytes, INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 4);
+        assert!(lines.contains(&format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes={} largest_component=postings.bin largest_component_bytes={} high_growth_component_count=1 high_growth_threshold_bytes={} next_action=inspect-largest-index-artifact",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 4,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
+        assert!(lines.contains(&"index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .brutal-index artifacts".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 4,
+            artifacts: vec![IndexStorageArtifact {
+                name: "docs.bin",
+                bytes: 4,
+            }],
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_lines = index_artifact_storage_pressure_lines(&clean_stats);
+        assert!(clean_lines.contains(&format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes=4 largest_component=docs.bin largest_component_bytes=4 high_growth_component_count=0 high_growth_threshold_bytes={} next_action=index-pressure-low",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
     }
 
     #[test]
