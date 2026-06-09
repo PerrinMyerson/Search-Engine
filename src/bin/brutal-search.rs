@@ -1756,6 +1756,7 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
             stats.browser_document_max_row_bytes,
             stats.browser_document_large_row_count
         ),
+        browser_session_artifact_footprint_line(stats),
         format!(
             "browser_document_storage_unique_rows: {}",
             stats.browser_document_unique_rows
@@ -1812,6 +1813,36 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         );
     }
     lines
+}
+
+fn browser_session_artifact_footprint_line(stats: &IndexStorageStats) -> String {
+    let candidate_count = usize::from(stats.browser_document_bytes > 0);
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-duplicate-large-browser-session-artifacts"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-duplicate-browser-session-artifacts"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-session-artifacts"
+    } else if stats.browser_document_bytes.saturating_mul(2) >= index_storage_budget_bytes() {
+        "monitor-browser-session-artifact-budget"
+    } else {
+        "browser-session-artifacts-low"
+    };
+
+    format!(
+        "browser_session_artifact_footprint: report_only=true deletes=false compacts=false candidate_artifacts={candidate_count} rows={} bytes={} sessions={} largest_artifact=browser-documents.jsonl largest_artifact_bytes={} max_row_bytes={} large_row_count={} large_row_threshold_bytes={} duplicate_rows={} duplicate_row_bytes={} next_action={next_action}",
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_session_count,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
+        stats.browser_document_large_row_count,
+        BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+    )
 }
 
 fn storage_pressure_rollup_lines(
@@ -5948,9 +5979,12 @@ mod tests {
         )
         .unwrap();
 
+        let before = std::fs::read(&path).unwrap();
         let stats = collect_index_storage_stats(dir.path()).unwrap();
         let lines = browser_document_storage_pressure_summary_lines(&stats);
+        let after = std::fs::read(&path).unwrap();
 
+        assert_eq!(before, after);
         assert_eq!(stats.browser_document_session_count, 2);
         assert_eq!(stats.browser_document_rows, 3);
         assert_eq!(stats.browser_document_duplicate_rows, 1);
@@ -5962,6 +5996,14 @@ mod tests {
             stats.browser_document_bytes,
             stats.browser_document_duplicate_row_bytes,
             stats.browser_document_max_row_bytes
+        )));
+        assert!(lines.contains(&format!(
+            "browser_session_artifact_footprint: report_only=true deletes=false compacts=false candidate_artifacts=1 rows=3 bytes={} sessions=2 largest_artifact=browser-documents.jsonl largest_artifact_bytes={} max_row_bytes={} large_row_count=2 large_row_threshold_bytes={} duplicate_rows=1 duplicate_row_bytes={} next_action=inspect-duplicate-large-browser-session-artifacts",
+            stats.browser_document_bytes,
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
         )));
     }
 
