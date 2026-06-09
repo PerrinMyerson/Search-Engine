@@ -11430,6 +11430,151 @@ fn viewport_nearby_hit_testing_respects_clipped_media_bounds_after_scroll() {
 }
 
 #[test]
+fn viewport_nearby_visual_fallback_does_not_beat_visible_link_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://nearby-visual-fallback-precision".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 1,
+                y: 3,
+                width: 3,
+                height: 1,
+                shade: 210,
+                red: 220,
+                green: 88,
+                blue: 88,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 4,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 10,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Body".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Open\nBody\nFooter".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 3,
+            width: 10,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(first.viewport.y, 3);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 0),
+        Some(41),
+        "normal-flow visual target should be hittable while painted"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 1),
+        Some(77),
+        "visible linked text should remain exact-hittable below the visual"
+    );
+
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 4);
+    assert_eq!(second.scroll_delta_y, 1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        Some(77),
+        "visible linked text should win after the visual target scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 1),
+        None,
+        "nearby normal-flow visual fallback should not leak into the adjacent background row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(second.viewport.y),
+        viewport_width: Some(second.viewport.width),
+        viewport_height: Some(second.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, options).expect("rasterize nearby fallback precision slice");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let link_x = options.padding_x.saturating_add(options.cell_width);
+    let link_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (link_x..link_x.saturating_add(options.cell_width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "scrolled raster should show the linked text at the winning hit row"
+    );
+    assert_eq!(
+        pixel(
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [236, 244, 250, 255],
+        "adjacent row should paint background, not the stale visual target"
+    );
+}
+
+#[test]
 fn viewport_exact_hit_respects_clipped_normal_flow_stack_after_adjacent_scroll() {
     let image_url = "mem://exact-hit-clipped-image".to_owned();
     let background_url = "mem://exact-hit-clipped-background".to_owned();

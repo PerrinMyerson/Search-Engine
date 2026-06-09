@@ -4689,7 +4689,7 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
                 .hit_targets
                 .get(command_index)
                 .is_some_and(|target| target.source_bounds.is_some());
-            let tolerance = if clipped { 0 } else { 1 };
+            let tolerance = if clipped || !pinned { 0 } else { 1 };
             let y_tolerance = if pinned { tolerance } else { 0 };
             if !bounds_contains_with_tolerance(visible_bounds, x, y, tolerance, y_tolerance) {
                 return None;
