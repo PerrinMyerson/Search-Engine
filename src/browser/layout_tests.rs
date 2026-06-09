@@ -12309,6 +12309,257 @@ fn decoded_media_scroll_dirty_regions_match_painted_clip_and_hits() {
 }
 
 #[test]
+fn scrolled_media_visible_report_raster_and_hits_move_one_row_together() {
+    let image_url = "mem://scroll-report-continuity-image".to_owned();
+    let background_url = "mem://scroll-report-continuity-background".to_owned();
+    let red = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![92],
+        rgb_pixels: Some(vec![224, 48, 48]),
+    };
+    let blue = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![42, 128, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://scroll-report-continuity".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 6,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: image_url.clone(),
+                width: red.width,
+                height: red.height,
+                pixel_hash: red.pixel_hash(),
+                image: red,
+            },
+            DecodedImageEntry {
+                url: background_url.clone(),
+                width: blue.width,
+                height: blue.height,
+                pixel_hash: blue.pixel_hash(),
+                image: blue,
+            },
+        ],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(42)),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Go".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::BackgroundImage {
+                x: 0,
+                y: 4,
+                width: 4,
+                height: 1,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 100,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 5,
+                width: 1,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 2,
+                y: 5,
+                text: "Go".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 8,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Lead\nGo\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 4,
+        width: 8,
+        height: 2,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let first = browser_viewport_frame(&render, start, None, options)
+        .expect("render first scroll-continuity frame");
+    let background = first
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.command_index == 1)
+        .expect("painted no-repeat background should be reported");
+    assert_eq!(
+        (
+            background.visible_x,
+            background.visible_y,
+            background.visible_width,
+            background.visible_height,
+        ),
+        (3, 0, 1, 1),
+        "visible command report should match the decoded painted background tile"
+    );
+
+    let second_requested = BrowserViewportState { y: 5, ..start };
+    let second = browser_viewport_frame(&render, second_requested, Some(start), options)
+        .expect("render one-row scrolled continuity frame");
+    assert_eq!(second.report.viewport.viewport.y, 5);
+    assert_eq!(second.report.viewport.scroll_delta_y, 1);
+    assert!(second.report.reused_pixel_area > 0);
+    assert!(
+        second
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .any(|region| region.viewport_y == 1 && region.viewport_height == 1),
+        "one-row scroll should dirty the newly exposed bottom row"
+    );
+    assert!(
+        !second
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .any(|command| command.command_index == 1),
+        "background command should leave the visible report after it scrolls out"
+    );
+    assert_eq!(
+        second
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .filter(|command| command.command_index == 2 || command.command_index == 3)
+            .map(|command| (command.command_index, command.visible_y))
+            .collect::<Vec<_>>(),
+        vec![(2, 0), (3, 0)],
+        "image and linked text should move to the top row together"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.report.viewport.viewport, 3, 0),
+        Some(42),
+        "first scrolled slice should hit the painted background tile"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.report.viewport.viewport, 0, 0),
+        None,
+        "blank background cells should not steal clicks"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.report.viewport.viewport, 0, 0),
+        Some(41),
+        "decoded image target should move to the top row after one scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.report.viewport.viewport, 2, 0),
+        Some(77),
+        "linked text target should stay aligned with the same moved raster row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.report.viewport.viewport, 3, 1),
+        None,
+        "offscreen painted background target should not remain clickable in the new bottom row"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    assert_eq!(
+        pixel(
+            &first,
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(3)),
+            options.padding_y,
+        ),
+        [42, 128, 220, 255],
+        "first scrolled raster should show the decoded background tile"
+    );
+    assert_eq!(
+        pixel(&first, options.padding_x, options.padding_y),
+        [255, 255, 255, 255],
+        "first scrolled raster should leave blank background cells empty"
+    );
+    assert_eq!(
+        pixel(&second, options.padding_x, options.padding_y),
+        [224, 48, 48, 255],
+        "second scrolled raster should move the decoded image into the top row"
+    );
+    assert_eq!(
+        pixel(
+            &second,
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height),
+        ),
+        [238, 244, 250, 255],
+        "second scrolled raster should replace offscreen media with the next row"
+    );
+}
+
+#[test]
 fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
     let image_url = "mem://rerender-dirty-image".to_owned();
     let background_url = "mem://rerender-dirty-background".to_owned();
