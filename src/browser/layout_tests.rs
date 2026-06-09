@@ -13019,6 +13019,26 @@ fn adjacent_scroll_frames_shift_visible_rows_without_stale_targets() {
     for (index, frame) in frames.iter().enumerate() {
         assert_eq!(frame.report.viewport.scroll_delta_y, 1);
         assert_eq!(frame.report.frame.raster_viewport_y, Some(index + 3));
+        let frame_pixel_area = frame
+            .report
+            .frame_width
+            .saturating_mul(frame.report.frame_height);
+        assert_eq!(
+            frame
+                .report
+                .dirty_pixel_area
+                .saturating_add(frame.report.reused_pixel_area),
+            frame_pixel_area,
+            "adjacent frame {index} should report dirty and reused pixel area for the whole frame"
+        );
+        assert!(
+            frame.report.reused_pixel_area > 0,
+            "adjacent frame {index} should preserve reusable pixels after a one-row scroll"
+        );
+        assert!(
+            frame.report.dirty_pixel_area < frame_pixel_area,
+            "adjacent frame {index} should not look like a full-frame repaint"
+        );
         let dirty_rows = frame
             .report
             .dirty_pixel_regions
