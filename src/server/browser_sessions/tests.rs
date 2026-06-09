@@ -31,6 +31,47 @@ fn assert_chrome_status_flags(
     )));
 }
 
+fn assert_address_submit_state(
+    topbar_html: &str,
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+) {
+    for action in ["open", "open-new-session", "open-background-session"] {
+        assert!(topbar_html.contains(&format!(r#"data-browser-address-submit="{}""#, action)));
+    }
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-session="{}""#,
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-from="{}""#,
+        html_escape::encode_double_quoted_attribute(back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-width="{}""#,
+        payload.width
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-height="{}""#,
+        payload.height
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-address-submit-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+}
 #[tokio::test]
 async fn browser_session_registry_keeps_history_across_link_navigation() {
     let dir = tempfile::tempdir().unwrap();
@@ -2799,6 +2840,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         payload.max_bytes
     )));
     assert!(html.contains(">Top</a>"));
+    assert_address_submit_state(topbar_html, &payload, &back_href);
+    assert!(topbar_html.contains(r#"data-browser-location-strip"#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
     assert!(html.contains(">Page down</a>"));
@@ -9465,6 +9508,8 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-x="{link_x}""#)));
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert_address_submit_state(topbar_html, &payload, &back_href);
+    assert!(topbar_html.contains(r#"data-browser-location-strip"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert_chrome_status_flags(topbar_html, false, false, true, false, false);
     assert!(topbar_html.contains(&format!(
@@ -13789,6 +13834,7 @@ async fn browser_session_page_renders_form_controls() {
         r#"data-browser-address-max-bytes="{}""#,
         payload.max_bytes
     )));
+    assert_address_submit_state(topbar_html, &payload, &back_href);
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
