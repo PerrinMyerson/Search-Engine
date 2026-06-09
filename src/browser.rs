@@ -513,6 +513,7 @@ pub struct BrowserViewportFrameReport {
     pub frame: BrowserRgbaRasterReport,
     pub dirty_pixel_regions: Vec<BrowserViewportFrameDirtyRect>,
     pub dirty_pixel_area: usize,
+    pub reused_pixel_area: usize,
     pub frame_width: usize,
     pub frame_height: usize,
     pub cell_width: usize,
@@ -5634,6 +5635,8 @@ pub fn browser_viewport_frame(
         .map(|region| region.width.saturating_mul(region.height))
         .sum::<usize>()
         .min(frame.width.saturating_mul(frame.height));
+    let frame_pixel_area = frame.width.saturating_mul(frame.height);
+    let reused_pixel_area = frame_pixel_area.saturating_sub(dirty_pixel_area);
 
     let report = BrowserViewportFrameReport {
         frame_width: frame.width,
@@ -5650,6 +5653,7 @@ pub fn browser_viewport_frame(
         frame,
         dirty_pixel_regions,
         dirty_pixel_area,
+        reused_pixel_area,
     };
 
     Ok(BrowserViewportFrame { report, raster })
