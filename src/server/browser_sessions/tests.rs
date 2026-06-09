@@ -2661,6 +2661,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"40\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-coalescing=\"queued-target\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-flush-delay-ms=\"18\""));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-scroll-max-bytes=\"{}\"",
         payload.max_bytes
@@ -2740,6 +2742,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(controls_html.contains(r#"data-browser-scroll-control-viewport-y="0""#));
     assert!(controls_html.contains(r#"data-browser-scroll-control-width="40""#));
     assert!(controls_html.contains(r#"data-browser-scroll-control-height="16""#));
+    assert!(controls_html.contains("data-browser-scroll-control-coalescing=\"queued-target\""));
+    assert!(controls_html.contains("data-browser-scroll-control-flush-delay-ms=\"18\""));
     assert!(controls_html.contains(&format!(
         r#"data-browser-scroll-control-max-bytes="{}""#,
         payload.max_bytes
@@ -3454,7 +3458,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const latestQueued = queuedScrollDelta();"));
     assert!(html.contains("buildScrollUrl(latestQueued.dx, latestQueued.dy)"));
     assert!(html.contains("const queueViewportScroll"));
-    assert!(html.contains("const scrollFlushDelayMs = 18"));
+    assert!(html.contains("const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 18, 0, 120);"));
+    assert!(html.contains(r#"data-browser-wheel-scroll-mode="coalesced""#));
+    assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
+    assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const clearDeferredClickForScroll = () =>"));
