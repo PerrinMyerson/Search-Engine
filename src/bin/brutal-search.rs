@@ -13,8 +13,8 @@ use brutal_search::frontier::{
     DEFAULT_MAX_FAILED_FRONTIER_RECORDS, FrontierStats, FrontierStore, RecrawlPlanEntry, unix_now,
 };
 use brutal_search::index::{
-    IndexBuildOptions, PreloadMode, SearchIndex, TermCorrection, TermSuggestion, build_from_corpus,
-    build_from_fielded_documents,
+    IndexBuildOptions, IndexManifest, PreloadMode, SearchIndex, TermCorrection, TermSuggestion,
+    build_from_corpus, build_from_fielded_documents,
 };
 use brutal_search::protocol::{DaemonRequest, DaemonResponse};
 use brutal_search::query::{SearchOptions, SearchResult};
@@ -856,6 +856,7 @@ struct IndexStorageStats {
     total_bytes: u64,
     artifacts: Vec<IndexStorageArtifact>,
     web_artifacts: Vec<WebStorageArtifactStats>,
+    indexed_document_count: Option<u32>,
     browser_document_bytes: u64,
     browser_document_rows: usize,
     browser_document_session_count: usize,
@@ -1132,6 +1133,7 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         total_bytes: 0,
         artifacts: Vec::new(),
         web_artifacts: Vec::new(),
+        indexed_document_count: None,
         browser_document_bytes: 0,
         browser_document_rows: 0,
         browser_document_session_count: 0,
@@ -1166,6 +1168,19 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         stats.total_bytes = stats.total_bytes.saturating_add(bytes);
         stats.artifacts.push(IndexStorageArtifact { name, bytes });
         match *name {
+            "manifest.json" => {
+                let manifest = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| bincode::deserialize::<IndexManifest>(&bytes).ok())
+                    .or_else(|| {
+                        std::fs::read_to_string(&path).ok().and_then(|contents| {
+                            serde_json::from_str::<IndexManifest>(&contents).ok()
+                        })
+                    });
+                if let Some(manifest) = manifest {
+                    stats.indexed_document_count = Some(manifest.doc_count);
+                }
+            }
             "frontier.bin" => {
                 stats.crawl_frontier_bytes = bytes;
                 stats.crawl_frontier_stats = Some(FrontierStore::open(&path)?.stats());
@@ -1230,6 +1245,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
         println!("{line}");
     }
     for line in storage_budget_pressure_lines(&stats, &web_summary, retention_config) {
+        println!("{line}");
+    }
+    for line in search_index_retention_audit_lines(&stats, &web_summary) {
         println!("{line}");
     }
     for line in storage_cleanup_readiness_lines(&stats, &web_summary) {
@@ -1781,6 +1799,78 @@ fn storage_budget_pressure_lines(
         "storage_budget_report_mode: report-only".to_owned(),
         "storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
     ]
+}
+
+fn search_index_retention_audit_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let cache = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl");
+    let result_log = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let cache_rows = cache
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let cache_bytes = cache.map(|artifact| artifact.bytes).unwrap_or(0);
+    let cache_query_buckets = cache.map(|artifact| artifact.query_count).unwrap_or(0);
+    let result_log_rows = result_log
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let result_log_bytes = result_log.map(|artifact| artifact.bytes).unwrap_or(0);
+    let result_log_query_buckets = result_log.map(|artifact| artifact.query_count).unwrap_or(0);
+    let result_log_only_rows = result_log_rows.saturating_sub(cache_rows);
+    let missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
+    let indexed_documents = stats.indexed_document_count.unwrap_or(0);
+    let indexed_document_bytes = index_storage_artifact_bytes(stats, "docs.bin")
+        .saturating_add(index_storage_artifact_bytes(stats, "field_docs.bin"))
+        .saturating_add(index_storage_artifact_bytes(stats, "texts.bin"));
+    let drift_rows = cache_rows.abs_diff(result_log_rows);
+    let status = if web_summary.result_rows == 0 && indexed_documents == 0 {
+        "empty"
+    } else if web_summary.incomplete_result_rows > 0
+        || result_log_only_rows > 0
+        || missing_query_buckets > 0
+        || (indexed_documents == 0 && web_summary.durable_result_rows > 0)
+        || drift_rows > 0
+    {
+        "needs-review"
+    } else {
+        "ready"
+    };
+    let next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-result-rows"
+    } else if missing_query_buckets > 0 || result_log_only_rows > 0 {
+        "rebuild-web-cache-replay"
+    } else if indexed_documents == 0 && web_summary.durable_result_rows > 0 {
+        "inspect-index-rebuild"
+    } else if drift_rows > 0 {
+        "inspect-web-result-drift"
+    } else {
+        "retention-aligned"
+    };
+
+    vec![
+        format!(
+            "search_index_retention_audit: report_only=true status={status} web_cache_rows={cache_rows} brave_result_rows={result_log_rows} durable_web_rows={} incomplete_web_rows={} result_log_only_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} indexed_document_bytes={indexed_document_bytes} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} drift_rows={drift_rows} next_action={next_action}",
+            web_summary.durable_result_rows,
+            web_summary.incomplete_result_rows
+        ),
+        "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned(),
+    ]
+}
+
+fn index_storage_artifact_bytes(stats: &IndexStorageStats, name: &str) -> u64 {
+    stats
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == name)
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0)
 }
 
 fn storage_cleanup_readiness_lines(
@@ -3681,6 +3771,7 @@ mod tests {
                 bytes: 4,
             }],
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 0,
             browser_document_rows: 0,
             browser_document_session_count: 0,
@@ -3710,6 +3801,7 @@ mod tests {
             total_bytes: 170,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 0,
             browser_document_rows: 0,
             browser_document_session_count: 0,
@@ -3778,6 +3870,7 @@ mod tests {
             total_bytes: 80,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 0,
             browser_document_rows: 0,
             browser_document_session_count: 0,
@@ -3821,6 +3914,7 @@ mod tests {
             total_bytes: 170,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 0,
             browser_document_rows: 0,
             browser_document_session_count: 0,
@@ -3890,6 +3984,7 @@ mod tests {
             total_bytes: 170,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 0,
             browser_document_rows: 0,
             browser_document_session_count: 0,
@@ -3969,6 +4064,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4024,6 +4120,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4072,6 +4169,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -4114,6 +4212,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4164,6 +4263,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -4203,6 +4303,7 @@ mod tests {
             total_bytes: DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -4251,6 +4352,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4320,6 +4422,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4374,6 +4477,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -4426,6 +4530,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4486,6 +4591,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 2,
             browser_document_session_count: 0,
@@ -4536,6 +4642,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4618,6 +4725,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4676,6 +4784,7 @@ mod tests {
             total_bytes: 1_000,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 50,
             browser_document_rows: 3,
             browser_document_session_count: 0,
@@ -4724,6 +4833,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -4766,6 +4876,7 @@ mod tests {
             total_bytes: 700,
             artifacts: Vec::new(),
             web_artifacts: Vec::new(),
+            indexed_document_count: None,
             browser_document_bytes: 25,
             browser_document_rows: 1,
             browser_document_session_count: 0,
@@ -5411,6 +5522,78 @@ mod tests {
         assert!(empty_lines.contains(
             &"web_storage_export_readiness: status=empty report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=0 incomplete_result_rows=0 duplicate_rows=1".to_owned()
         ));
+    }
+
+    #[test]
+    fn search_index_retention_audit_reports_web_index_drift() {
+        let stats = IndexStorageStats {
+            total_bytes: 190,
+            artifacts: vec![
+                IndexStorageArtifact {
+                    name: "docs.bin",
+                    bytes: 40,
+                },
+                IndexStorageArtifact {
+                    name: "texts.bin",
+                    bytes: 60,
+                },
+            ],
+            web_artifacts: vec![WebStorageArtifactStats {
+                name: "brave-results.jsonl",
+                bytes: 90,
+                entries: 2,
+                result_rows: 2,
+                durable_result_rows: 2,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 0,
+                unique_row_bytes: 90,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                max_entries_per_query: 1,
+                oldest_fetched_at_unix: Some(190),
+                newest_fetched_at_unix: Some(200),
+            }],
+            indexed_document_count: Some(3),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 90,
+            entries: 2,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let lines = search_index_retention_audit_lines(&stats, &summary);
+
+        assert!(lines.contains(&"search_index_retention_audit: report_only=true status=needs-review web_cache_rows=0 brave_result_rows=2 durable_web_rows=2 incomplete_web_rows=0 result_log_only_rows=2 missing_query_buckets=2 indexed_documents=3 indexed_document_bytes=100 web_cache_bytes=0 brave_result_bytes=90 drift_rows=2 next_action=rebuild-web-cache-replay".to_owned()));
+        assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned()));
     }
 
     #[test]
