@@ -14287,6 +14287,30 @@ fn browser_session_chrome_image_state(
     None
 }
 
+fn browser_session_viewport_action_state_attrs(payload: &BrowserSessionPayload) -> String {
+    let navigation = browser_session_navigation_feedback_text(payload).is_some();
+    let click_feedback = browser_session_click_feedback_text(payload);
+    let click = click_feedback.is_some();
+    let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
+    let mut attrs = format!(
+        r#" data-browser-viewport-action-state="compact" data-browser-viewport-has-navigation="{navigation}" data-browser-viewport-has-click="{click}" data-browser-viewport-last-action="{last_action}" data-browser-viewport-last-outcome="{last_outcome}""#
+    );
+    if let Some(feedback) = click_feedback {
+        let (outcome, target) = browser_session_click_feedback_outcome_target(feedback);
+        let _ = write!(
+            attrs,
+            r#" data-browser-viewport-click-outcome="{outcome}" data-browser-viewport-click-target="{target}""#
+        );
+        if let Some((x, y, page_x, page_y)) = browser_session_click_feedback_points(feedback) {
+            let _ = write!(
+                attrs,
+                r#" data-browser-viewport-click-x="{x}" data-browser-viewport-click-y="{y}" data-browser-viewport-click-page-x="{page_x}" data-browser-viewport-click-page-y="{page_y}""#
+            );
+        }
+    }
+    attrs
+}
+
 fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> String {
     let vertical_percent = browser_scroll_percent(payload.viewport_y, payload.max_scroll_y);
     let meter_percent = if payload.max_scroll_y == 0 {
@@ -14333,8 +14357,9 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     let viewport_feedback = render_browser_session_viewport_feedback(payload);
     let click_status = browser_session_click_status(payload);
     let click_hint = browser_session_click_hint(payload);
+    let action_state_attrs = browser_session_viewport_action_state_attrs(payload);
     format!(
-        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter" data-browser-viewport-pending-state="idle" data-browser-viewport-target-x="{x}" data-browser-viewport-target-y="{y}" data-browser-viewport-current-x="{x}" data-browser-viewport-current-y="{y}" data-browser-viewport-max-x="{max_x}" data-browser-viewport-max-y="{max_y}" data-browser-viewport-input-sources="wheel keyboard controls"><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter" data-browser-viewport-pending-state="idle" data-browser-viewport-target-x="{x}" data-browser-viewport-target-y="{y}" data-browser-viewport-current-x="{x}" data-browser-viewport-current-y="{y}" data-browser-viewport-max-x="{max_x}" data-browser-viewport-max-y="{max_y}" data-browser-viewport-input-sources="wheel keyboard controls"{action_state_attrs}><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
         max_x = payload.max_scroll_x,
@@ -14346,6 +14371,7 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
         viewport_feedback = viewport_feedback,
         click_status = click_status,
         click_hint = click_hint,
+        action_state_attrs = action_state_attrs,
         meter_percent = meter_percent,
     )
 }
@@ -14800,13 +14826,8 @@ fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Optio
     })
 }
 
-fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
-    let action = if feedback.starts_with("Click selector") {
-        "click-selector"
-    } else {
-        "click-at"
-    };
-    let (outcome, target) = if feedback.starts_with("No click") {
+fn browser_session_click_feedback_outcome_target(feedback: &str) -> (&'static str, &'static str) {
+    if feedback.starts_with("No click") {
         ("miss", "none")
     } else if feedback.contains("opened ") {
         ("success", "navigation")
@@ -14814,7 +14835,16 @@ fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
         ("success", "page-update")
     } else {
         ("reported", "dom")
+    }
+}
+
+fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
+    let action = if feedback.starts_with("Click selector") {
+        "click-selector"
+    } else {
+        "click-at"
     };
+    let (outcome, target) = browser_session_click_feedback_outcome_target(feedback);
     let mut attrs = format!(
         r#" data-browser-chrome-click-action="{action}" data-browser-chrome-click-outcome="{outcome}" data-browser-chrome-click-target="{target}""#
     );
