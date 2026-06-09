@@ -1019,6 +1019,178 @@ fn web_results_for_storage(results: &[WebSearchResult]) -> Vec<WebSearchResult> 
         .collect()
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct WebResultArtifactDurabilityStats {
+    bytes: u64,
+    entries: usize,
+    durable_rows: usize,
+    duplicate_rows: usize,
+    query_buckets: usize,
+}
+
+pub fn durable_web_result_commit_report_lines(
+    cache_path: &Path,
+    result_log_path: &Path,
+) -> Result<Vec<String>> {
+    let cache = collect_web_result_artifact_durability(cache_path, "web-cache.jsonl")?;
+    let result_log =
+        collect_web_result_artifact_durability(result_log_path, "brave-results.jsonl")?;
+    let result_log_only_rows = result_log.durable_rows.saturating_sub(cache.durable_rows);
+    let survives_restart = result_log.durable_rows > 0 || cache.durable_rows > 0;
+    let prune_safe_after_dry_run = result_log.duplicate_rows > 0 || cache.duplicate_rows > 0;
+    let next_action = if result_log_only_rows > 0 {
+        "backfill-web-cache-replay-before-prune"
+    } else if prune_safe_after_dry_run {
+        "dry-run-compact-duplicate-durable-rows"
+    } else if survives_restart {
+        "durable-web-results-ready"
+    } else {
+        "no-durable-web-results"
+    };
+
+    Ok(vec![format!(
+        "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
+        cache.entries,
+        cache.bytes,
+        cache.durable_rows,
+        result_log.entries,
+        result_log.bytes,
+        result_log.durable_rows,
+        cache
+            .duplicate_rows
+            .saturating_add(result_log.duplicate_rows),
+        cache.query_buckets,
+        result_log.query_buckets,
+    )])
+}
+
+fn collect_web_result_artifact_durability(
+    path: &Path,
+    artifact_name: &str,
+) -> Result<WebResultArtifactDurabilityStats> {
+    if !path.exists() {
+        return Ok(WebResultArtifactDurabilityStats::default());
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("open web result artifact {}", path.display()))?;
+    let bytes = file
+        .metadata()
+        .with_context(|| format!("read web result artifact metadata {}", path.display()))?
+        .len();
+    let mut stats = WebResultArtifactDurabilityStats {
+        bytes,
+        ..WebResultArtifactDurabilityStats::default()
+    };
+    let mut durable_keys = HashSet::new();
+    let mut query_buckets = HashSet::new();
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web result artifact {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        stats.entries = stats.entries.saturating_add(1);
+        let value = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(query) = value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+        {
+            if !query.trim().is_empty() {
+                query_buckets.insert(query.to_owned());
+            }
+        }
+        match artifact_name {
+            "web-cache.jsonl" => {
+                let has_entry_metadata = web_json_string_present(&value, "normalized_query")
+                    && web_json_string_present(&value, "provider")
+                    && value
+                        .get("fetched_at_unix")
+                        .and_then(|value| value.as_u64())
+                        .is_some();
+                if let Some(results) = value.get("results").and_then(|value| value.as_array()) {
+                    for result in results {
+                        if !has_entry_metadata
+                            || !web_json_string_present(result, "url")
+                            || !web_json_string_present(result, "title")
+                            || !web_json_string_present(result, "snippet")
+                        {
+                            continue;
+                        }
+                        stats.durable_rows = stats.durable_rows.saturating_add(1);
+                        let key = durable_web_result_key(
+                            value
+                                .get("normalized_query")
+                                .and_then(|value| value.as_str()),
+                            value.get("provider").and_then(|value| value.as_str()),
+                            result.get("url").and_then(|value| value.as_str()),
+                        );
+                        if !durable_keys.insert(key) {
+                            stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            "brave-results.jsonl" => {
+                let durable = web_json_string_present(&value, "normalized_query")
+                    && web_json_string_present(&value, "provider")
+                    && web_json_string_present(&value, "url")
+                    && web_json_string_present(&value, "title")
+                    && web_json_string_present(&value, "snippet")
+                    && value
+                        .get("fetched_at_unix")
+                        .and_then(|value| value.as_u64())
+                        .is_some()
+                    && value.get("rank").and_then(|value| value.as_u64()).is_some();
+                if durable {
+                    stats.durable_rows = stats.durable_rows.saturating_add(1);
+                    let key = durable_web_result_key(
+                        value
+                            .get("normalized_query")
+                            .and_then(|value| value.as_str()),
+                        value.get("provider").and_then(|value| value.as_str()),
+                        value.get("url").and_then(|value| value.as_str()),
+                    );
+                    if !durable_keys.insert(key) {
+                        stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    stats.query_buckets = query_buckets.len();
+    Ok(stats)
+}
+
+fn web_json_string_present(value: &serde_json::Value, field: &str) -> bool {
+    value
+        .get(field)
+        .and_then(|value| value.as_str())
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn durable_web_result_key(
+    normalized_query: Option<&str>,
+    provider: Option<&str>,
+    url: Option<&str>,
+) -> (String, String, String) {
+    (
+        normalized_query.unwrap_or_default().trim().to_owned(),
+        provider.unwrap_or_default().trim().to_owned(),
+        url.unwrap_or_default().trim().to_owned(),
+    )
+}
+
 fn append_cache_entry(path: &Path, entry: &CachedWebSearch) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1904,6 +2076,50 @@ mod tests {
         assert!(lines.contains("https://example.com/heavy/3"));
         assert!(lines.contains("https://example.com/light/0"));
         assert!(lines.contains("https://example.com/light/1"));
+    }
+
+    #[test]
+    fn durable_web_result_commit_report_survives_restart_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        fs::write(
+            &cache_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0},{\"title\":\"One duplicate\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one duplicate\",\"score\":0.9}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        fs::write(
+            &result_log_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"rank\":1,\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}\n{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":101,\"rank\":2,\"title\":\"Two\",\"url\":\"https://example.com/two\",\"snippet\":\"Snippet two\",\"score\":0.8}\n",
+        )
+        .unwrap();
+
+        let before_cache = fs::read(&cache_path).unwrap();
+        let before_result_log = fs::read(&result_log_path).unwrap();
+        let lines = durable_web_result_commit_report_lines(&cache_path, &result_log_path).unwrap();
+
+        assert_eq!(before_cache, fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, fs::read(&result_log_path).unwrap());
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(line.starts_with("durable_web_result_commit_report: report_only=true"));
+        assert!(line.contains("mutates_files=false"));
+        assert!(line.contains("survives_restart=true"));
+        assert!(line.contains("cache_entries=1"));
+        assert!(line.contains("replayable_cache_rows=2"));
+        assert!(line.contains("result_log_entries=2"));
+        assert!(line.contains("durable_result_log_rows=2"));
+        assert!(line.contains("result_log_only_rows=0"));
+        assert!(line.contains("duplicate_rows=1"));
+        assert!(line.contains("cache_query_buckets=1"));
+        assert!(line.contains("result_log_query_buckets=1"));
+        assert!(line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(line.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(line.contains(
+            "durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet"
+        ));
+        assert!(line.contains("prune_safe_after_dry_run=true"));
+        assert!(line.contains("next_action=dry-run-compact-duplicate-durable-rows"));
     }
 
     #[test]
