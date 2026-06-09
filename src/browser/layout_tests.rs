@@ -12638,6 +12638,133 @@ fn scrolled_viewport_reports_visible_command_rows_matching_raster_and_hits() {
 }
 
 #[test]
+fn viewport_nearby_visual_hit_respects_visible_bounds_after_adjacent_scroll() {
+    let render = BrowserRender {
+        source: "mem://nearby-visual-viewport-bounds".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(77)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::ColorRect {
+                x: 1,
+                y: 5,
+                width: 3,
+                height: 1,
+                shade: 210,
+                red: 220,
+                green: 82,
+                blue: 82,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 12,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer keeps adjacent scroll available".to_owned(),
+            },
+        ],
+        text: "Intro\nFooter keeps adjacent scroll available".to_owned(),
+    };
+
+    let first = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 5,
+            width: 12,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(first.viewport.y, 5);
+    assert_eq!(
+        first
+            .visible_commands
+            .iter()
+            .map(|command| (command.command_index, command.visible_y))
+            .collect::<Vec<_>>(),
+        vec![(1, 0), (2, 1)]
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 0),
+        Some(77),
+        "button-like visual should be hittable where it is painted"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, first.viewport, 1, 1),
+        None,
+        "nearby visual fallback should not keep the target hittable in the next raster row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(first.viewport.y),
+        viewport_width: Some(first.viewport.width),
+        viewport_height: Some(first.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize visual hit viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let target_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(target_x, options.padding_y),
+        [220, 82, 82, 255],
+        "top row should show the clickable visual target"
+    );
+    assert_eq!(
+        pixel(
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [236, 244, 248, 255],
+        "second row should show the non-target background"
+    );
+
+    let second = browser_document_viewport_after_scroll(&render, first.viewport, 0, 1);
+    assert_eq!(second.viewport.y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, second.viewport, 1, 0),
+        None,
+        "visual target should not stay hittable after it scrolls out of the viewport"
+    );
+}
+
+#[test]
 fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://flow-only-scroll-height",
