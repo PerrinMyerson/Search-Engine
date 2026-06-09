@@ -18263,6 +18263,260 @@ fn repeated_scroll_mixed_image_form_link_rows_keep_raster_hits_and_dirty_regions
 }
 
 #[test]
+fn successive_scroll_delta_frames_canonicalize_mixed_dirty_rows_and_hits() {
+    let image_url = "mem://scroll-delta-reuse-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![40, 132, 220]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://scroll-delta-reuse-continuity",
+        format!(
+            r#"
+            <html><body>
+              <div style="height:24px"></div>
+              <p>Lead <a href="/photo"><img src="{image_url}" width="16" height="12" alt="chart"></a> <input name="q" value="rust"> <a href="/next">Next</a></p>
+              <p>Body row keeps scrolling</p>
+              <div style="height:48px"></div>
+            </body></html>
+            "#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 64,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render scroll delta reuse fixture");
+    let render = profiled.render;
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image should render");
+    let input_fill = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE && *y == image.1 => {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("inline input should paint in the mixed row");
+    let next_link = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Next") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("following link should render");
+    assert_eq!(input_fill.1, image.1);
+    assert_eq!(next_link.1, image.1);
+    let next_hit_x = next_link.0.saturating_add(
+        next_link
+            .2
+            .chars()
+            .position(|ch| ch == 'N')
+            .expect("next link should contain N"),
+    );
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: image.1.saturating_sub(1),
+        width: 64,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1)], options)
+        .expect("render successive scroll delta frames");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].report.viewport.viewport.y, image.1);
+    assert_eq!(
+        frames[1].report.viewport.viewport.y,
+        image.1.saturating_add(1)
+    );
+
+    for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+        assert_eq!(
+            frame
+                .report
+                .dirty_pixel_area
+                .saturating_add(frame.report.reused_pixel_area),
+            frame
+                .report
+                .frame_width
+                .saturating_mul(frame.report.frame_height),
+            "scroll delta frame {index} should account for dirty and reused pixels"
+        );
+        assert!(
+            frame.report.reused_pixel_area > 0,
+            "scroll delta frame {index} should preserve reusable raster rows"
+        );
+        assert!(
+            frame.report.dirty_pixel_area
+                < frame
+                    .report
+                    .frame_width
+                    .saturating_mul(frame.report.frame_height),
+            "scroll delta frame {index} should not degrade into full repaint metadata"
+        );
+        assert!(
+            frame.report.dirty_pixel_regions.windows(2).all(|regions| {
+                (regions[0].viewport_y, regions[0].viewport_x)
+                    <= (regions[1].viewport_y, regions[1].viewport_x)
+            }),
+            "scroll delta frame {index} should report dirty cells in viewport order"
+        );
+        assert!(
+            frame
+                .report
+                .dirty_pixel_regions
+                .iter()
+                .any(|region| region.viewport_y == start.height - 1 && region.viewport_height == 1),
+            "scroll delta frame {index} should dirty the newly exposed bottom row"
+        );
+    }
+
+    assert!(
+        frames[0].report.dirty_pixel_regions.iter().any(|region| {
+            input_fill.0 >= region.viewport_x
+                && input_fill.0 < region.viewport_x.saturating_add(region.viewport_width)
+                && region.viewport_y == 0
+        }),
+        "first scroll delta should include the visible form-control cells before the bottom scroll band"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, image.0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/photo".to_owned()),
+        "visible image hit should map to the image link"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(
+            &render,
+            frames[0].report.viewport.viewport,
+            input_fill.0,
+            0
+        ),
+        hit_test_target_node(&render, input_fill.0, input_fill.1),
+        "visible input hit should match the document hit in the first scroll delta"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(
+            &render,
+            frames[0].report.viewport.viewport,
+            next_hit_x,
+            0
+        )
+        .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "visible link hit should map to the following URL"
+    );
+    let after = browser_document_viewport_after_scroll(
+        &render,
+        frames[0].report.viewport.viewport,
+        0,
+        input_fill.3 as isize,
+    );
+    assert!(
+        after.viewport.y >= input_fill.1.saturating_add(input_fill.3),
+        "stale-hit viewport should start after the full control height scrolls away"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, input_fill.0, 0),
+        None,
+        "input target should not remain hittable after its full visible height scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        None,
+        "link target should not remain hittable after the mixed row scrolls out"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_pixel_x = frames[0]
+        .report
+        .padding_x
+        .saturating_add(image.0.saturating_mul(frames[0].report.cell_width));
+    assert_eq!(
+        pixel(&frames[0], image_pixel_x, frames[0].report.padding_y),
+        [40, 132, 220, 255],
+        "first scroll delta raster should paint the decoded image in the visible mixed row"
+    );
+    let input_pixel_x = frames[0]
+        .report
+        .padding_x
+        .saturating_add(input_fill.0.saturating_mul(frames[0].report.cell_width));
+    assert_eq!(
+        pixel(&frames[0], input_pixel_x, frames[0].report.padding_y),
+        [
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            255,
+        ],
+        "first scroll delta raster should paint the input border in the visible mixed row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_pixel_x, frames[1].report.padding_y),
+        [40, 132, 220, 255],
+        "second scroll delta raster should not keep stale image pixels after the mixed row leaves"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {

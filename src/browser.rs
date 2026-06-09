@@ -6232,7 +6232,7 @@ fn browser_viewport_frame_dirty_regions(
         }];
     }
 
-    viewport
+    let mut regions = viewport
         .invalidated_regions
         .iter()
         .filter(|region| region.width > 0 && region.height > 0)
@@ -6250,7 +6250,69 @@ fn browser_viewport_frame_dirty_regions(
             viewport_width: region.width,
             viewport_height: region.height,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    canonicalize_browser_viewport_frame_dirty_regions(&mut regions);
+    regions
+}
+
+fn canonicalize_browser_viewport_frame_dirty_regions(
+    regions: &mut Vec<BrowserViewportFrameDirtyRect>,
+) {
+    if regions.len() < 2 {
+        return;
+    }
+
+    regions.sort_by_key(|region| {
+        (
+            region.viewport_y,
+            region.viewport_x,
+            region.viewport_height,
+            region.viewport_width,
+        )
+    });
+    let mut horizontal: Vec<BrowserViewportFrameDirtyRect> = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        if let Some(last) = horizontal.last_mut() {
+            if last.viewport_y == region.viewport_y
+                && last.viewport_height == region.viewport_height
+                && last.y == region.y
+                && last.height == region.height
+                && last.viewport_x.saturating_add(last.viewport_width) == region.viewport_x
+                && last.x.saturating_add(last.width) == region.x
+            {
+                last.viewport_width = last.viewport_width.saturating_add(region.viewport_width);
+                last.width = last.width.saturating_add(region.width);
+                continue;
+            }
+        }
+        horizontal.push(region);
+    }
+
+    horizontal.sort_by_key(|region| {
+        (
+            region.viewport_x,
+            region.viewport_y,
+            region.viewport_width,
+            region.viewport_height,
+        )
+    });
+    for region in horizontal {
+        if let Some(last) = regions.last_mut() {
+            if last.viewport_x == region.viewport_x
+                && last.viewport_width == region.viewport_width
+                && last.x == region.x
+                && last.width == region.width
+                && last.viewport_y.saturating_add(last.viewport_height) == region.viewport_y
+                && last.y.saturating_add(last.height) == region.y
+            {
+                last.viewport_height = last.viewport_height.saturating_add(region.viewport_height);
+                last.height = last.height.saturating_add(region.height);
+                continue;
+            }
+        }
+        regions.push(region);
+    }
+    regions.sort_by_key(|region| (region.viewport_y, region.viewport_x));
 }
 
 fn browser_viewport_signed_delta(current: usize, previous: usize) -> isize {
