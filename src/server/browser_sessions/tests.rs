@@ -3377,7 +3377,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("partialRequestController.abort()"));
     assert!(html.contains("abortPartialViewportRequest();"));
     assert!(html.contains("const scrollDelta = scrollDeltaFromUrl(targetUrl)"));
-    assert!(html.contains("queueViewportScroll(scrollDelta.dx, scrollDelta.dy)"));
+    assert!(html.contains(r#"queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls")"#));
     assert!(html.contains("shell.dataset.queuedScrollDx = String(pending.dx)"));
     assert!(html.contains("shell.dataset.queuedScrollDy = String(pending.dy)"));
     assert!(html.contains("shell.dataset.queuedScrollDx = String(pendingScrollDx)"));
@@ -3458,10 +3458,18 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const latestQueued = queuedScrollDelta();"));
     assert!(html.contains("buildScrollUrl(latestQueued.dx, latestQueued.dy)"));
     assert!(html.contains("const queueViewportScroll"));
+    assert!(html.contains("const queueViewportScroll = (dx, dy, inputSource = \"manual\") =>"));
+    assert!(html.contains(r#"shell.dataset.scrollInputSource = inputSource"#));
+    assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(pending.x)"#));
+    assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(pending.y)"#));
+    assert!(html.contains(r#"queueViewportScroll(dx, dy, "wheel")"#));
+    assert!(html.contains(r#"queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls")"#));
+    assert!(html.contains(r#"queueViewportScroll(delta.dx, delta.dy, "keyboard")"#));
     assert!(html.contains("const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 18, 0, 120);"));
     assert!(html.contains(r#"data-browser-wheel-scroll-mode="coalesced""#));
     assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
     assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
+    assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls""#));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const clearDeferredClickForScroll = () =>"));
