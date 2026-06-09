@@ -12550,6 +12550,217 @@ fn multi_row_scroll_keeps_text_image_link_raster_and_hits_aligned() {
 }
 
 #[test]
+fn repeated_small_scroll_slices_drop_stale_link_hits_after_visible_rows_move() {
+    let image_url = "mem://small-slice-stability-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![42, 132, 216]),
+    };
+    let render = BrowserRender {
+        source: "mem://small-slice-stability".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 7,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 3,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 10,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Lead\nOpen\nBody\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 1,
+        width: 10,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames =
+        browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1), (0, 1)], options)
+            .expect("render repeated small scroll slices");
+    assert_eq!(frames.len(), 3);
+
+    let expected_rows = [
+        vec![(1, "Image", 0), (2, "StyledText", 1), (3, "ColorRect", 2)],
+        vec![(2, "StyledText", 0), (3, "ColorRect", 1), (4, "Text", 2)],
+        vec![(3, "ColorRect", 0), (4, "Text", 1), (5, "Text", 2)],
+    ];
+    for (index, frame) in frames.iter().enumerate() {
+        let expected_y = index + 2;
+        assert_eq!(frame.report.viewport.viewport.y, expected_y);
+        assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+        assert_eq!(frame.report.frame.raster_viewport_y, Some(expected_y));
+        assert_eq!(
+            frame
+                .report
+                .viewport
+                .visible_commands
+                .iter()
+                .map(|command| {
+                    (
+                        command.command_index,
+                        command.kind.as_str(),
+                        command.visible_y,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            expected_rows[index],
+            "scroll slice {index} should advance visible command rows monotonically"
+        );
+        assert!(
+            frame
+                .report
+                .dirty_pixel_regions
+                .iter()
+                .any(|region| region.viewport_y == start.height - 1 && region.viewport_height == 1),
+            "scroll slice {index} should dirty the newly exposed bottom row"
+        );
+    }
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "image target should be hittable while painted at the top row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 1),
+        Some(77),
+        "link target should be hittable while painted below the image"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 0),
+        Some(77),
+        "link target should move to the top row after one more scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 1),
+        None,
+        "image target should not leak into the background row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[2].report.viewport.viewport, 1, 0),
+        None,
+        "link target should not remain hittable after it scrolls out"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let target_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], target_x, options.padding_y),
+        [42, 132, 216, 255],
+        "first small-scroll slice should show the decoded image at the top row"
+    );
+    let link_has_top_ink = |frame: &BrowserViewportFrame| {
+        (options.padding_y
+            ..options
+                .padding_y
+                .saturating_add(options.cell_height)
+                .min(frame.raster.height))
+            .any(|y| {
+                (target_x..target_x.saturating_add(options.cell_width))
+                    .any(|x| pixel(frame, x, y) == [0, 0, 0, 255])
+            })
+    };
+    assert!(
+        link_has_top_ink(&frames[1]),
+        "second small-scroll slice should paint the link at the top row"
+    );
+    assert_eq!(
+        pixel(&frames[2], options.padding_x, options.padding_y),
+        [236, 244, 250, 255],
+        "third small-scroll slice should replace the link with the background row"
+    );
+}
+
+#[test]
 fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
     let render = BrowserRender {
         source: "mem://viewport-text-hit-continuity".to_owned(),
