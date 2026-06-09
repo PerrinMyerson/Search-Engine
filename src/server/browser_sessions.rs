@@ -11235,6 +11235,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-scroll-queued-during-request");
     shell.removeAttribute("data-stale-viewport-response");
     shell.removeAttribute("data-viewport-request-aborted");
+    shell.dataset.scrollActionState = "idle";
     shell.dataset.viewportState = "settled";
     shell.dataset.settledViewportX = String(numberData("viewportX"));
     shell.dataset.settledViewportY = String(numberData("viewportY"));
@@ -11264,6 +11265,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.dataset.browserViewportCurrentX = String(numberData("viewportX"));
       status.dataset.browserViewportCurrentY = String(numberData("viewportY"));
       status.dataset.browserViewportInputSource = "idle";
+      status.dataset.browserViewportScrollActionState = "idle";
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
@@ -11737,6 +11739,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const appliedDx = nextX - x;
     const appliedDy = nextY - y;
     if (appliedDx === 0 && appliedDy === 0) {
+      shell.dataset.scrollActionState = "edge";
+      const status = viewportStatus();
+      if (status) {
+        status.dataset.browserViewportScrollActionState = "edge";
+      }
       if (dy < 0 && y <= 0) {
         setViewportFeedback("Already at top.");
       } else if (dy > 0 && y >= maxY) {
@@ -11824,6 +11831,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!scroll) {
       return false;
     }
+    shell.dataset.scrollActionState = "submitting";
     shell.dataset.pendingViewportX = String(scroll.x);
     shell.dataset.pendingViewportY = String(scroll.y);
     shell.dataset.queuedScrollDx = String(scroll.dx);
@@ -11834,9 +11842,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const queueViewportScroll = (dx, dy, inputSource = "manual") => {
     shell.dataset.scrollInputSource = inputSource;
+    shell.dataset.scrollActionState = "queued";
+    shell.dataset.scrollPreservedViewportX = String(numberData("viewportX"));
+    shell.dataset.scrollPreservedViewportY = String(numberData("viewportY"));
     const status = viewportStatus();
     if (status) {
       status.dataset.browserViewportInputSource = inputSource;
+      status.dataset.browserViewportScrollActionState = "queued";
+      status.dataset.browserViewportPreservedX = String(numberData("viewportX"));
+      status.dataset.browserViewportPreservedY = String(numberData("viewportY"));
     }
     clearDeferredClickForScroll();
     pendingScrollDx += dx;
@@ -14475,7 +14489,13 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     let click_hint = browser_session_click_hint(payload);
     let action_state_attrs = browser_session_viewport_action_state_attrs(payload);
     format!(
-        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-density="compact" data-browser-viewport-status-layout="summary feedback meter" data-browser-viewport-feedback-lanes="scroll click" data-browser-viewport-pending-state="idle" data-browser-viewport-target-x="{x}" data-browser-viewport-target-y="{y}" data-browser-viewport-current-x="{x}" data-browser-viewport-current-y="{y}" data-browser-viewport-max-x="{max_x}" data-browser-viewport-max-y="{max_y}" data-browser-viewport-input-sources="wheel keyboard controls drag"{action_state_attrs}><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-density="compact" data-browser-viewport-status-session="{id}" data-browser-viewport-status-from="{back_href}" data-browser-viewport-status-source="{source}" data-browser-viewport-status-width="{width}" data-browser-viewport-status-height="{height}" data-browser-viewport-status-max-bytes="{max_bytes}" data-browser-viewport-status-scroll-state="idle" data-browser-viewport-status-click-state="ready" data-browser-viewport-status-layout="summary feedback meter" data-browser-viewport-feedback-lanes="scroll click" data-browser-viewport-pending-state="idle" data-browser-viewport-target-x="{x}" data-browser-viewport-target-y="{y}" data-browser-viewport-current-x="{x}" data-browser-viewport-current-y="{y}" data-browser-viewport-max-x="{max_x}" data-browser-viewport-max-y="{max_y}" data-browser-viewport-input-sources="wheel keyboard controls drag"{action_state_attrs}><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
         x = payload.viewport_x,
         y = payload.viewport_y,
         max_x = payload.max_scroll_x,

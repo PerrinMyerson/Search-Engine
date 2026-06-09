@@ -9943,6 +9943,44 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-status-session="{}""#,
+        payload.id
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-status-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-status-width="{}""#,
+        payload.width
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-status-height="{}""#,
+        payload.height
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-status-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+    assert!(html.contains(r#"data-browser-viewport-status-scroll-state="idle""#));
+    assert!(html.contains(r#"data-browser-viewport-status-click-state="ready""#));
+    assert!(html.contains(r#"shell.dataset.scrollActionState = "queued""#));
+    assert!(html.contains(r#"shell.dataset.scrollActionState = "submitting""#));
+    assert!(html.contains(r#"shell.dataset.scrollActionState = "edge""#));
+    assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "queued""#));
+    assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "idle""#));
+    assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "edge""#));
+    assert!(
+        html.contains(
+            r#"shell.dataset.scrollPreservedViewportX = String(numberData("viewportX"))"#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"shell.dataset.scrollPreservedViewportY = String(numberData("viewportY"))"#
+        )
+    );
 
     let (link_x, link_y) = {
         let sessions = registry.sessions.lock().await;
