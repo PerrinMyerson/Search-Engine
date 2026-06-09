@@ -889,6 +889,7 @@ struct WebStorageArtifactStats {
     name: &'static str,
     bytes: u64,
     entries: usize,
+    invalid_json_rows: usize,
     result_rows: usize,
     durable_result_rows: usize,
     incomplete_result_rows: usize,
@@ -2403,6 +2404,24 @@ fn web_storage_pressure_summary_lines(
 ) -> Vec<String> {
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
     let cache_pressure_action = web_storage_cache_pressure_next_action(&summary);
+    let invalid_json_rows = artifacts
+        .iter()
+        .map(|artifact| artifact.invalid_json_rows)
+        .sum::<usize>();
+    let invalid_json_artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.invalid_json_rows > 0)
+        .count();
+    let integrity_status = if invalid_json_rows > 0 {
+        "needs-review"
+    } else {
+        "ok"
+    };
+    let integrity_next_action = if invalid_json_rows > 0 {
+        "inspect-or-dry-run-compact"
+    } else {
+        "no-integrity-action-needed"
+    };
     let mut lines = vec![
         format!(
             "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
@@ -2492,6 +2511,11 @@ fn web_storage_pressure_summary_lines(
             summary.max_entries_per_query,
             summary.stale_artifacts,
             summary.suggested_dry_runs
+        ),
+        format!(
+            "web_storage_integrity_audit: report_only=true status={integrity_status} invalid_json_rows={invalid_json_rows} affected_artifacts={invalid_json_artifacts} valid_entries={} retained_rows={} malformed_rows={invalid_json_rows} next_action={integrity_next_action}",
+            summary.entries.saturating_sub(invalid_json_rows),
+            summary.durable_result_rows
         ),
     ];
     if summary.suggested_dry_runs > 0 {
@@ -3491,6 +3515,7 @@ fn collect_web_storage_artifact_stats(
         name,
         bytes,
         entries: 0,
+        invalid_json_rows: 0,
         result_rows: 0,
         durable_result_rows: 0,
         incomplete_result_rows: 0,
@@ -3525,6 +3550,7 @@ fn collect_web_storage_artifact_stats(
         stats.entries += 1;
         let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            stats.invalid_json_rows = stats.invalid_json_rows.saturating_add(1);
             continue;
         };
         let durability = web_storage_result_row_durability(name, &value);
@@ -3955,6 +3981,7 @@ mod tests {
                     name: "web-cache.jsonl",
                     bytes: 48,
                     entries: 2,
+                    invalid_json_rows: 0,
                     result_rows: 0,
                     durable_result_rows: 0,
                     incomplete_result_rows: 0,
@@ -3974,6 +4001,7 @@ mod tests {
                     name: "brave-results.jsonl",
                     bytes: 24,
                     entries: 1,
+                    invalid_json_rows: 0,
                     result_rows: 1,
                     durable_result_rows: 0,
                     incomplete_result_rows: 1,
@@ -5558,6 +5586,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 120,
             entries: 3,
+            invalid_json_rows: 0,
             result_rows: 4,
             durable_result_rows: 4,
             incomplete_result_rows: 0,
@@ -5577,6 +5606,7 @@ mod tests {
             name: "brave-results.jsonl",
             bytes: 4096,
             entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            invalid_json_rows: 0,
             result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             durable_result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
             incomplete_result_rows: 0,
@@ -5596,6 +5626,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 80,
             entries: 2,
+            invalid_json_rows: 0,
             result_rows: 2,
             durable_result_rows: 2,
             incomplete_result_rows: 0,
@@ -5642,6 +5673,7 @@ mod tests {
             name: "web-cache.jsonl",
             bytes: 120,
             entries: 2,
+            invalid_json_rows: 0,
             result_rows: 2,
             durable_result_rows: 2,
             incomplete_result_rows: 0,
@@ -5661,6 +5693,7 @@ mod tests {
             name: "brave-results.jsonl",
             bytes: 90,
             entries: 2,
+            invalid_json_rows: 0,
             result_rows: 2,
             durable_result_rows: 2,
             incomplete_result_rows: 0,
@@ -5739,6 +5772,26 @@ mod tests {
     }
 
     #[test]
+    fn web_storage_integrity_audit_reports_malformed_jsonl_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let cache_contents = b"{\"normalized_query\":\"valid\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{not valid json\n";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        let before = std::fs::read(&cache_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats.clone()], 120, 60);
+        let after = std::fs::read(&cache_path).unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(cache_stats.entries, 2);
+        assert_eq!(cache_stats.invalid_json_rows, 1);
+        assert_eq!(cache_stats.durable_result_rows, 1);
+        assert!(lines.contains(&"web_storage_integrity_audit: report_only=true status=needs-review invalid_json_rows=1 affected_artifacts=1 valid_entries=1 retained_rows=1 malformed_rows=1 next_action=inspect-or-dry-run-compact".to_owned()));
+    }
+
+    #[test]
     fn web_storage_pressure_summary_lines_report_aggregate_pressure() {
         let lines = web_storage_pressure_summary_lines(
             &[
@@ -5746,6 +5799,7 @@ mod tests {
                     name: "web-cache.jsonl",
                     bytes: 120,
                     entries: 3,
+                    invalid_json_rows: 0,
                     result_rows: 4,
                     durable_result_rows: 4,
                     incomplete_result_rows: 0,
@@ -5765,6 +5819,7 @@ mod tests {
                     name: "brave-results.jsonl",
                     bytes: 90,
                     entries: 2,
+                    invalid_json_rows: 0,
                     result_rows: 2,
                     durable_result_rows: 2,
                     incomplete_result_rows: 0,
@@ -5842,6 +5897,7 @@ mod tests {
                     name: "web-cache.jsonl",
                     bytes: 120,
                     entries: 3,
+                    invalid_json_rows: 0,
                     result_rows: 4,
                     durable_result_rows: 4,
                     incomplete_result_rows: 0,
@@ -5861,6 +5917,7 @@ mod tests {
                     name: "brave-results.jsonl",
                     bytes: 90,
                     entries: 2,
+                    invalid_json_rows: 0,
                     result_rows: 2,
                     durable_result_rows: 2,
                     incomplete_result_rows: 0,
@@ -5966,6 +6023,7 @@ mod tests {
                 name: "brave-results.jsonl",
                 bytes: 90,
                 entries: 2,
+                invalid_json_rows: 0,
                 result_rows: 2,
                 durable_result_rows: 2,
                 incomplete_result_rows: 0,
@@ -6043,6 +6101,7 @@ mod tests {
                 name: "brave-results.jsonl",
                 bytes: 90,
                 entries: 2,
+                invalid_json_rows: 0,
                 result_rows: 2,
                 durable_result_rows: 2,
                 incomplete_result_rows: 0,
@@ -6113,6 +6172,7 @@ mod tests {
                 name: "brave-results.jsonl",
                 bytes: 90,
                 entries: 2,
+                invalid_json_rows: 0,
                 result_rows: 2,
                 durable_result_rows: 2,
                 incomplete_result_rows: 0,
@@ -6202,6 +6262,7 @@ mod tests {
                 name: "web-cache.jsonl",
                 bytes: 120,
                 entries: 3,
+                invalid_json_rows: 0,
                 result_rows: 4,
                 durable_result_rows: 4,
                 incomplete_result_rows: 0,
@@ -6235,6 +6296,7 @@ mod tests {
                 name: "web-cache.jsonl",
                 bytes: 120,
                 entries: 3,
+                invalid_json_rows: 0,
                 result_rows: 4,
                 durable_result_rows: 4,
                 incomplete_result_rows: 0,
@@ -6264,6 +6326,7 @@ mod tests {
                 name: "web-cache.jsonl",
                 bytes: 120,
                 entries: 3,
+                invalid_json_rows: 0,
                 result_rows: 4,
                 durable_result_rows: 4,
                 incomplete_result_rows: 0,
@@ -6309,6 +6372,7 @@ mod tests {
                 name: "web-cache.jsonl",
                 bytes: 120,
                 entries: 3,
+                invalid_json_rows: 0,
                 result_rows: 4,
                 durable_result_rows: 4,
                 incomplete_result_rows: 0,
@@ -6355,6 +6419,7 @@ mod tests {
                 name: "web-cache.jsonl",
                 bytes: 120,
                 entries: 3,
+                invalid_json_rows: 0,
                 result_rows: 4,
                 durable_result_rows: 4,
                 incomplete_result_rows: 0,
