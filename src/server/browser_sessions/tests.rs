@@ -157,6 +157,12 @@ fn assert_chrome_page_action_link_state(
         r#"data-browser-chrome-{action}-max-bytes="{}""#,
         payload.max_bytes
     )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-availability="available""#
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-pending-state="idle""#
+    )));
 }
 #[tokio::test]
 async fn browser_session_registry_keeps_history_across_link_navigation() {
@@ -12394,13 +12400,24 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         .unwrap();
     let page_actions_html = &topbar_html[page_actions_index..scroll_actions_index];
     assert!(page_actions_html.contains(r#"data-browser-chrome-current-action"#));
+    assert!(
+        page_actions_html
+            .contains(r#"aria-label="Refresh current viewport" title="Refresh current viewport""#)
+    );
     assert!(page_actions_html.contains(r#"data-browser-chrome-reload-action"#));
+    assert!(
+        page_actions_html
+            .contains(r#"aria-label="Reload current page" title="Reload current page""#)
+    );
     assert!(
         topbar_html.contains(
             r#"data-browser-chrome-secondary-action-group="tabs" aria-label="Tab actions""#
         )
     );
     assert!(page_actions_html.contains(r#"data-browser-chrome-images-action"#));
+    assert!(page_actions_html.contains(
+        r#"aria-label="Load images for current page" title="Load images for current page""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-shell-images"#));
     assert!(topbar_html.contains(r#">1 image in Tools</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-make-visual-action"#));
