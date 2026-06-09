@@ -137,6 +137,8 @@ pub struct BrowserResourceFetch {
     pub render_attached: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_attachment_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_visibility_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -404,6 +406,7 @@ impl BrowserResourceFetch {
             decoded_color_bytes,
             render_attached: None,
             render_attachment_kind: None,
+            image_visibility_state: None,
         }
     }
 
@@ -3152,6 +3155,7 @@ mod tests {
             decoded_color_bytes: None,
             render_attached: None,
             render_attachment_kind: None,
+            image_visibility_state: None,
         };
 
         let serialized = serde_json::to_value(&fetch).unwrap();
