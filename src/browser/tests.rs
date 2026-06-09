@@ -16070,7 +16070,7 @@ async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() 
             <p>Before real lazy aliases</p>
             <img src="loading.gif" data-original="article.gif" alt="Article lazy image" width="80" height="24">
             <img src="loading.gif" data-lazy-src="gallery.gif" alt="Gallery lazy image" width="80" height="24">
-            <img src="loading.gif" data-original-srcset="selected.gif 80w, oversized.gif 640w" sizes="80px" alt="Srcset lazy image" width="80" height="24">
+            <img src="loading.gif" data-original-srcset="dead.avif 40w, selected.gif 80w, oversized.gif 640w" sizes="80px" alt="Srcset lazy image" width="80" height="24">
             <section data-bg="loading.gif" data-background-image="url('background.gif')">Background alias</section>
             <p>After real lazy aliases</p>
         </body></html>"#,
@@ -16107,6 +16107,7 @@ async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() 
     assert!(!resource_report.resources.iter().any(|fetch| {
         fetch.resource.resolved == placeholder_url
             || fetch.resource.url == "loading.gif"
+            || fetch.resource.url == "dead.avif"
             || fetch.resource.resolved == oversized_url
             || fetch.resource.url == "oversized.gif"
     }));
@@ -16121,6 +16122,9 @@ async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() 
         assert_eq!(fetch.status, "fetched");
         assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
         assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/gif"));
         assert!(fetch.decoded_color_hash.is_some());
         assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
     }
@@ -16138,6 +16142,7 @@ async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() 
     assert!(!report.fetches.iter().any(|fetch| {
         fetch.resource.resolved == placeholder_url
             || fetch.resource.url == "loading.gif"
+            || fetch.resource.url == "dead.avif"
             || fetch.resource.resolved == oversized_url
             || fetch.resource.url == "oversized.gif"
     }));
@@ -16163,6 +16168,9 @@ async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() 
         assert_eq!(fetch.status, "fetched");
         assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
         assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/gif"));
         assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
         decoded.push((
             resolved.to_owned(),
