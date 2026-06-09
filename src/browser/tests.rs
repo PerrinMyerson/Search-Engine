@@ -3885,6 +3885,88 @@ fn selects_data_url_jpeg_srcset_candidate_for_static_render() {
     );
 }
 
+#[tokio::test]
+async fn lazy_img_data_url_reports_color_and_attaches() {
+    let data_url = tiny_test_webp_data_url();
+    let decoded = decode_image_reference("mem://lazy-data-srcset", &data_url).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let html = format!(
+        r#"<html><body>
+            <p>Before lazy data image</p>
+            <img loading="lazy" src="{data_url}" alt="Lazy data WebP" width="80" height="24">
+            <p>After lazy data image</p>
+        </body></html>"#
+    );
+    fs::write(&page, html).unwrap();
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, data_url);
+    assert_eq!(fetch.resource.resolved, data_url);
+    assert_eq!(fetch.status, "cached");
+    let source = fetch.source.as_deref().unwrap();
+    assert_ne!(source, data_url);
+    assert!(source.starts_with("data:image/webp;base64,..."));
+    assert!(source.contains("decoded_bytes="));
+    assert!(source.contains(&format!("source_chars={}", data_url.len())));
+    assert_eq!(fetch.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/webp"));
+    assert_eq!(fetch.decoded_width, Some(decoded.width));
+    assert_eq!(fetch.decoded_height, Some(decoded.height));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before lazy data image"));
+    assert!(render.text.contains("After lazy data image"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == data_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb.as_slice())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &data_url && hash == &expected_hash
+        )
+    }));
+}
+
 #[test]
 fn image_decode_visibility_skips_unsupported_width_srcset_candidate() {
     let dir = tempfile::tempdir().unwrap();
