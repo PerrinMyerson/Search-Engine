@@ -9700,6 +9700,123 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
 }
 
 #[tokio::test]
+async fn redirected_image_resource_keeps_original_url_and_decoded_color_attachment() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /redirect-image ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /final-color.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            let (content_type, body) = if first_line.contains(" /final-color.png ") {
+                ("application/octet-stream", png_bytes.clone())
+            } else {
+                assert!(first_line.contains(" /page.html "), "{first_line}");
+                (
+                    "text/html",
+                    br#"<html><body><p>Before redirect</p><img src="/redirect-image" alt="Redirected color"><p>After redirect</p></body></html>"#.to_vec(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let original_url = format!("http://{addr}/redirect-image");
+    let final_url = format!("http://{addr}/final-color.png");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.url, "/redirect-image");
+    assert_eq!(fetch.resource.resolved, original_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(
+        fetch.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(12));
+
+    let render = session.current().unwrap();
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == original_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap();
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb)
+    );
+    assert!(expected_rgb.chunks_exact(3).any(|pixel| i16::from(
+        pixel[0].max(pixel[1]).max(pixel[2])
+    ) - i16::from(
+        pixel[0].min(pixel[1]).min(pixel[2])
+    ) > 100));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &original_url && hash == &expected_hash
+        )
+    }));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn image_resource_reporting_distinguishes_decode_outcomes() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
