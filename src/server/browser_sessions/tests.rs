@@ -3564,6 +3564,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         r#"updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href")"#
     ));
+    assert!(html.contains(
+        r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href")"#
+    ));
+    assert!(html.contains(
+        r#"updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href")"#
+    ));
     assert!(html.contains(r#"document.querySelectorAll("input[name=\"viewport_x\"]")"#));
     assert!(html.contains(r#"document.querySelectorAll("input[name=\"viewport_y\"]")"#));
     assert!(
@@ -3743,6 +3749,19 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
     assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
     assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls drag""#));
+    assert!(html.contains(r#"data-browser-shell-interaction-mode="browser""#));
+    assert!(
+        html.contains(r#"data-browser-shell-preserves="session from source viewport max-bytes""#)
+    );
+    assert!(
+        html.contains(r#"data-browser-shell-click-scroll-separation="defer-click-during-scroll""#)
+    );
+    assert!(
+        html.contains(r#"data-browser-scroll-preserves="session from source viewport max-bytes""#)
+    );
+    assert!(
+        html.contains(r#"data-browser-click-preserves="session from source viewport max-bytes""#)
+    );
     assert!(html.contains(r#"data-browser-scroll-input-source="idle""#));
     assert!(html.contains(r#"data-browser-scroll-line-step="2""#));
     assert!(html.contains(r#"data-browser-scroll-page-step-x="20""#));
