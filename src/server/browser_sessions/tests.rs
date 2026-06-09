@@ -2623,6 +2623,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         )
     );
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
+    assert!(html.contains(r#"data-browser-controls-tray-role="secondary-tools""#));
+    assert!(html.contains(r#"data-browser-controls-tray-default="collapsed""#));
     assert!(html.contains(">Bottom</a>"));
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
@@ -13997,6 +13999,18 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_index < location_index);
     let topbar_html = &html[topbar_index..html.find("</header>").unwrap()];
     assert!(topbar_html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
+    assert!(topbar_html.contains(r#"data-browser-first-viewport-chrome="compact""#));
+    assert!(topbar_html.contains(r#"data-browser-debug-default="secondary""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-density="compact""#));
+    assert!(
+        topbar_html.contains(
+            r#"data-browser-chrome-primary-controls="navigation address actions status""#
+        )
+    );
+    assert!(
+        topbar_html
+            .contains(r#"data-browser-chrome-secondary-controls="tools diagnostics manual-input""#)
+    );
     assert!(
         topbar_html.contains(r#"data-browser-chrome-toolbar-order="navigation address status""#)
     );

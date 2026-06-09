@@ -10580,8 +10580,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </head>
 <body>
 <main>
-<header class="browser-topbar">
-<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-toolbar-order="navigation address status">
+<header class="browser-topbar" data-browser-first-viewport-chrome="compact" data-browser-debug-default="secondary">
+<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address status">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control data-browser-primary-nav-session="{id}" data-browser-primary-nav-from="{back_href}" data-browser-primary-nav-source="{source_attr}" data-browser-primary-nav-viewport-x="{viewport_x}" data-browser-primary-nav-viewport-y="{viewport_y}" data-browser-primary-nav-width="{width}" data-browser-primary-nav-height="{height}" data-browser-primary-nav-max-bytes="{max_bytes}" data-browser-primary-nav-order="search back forward actions"><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
@@ -10609,7 +10609,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray data-browser-controls-tray-scrollable="{controls_scrollable}" data-browser-controls-tray-find="{controls_find}" data-browser-controls-tray-forms="{controls_forms}" data-browser-controls-tray-resources="{controls_resources}">{controls_tray_summary}<div class="browser-controls-content" data-browser-controls-content data-browser-controls-content-order="scroll find jump resources text">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray data-browser-controls-tray-role="secondary-tools" data-browser-controls-tray-default="collapsed" data-browser-controls-tray-scrollable="{controls_scrollable}" data-browser-controls-tray-find="{controls_find}" data-browser-controls-tray-forms="{controls_forms}" data-browser-controls-tray-resources="{controls_resources}">{controls_tray_summary}<div class="browser-controls-content" data-browser-controls-content data-browser-controls-content-order="scroll find jump resources text">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
 {diagnostics_section}
 {keyboard_controls_script}
