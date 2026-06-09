@@ -7598,7 +7598,7 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         &page,
         r#"<html><head>
             <style>
-                .hero { background-image: url('background.png'); min-height: 64px; }
+                .hero { background-image: image-set(url('dead.avif') type('image/avif') 1x, url('background.png') type('image/png') 2x); min-height: 64px; }
             </style>
             <link rel="preload" as="image" href="preload.png">
         </head><body>
@@ -7641,6 +7641,12 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(image_report.decoded, 5);
     assert_eq!(image_report.failed, 2);
     assert_eq!(image_report.skipped, 1);
+    assert!(!image_report.fetches.iter().any(|fetch| {
+        matches!(
+            fetch.resource.url.as_str(),
+            "dead.avif" | "print.png" | "fallback.png"
+        )
+    }));
 
     for (path, attachment_kind) in [
         (&background, "background_image"),
@@ -7655,11 +7661,13 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
             .find(|fetch| fetch.resource.resolved == resolved)
             .unwrap();
         assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.image_resource_state.as_deref(), Some("decoded_color"));
         assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
         assert_eq!(
             fetch.decoded_color_hash.as_deref(),
             Some(expected_color_hash.as_str())
         );
+        assert_eq!(fetch.decoded_color_bytes, Some(12));
         assert_eq!(fetch.render_attached, Some(true));
         assert_eq!(
             fetch.render_attachment_kind.as_deref(),
@@ -7680,7 +7688,12 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         preload_fetch.image_decode_status.as_deref(),
         Some("decoded")
     );
+    assert_eq!(
+        preload_fetch.image_resource_state.as_deref(),
+        Some("decoded_color")
+    );
     assert_eq!(preload_fetch.render_attached, Some(false));
+    assert_eq!(preload_fetch.render_attachment_kind, None);
     assert_eq!(
         preload_fetch.image_visibility_state.as_deref(),
         Some("decoded_unattached")
@@ -7699,6 +7712,11 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         broken_fetch.image_visibility_state.as_deref(),
         Some("decode_failed")
     );
+    assert_eq!(
+        broken_fetch.image_resource_state.as_deref(),
+        Some("decode_failed")
+    );
+    assert_eq!(broken_fetch.render_attached, Some(false));
 
     let unsupported_fetch = image_report
         .fetches
@@ -7713,6 +7731,14 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         unsupported_fetch.image_visibility_state.as_deref(),
         Some("unsupported_type")
     );
+    assert_eq!(
+        unsupported_fetch.image_resource_state.as_deref(),
+        Some("unsupported_type")
+    );
+    assert_eq!(
+        unsupported_fetch.image_byte_signature.as_deref(),
+        Some("image/avif")
+    );
 
     let missing_fetch = image_report
         .fetches
@@ -7722,6 +7748,14 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(missing_fetch.status, "failed");
     assert_eq!(
         missing_fetch.image_visibility_state.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        missing_fetch.image_resource_state.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        missing_fetch.image_decode_status.as_deref(),
         Some("not_fetched")
     );
 
@@ -7734,6 +7768,14 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(
         skipped_fetch.image_visibility_state.as_deref(),
         Some("skipped")
+    );
+    assert_eq!(
+        skipped_fetch.image_resource_state.as_deref(),
+        Some("skipped")
+    );
+    assert_eq!(
+        skipped_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
     );
 
     let render = session.current().unwrap();
@@ -7818,6 +7860,15 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         capped_fetch.image_visibility_state.as_deref(),
         Some("not_fetched")
     );
+    assert_eq!(
+        capped_fetch.image_resource_state.as_deref(),
+        Some("byte_limited")
+    );
+    assert_eq!(
+        capped_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(capped_fetch.render_attached, Some(false));
 }
 
 #[tokio::test]
