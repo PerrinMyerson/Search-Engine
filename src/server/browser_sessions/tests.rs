@@ -2815,6 +2815,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let controls_html = &html[controls_tray_index..debug_index];
     assert!(controls_html.contains(r#"data-browser-controls-summary"#));
     assert!(controls_html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(controls_html.contains(r#"data-browser-controls-summary-placement="secondary""#));
+    assert!(controls_html.contains(r#"data-browser-controls-summary-primary-flow="false""#));
     assert!(controls_html.contains(r#"data-browser-controls-summary-scroll="true""#));
     assert!(controls_html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(controls_html.contains(r#"<strong>Tools</strong>"#));
@@ -2909,7 +2911,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(r#"data-browser-first-view-status="compact""#));
+    assert!(html.contains(r#"data-browser-viewport-status-density="compact""#));
     assert!(html.contains(r#"data-browser-viewport-status-layout="summary feedback meter""#));
+    assert!(html.contains(r#"data-browser-viewport-feedback-lanes="scroll click""#));
     assert!(html.contains(r#"data-browser-viewport-pending-state="idle""#));
     assert!(html.contains(r#"data-browser-viewport-target-x="0""#));
     assert!(html.contains(r#"data-browser-viewport-target-y="0""#));
@@ -3453,6 +3457,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"data-browser-controls-summary"#));
     assert!(html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(html.contains(r#"data-browser-controls-summary-placement="secondary""#));
+    assert!(html.contains(r#"data-browser-controls-summary-primary-flow="false""#));
     assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
     assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(html.contains(r#"<strong>Tools</strong>"#));
@@ -14394,6 +14400,10 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-chrome-last-action="none""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-last-outcome="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-status-density="compact""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-status-feedback-lanes="navigation scroll click form action""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-chrome-outcome-display="compact""#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
