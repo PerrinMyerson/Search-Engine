@@ -11954,6 +11954,156 @@ fn no_repeat_background_hit_uses_painted_tile_after_scroll() {
 }
 
 #[test]
+fn scrolled_no_repeat_visual_fallback_uses_painted_tile_columns() {
+    let background_url = "mem://scrolled-painted-tile-link".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![104],
+        rgb_pixels: Some(vec![38, 132, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://scrolled-painted-tile-link-page".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: background_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 1,
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::BackgroundImage {
+                x: 0,
+                y: 5,
+                width: 4,
+                height: 1,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 100,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 8,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Lead\nTail".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 5,
+            width: 8,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 5);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 3, 0),
+        Some(77),
+        "exact hit should resolve the visible painted no-repeat tile"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 4, 0),
+        Some(77),
+        "nearby visual fallback should use painted tile columns, not the full background box"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 0),
+        None,
+        "blank no-repeat background cells should not steal hits from visible controls"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba =
+        rasterize_render_rgba(&render, options).expect("rasterize scrolled painted tile link");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(3)),
+            options.padding_y
+        ),
+        [38, 132, 220, 255],
+        "raster should show the decoded painted tile on the same row as the hit"
+    );
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [255, 255, 255, 255],
+        "blank no-repeat background area should remain visually empty"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 4, 0),
+        None,
+        "painted tile target should not remain hittable after it scrolls out"
+    );
+}
+
+#[test]
 fn decoded_media_scroll_dirty_regions_match_painted_clip_and_hits() {
     let image_url = "mem://decoded-scroll-clip-image".to_owned();
     let background_url = "mem://decoded-scroll-clip-background".to_owned();
