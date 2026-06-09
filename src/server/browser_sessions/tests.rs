@@ -582,7 +582,9 @@ async fn browser_session_page_can_omit_heavy_diagnostics_for_default_route() {
     assert!(slim_html.contains(r#"data-browser-primary-surface"#));
     assert!(slim_html.contains(r#"class="browser-raster-shell""#));
     assert!(slim_html.contains(r#"data-browser-controls-summary"#));
-    assert!(slim_html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(slim_html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(slim_html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
+    assert!(slim_html.contains(r#"<strong>Tools</strong>"#));
     assert!(slim_html.contains("Open diagnostics"));
     assert!(slim_html.contains("debug=1"));
     assert!(!slim_html.contains(r#"<summary>Diagnostics</summary>"#));
@@ -2677,7 +2679,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     let controls_html = &html[controls_tray_index..debug_index];
     assert!(controls_html.contains(r#"data-browser-controls-summary"#));
-    assert!(controls_html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(controls_html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(controls_html.contains(r#"data-browser-controls-summary-scroll="true""#));
+    assert!(controls_html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
+    assert!(controls_html.contains(r#"<strong>Tools</strong>"#));
     assert!(controls_html.contains(r#"data-browser-controls-tray-scrollable="true""#));
     assert!(
         controls_html
@@ -3312,7 +3317,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(manual_scroll_controls_index < command_strip_index);
     assert!(controls_tray_index < command_strip_index);
     assert!(html.contains(r#"data-browser-controls-summary"#));
-    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
+    assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
+    assert!(html.contains(r#"<strong>Tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(
         html.contains(
@@ -14285,7 +14293,12 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     let primary_html = &html[viewport_index..controls_tray_index];
     let controls_html = &html[controls_tray_index..debug_index];
-    assert!(primary_html.contains(r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter">"#));
+    assert!(primary_html.contains(r#"class="viewport-status compact""#));
+    assert!(primary_html.contains(r#"data-browser-viewport-status"#));
+    assert!(primary_html.contains(r#"data-browser-first-view-status="compact""#));
+    assert!(
+        primary_html.contains(r#"data-browser-viewport-status-layout="summary feedback meter""#)
+    );
     assert!(primary_html.contains(r#"data-browser-primary-raster hidden"#));
     assert!(!primary_html.contains(r#"<span data-browser-primary-raster>Browser view ready"#));
     assert!(html.contains(r#".viewport-status { display: grid; gap: 5px; margin: 4px 0 8px; }"#));
@@ -14300,7 +14313,10 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"<summary>Page details</summary>"#));
     assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > debug_index);
     assert!(html.contains(r#"data-browser-controls-summary"#));
-    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
+    assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
+    assert!(html.contains(r#"<strong>Tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
     assert!(html.contains(r#"class="debug-stack-content""#));
@@ -14880,7 +14896,10 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains("Still opening; retrying once in this tab..."));
     assert!(html.contains("Still opening; use Continue loading to retry in this tab."));
     assert!(html.contains(r#"data-browser-controls-summary"#));
-    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(html.contains(r#"data-browser-controls-summary-density="compact""#));
+    assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
+    assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
+    assert!(html.contains(r#"<strong>Tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains(r#"data-viewport-state="loading""#));
@@ -15227,7 +15246,7 @@ async fn browser_page_renders_stale_session_recovery_shell_without_source() {
             .body
             .contains(r#"<a href="/search?q=stale">Back to search</a>"#)
     );
-    assert!(!response.body.contains("More browser tools"));
+    assert!(!response.body.contains(r#"data-browser-controls-summary"#));
 }
 
 #[tokio::test]
