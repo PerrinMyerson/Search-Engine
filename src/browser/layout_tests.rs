@@ -7889,6 +7889,185 @@ fn overflow_clipped_image_samples_original_source_in_scrolled_viewport() {
 }
 
 #[test]
+fn decoded_intrinsic_image_width_clamp_preserves_aspect_and_scroll_hits() {
+    let image_url = "mem://wide-intrinsic-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 4,
+        height: 2,
+        pixels: vec![120; 8],
+        rgb_pixels: Some(vec![
+            36, 128, 220, 36, 128, 220, 36, 128, 220, 36, 128, 220, 36, 128, 220, 36, 128, 220, 36,
+            128, 220, 36, 128, 220,
+        ]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://wide-intrinsic-scroll-image-page",
+        format!(
+            r#"
+            <html><head><style>
+              .spacer {{ height: 24px; }}
+              .tail {{ height: 48px; }}
+            </style></head><body>
+              <div class="spacer"></div>
+              <a href="/photo" style="display:block"><img src="{image_url}" alt="wide decoded"></a>
+              <a href="/next" style="display:block">Next</a>
+              <div class="tail"></div>
+            </body></html>
+            "#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 2,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render wide intrinsic decoded image fixture");
+    let render = profiled.render;
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded foreground image command");
+    assert_eq!(
+        image.2, 1,
+        "fixture should clamp the wide intrinsic image to the final available image cell"
+    );
+    assert_eq!(
+        image.3, 1,
+        "width-clamped intrinsic image should preserve aspect instead of leaving a stale extra row"
+    );
+    let next_link = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text == "Next" => Some((*x, *y)),
+            DisplayCommand::Text { x, y, text } if text == "Next" => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("following link text should render");
+    assert_eq!(
+        next_link.1,
+        image.1.saturating_add(1),
+        "following link row should start immediately after the scaled image row"
+    );
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: image.1,
+            width: 2,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/photo".to_owned()),
+        "image link should be hittable on the painted scrolled row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 1)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "following text link should be hittable on the next viewport row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options)
+        .expect("rasterize width-clamped foreground image viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [36, 128, 220, 255],
+        "scrolled raster should paint the decoded foreground image in the top row"
+    );
+    let text_start_x = options.padding_x.saturating_add(
+        next_link
+            .0
+            .saturating_sub(viewport.viewport.x)
+            .saturating_mul(options.cell_width),
+    );
+    let text_end_x = options.padding_x.saturating_add(
+        next_link
+            .0
+            .saturating_add("Next".len())
+            .saturating_sub(viewport.viewport.x)
+            .min(viewport.viewport.width)
+            .saturating_mul(options.cell_width),
+    );
+    let link_row_has_visible_ink = (options.padding_y.saturating_add(options.cell_height)
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height.saturating_mul(2))
+            .min(rgba.height))
+        .any(|y| {
+            (text_start_x..text_end_x.min(rgba.width)).any(|x| {
+                let pixel = pixel(x, y);
+                pixel[3] == 255 && pixel != rgba.background && pixel != [36, 128, 220, 255]
+            })
+        });
+    assert!(
+        link_row_has_visible_ink,
+        "following link text should paint non-background ink below the scaled image row"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
+    assert_eq!(after.viewport.y, image.1.saturating_add(1));
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "text link should replace the image hit after one-row scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 0, 1),
+        None,
+        "foreground image target should not leave a stale extra hit row after scroll"
+    );
+}
+
+#[test]
 fn overflow_clip_uses_padding_box_for_scrolled_media_and_hit_geometry() {
     let image_url = "mem://overflow-padding-box-image".to_owned();
     let decoded = DecodedImage {

@@ -18436,7 +18436,16 @@ fn image_placeholder_extent(
     };
     width = constrain_image_width(width, style, width_basis);
     height = constrain_image_height(height, style);
-    (width.clamp(1, width_basis), height)
+    let unclamped_width = width.max(1);
+    width = width.clamp(1, width_basis);
+    if width < unclamped_width
+        && style_height.is_none()
+        && attr_height.is_none()
+        && let Some(scaled_height) = scale_image_dimension(width, height, unclamped_width)
+    {
+        height = scaled_height.max(1);
+    }
+    (width, height)
 }
 
 fn constrain_image_width(width: usize, style: &ComputedStyle, basis: usize) -> usize {
