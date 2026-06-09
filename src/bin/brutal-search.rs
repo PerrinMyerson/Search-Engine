@@ -1967,6 +1967,7 @@ fn storage_pressure_rollup_lines(
             frontier_records
         ),
         "storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .brutal-index contents".to_owned(),
+        "storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned(),
         format!(
             "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.brutal-index/raw-index-data",
             stats.total_bytes,
@@ -2302,6 +2303,9 @@ fn search_index_retention_audit_lines(
         ),
         format!(
             "brave_web_replay_index_gap: report_only=true replayable_rows={cache_rows} durable_provider_rows={result_log_rows} durable_not_replayable_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} durable_not_indexed_rows={durable_not_indexed_rows} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} next_action={index_gap_next_action}"
+        ),
+        format!(
+            "local_web_index_persistence_boundary: report_only=true durable_provider_rows={result_log_rows} replayable_cache_rows={cache_rows} indexed_documents={indexed_documents} missing_replay_rows={result_log_only_rows} missing_index_rows={durable_not_indexed_rows} persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action={index_gap_next_action}"
         ),
         "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned(),
     ]
@@ -5275,6 +5279,7 @@ mod tests {
 
         assert!(lines.contains(&"storage_git_manifest_readiness: report_only=true status=needs-review exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_rows=30 browser_document_rows=3 snapshot_entries=5 frontier_records=10".to_owned()));
         assert!(lines.contains(&"storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .brutal-index contents".to_owned()));
+        assert!(lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
 
         let clean_stats = IndexStorageStats {
             total_bytes: 700,
@@ -6139,6 +6144,66 @@ mod tests {
     }
 
     #[test]
+    fn local_web_index_footprint_hygiene_reports_bounds_and_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser_path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &browser_path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"local\",\"provider\":\"cache\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet A\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"local\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet A\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"local\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Snippet B\",\"fetched_at_unix\":101}\n",
+        )
+        .unwrap();
+
+        let before_browser = std::fs::read(&browser_path).unwrap();
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let browser_lines = browser_document_storage_pressure_summary_lines(&stats);
+        let rollup_lines = storage_pressure_rollup_lines(&stats, &web_summary);
+        let retention_lines = search_index_retention_audit_lines(&stats, &web_summary);
+
+        assert_eq!(before_browser, std::fs::read(&browser_path).unwrap());
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
+        assert!(browser_lines.iter().any(|line| {
+            line.starts_with("browser_runtime_footprint_bounds: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("sessions=2")
+                && line.contains("browser_document_rows=3")
+                && line.contains("resource_cache_bytes=0")
+                && line.contains("resource_cache_status=not-scanned")
+                && line.contains("suggested_session_payload_cap_bytes=65536")
+                && line.contains("next_action=inspect-duplicate-large-browser-runtime-rows")
+        }));
+        assert!(rollup_lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
+        assert!(retention_lines.iter().any(|line| {
+            line.starts_with("local_web_index_persistence_boundary: report_only=true")
+                && line.contains("durable_provider_rows=2")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("missing_replay_rows=1")
+                && line.contains("persists=brave-results.jsonl,web-cache.jsonl")
+                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+        }));
+    }
+
+    #[test]
     fn browser_document_storage_pressure_reports_zero_removal() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("browser-documents.jsonl");
@@ -6850,6 +6915,7 @@ mod tests {
 
         assert!(lines.contains(&"search_index_retention_audit: report_only=true status=needs-review web_cache_rows=0 brave_result_rows=2 durable_web_rows=2 incomplete_web_rows=0 result_log_only_rows=2 missing_query_buckets=2 indexed_documents=3 indexed_document_bytes=100 web_cache_bytes=0 brave_result_bytes=90 drift_rows=2 next_action=rebuild-web-cache-replay".to_owned()));
         assert!(lines.contains(&"brave_web_replay_index_gap: report_only=true replayable_rows=0 durable_provider_rows=2 durable_not_replayable_rows=2 missing_query_buckets=2 indexed_documents=3 durable_not_indexed_rows=0 web_cache_bytes=0 brave_result_bytes=90 next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
+        assert!(lines.contains(&"local_web_index_persistence_boundary: report_only=true durable_provider_rows=2 replayable_cache_rows=0 indexed_documents=3 missing_replay_rows=2 missing_index_rows=0 persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
         assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned()));
     }
 
