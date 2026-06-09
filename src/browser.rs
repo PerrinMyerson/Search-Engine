@@ -4397,20 +4397,22 @@ fn hit_test_nearby_text_target_node_for_viewport_matching(
             ) {
                 return None;
             }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
             let command_bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
-                display_command_viewport_fixed(render, command_index),
-                display_command_viewport_sticky_top(render, command_index),
+                viewport_fixed,
+                viewport_sticky_top,
             );
-            let visible_bounds = if display_command_viewport_fixed(render, command_index)
-                || display_command_viewport_sticky_top(render, command_index).is_some()
-            {
+            let pinned = viewport_fixed || viewport_sticky_top.is_some();
+            let visible_bounds = if pinned {
                 command_bounds
             } else {
                 intersect_display_bounds_with_viewport(command_bounds, viewport)?
             };
-            if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, 1) {
+            let y_tolerance = if pinned { 1 } else { 0 };
+            if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, y_tolerance) {
                 return None;
             }
             let column = clamped_bounds_column(command_bounds, x);
