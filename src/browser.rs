@@ -5055,7 +5055,7 @@ fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
             DisplayCommandBounds {
                 x: *x,
                 y: *y,
-                width: text.chars().count(),
+                width: display_command_text_width(text),
                 height: 1,
             }
         }
@@ -5093,6 +5093,14 @@ fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
             height: *height,
         },
     }
+}
+
+fn display_command_text_width(text: &str) -> usize {
+    collapse_repeated_glyph_runs(text)
+        .as_deref()
+        .unwrap_or(text)
+        .chars()
+        .count()
 }
 
 #[derive(Debug, Clone)]
