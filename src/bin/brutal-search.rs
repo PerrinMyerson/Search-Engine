@@ -2437,6 +2437,36 @@ fn web_storage_pressure_summary_lines(
         "dry-run-recommended" => "run-web-storage-dry-run",
         _ => "no-storage-action-needed",
     };
+    let brave_results = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let brave_persisted_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let brave_duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let brave_duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let brave_invalid_rows = brave_results
+        .map(|artifact| artifact.invalid_json_rows)
+        .unwrap_or(0);
+    let brave_archive_status = if brave_invalid_rows > 0 {
+        "needs-review"
+    } else if brave_duplicate_rows > 0 || brave_duplicate_row_bytes > 0 {
+        "duplicate-pressure"
+    } else if brave_persisted_rows > 0 {
+        "ready"
+    } else {
+        "empty"
+    };
+    let brave_archive_next_action = match brave_archive_status {
+        "needs-review" => "inspect-brave-results-jsonl",
+        "duplicate-pressure" => "run-web-cache-dry-run-before-apply",
+        "ready" => "archive-healthy",
+        _ => "no-brave-results-retained",
+    };
     let mut lines = vec![
         format!(
             "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
@@ -2539,6 +2569,9 @@ fn web_storage_pressure_summary_lines(
             summary.duplicate_entries,
             summary.duplicate_row_bytes,
             summary.suggested_dry_runs
+        ),
+        format!(
+            "brave_result_archive_guard: report_only=true status={brave_archive_status} persisted_rows={brave_persisted_rows} duplicate_rows={brave_duplicate_rows} duplicate_row_bytes={brave_duplicate_row_bytes} malformed_rows={brave_invalid_rows} mutates_files=false next_action={brave_archive_next_action}"
         ),
     ];
     if summary.suggested_dry_runs > 0 {
@@ -5836,6 +5869,31 @@ mod tests {
                 && line.contains("reclaimable_rows=1")
                 && line.contains("suggested_dry_runs=1")
                 && line.contains("next_action=inspect-or-dry-run-compact")
+        }));
+    }
+
+    #[test]
+    fn brave_result_archive_guard_reports_duplicate_pressure_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let result_log_contents = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha duplicate\",\"fetched_at_unix\":110}\n";
+        std::fs::write(&result_log_path, result_log_contents).unwrap();
+        let before = std::fs::read(&result_log_path).unwrap();
+
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[log_stats], 120, 60);
+        let after = std::fs::read(&result_log_path).unwrap();
+
+        assert_eq!(before, after);
+        assert!(lines.iter().any(|line| {
+            line.starts_with("brave_result_archive_guard: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("persisted_rows=2")
+                && line.contains("duplicate_rows=1")
+                && line.contains("malformed_rows=0")
+                && line.contains("mutates_files=false")
+                && line.contains("next_action=run-web-cache-dry-run-before-apply")
         }));
     }
 
