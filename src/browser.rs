@@ -5786,7 +5786,10 @@ pub fn browser_document_viewport(
     let (mut invalidated_regions, full_repaint) =
         browser_viewport_invalidated_regions(previous, viewport_state);
     if !full_repaint && let Some(previous_state) = previous {
-        if previous_state.x != viewport_state.x || previous_state.y != viewport_state.y {
+        let viewport_moved =
+            previous_state.x != viewport_state.x || previous_state.y != viewport_state.y;
+        let explicit_same_viewport_rerender = requested == viewport_state;
+        if viewport_moved {
             append_viewport_positioned_invalidated_regions(
                 render,
                 previous_state,
@@ -5812,7 +5815,7 @@ pub fn browser_document_viewport(
                 browser_viewport_signed_delta(previous_state.y, viewport_state.y),
                 &mut invalidated_regions,
             );
-        } else {
+        } else if explicit_same_viewport_rerender {
             append_viewport_media_invalidated_regions(
                 render,
                 viewport_state,
@@ -5826,12 +5829,14 @@ pub fn browser_document_viewport(
                 &mut invalidated_regions,
             );
         }
-        append_viewport_readable_context_invalidated_regions(
-            render,
-            previous_state,
-            viewport_state,
-            &mut invalidated_regions,
-        );
+        if viewport_moved || explicit_same_viewport_rerender {
+            append_viewport_readable_context_invalidated_regions(
+                render,
+                previous_state,
+                viewport_state,
+                &mut invalidated_regions,
+            );
+        }
     }
     let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
     let invalidated_area = invalidated_regions
@@ -5956,7 +5961,7 @@ pub fn browser_viewport_frame_sequence(
     for (delta_x, delta_y) in scroll_deltas {
         let viewport = browser_document_viewport_after_scroll(render, previous, *delta_x, *delta_y);
         let frame =
-            browser_viewport_frame(render, viewport.viewport, Some(previous), raster_options)?;
+            browser_viewport_frame(render, viewport.requested, Some(previous), raster_options)?;
         previous = frame.report.viewport.viewport;
         frames.push(frame);
     }
@@ -6432,6 +6437,39 @@ fn canonicalize_browser_viewport_frame_dirty_regions(
         return;
     }
 
+    merge_horizontal_viewport_frame_dirty_regions(regions);
+
+    regions.sort_by_key(|region| {
+        (
+            region.viewport_x,
+            region.viewport_y,
+            region.viewport_width,
+            region.viewport_height,
+        )
+    });
+    let mut vertical: Vec<BrowserViewportFrameDirtyRect> = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        if let Some(last) = vertical.last_mut() {
+            if last.viewport_x == region.viewport_x
+                && last.viewport_width == region.viewport_width
+                && last.x == region.x
+                && last.width == region.width
+                && last.viewport_y.saturating_add(last.viewport_height) == region.viewport_y
+                && last.y.saturating_add(last.height) == region.y
+            {
+                last.viewport_height = last.viewport_height.saturating_add(region.viewport_height);
+                last.height = last.height.saturating_add(region.height);
+                continue;
+            }
+        }
+        vertical.push(region);
+    }
+    *regions = vertical;
+    merge_horizontal_viewport_frame_dirty_regions(regions);
+    regions.sort_by_key(|region| (region.viewport_y, region.viewport_x));
+}
+
+fn merge_horizontal_viewport_frame_dirty_regions(regions: &mut Vec<BrowserViewportFrameDirtyRect>) {
     regions.sort_by_key(|region| {
         (
             region.viewport_y,
@@ -6457,32 +6495,7 @@ fn canonicalize_browser_viewport_frame_dirty_regions(
         }
         horizontal.push(region);
     }
-
-    horizontal.sort_by_key(|region| {
-        (
-            region.viewport_x,
-            region.viewport_y,
-            region.viewport_width,
-            region.viewport_height,
-        )
-    });
-    for region in horizontal {
-        if let Some(last) = regions.last_mut() {
-            if last.viewport_x == region.viewport_x
-                && last.viewport_width == region.viewport_width
-                && last.x == region.x
-                && last.width == region.width
-                && last.viewport_y.saturating_add(last.viewport_height) == region.viewport_y
-                && last.y.saturating_add(last.height) == region.y
-            {
-                last.viewport_height = last.viewport_height.saturating_add(region.viewport_height);
-                last.height = last.height.saturating_add(region.height);
-                continue;
-            }
-        }
-        regions.push(region);
-    }
-    regions.sort_by_key(|region| (region.viewport_y, region.viewport_x));
+    *regions = horizontal;
 }
 
 fn browser_viewport_signed_delta(current: usize, previous: usize) -> isize {

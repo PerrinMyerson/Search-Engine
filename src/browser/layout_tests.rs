@@ -13162,15 +13162,9 @@ fn clamped_bottom_raster_slice_keeps_media_text_and_hits_aligned() {
     assert_eq!(clamped_again.viewport.y, bottom.viewport.y);
     assert_eq!(clamped_again.scroll_delta_y, 0);
     assert!(!clamped_again.full_repaint);
-    assert_eq!(
-        clamped_again.invalidated_regions,
-        vec![BrowserViewportRect {
-            x: 0,
-            y: 0,
-            width: 2,
-            height: 1,
-        }],
-        "same-viewport bottom clamp should only dirty visible media cells"
+    assert!(
+        clamped_again.invalidated_regions.is_empty(),
+        "clamped bottom no-op should not dirty media rows"
     );
 
     let raster_options = BrowserRasterOptions {
