@@ -931,6 +931,7 @@ fn temp_cleanup_classification(
     name: &str,
     is_git_worktree: bool,
     git_dirty: Option<bool>,
+    active_worktree: bool,
 ) -> TempCleanupClassification {
     if name.contains("-target-") || name.ends_with("-target") {
         return TempCleanupClassification {
@@ -938,6 +939,15 @@ fn temp_cleanup_classification(
             status: "candidate",
             cleanup_safe: true,
             next_action: "remove-merged-target",
+        };
+    }
+
+    if active_worktree {
+        return TempCleanupClassification {
+            kind: "source-worktree",
+            status: "active",
+            cleanup_safe: false,
+            next_action: "preserve-active-worktree",
         };
     }
 
@@ -964,12 +974,29 @@ fn temp_cleanup_classification(
         };
     }
 
+    if temp_cleanup_generated_output_name(name) {
+        return TempCleanupClassification {
+            kind: "generated-output",
+            status: "review-required",
+            cleanup_safe: false,
+            next_action: "review-generated-output",
+        };
+    }
+
     TempCleanupClassification {
         kind: "unknown-dir",
         status: "review-required",
         cleanup_safe: false,
         next_action: "unknown-review-required",
     }
+}
+
+fn temp_cleanup_generated_output_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("session")
+        || lower.contains("cache")
+        || lower.contains("generated")
+        || lower.contains("artifact")
 }
 
 fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
@@ -994,7 +1021,12 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         } else {
             None
         };
-        let classification = temp_cleanup_classification(name, is_git_worktree, git_dirty);
+        let active_worktree = is_git_worktree
+            && std::env::current_dir()
+                .ok()
+                .is_some_and(|current_dir| current_dir == path);
+        let classification =
+            temp_cleanup_classification(name, is_git_worktree, git_dirty, active_worktree);
         let bytes = directory_size_bytes(&path).unwrap_or(0);
         let metadata = std::fs::metadata(&path).ok();
         let modified_age_secs = metadata
@@ -1029,6 +1061,9 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut old_target_count = 0usize;
     let mut dirty_worktree_count = 0usize;
     let mut unknown_review_count = 0usize;
+    let mut active_worktree_count = 0usize;
+    let mut generated_review_count = 0usize;
+    let mut generated_review_bytes = 0u64;
     let mut total_bytes = 0u64;
     for (path, bytes, classification, modified_age_secs, mtime_unix_secs) in entries {
         total_bytes = total_bytes.saturating_add(bytes);
@@ -1045,16 +1080,24 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         if classification.status == "dirty" {
             dirty_worktree_count += 1;
         }
+        if classification.status == "active" {
+            active_worktree_count += 1;
+        }
+        if classification.kind == "generated-output" {
+            generated_review_count += 1;
+            generated_review_bytes = generated_review_bytes.saturating_add(bytes);
+        }
         if classification.kind == "unknown-dir" || classification.status == "git-status-unavailable"
         {
             unknown_review_count += 1;
         }
         lines.push(format!(
-            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} age_secs={} mtime_unix_secs={} kind={} status={} cleanup_safe={} next_action={}",
+            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} age_secs={} mtime_unix_secs={} category={} kind={} status={} cleanup_safe={} next_action={}",
             path.display(),
             bytes,
             modified_age_secs,
             mtime_unix_secs,
+            classification.kind,
             classification.kind,
             classification.status,
             classification.cleanup_safe,
@@ -1072,6 +1115,14 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     lines.push(format!(
         "storage_temp_cleanup_age_pressure: report_only=true old_target_count={old_target_count} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} total_bytes={total_bytes} next_action={age_next_action} old_target_threshold_secs={TEMP_CLEANUP_OLD_TARGET_SECS}"
     ));
+    let generated_next_action = temp_cleanup_generated_pressure_next_action(
+        active_worktree_count,
+        generated_review_count,
+        old_target_count,
+    );
+    lines.push(format!(
+        "storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count={active_worktree_count} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} old_target_count={old_target_count} total_bytes={total_bytes} next_action={generated_next_action}"
+    ));
     lines.push(
         "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
             .to_owned(),
@@ -1088,6 +1139,22 @@ fn temp_cleanup_age_pressure_next_action(
         "review-unknown-temp-dirs"
     } else if dirty_worktree_count > 0 {
         "review-dirty-worktrees"
+    } else if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else {
+        "cleanup-low"
+    }
+}
+
+fn temp_cleanup_generated_pressure_next_action(
+    active_worktree_count: usize,
+    generated_review_count: usize,
+    old_target_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if generated_review_count > 0 {
+        "review-generated-output"
     } else if old_target_count > 0 {
         "remove-old-merged-targets"
     } else {
@@ -3671,6 +3738,7 @@ mod tests {
             "search-engine-storage-temp-cleanup-audit-target-5819222",
             false,
             None,
+            false,
         );
         assert_eq!(target.kind, "validation-target");
         assert_eq!(target.status, "candidate");
@@ -3681,24 +3749,37 @@ mod tests {
             "search-engine-storage-temp-cleanup-audit-5819222",
             true,
             Some(true),
+            false,
         );
         assert_eq!(dirty_worktree.kind, "source-worktree");
         assert_eq!(dirty_worktree.status, "dirty");
         assert!(!dirty_worktree.cleanup_safe);
         assert_eq!(dirty_worktree.next_action, "review-dirty-worktree");
 
-        let clean_worktree =
-            temp_cleanup_classification("search-engine-image-merged-5819222", true, Some(false));
+        let clean_worktree = temp_cleanup_classification(
+            "search-engine-image-merged-5819222",
+            true,
+            Some(false),
+            false,
+        );
         assert_eq!(clean_worktree.kind, "source-worktree");
         assert_eq!(clean_worktree.status, "clean-review-required");
         assert!(!clean_worktree.cleanup_safe);
         assert_eq!(clean_worktree.next_action, "unknown-review-required");
 
-        let unknown = temp_cleanup_classification("search-engine-leftover-cache", false, None);
-        assert_eq!(unknown.kind, "unknown-dir");
-        assert_eq!(unknown.status, "review-required");
-        assert!(!unknown.cleanup_safe);
-        assert_eq!(unknown.next_action, "unknown-review-required");
+        let generated_cache =
+            temp_cleanup_classification("search-engine-leftover-cache", false, None, false);
+        assert_eq!(generated_cache.kind, "generated-output");
+        assert_eq!(generated_cache.status, "review-required");
+        assert!(!generated_cache.cleanup_safe);
+        assert_eq!(generated_cache.next_action, "review-generated-output");
+
+        let active_worktree =
+            temp_cleanup_classification("search-engine-active-worktree", true, Some(false), true);
+        assert_eq!(active_worktree.kind, "source-worktree");
+        assert_eq!(active_worktree.status, "active");
+        assert!(!active_worktree.cleanup_safe);
+        assert_eq!(active_worktree.next_action, "preserve-active-worktree");
     }
 
     #[test]
@@ -3721,15 +3802,16 @@ mod tests {
                 && line.contains(" bytes=6 ")
                 && line.contains(" age_secs=")
                 && line.contains(" mtime_unix_secs=")
-                && line.contains(" kind=validation-target status=candidate cleanup_safe=true next_action=remove-merged-target")
+                && line.contains(" category=validation-target kind=validation-target status=candidate cleanup_safe=true next_action=remove-merged-target")
         }));
         assert!(lines.iter().any(|line| {
             line.starts_with("storage_temp_cleanup_candidate: report_only=true path=")
                 && line.contains("search-engine-leftover-resource-cache")
                 && line.contains(" bytes=7 ")
-                && line.contains(" kind=unknown-dir status=review-required cleanup_safe=false next_action=unknown-review-required")
+                && line.contains(" category=generated-output kind=generated-output status=review-required cleanup_safe=false next_action=review-generated-output")
         }));
-        assert!(lines.contains(&"storage_temp_cleanup_age_pressure: report_only=true old_target_count=0 dirty_worktree_count=0 unknown_review_count=1 total_bytes=13 next_action=review-unknown-temp-dirs old_target_threshold_secs=86400".to_owned()));
+        assert!(lines.contains(&"storage_temp_cleanup_age_pressure: report_only=true old_target_count=0 dirty_worktree_count=0 unknown_review_count=0 total_bytes=13 next_action=cleanup-low old_target_threshold_secs=86400".to_owned()));
+        assert!(lines.contains(&"storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count=0 generated_review_count=1 generated_review_bytes=7 old_target_count=0 total_bytes=13 next_action=review-generated-output".to_owned()));
         assert_eq!(
             temp_cleanup_age_pressure_next_action(1, 0, 0),
             "remove-old-merged-targets"
@@ -3741,6 +3823,14 @@ mod tests {
         assert_eq!(
             temp_cleanup_age_pressure_next_action(0, 0, 0),
             "cleanup-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_pressure_next_action(1, 1, 1),
+            "preserve-active-worktree"
+        );
+        assert_eq!(
+            temp_cleanup_generated_pressure_next_action(0, 1, 1),
+            "review-generated-output"
         );
     }
 
