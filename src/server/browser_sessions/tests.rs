@@ -2635,6 +2635,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .contains(r#"data-browser-controls-content-order="scroll find jump resources text""#)
     );
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-actions"#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-y="0""#));
     assert!(topbar_html.contains(&format!(
@@ -12254,10 +12257,16 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-primary-actions"#));
+    assert!(
+        topbar_html.contains(
+            r#"data-browser-chrome-primary-actions-order="current reload images scroll""#
+        )
+    );
     assert!(topbar_html.contains(
-        r#"data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs""#
+        r#"data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs""#
     ));
-    assert!(topbar_html.contains(r#"data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
@@ -12314,6 +12323,11 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     let page_actions_html = &topbar_html[page_actions_index..scroll_actions_index];
     assert!(page_actions_html.contains(r#"data-browser-chrome-current-action"#));
     assert!(page_actions_html.contains(r#"data-browser-chrome-reload-action"#));
+    assert!(
+        topbar_html.contains(
+            r#"data-browser-chrome-secondary-action-group="tabs" aria-label="Tab actions""#
+        )
+    );
     assert!(page_actions_html.contains(r#"data-browser-chrome-images-action"#));
     assert!(topbar_html.contains(r#"data-browser-shell-images"#));
     assert!(topbar_html.contains(r#">1 image in Tools</span>"#));
@@ -13933,11 +13947,14 @@ async fn browser_session_page_renders_form_controls() {
         topbar_html.contains(r#"data-browser-chrome-toolbar-order="navigation address status""#)
     );
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
+    assert!(
+        topbar_html.contains(r#"data-browser-primary-nav-order="search back forward actions""#)
+    );
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
     assert!(topbar_html.contains(
-        r#"data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs""#
+        r#"data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs""#
     ));
-    assert!(topbar_html.contains(r#"data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
