@@ -2711,6 +2711,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         html.contains(r#"<input id="browser-scroll-step-dy" type="number" name="dy" value="8""#)
     );
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
+    assert!(html.contains(r#"data-browser-first-view-status="compact""#));
+    assert!(html.contains(r#"data-browser-viewport-status-layout="summary feedback meter""#));
+    assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
     assert!(html.contains(r#"aria-label="Manual viewport scroll controls; x 0 of "#));
     assert!(html.contains(r#"data-scroll-x="0""#));
     assert!(html.contains(r#"data-scroll-y="0""#));
@@ -3131,7 +3134,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-state="summary""#));
     assert!(html.contains(r#"data-scroll-x-state="horizontal scroll available""#));
     assert!(html.contains(r#"data-scroll-y-state="vertical scroll available""#));
-    assert!(html.contains(r#"data-browser-scroll-input-hint>Wheel / keys scroll</span>"#));
+    assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
     assert!(html.contains(&format!(r#"aria-valuemax="{}""#, payload.max_scroll_y)));
     assert!(html.contains(r#"aria-valuenow="4""#));
     assert!(html.contains(&format!(
@@ -3184,7 +3187,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .unwrap();
     let status_index = primary_surface_index
         + html[primary_surface_index..]
-            .find(r#"class="viewport-status" data-browser-viewport-status"#)
+            .find(r#"class="viewport-status compact" data-browser-viewport-status"#)
             .unwrap();
     let interaction_controls_index = primary_surface_index
         + html[primary_surface_index..]
@@ -9431,6 +9434,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(primary_html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(primary_html.contains(r#"data-browser-click-hint"#));
+    assert!(primary_html.contains(r#"data-browser-click-hint hidden"#));
     assert!(html.contains("Ready for page click."));
     assert!(html.contains("click links and buttons in this image"));
     let links_start = html.find(r#"<summary>Links</summary>"#).unwrap();
@@ -14030,7 +14034,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     let primary_html = &html[viewport_index..controls_tray_index];
     let controls_html = &html[controls_tray_index..debug_index];
-    assert!(primary_html.contains(r#"<div class="viewport-status" data-browser-viewport-status>"#));
+    assert!(primary_html.contains(r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter">"#));
     assert!(primary_html.contains(r#"data-browser-primary-raster hidden"#));
     assert!(!primary_html.contains(r#"<span data-browser-primary-raster>Browser view ready"#));
     assert!(html.contains(r#".viewport-status { display: grid; gap: 5px; margin: 4px 0 8px; }"#));

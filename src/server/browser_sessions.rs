@@ -10407,6 +10407,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .viewport-jump-range {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .viewport-status {{ display: grid; gap: 5px; margin: 4px 0 8px; }}
 .viewport-status-text {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: #3a3f45; font-size: 12px; font-weight: 700; }}
+.viewport-status.compact .viewport-status-text {{ flex-wrap: nowrap; overflow: hidden; }}
 .viewport-status-text span {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #dfe2e6; border-radius: 6px; padding: 0 6px; background: #fff; }}
 .viewport-scroll-feedback {{ max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .viewport-scroll-meter {{ height: 6px; border-radius: 999px; background: #dfe2e6; overflow: hidden; }}
@@ -14219,7 +14220,7 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     let click_status = browser_session_click_status(payload);
     let click_hint = browser_session_click_hint(payload);
     format!(
-        r#"<div class="viewport-status" data-browser-viewport-status><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter"><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
         y = payload.viewport_y,
         max_y = payload.max_scroll_y,
         horizontal_state = horizontal_state,
