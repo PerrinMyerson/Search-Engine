@@ -3478,6 +3478,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"document.addEventListener("click""#));
     assert!(html.contains("const keyboardDelta"));
     assert!(html.contains("const handleKeyboardScroll"));
+    assert!(html.contains("const isBrowserShortcutTextTarget"));
+    assert!(html.contains(r#"[data-browser-address-keyboard-owner='text-entry']"#));
+    assert!(html.contains("return isBrowserShortcutTextTarget(target)"));
     assert!(
         html.contains(
             "const lineStep = Math.max(1, Math.round(numberData(\"browserScrollLineStep\")) || Math.floor(numberData(\"viewportHeight\") / 6));"
@@ -14343,6 +14346,8 @@ async fn browser_session_page_renders_form_controls() {
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
     assert!(topbar_html.contains(r#"data-browser-address-form"#));
+    assert!(topbar_html.contains(r#"data-browser-address-focus-scope="address""#));
+    assert!(topbar_html.contains(r#"data-browser-address-shortcut-owner="text-entry""#));
     assert!(topbar_html.contains(&format!(r#"data-browser-address-session="{}""#, payload.id)));
     assert!(topbar_html.contains(r#"data-browser-address-from="/search?q=forms""#));
     assert!(topbar_html.contains(&format!(
@@ -14365,6 +14370,8 @@ async fn browser_session_page_renders_form_controls() {
     )));
     assert_address_submit_state(topbar_html, &payload, &back_href);
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
+    assert!(topbar_html.contains(r#"data-browser-address-focus-owner="address""#));
+    assert!(topbar_html.contains(r#"data-browser-address-keyboard-owner="text-entry""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)

@@ -10602,7 +10602,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <header class="browser-topbar" data-browser-first-viewport-chrome="compact" data-browser-debug-default="secondary">
 <div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address location actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address location status">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control data-browser-primary-nav-session="{id}" data-browser-primary-nav-from="{back_href}" data-browser-primary-nav-source="{source_attr}" data-browser-primary-nav-viewport-x="{viewport_x}" data-browser-primary-nav-viewport-y="{viewport_y}" data-browser-primary-nav-width="{width}" data-browser-primary-nav-height="{height}" data-browser-primary-nav-max-bytes="{max_bytes}" data-browser-primary-nav-history-position="{primary_nav_history_position}" data-browser-primary-nav-history-length="{history_len}" data-browser-primary-nav-can-back="{can_back}" data-browser-primary-nav-can-forward="{can_forward}" data-browser-primary-nav-order="search back forward actions"><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
-<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
+<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-focus-scope="address" data-browser-address-shortcut-owner="text-entry" data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -10611,7 +10611,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
 {address_source_input}
-<input data-browser-address type="text" inputmode="url" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
+<input data-browser-address type="text" inputmode="url" data-browser-address-focus-owner="address" data-browser-address-keyboard-owner="text-entry" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
@@ -12016,11 +12016,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     queueViewportScroll(delta.dx, delta.dy, "keyboard");
     return true;
   };
+  const isBrowserShortcutTextTarget = (target) => {
+    if (!target || typeof target.closest !== "function") {
+      return false;
+    }
+    return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [data-browser-address-keyboard-owner='text-entry']"));
+  };
   const isInteractiveTarget = (target) => {
     if (!target || typeof target.closest !== "function") {
       return false;
     }
-    return Boolean(target.closest("input, textarea, select, button, a, summary, [contenteditable='true']"));
+    return isBrowserShortcutTextTarget(target) || Boolean(target.closest("button, a, summary"));
   };
   shell.addEventListener("keydown", (event) => {
     handleKeyboardScroll(event);
