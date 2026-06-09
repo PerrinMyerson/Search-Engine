@@ -10030,6 +10030,8 @@ fn render_browser_session_page_with_diagnostics(
     );
 
     let back_control = browser_chrome_nav_control(
+        payload,
+        back_href,
         payload.can_back,
         "Back",
         &browser_session_action_href(&payload.id, "back", &[], payload),
@@ -10037,6 +10039,8 @@ fn render_browser_session_page_with_diagnostics(
         "No back history",
     );
     let forward_control = browser_chrome_nav_control(
+        payload,
+        back_href,
         payload.can_forward,
         "Forward",
         &browser_session_action_href(&payload.id, "forward", &[], payload),
@@ -16866,25 +16870,54 @@ fn nav_control(enabled: bool, label: &str, href: &str) -> String {
 }
 
 fn browser_chrome_nav_control(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
     enabled: bool,
     label: &str,
     href: &str,
     action: &str,
     disabled_reason: &str,
 ) -> String {
+    let state_attrs =
+        browser_chrome_nav_action_state_attrs(payload, back_href, href, action, enabled);
     if enabled {
         return format!(
-            r#"<a href="{href}" data-browser-primary-nav-action="{action}">{label}</a>"#,
+            r#"<a href="{href}" data-browser-primary-nav-action="{action}"{state_attrs}>{label}</a>"#,
             href = html_escape::encode_double_quoted_attribute(href),
             action = html_escape::encode_double_quoted_attribute(action),
+            state_attrs = state_attrs,
             label = html_escape::encode_text(label),
         );
     }
     format!(
-        r#"<span aria-disabled="true" title="{reason}" data-browser-primary-nav-action="{action}" data-browser-primary-nav-disabled="{reason}">{label}</span>"#,
+        r#"<span aria-disabled="true" title="{reason}" data-browser-primary-nav-action="{action}" data-browser-primary-nav-disabled="{reason}"{state_attrs}>{label}</span>"#,
         reason = html_escape::encode_double_quoted_attribute(disabled_reason),
         action = html_escape::encode_double_quoted_attribute(action),
+        state_attrs = state_attrs,
         label = html_escape::encode_text(label),
+    )
+}
+
+fn browser_chrome_nav_action_state_attrs(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    href: &str,
+    action: &str,
+    enabled: bool,
+) -> String {
+    format!(
+        r#" data-browser-primary-nav-{action}-available="{enabled}" data-browser-primary-nav-{action}-href="{href}" data-browser-primary-nav-{action}-session="{id}" data-browser-primary-nav-{action}-from="{back_href}" data-browser-primary-nav-{action}-source="{source}" data-browser-primary-nav-{action}-viewport-x="{viewport_x}" data-browser-primary-nav-{action}-viewport-y="{viewport_y}" data-browser-primary-nav-{action}-width="{width}" data-browser-primary-nav-{action}-height="{height}" data-browser-primary-nav-{action}-max-bytes="{max_bytes}""#,
+        action = html_escape::encode_double_quoted_attribute(action),
+        enabled = enabled,
+        href = html_escape::encode_double_quoted_attribute(href),
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
     )
 }
 

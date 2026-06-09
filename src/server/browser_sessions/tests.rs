@@ -164,6 +164,56 @@ fn assert_chrome_page_action_link_state(
         r#"data-browser-chrome-{action}-pending-state="idle""#
     )));
 }
+
+fn assert_primary_nav_action_state(
+    topbar_html: &str,
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    action: &str,
+    href: &str,
+    available: bool,
+) {
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-available="{available}""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-href="{}""#,
+        html_escape::encode_double_quoted_attribute(href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-session="{}""#,
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-from="{}""#,
+        html_escape::encode_double_quoted_attribute(back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-width="{}""#,
+        payload.width
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-height="{}""#,
+        payload.height
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+}
+
 #[tokio::test]
 async fn browser_session_registry_keeps_history_across_link_navigation() {
     let dir = tempfile::tempdir().unwrap();
@@ -205,12 +255,28 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="1""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="false""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
-    assert!(topbar_html.contains(
-        r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
-    ));
-    assert!(topbar_html.contains(
-        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-disabled="No back history""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-disabled="No forward history""#));
+    let back_href = browser_session_action_href(&payload.id, "back", &[], &payload);
+    let forward_href = browser_session_action_href(&payload.id, "forward", &[], &payload);
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "back",
+        &back_href,
+        false,
+    );
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "forward",
+        &forward_href,
+        false,
+    );
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
     assert!(html.contains(r#"data-browser-navigation-state"#));
     assert!(html.contains(&format!(
@@ -244,10 +310,27 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
-    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back">Back</a>"#));
-    assert!(topbar_html.contains(
-        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-disabled="No forward history""#));
+    let back_href = browser_session_action_href(&payload.id, "back", &[], &payload);
+    let forward_href = browser_session_action_href(&payload.id, "forward", &[], &payload);
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "back",
+        &back_href,
+        true,
+    );
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "forward",
+        &forward_href,
+        false,
+    );
     let expected_feedback = format!(
         "Opened link 1; opened local page: {}",
         browser_session_feedback_excerpt(&second.display().to_string())
@@ -293,10 +376,27 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="false""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="true""#));
-    assert!(topbar_html.contains(
-        r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
-    ));
-    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward">Forward</a>"#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-disabled="No back history""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward""#));
+    let back_href = browser_session_action_href(&payload.id, "back", &[], &payload);
+    let forward_href = browser_session_action_href(&payload.id, "forward", &[], &payload);
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "back",
+        &back_href,
+        false,
+    );
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "forward",
+        &forward_href,
+        true,
+    );
     let expected_back_feedback = format!(
         "Went back; opened local page: {}; viewport settled at x 0, y 0",
         browser_session_feedback_excerpt(&first.display().to_string())
@@ -340,10 +440,27 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(
         r#"data-browser-chrome-history data-browser-history-position="2" data-browser-history-length="2" title="history 2/2">history 2/2</span>"#
     ));
-    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back">Back</a>"#));
-    assert!(topbar_html.contains(
-        r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-action="forward""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-disabled="No forward history""#));
+    let back_href = browser_session_action_href(&payload.id, "back", &[], &payload);
+    let forward_href = browser_session_action_href(&payload.id, "forward", &[], &payload);
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "back",
+        &back_href,
+        true,
+    );
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "forward",
+        &forward_href,
+        false,
+    );
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="2""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
@@ -409,6 +526,24 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
+    let back_href = browser_session_action_href(&payload.id, "back", &[], &payload);
+    let forward_href = browser_session_action_href(&payload.id, "forward", &[], &payload);
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "back",
+        &back_href,
+        true,
+    );
+    assert_primary_nav_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=local",
+        "forward",
+        &forward_href,
+        false,
+    );
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
     assert!(html.contains(r#"data-browser-navigation-history-position="2""#));
     assert!(html.contains(r#"data-browser-navigation-history-length="2""#));
