@@ -3641,6 +3641,7 @@ impl BrowserSession {
             .count();
         self.entries[current_index].page_state.cached_images = cached_images;
         let render = self.render_entry_page_state(current_index);
+        annotate_image_fetch_render_attachments(&mut fetches, &render);
         self.set_entry_render(current_index, render);
 
         Ok(BrowserImageRenderReport {
@@ -3663,6 +3664,49 @@ impl BrowserSession {
             entry.render = render;
         }
     }
+}
+
+fn annotate_image_fetch_render_attachments(
+    fetches: &mut [BrowserResourceFetch],
+    render: &BrowserRender,
+) {
+    for fetch in fetches {
+        if fetch.image_decode_status.is_none() {
+            continue;
+        }
+        let Some(decoded_hash) = fetch.decoded_hash.as_deref() else {
+            fetch.render_attached = Some(false);
+            fetch.render_attachment_kind = None;
+            continue;
+        };
+        let attachment_kind =
+            image_render_attachment_kind(render, &fetch.resource.resolved, decoded_hash);
+        fetch.render_attached = Some(attachment_kind.is_some());
+        fetch.render_attachment_kind = attachment_kind.map(str::to_owned);
+    }
+}
+
+fn image_render_attachment_kind<'a>(
+    render: &'a BrowserRender,
+    resource_url: &str,
+    decoded_hash: &str,
+) -> Option<&'a str> {
+    render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == resource_url && hash == decoded_hash => Some("image"),
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == resource_url && hash == decoded_hash => Some("background_image"),
+            _ => None,
+        })
 }
 
 fn set_live_form_value(dom: &mut Dom, node_id: usize, kind: &str, value: &str) {
