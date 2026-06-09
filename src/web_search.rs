@@ -56,6 +56,10 @@ pub struct WebSearchLookup {
     pub cache_hit: bool,
     pub cache_status: &'static str,
     pub retained_cache_results: usize,
+    pub returned_results: usize,
+    pub durable_result_rows: usize,
+    pub persistence_gap_rows: usize,
+    pub persistence_status: &'static str,
     pub fetched: bool,
     pub results: Vec<WebSearchResult>,
 }
@@ -245,6 +249,10 @@ impl WebSearchService {
                 cache_hit: false,
                 cache_status: "skipped-empty-query",
                 retained_cache_results: 0,
+                returned_results: 0,
+                durable_result_rows: 0,
+                persistence_gap_rows: 0,
+                persistence_status: "skipped-no-results",
                 fetched: false,
                 results: Vec::new(),
             });
@@ -257,13 +265,19 @@ impl WebSearchService {
             let cache = self.cache.lock().await;
             if let Some(results) = cache.lookup(&normalized_query, now_unix()) {
                 let retained_cache_results = results.len();
+                let results = take_results(results, limit);
+                let returned_results = results.len();
                 return Ok(WebSearchLookup {
                     provider: self.provider_name(),
                     cache_hit: true,
                     cache_status: "hit",
                     retained_cache_results,
+                    returned_results,
+                    durable_result_rows: retained_cache_results,
+                    persistence_gap_rows: 0,
+                    persistence_status: "cache-hit",
                     fetched: false,
-                    results: take_results(results, limit),
+                    results,
                 });
             }
         }
@@ -290,6 +304,10 @@ impl WebSearchService {
                         "miss"
                     },
                     retained_cache_results: 0,
+                    returned_results: 0,
+                    durable_result_rows: 0,
+                    persistence_gap_rows: 0,
+                    persistence_status: "cache-miss-no-fetch",
                     fetched: false,
                     results: Vec::new(),
                 });
@@ -297,6 +315,14 @@ impl WebSearchService {
         };
 
         let storage_results = web_results_for_storage(&results);
+        let returned_results = results.len();
+        let durable_result_rows = storage_results.len();
+        let persistence_gap_rows = returned_results.saturating_sub(durable_result_rows);
+        let persistence_status = if persistence_gap_rows == 0 {
+            "persisted"
+        } else {
+            "partial-persisted"
+        };
         if self.config.cache_ttl_secs > 0 {
             let mut cache = self.cache.lock().await;
             cache.store(
@@ -326,6 +352,10 @@ impl WebSearchService {
                 "miss-fetched"
             },
             retained_cache_results: 0,
+            returned_results,
+            durable_result_rows,
+            persistence_gap_rows,
+            persistence_status,
             fetched: true,
             results,
         })
@@ -1888,7 +1918,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_only_provider_serves_cached_results_without_fetching() {
+    async fn web_search_lookup_reports_result_persistence_accounting() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("web-cache.jsonl");
         let now = now_unix();
@@ -1930,6 +1960,10 @@ mod tests {
         assert!(hit.cache_hit);
         assert_eq!(hit.cache_status, "hit");
         assert_eq!(hit.retained_cache_results, 1);
+        assert_eq!(hit.returned_results, 1);
+        assert_eq!(hit.durable_result_rows, 1);
+        assert_eq!(hit.persistence_gap_rows, 0);
+        assert_eq!(hit.persistence_status, "cache-hit");
         assert!(!hit.fetched);
         assert_eq!(hit.results.len(), 1);
         assert_eq!(hit.results[0].url, "https://example.com/cached");
@@ -1939,6 +1973,10 @@ mod tests {
         assert!(!miss.cache_hit);
         assert_eq!(miss.cache_status, "miss");
         assert_eq!(miss.retained_cache_results, 0);
+        assert_eq!(miss.returned_results, 0);
+        assert_eq!(miss.durable_result_rows, 0);
+        assert_eq!(miss.persistence_gap_rows, 0);
+        assert_eq!(miss.persistence_status, "cache-miss-no-fetch");
         assert!(!miss.fetched);
         assert!(miss.results.is_empty());
     }
