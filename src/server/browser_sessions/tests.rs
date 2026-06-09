@@ -10497,6 +10497,9 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-chrome-last-action="click""#));
     assert!(html.contains(r#"data-browser-chrome-last-outcome="miss""#));
+    assert!(html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
+    assert!(html.contains(r#"data-browser-chrome-outcome-display="compact""#));
+    assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-last-outcome="miss"] [data-browser-chrome-click-feedback]"#));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains("No click target at DOM point x 999, y 999"));
     assert!(html.contains("click a visible link/button or retry with an exact point"));
@@ -14074,6 +14077,8 @@ async fn browser_session_page_renders_form_controls() {
     ));
     assert!(topbar_html.contains(r#"data-browser-chrome-last-action="none""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-last-outcome="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-outcome-display="compact""#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
@@ -14082,6 +14087,7 @@ async fn browser_session_page_renders_form_controls() {
         r#".browser-chrome-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;"#
     ));
     assert!(html.contains(r#".browser-chrome-status { display: flex; flex-wrap: nowrap;"#));
+    assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-action-feedback]"#));
     assert!(html.contains(r#".toolbar { display: flex; align-items: center; flex-wrap: nowrap;"#));
     assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 auto; }"#));
     assert!(html.contains(r#".address-bar button.browser-background-tab { display: none; }"#));

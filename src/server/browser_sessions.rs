@@ -10365,6 +10365,20 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status [data-browser-chrome-scroll-feedback],
 .browser-chrome-status [data-browser-chrome-click-feedback],
 .browser-chrome-status [data-browser-chrome-form-feedback] {{ max-width: min(28vw, 260px); }}
+.browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-action-feedback],
+.browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-navigation-feedback],
+.browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-scroll-feedback],
+.browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-click-feedback],
+.browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-form-feedback] {{ max-width: min(22vw, 220px); }}
+.browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-action-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-navigation-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-scroll-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-click-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-form-feedback] {{ background: #eef8f1; color: #285b38; box-shadow: inset 0 0 0 1px #b8d8c2; }}
+.browser-chrome-status[data-browser-chrome-last-outcome="miss"] [data-browser-chrome-click-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="error"] [data-browser-chrome-action-feedback],
+.browser-chrome-status[data-browser-chrome-last-outcome="error"] [data-browser-chrome-click-feedback] {{ background: #fff5f5; color: #7a2020; box-shadow: inset 0 0 0 1px #d7a8a8; }}
+.browser-chrome-status[data-browser-chrome-last-outcome="boundary"] [data-browser-chrome-scroll-feedback] {{ background: #fff8d8; color: #6a5614; box-shadow: inset 0 0 0 1px #e3d6a0; }}
 .browser-chrome-status a {{ min-height: 22px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 7px; background: #fff; color: #20242a; font-size: 11px; font-weight: 800; white-space: nowrap; }}
 .browser-chrome-status a.primary-action {{ background: #2457d6; border-color: #2457d6; color: #fff; }}
 .browser-chrome-status[data-resource-pending="true"] a[href^="/browser"], .browser-chrome-status[data-visual-pending="true"] .primary-action {{ cursor: wait; opacity: 0.72; }}
@@ -13961,7 +13975,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
