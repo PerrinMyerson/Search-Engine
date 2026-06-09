@@ -13918,14 +13918,50 @@ fn render_browser_session_controls_tray_summary(payload: &BrowserSessionPayload)
     )
 }
 
+fn browser_session_chrome_action_outcome(
+    payload: &BrowserSessionPayload,
+) -> (&'static str, &'static str) {
+    let Some(feedback) = browser_session_action_feedback_text(payload) else {
+        return ("none", "idle");
+    };
+    if feedback.contains("navigation failed") {
+        ("click", "error")
+    } else if feedback.starts_with("No click") {
+        ("click", "miss")
+    } else if feedback.starts_with("Clicked ") || feedback.starts_with("Click ") {
+        ("click", "success")
+    } else if feedback.starts_with("Loaded images") {
+        ("load-images", "success")
+    } else if feedback.starts_with("Reloaded page") {
+        ("reload", "success")
+    } else if feedback.starts_with("Opened link ")
+        || feedback.starts_with("Went back")
+        || feedback.starts_with("Went forward")
+    {
+        ("navigation", "success")
+    } else if feedback.starts_with("Already at") || feedback.starts_with("Viewport is already") {
+        ("scroll", "boundary")
+    } else if feedback.starts_with("Moved visual viewport")
+        || feedback.starts_with("Viewport moved")
+        || feedback.starts_with("Viewport settled")
+    {
+        ("scroll", "success")
+    } else if feedback.contains("failed") || feedback.contains("error") {
+        ("generic", "error")
+    } else {
+        ("generic", "reported")
+    }
+}
+
 fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_href: &str) -> String {
     let navigation = browser_session_navigation_feedback_text(payload).is_some();
     let scroll = browser_session_scroll_feedback_text(payload).is_some();
     let click = browser_session_click_feedback_text(payload).is_some();
     let form = browser_session_form_feedback_text(payload).is_some();
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
+    let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}""#,
+        r#" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -13939,6 +13975,8 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
         click = click,
         form = form,
         generic_action = generic_action,
+        last_action = last_action,
+        last_outcome = last_outcome,
     )
 }
 
