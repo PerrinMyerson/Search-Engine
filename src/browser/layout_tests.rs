@@ -11954,6 +11954,211 @@ fn no_repeat_background_hit_uses_painted_tile_after_scroll() {
 }
 
 #[test]
+fn decoded_media_scroll_dirty_regions_match_painted_clip_and_hits() {
+    let image_url = "mem://decoded-scroll-clip-image".to_owned();
+    let background_url = "mem://decoded-scroll-clip-background".to_owned();
+    let red = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![90],
+        rgb_pixels: Some(vec![220, 48, 48]),
+    };
+    let blue = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![42, 128, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://decoded-media-scroll-clip".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![
+            DecodedImageEntry {
+                url: image_url.clone(),
+                width: red.width,
+                height: red.height,
+                pixel_hash: red.pixel_hash(),
+                image: red,
+            },
+            DecodedImageEntry {
+                url: background_url.clone(),
+                width: blue.width,
+                height: blue.height,
+                pixel_hash: blue.pixel_hash(),
+                image: blue,
+            },
+        ],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(42)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 1,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 0,
+                y: 3,
+                width: 4,
+                height: 2,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 100,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 4,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 8,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+        ],
+        text: "Intro\nOpen".to_owned(),
+    };
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: 2,
+        width: 8,
+        height: 2,
+    };
+    let current = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 8,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, current, Some(previous));
+    assert_eq!(report.viewport.y, 3);
+    assert_eq!(report.scroll_delta_y, 1);
+    let dirty_cells = report
+        .invalidated_regions
+        .iter()
+        .flat_map(|region| {
+            (region.y..region.y.saturating_add(region.height)).flat_map(move |y| {
+                (region.x..region.x.saturating_add(region.width)).map(move |x| (x, y))
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        dirty_cells.contains(&(0, 0)),
+        "decoded foreground image cell should be dirty in the scrolled slice"
+    );
+    assert!(
+        dirty_cells.contains(&(2, 0)),
+        "decoded no-repeat background painted tile should be dirty in the scrolled slice"
+    );
+    assert!(
+        !dirty_cells.contains(&(1, 0)),
+        "blank no-repeat background cell should not be dirtied as painted media"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 0, 0),
+        Some(41),
+        "decoded foreground image target should match the visible scrolled row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 2, 0),
+        Some(42),
+        "decoded no-repeat background tile target should match the painted row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize decoded media scroll");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [220, 48, 48, 255],
+        "scrolled raster should paint the decoded foreground image"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(2)),
+            options.padding_y
+        ),
+        [42, 128, 220, 255],
+        "scrolled raster should paint the clipped decoded background tile"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, report.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 4);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 0, 0),
+        Some(77),
+        "visible linked text should replace the image target after the image scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 0, 1),
+        None,
+        "offscreen decoded image target should not remain clickable in the following row"
+    );
+}
+
+#[test]
 fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
     let image_url = "mem://rerender-dirty-image".to_owned();
     let background_url = "mem://rerender-dirty-background".to_owned();

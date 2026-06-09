@@ -5881,13 +5881,11 @@ fn append_viewport_media_invalidated_regions(
         ) {
             continue;
         }
-        let viewport_fixed = display_command_viewport_fixed(render, command_index);
-        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         append_display_command_viewport_dirty_region(
+            render,
+            command_index,
             command,
             viewport,
-            viewport_fixed,
-            viewport_sticky_top,
             0,
             0,
             regions,
@@ -5911,19 +5909,19 @@ fn append_viewport_positioned_invalidated_regions(
         }
 
         append_display_command_viewport_dirty_region(
+            render,
+            command_index,
             command,
             current_viewport,
-            viewport_fixed,
-            viewport_sticky_top,
             0,
             0,
             regions,
         );
         append_display_command_viewport_dirty_region(
+            render,
+            command_index,
             command,
             previous_viewport,
-            viewport_fixed,
-            viewport_sticky_top,
             browser_viewport_signed_delta(previous.x, current.x),
             browser_viewport_signed_delta(previous.y, current.y),
             regions,
@@ -5990,16 +5988,19 @@ fn append_viewport_readable_context_rows(
 }
 
 fn append_display_command_viewport_dirty_region(
+    render: &BrowserRender,
+    command_index: usize,
     command: &DisplayCommand,
     viewport: RasterViewport,
-    viewport_fixed: bool,
-    viewport_sticky_top: Option<usize>,
     output_shift_x: isize,
     output_shift_y: isize,
     regions: &mut Vec<BrowserViewportRect>,
 ) {
-    let command_bounds =
-        display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
+    let Some(command_bounds) =
+        display_command_exact_hit_bounds_for_viewport(render, command_index, command, viewport)
+    else {
+        return;
+    };
     let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
     else {
         return;
