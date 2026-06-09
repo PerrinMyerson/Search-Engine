@@ -2422,6 +2422,21 @@ fn web_storage_pressure_summary_lines(
     } else {
         "no-integrity-action-needed"
     };
+    let operator_status = if invalid_json_rows > 0 {
+        "needs-review"
+    } else if summary.duplicate_entries > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.suggested_dry_runs > 0
+    {
+        "dry-run-recommended"
+    } else {
+        "ok"
+    };
+    let operator_next_action = match operator_status {
+        "needs-review" => "inspect-or-dry-run-compact",
+        "dry-run-recommended" => "run-web-storage-dry-run",
+        _ => "no-storage-action-needed",
+    };
     let mut lines = vec![
         format!(
             "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
@@ -2516,6 +2531,14 @@ fn web_storage_pressure_summary_lines(
             "web_storage_integrity_audit: report_only=true status={integrity_status} invalid_json_rows={invalid_json_rows} affected_artifacts={invalid_json_artifacts} valid_entries={} retained_rows={} malformed_rows={invalid_json_rows} next_action={integrity_next_action}",
             summary.entries.saturating_sub(invalid_json_rows),
             summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_operator_summary: report_only=true status={operator_status} retained_rows={} retained_bytes={} malformed_rows={invalid_json_rows} reclaimable_rows={} reclaimable_bytes={} suggested_dry_runs={} next_action={operator_next_action}",
+            summary.durable_result_rows,
+            summary.unique_row_bytes,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes,
+            summary.suggested_dry_runs
         ),
     ];
     if summary.suggested_dry_runs > 0 {
@@ -5789,6 +5812,31 @@ mod tests {
         assert_eq!(cache_stats.invalid_json_rows, 1);
         assert_eq!(cache_stats.durable_result_rows, 1);
         assert!(lines.contains(&"web_storage_integrity_audit: report_only=true status=needs-review invalid_json_rows=1 affected_artifacts=1 valid_entries=1 retained_rows=1 malformed_rows=1 next_action=inspect-or-dry-run-compact".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_operator_summary_reports_health_and_preserves_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let cache_contents = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n{malformed json\n";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        let before = std::fs::read(&cache_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats], 120, 60);
+        let after = std::fs::read(&cache_path).unwrap();
+
+        assert_eq!(before, after);
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_operator_summary: report_only=true")
+                && line.contains("status=needs-review")
+                && line.contains("retained_rows=2")
+                && line.contains("malformed_rows=1")
+                && line.contains("reclaimable_rows=1")
+                && line.contains("suggested_dry_runs=1")
+                && line.contains("next_action=inspect-or-dry-run-compact")
+        }));
     }
 
     #[test]
