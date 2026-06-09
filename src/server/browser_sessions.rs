@@ -10643,7 +10643,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         settled_primary_page_state = settled_primary_page_state.unwrap_or_default(),
         auto_visual_bootstrap = auto_visual_bootstrap,
         pending_load_retry = pending_load_retry,
-        browser_chrome_status = render_browser_session_chrome_status(payload),
+        browser_chrome_status = render_browser_session_chrome_status(payload, back_href),
         browser_chrome_status_attrs = browser_session_chrome_status_attrs(payload, back_href),
         tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
         viewport_command_strip = viewport_command_strip,
@@ -13939,7 +13939,32 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     )
 }
 
-fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> String {
+fn browser_session_chrome_feedback_state_attrs(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+) -> String {
+    let history_position = payload.current_history_index.map_or(0, |index| index + 1);
+    format!(
+        r#" data-browser-chrome-feedback-session="{id}" data-browser-chrome-feedback-from="{from}" data-browser-chrome-feedback-source="{source}" data-browser-chrome-feedback-history-position="{history_position}" data-browser-chrome-feedback-history-length="{history_len}" data-browser-chrome-feedback-can-back="{can_back}" data-browser-chrome-feedback-can-forward="{can_forward}" data-browser-chrome-feedback-viewport-x="{viewport_x}" data-browser-chrome-feedback-viewport-y="{viewport_y}" data-browser-chrome-feedback-width="{width}" data-browser-chrome-feedback-height="{height}" data-browser-chrome-feedback-max-bytes="{max_bytes}""#,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        from = html_escape::encode_double_quoted_attribute(back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        history_position = history_position,
+        history_len = payload.history_len,
+        can_back = payload.can_back,
+        can_forward = payload.can_forward,
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
+    )
+}
+
+fn render_browser_session_chrome_status(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+) -> String {
     let mut status = String::new();
     let action_urls = browser_session_resource_action_urls(payload);
     let show_read_action = !browser_session_has_ready_raster(payload);
@@ -13956,6 +13981,7 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     let has_image_state = image_state.is_some();
     let history_position = payload.current_history_index.map_or(0, |index| index + 1);
     let form_state = browser_session_chrome_form_state(payload);
+    let feedback_state_attrs = browser_session_chrome_feedback_state_attrs(payload, back_href);
     let _ = write!(
         status,
         r#"<span class="viewport-state-chip" data-browser-shell-session title="tab {id}" hidden>{id}</span><span class="viewport-state-chip" data-browser-chrome-history data-browser-history-position="{history_position}" data-browser-history-length="{history_len}" title="history {history_position}/{history_len}">history {history_position}/{history_len}</span>{form_state}<span class="viewport-state-chip" data-browser-shell-viewport title="viewport {width}x{height} at {x},{y}" hidden>{width}x{height}</span><span class="viewport-state-chip" data-browser-chrome-viewport title="viewport {width}x{height} at {x},{y}">x {x}/{max_x} · y {y}/{max_y}</span><span class="viewport-state-chip" data-browser-shell-render title="{raster_title}" hidden>{raster}</span>"#,
@@ -13999,7 +14025,8 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
     if let Some(feedback) = browser_session_navigation_feedback_text(payload) {
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-navigation-feedback title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-navigation-feedback{feedback_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            feedback_state_attrs = feedback_state_attrs,
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14024,7 +14051,8 @@ fn render_browser_session_chrome_status(payload: &BrowserSessionPayload) -> Stri
         let click_state_attrs = browser_session_click_feedback_state_attrs(feedback);
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback{click_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback{feedback_state_attrs}{click_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            feedback_state_attrs = feedback_state_attrs,
             click_state_attrs = click_state_attrs,
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
