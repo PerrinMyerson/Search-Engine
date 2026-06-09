@@ -1054,16 +1054,8 @@ fn append_result_log(
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create web search result log parent {}", parent.display()))?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open web search result log {}", path.display()))?;
+    let mut seen = result_log_dedupe_keys(path)?;
+    let mut entries = Vec::new();
     for (index, result) in results.iter().enumerate() {
         let entry = WebSearchResultLogEntry {
             query: query.to_owned(),
@@ -1076,12 +1068,64 @@ fn append_result_log(
             snippet: result.snippet.clone(),
             score: result.score,
         };
-        serde_json::to_writer(&mut file, &entry)?;
+        if seen.insert(result_log_dedupe_key(&entry)) {
+            entries.push(entry);
+        }
+    }
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create web search result log parent {}", parent.display()))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open web search result log {}", path.display()))?;
+    for entry in &entries {
+        serde_json::to_writer(&mut file, entry)?;
         file.write_all(b"\n")?;
     }
     file.flush()?;
     enforce_result_log_retention(path, max_entries, max_bytes)?;
     Ok(())
+}
+
+fn result_log_dedupe_keys(path: &Path) -> Result<HashSet<(String, String, String)>> {
+    let mut keys = HashSet::new();
+    if !path.exists() {
+        return Ok(keys);
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("open web search result log {}", path.display()))?;
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web search result log {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<WebSearchResultLogEntry>(&line) {
+            Ok(entry) => {
+                keys.insert(result_log_dedupe_key(&entry));
+            }
+            Err(error) => eprintln!(
+                "web search result log skipped invalid line {} in {}: {error}",
+                line_no + 1,
+                path.display()
+            ),
+        }
+    }
+    Ok(keys)
 }
 
 fn result_log_results_for_query(
@@ -1956,6 +2000,44 @@ mod tests {
         assert_eq!(lines.lines().count(), 1);
         assert!(!lines.contains("https://example.com/old"));
         assert!(lines.contains("https://example.com/new"));
+    }
+
+    #[test]
+    fn append_result_log_skips_existing_duplicate_rows_before_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        append_result_log(
+            &path,
+            "query",
+            "query",
+            "brave",
+            &[web_result("https://example.com/existing", 10)],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+        let initial = fs::read_to_string(&path).unwrap();
+
+        append_result_log(
+            &path,
+            "query",
+            "query",
+            "brave",
+            &[
+                web_result("https://example.com/existing", 20),
+                web_result("https://example.com/new", 20),
+                web_result("https://example.com/new", 20),
+            ],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(&path).unwrap();
+        assert_eq!(initial.lines().count(), 1);
+        assert_eq!(lines.lines().count(), 2);
+        assert_eq!(lines.matches("https://example.com/existing").count(), 1);
+        assert_eq!(lines.matches("https://example.com/new").count(), 1);
     }
 
     #[test]
