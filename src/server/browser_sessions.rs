@@ -11404,6 +11404,36 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return url;
   };
+  const syncChromeViewportState = () => {
+    const currentX = String(numberData("viewportX"));
+    const currentY = String(numberData("viewportY"));
+    const updateHref = (selector, hrefAttr) => {
+      const link = document.querySelector(selector);
+      if (!link || !link.href) {
+        return;
+      }
+      const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
+      link.href = url.toString();
+      link.setAttribute(hrefAttr, url.toString());
+    };
+    updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href");
+    updateHref("[data-browser-chrome-reload-action]", "data-browser-chrome-reload-href");
+    updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href");
+    for (const element of document.querySelectorAll("[data-browser-address-form], [data-browser-address], [data-browser-address-submit], [data-browser-primary-nav], [data-browser-chrome-status]")) {
+      element.dataset.browserAddressViewportX = currentX;
+      element.dataset.browserAddressViewportY = currentY;
+      element.dataset.browserPrimaryNavViewportX = currentX;
+      element.dataset.browserPrimaryNavViewportY = currentY;
+      element.dataset.browserChromeStatusViewportX = currentX;
+      element.dataset.browserChromeStatusViewportY = currentY;
+    }
+    for (const input of document.querySelectorAll("input[name=\"viewport_x\"]")) {
+      input.value = currentX;
+    }
+    for (const input of document.querySelectorAll("input[name=\"viewport_y\"]")) {
+      input.value = currentY;
+    }
+  };
   const submitViewportClick = (point, messagePrefix) => {
     const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));
     const size = rasterSize();
@@ -11517,6 +11547,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (keepFocus) {
       shell.focus({ preventScroll: true });
     }
+    syncChromeViewportState();
     restoreClickMarkerAfterPartial();
     replayDeferredClickAfterPartial();
     return true;
