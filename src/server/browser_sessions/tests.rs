@@ -3337,11 +3337,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const handleKeyboardScroll"));
     assert!(
         html.contains(
-            "const lineStep = Math.max(1, Math.floor(numberData(\"viewportHeight\") / 6));"
+            "const lineStep = Math.max(1, Math.round(numberData(\"browserScrollLineStep\")) || Math.floor(numberData(\"viewportHeight\") / 6));"
         )
     );
     assert!(html.contains(r#"dy = lineStep"#));
     assert!(html.contains(r#"dy = -lineStep"#));
+    assert!(html.contains(r#"const pageY = Math.max(1, Math.round(numberData("browserScrollPageStepY")) || Math.floor(numberData("viewportHeight") / 2))"#));
+    assert!(html.contains(r#"const pageX = Math.max(1, Math.round(numberData("browserScrollPageStepX")) || Math.floor(numberData("viewportWidth") / 2))"#));
     assert!(html.contains(r#"dx = lineStep"#));
     assert!(html.contains(r#"dx = -lineStep"#));
     assert!(html.contains("setViewportPending"));
@@ -3553,6 +3555,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const queueViewportScroll"));
     assert!(html.contains("const queueViewportScroll = (dx, dy, inputSource = \"manual\") =>"));
     assert!(html.contains(r#"shell.dataset.scrollInputSource = inputSource"#));
+    assert!(html.contains(r#"status.dataset.browserViewportInputSource = inputSource"#));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(pending.x)"#));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(pending.y)"#));
     assert!(html.contains(r#"queueViewportScroll(dx, dy, "wheel")"#));
@@ -3563,6 +3566,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
     assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
     assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls""#));
+    assert!(html.contains(r#"data-browser-scroll-input-source="idle""#));
+    assert!(html.contains(r#"data-browser-scroll-line-step="2""#));
+    assert!(html.contains(r#"data-browser-scroll-page-step-x="20""#));
+    assert!(html.contains(r#"data-browser-scroll-page-step-y="8""#));
     assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const clearDeferredClickForScroll = () =>"));
@@ -3601,6 +3608,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"status.dataset.browserViewportPendingState = "pending""#));
     assert!(html.contains(r#"status.dataset.browserViewportTargetX = String(target.x)"#));
     assert!(html.contains(r#"status.dataset.browserViewportTargetY = String(target.y)"#));
+    assert!(html.contains(
+        r#"status.dataset.browserViewportInputSource = shell.dataset.scrollInputSource || "manual""#
+    ));
     assert!(html.contains(r#"status.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains(r#"status.dataset.browserViewportPendingState = "idle""#));
     assert!(
