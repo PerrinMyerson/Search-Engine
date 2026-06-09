@@ -2916,11 +2916,27 @@ fn web_replay_backfill_dry_run_lines(artifacts: &[WebStorageArtifactStats]) -> V
         "empty" => "no-durable-provider-results",
         _ => "inspect-web-replay-backfill",
     };
+    let skipped_rows = replayable_cache_rows
+        .saturating_add(skipped_duplicate_rows)
+        .saturating_add(incomplete_provider_rows);
+    let retention_status = if duplicate_provider_rows > 0 {
+        "duplicate-pressure"
+    } else {
+        status
+    };
+    let retention_next_action = if duplicate_provider_rows > 0 {
+        "inspect-duplicate-provider-rows-before-backfill"
+    } else {
+        next_action
+    };
     let missing_examples = web_storage_replay_missing_query_examples(artifacts);
 
     vec![
         format!(
             "web_replay_backfill_dry_run: report_only=true mutates_cache=false mutates_index=false status={status} would_add_rows={would_add_rows} skipped_replayable_rows={replayable_cache_rows} skipped_duplicate_rows={skipped_duplicate_rows} skipped_incomplete_rows={incomplete_provider_rows} durable_provider_rows={durable_provider_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} source=brave-results target=web-cache source_bytes={result_log_bytes} target_bytes={cache_bytes} next_action={next_action}"
+        ),
+        format!(
+            "web_replay_backfill_retention_summary: report_only=true status={retention_status} retained_cache_rows={replayable_cache_rows} retained_provider_rows={durable_provider_rows} would_add_rows={would_add_rows} skipped_rows={skipped_rows} skipped_replayable_rows={replayable_cache_rows} skipped_duplicate_rows={skipped_duplicate_rows} skipped_incomplete_rows={incomplete_provider_rows} missing_query_buckets={missing_query_buckets} source_bytes={result_log_bytes} target_bytes={cache_bytes} next_action={retention_next_action}"
         ),
         format!(
             "web_replay_backfill_skip_reasons: report_only=true already_replayable_rows={replayable_cache_rows} duplicate_provider_rows={duplicate_provider_rows} incomplete_provider_rows={incomplete_provider_rows} missing_query_buckets={missing_query_buckets}"
@@ -6496,6 +6512,44 @@ mod tests {
         }));
         assert!(lines.contains(&"web_replay_backfill_skip_reasons: report_only=true already_replayable_rows=1 duplicate_provider_rows=1 incomplete_provider_rows=0 missing_query_buckets=1".to_owned()));
         assert!(lines.contains(&"web_replay_backfill_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()));
+        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .brutal-index".to_owned()));
+    }
+
+    #[test]
+    fn web_replay_backfill_retention_summary_reports_retained_and_skipped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\",\"fetched_at_unix\":110}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta duplicate\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":3,\"url\":\"https://example.com/c\",\"title\":\"C\",\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines = web_replay_backfill_dry_run_lines(&[cache_stats, log_stats]);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_replay_backfill_retention_summary: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("retained_cache_rows=1")
+                && line.contains("retained_provider_rows=3")
+                && line.contains("would_add_rows=1")
+                && line.contains("skipped_rows=3")
+                && line.contains("skipped_replayable_rows=1")
+                && line.contains("skipped_duplicate_rows=1")
+                && line.contains("skipped_incomplete_rows=1")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("next_action=inspect-duplicate-provider-rows-before-backfill")
+        }));
         assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .brutal-index".to_owned()));
     }
 
