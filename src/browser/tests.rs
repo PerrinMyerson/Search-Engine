@@ -15743,6 +15743,188 @@ async fn image_background_aliases_prefer_real_candidate_over_placeholder_visible
 }
 
 #[tokio::test]
+async fn image_real_world_lazy_aliases_select_visible_color_over_placeholders() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let placeholder = dir.path().join("loading.gif");
+    let article = dir.path().join("article.gif");
+    let gallery = dir.path().join("gallery.gif");
+    let selected = dir.path().join("selected.gif");
+    let oversized = dir.path().join("oversized.gif");
+    let background = dir.path().join("background.gif");
+    fs::write(&placeholder, tiny_test_gif_palette()).unwrap();
+    fs::write(&article, tiny_test_gif_palette()).unwrap();
+    fs::write(&gallery, tiny_test_gif_palette()).unwrap();
+    fs::write(&selected, tiny_test_gif_palette()).unwrap();
+    fs::write(&oversized, tiny_test_gif_palette()).unwrap();
+    fs::write(&background, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before real lazy aliases</p>
+            <img src="loading.gif" data-original="article.gif" alt="Article lazy image" width="80" height="24">
+            <img src="loading.gif" data-lazy-src="gallery.gif" alt="Gallery lazy image" width="80" height="24">
+            <img src="loading.gif" data-original-srcset="selected.gif 80w, oversized.gif 640w" sizes="80px" alt="Srcset lazy image" width="80" height="24">
+            <section data-bg="loading.gif" data-background-image="url('background.gif')">Background alias</section>
+            <p>After real lazy aliases</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let placeholder_url = placeholder.display().to_string();
+    let article_url = article.display().to_string();
+    let gallery_url = gallery.display().to_string();
+    let selected_url = selected.display().to_string();
+    let oversized_url = oversized.display().to_string();
+    let background_url = background.display().to_string();
+    let expected = [
+        (article_url.as_str(), "article.gif", "image"),
+        (gallery_url.as_str(), "gallery.gif", "image"),
+        (selected_url.as_str(), "selected.gif", "image_candidate"),
+        (
+            background_url.as_str(),
+            "background.gif",
+            "background_image",
+        ),
+    ];
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(!resource_report.resources.iter().any(|fetch| {
+        fetch.resource.resolved == placeholder_url
+            || fetch.resource.url == "loading.gif"
+            || fetch.resource.resolved == oversized_url
+            || fetch.resource.url == "oversized.gif"
+    }));
+    for (resolved, url, kind) in expected {
+        let fetch = resource_report
+            .resources
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_hash.is_some());
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    }
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 4);
+    assert_eq!(report.decoded, 4);
+    assert_eq!(report.failed, 0);
+    assert!(!report.fetches.iter().any(|fetch| {
+        fetch.resource.resolved == placeholder_url
+            || fetch.resource.url == "loading.gif"
+            || fetch.resource.resolved == oversized_url
+            || fetch.resource.url == "oversized.gif"
+    }));
+
+    let mut decoded = Vec::new();
+    for (resolved, url, kind) in [
+        (article_url.as_str(), "article.gif", "image"),
+        (gallery_url.as_str(), "gallery.gif", "image"),
+        (selected_url.as_str(), "selected.gif", "image"),
+        (
+            background_url.as_str(),
+            "background.gif",
+            "background_image",
+        ),
+    ] {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        decoded.push((
+            resolved.to_owned(),
+            kind.to_owned(),
+            fetch.decoded_hash.clone().unwrap(),
+            fetch.decoded_color_hash.clone().unwrap(),
+        ));
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before real lazy aliases"));
+    assert!(render.text.contains("After real lazy aliases"));
+    for (resolved, kind, decoded_hash, color_hash) in decoded {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.pixel_hash == decoded_hash)
+            .unwrap();
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(color_hash.as_str())
+        );
+        let attached = render
+            .display_list
+            .iter()
+            .any(|command| match kind.as_str() {
+                "background_image" => matches!(
+                    command,
+                    DisplayCommand::BackgroundImage {
+                        url: Some(url),
+                        decoded_hash: Some(hash),
+                        ..
+                    } if url == &resolved && hash == &decoded_hash
+                ),
+                _ => matches!(
+                    command,
+                    DisplayCommand::Image {
+                        url: Some(url),
+                        decoded_hash: Some(hash),
+                        ..
+                    } if url == &resolved && hash == &decoded_hash
+                ),
+            });
+        assert!(attached, "expected decoded {kind} command for {resolved}");
+    }
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
 async fn image_background_aliases_skip_unsupported_direct_candidate_for_visible_rgb() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
