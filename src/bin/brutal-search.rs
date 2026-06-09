@@ -1296,6 +1296,35 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
         ),
     ];
     if let Some(frontier) = &stats.crawl_frontier_stats {
+        let frontier_active_records = frontier
+            .queued
+            .saturating_add(frontier.fetching)
+            .saturating_add(frontier.deferred);
+        let frontier_queue_action = if frontier_failed_projected_removed > 0 {
+            "inspect-failed-compaction"
+        } else if frontier.deferred > 0 || frontier.fetching > 0 {
+            "inspect-deferred-fetching"
+        } else if frontier.queued > 0 || stats.crawl_frontier_bytes > 0 {
+            "inspect-frontier-growth"
+        } else {
+            "queue-low"
+        };
+        lines.push(format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action={frontier_queue_action} total_bytes={} frontier_bytes={} queued={} fetching={} deferred={} failed={} active_records={} failed_removable_records={} total_records={}",
+            stats.crawl_frontier_bytes,
+            stats.crawl_frontier_bytes,
+            frontier.queued,
+            frontier.fetching,
+            frontier.deferred,
+            frontier.failed,
+            frontier_active_records,
+            frontier_failed_projected_removed,
+            frontier.total
+        ));
+        lines.push(
+            "crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .brutal-index"
+                .to_owned(),
+        );
         lines.push(format!(
             "crawl_storage_frontier_records: {}",
             frontier.total
@@ -3574,6 +3603,83 @@ mod tests {
         });
         let zero_lines = crawl_storage_pressure_summary_lines(&stats);
         assert!(zero_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=cleanup-pointless snapshot_cleanup_useful=false frontier_cleanup_useful=false snapshot_duplicate_rows=0 frontier_failed_removable_records=0".to_owned()));
+    }
+
+    #[test]
+    fn crawl_storage_frontier_queue_pressure_reports_growth_actions() {
+        let mut stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 2,
+                fetching: 0,
+                fetched: 3,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+
+        let growth_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(growth_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-frontier-growth total_bytes=50 frontier_bytes=50 queued=2 fetching=0 deferred=0 failed={DEFAULT_MAX_FAILED_FRONTIER_RECORDS} active_records=2 failed_removable_records=0 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5
+        )));
+        assert!(growth_lines.contains(&"crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .brutal-index".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 1,
+            fetched: 3,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 4,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 8,
+        });
+        let deferred_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(deferred_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-deferred-fetching total_bytes=50 frontier_bytes=50 queued=0 fetching=1 deferred=4 failed={DEFAULT_MAX_FAILED_FRONTIER_RECORDS} active_records=5 failed_removable_records=0 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 8
+        )));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 0,
+            fetched: 3,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+        });
+        let failed_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(failed_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-failed-compaction total_bytes=50 frontier_bytes=50 queued=0 fetching=0 deferred=0 failed={} active_records=0 failed_removable_records=2 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5
+        )));
+
+        stats.crawl_frontier_bytes = 0;
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 0,
+            fetched: 3,
+            failed: 0,
+            deferred: 0,
+            total: 3,
+        });
+        let low_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(low_lines.contains(&"crawl_storage_frontier_queue_pressure: report_only=true action=queue-low total_bytes=0 frontier_bytes=0 queued=0 fetching=0 deferred=0 failed=0 active_records=0 failed_removable_records=0 total_records=3".to_owned()));
     }
 
     #[test]
