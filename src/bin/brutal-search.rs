@@ -2697,6 +2697,7 @@ fn web_storage_export_readiness_lines(
             summary.stale_artifacts,
             summary.suggested_dry_runs
         ),
+        web_storage_cache_size_budget_line(artifacts, summary),
         format!(
             "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} staleness_status={staleness_status} newest_age_secs={} stale_after_secs={stale_secs} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
             newest_age_secs
@@ -2764,6 +2765,47 @@ fn web_storage_export_readiness_lines(
         ),
         "web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned(),
     ]
+}
+
+fn web_storage_cache_size_budget_line(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+) -> String {
+    let cache_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let result_log_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let over_budget_bytes = cache_bytes
+        .saturating_sub(DEFAULT_CACHE_MAX_BYTES)
+        .saturating_add(result_log_bytes.saturating_sub(DEFAULT_RESULT_LOG_MAX_BYTES));
+    let near_budget = cache_bytes.saturating_mul(4) >= DEFAULT_CACHE_MAX_BYTES.saturating_mul(3)
+        || result_log_bytes.saturating_mul(4) >= DEFAULT_RESULT_LOG_MAX_BYTES.saturating_mul(3);
+    let status = if over_budget_bytes > 0 {
+        "over-budget"
+    } else if summary.duplicate_row_bytes > 0 || summary.duplicate_entries > 0 {
+        "duplicate-pressure"
+    } else if near_budget {
+        "near-budget"
+    } else {
+        "within-budget"
+    };
+    let next_action = match status {
+        "over-budget" => "run-web-cache-dry-run-before-apply",
+        "duplicate-pressure" => "inspect-duplicate-web-result-rows",
+        "near-budget" => "monitor-web-cache-growth",
+        _ => "web-cache-budget-ok",
+    };
+
+    format!(
+        "web_storage_cache_size_budget: report_only=true status={status} cache_bytes={cache_bytes} cache_budget_bytes={DEFAULT_CACHE_MAX_BYTES} result_log_bytes={result_log_bytes} result_log_budget_bytes={DEFAULT_RESULT_LOG_MAX_BYTES} over_budget_bytes={over_budget_bytes} duplicate_row_bytes={} duplicate_rows={} next_action={next_action}",
+        summary.duplicate_row_bytes, summary.duplicate_entries
+    )
 }
 
 fn web_storage_replay_missing_query_examples(artifacts: &[WebStorageArtifactStats]) -> Vec<String> {
@@ -6250,6 +6292,44 @@ mod tests {
         assert!(lines.contains(&"web_storage_pressure_result_rows: 4".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_durable_result_rows: 2".to_owned()));
         assert!(lines.contains(&"web_storage_pressure_incomplete_result_rows: 2".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_cache_size_budget_reports_duplicate_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha again\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 120, 60);
+        let lines = web_storage_export_readiness_lines(&artifacts, &summary, 120, 60);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_cache_size_budget: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("cache_budget_bytes=8388608")
+                && line.contains("result_log_budget_bytes=8388608")
+                && line.contains("over_budget_bytes=0")
+                && line.contains("duplicate_rows=1")
+                && line.contains("next_action=inspect-duplicate-web-result-rows")
+        }));
+        assert!(lines.contains(
+            &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
+        ));
     }
 
     #[test]
