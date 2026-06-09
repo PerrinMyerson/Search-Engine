@@ -57,6 +57,7 @@ const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 const BROWSER_DOCUMENT_LARGE_ROW_BYTES: u64 = 64 * 1024;
+const TEMP_CLEANUP_OLD_TARGET_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -993,7 +994,26 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         };
         let classification = temp_cleanup_classification(name, is_git_worktree, git_dirty);
         let bytes = directory_size_bytes(&path).unwrap_or(0);
-        entries.push((path, bytes, classification));
+        let metadata = std::fs::metadata(&path).ok();
+        let modified_age_secs = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let mtime_unix_secs = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        entries.push((
+            path,
+            bytes,
+            classification,
+            modified_age_secs,
+            mtime_unix_secs,
+        ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -1004,30 +1024,73 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     ];
     let mut safe_candidates = 0usize;
     let mut review_required = 0usize;
-    for (path, bytes, classification) in entries {
+    let mut old_target_count = 0usize;
+    let mut dirty_worktree_count = 0usize;
+    let mut unknown_review_count = 0usize;
+    let mut total_bytes = 0u64;
+    for (path, bytes, classification, modified_age_secs, mtime_unix_secs) in entries {
+        total_bytes = total_bytes.saturating_add(bytes);
         if classification.cleanup_safe {
             safe_candidates += 1;
         } else {
             review_required += 1;
         }
+        if classification.kind == "validation-target"
+            && modified_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS
+        {
+            old_target_count += 1;
+        }
+        if classification.status == "dirty" {
+            dirty_worktree_count += 1;
+        }
+        if classification.kind == "unknown-dir" || classification.status == "git-status-unavailable"
+        {
+            unknown_review_count += 1;
+        }
         lines.push(format!(
-            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} kind={} status={} cleanup_safe={} next_action={}",
+            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} age_secs={} mtime_unix_secs={} kind={} status={} cleanup_safe={} next_action={}",
             path.display(),
             bytes,
+            modified_age_secs,
+            mtime_unix_secs,
             classification.kind,
             classification.status,
             classification.cleanup_safe,
             classification.next_action
         ));
     }
+    let age_next_action = temp_cleanup_age_pressure_next_action(
+        old_target_count,
+        dirty_worktree_count,
+        unknown_review_count,
+    );
     lines.push(format!(
         "storage_temp_cleanup_summary: safe_candidates={safe_candidates} review_required={review_required}"
+    ));
+    lines.push(format!(
+        "storage_temp_cleanup_age_pressure: report_only=true old_target_count={old_target_count} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} total_bytes={total_bytes} next_action={age_next_action} old_target_threshold_secs={TEMP_CLEANUP_OLD_TARGET_SECS}"
     ));
     lines.push(
         "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
             .to_owned(),
     );
     Ok(lines)
+}
+
+fn temp_cleanup_age_pressure_next_action(
+    old_target_count: usize,
+    dirty_worktree_count: usize,
+    unknown_review_count: usize,
+) -> &'static str {
+    if unknown_review_count > 0 {
+        "review-unknown-temp-dirs"
+    } else if dirty_worktree_count > 0 {
+        "review-dirty-worktrees"
+    } else if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else {
+        "cleanup-low"
+    }
 }
 
 fn git_worktree_is_dirty(path: &Path) -> Option<bool> {
@@ -3464,6 +3527,49 @@ mod tests {
         assert_eq!(unknown.status, "review-required");
         assert!(!unknown.cleanup_safe);
         assert_eq!(unknown.next_action, "unknown-review-required");
+    }
+
+    #[test]
+    fn storage_temp_cleanup_audit_reports_age_pressure_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir
+            .path()
+            .join("search-engine-storage-temp-cleanup-age-target-b56c72f");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("artifact.bin"), b"target").unwrap();
+        let unknown = dir.path().join("search-engine-leftover-resource-cache");
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::fs::write(unknown.join("cache.bin"), b"unknown").unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_candidate: report_only=true path=")
+                && line.contains("search-engine-storage-temp-cleanup-age-target-b56c72f")
+                && line.contains(" bytes=6 ")
+                && line.contains(" age_secs=")
+                && line.contains(" mtime_unix_secs=")
+                && line.contains(" kind=validation-target status=candidate cleanup_safe=true next_action=remove-merged-target")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_candidate: report_only=true path=")
+                && line.contains("search-engine-leftover-resource-cache")
+                && line.contains(" bytes=7 ")
+                && line.contains(" kind=unknown-dir status=review-required cleanup_safe=false next_action=unknown-review-required")
+        }));
+        assert!(lines.contains(&"storage_temp_cleanup_age_pressure: report_only=true old_target_count=0 dirty_worktree_count=0 unknown_review_count=1 total_bytes=13 next_action=review-unknown-temp-dirs old_target_threshold_secs=86400".to_owned()));
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(1, 0, 0),
+            "remove-old-merged-targets"
+        );
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(0, 1, 0),
+            "review-dirty-worktrees"
+        );
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(0, 0, 0),
+            "cleanup-low"
+        );
     }
 
     #[test]
