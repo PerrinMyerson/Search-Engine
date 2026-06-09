@@ -11176,6 +11176,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
   };
   const viewportStatus = () => document.querySelector("[data-browser-viewport-status]");
+  const chromeStatus = () => document.querySelector("[data-browser-chrome-status]");
   const setPendingViewportTarget = (target) => {
     if (!target) {
       return;
@@ -11752,21 +11753,35 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       const status = viewportStatus();
       if (status) {
         status.dataset.browserViewportScrollActionState = "edge";
+        status.dataset.browserViewportScrollEdgeState = "blocked";
+        status.dataset.browserViewportScrollEdgeX = String(x);
+        status.dataset.browserViewportScrollEdgeY = String(y);
+      }
+      const topStatus = chromeStatus();
+      if (topStatus) {
+        topStatus.dataset.browserChromeScrollEdgeState = "blocked";
+        topStatus.dataset.browserChromeScrollEdgeX = String(x);
+        topStatus.dataset.browserChromeScrollEdgeY = String(y);
       }
       if (dy < 0 && y <= 0) {
         shell.dataset.edgeScrollReason = "top";
+        if (topStatus) { topStatus.dataset.browserChromeScrollEdge = "top"; }
         setViewportFeedback("Already at top.");
       } else if (dy > 0 && y >= maxY) {
         shell.dataset.edgeScrollReason = "bottom";
+        if (topStatus) { topStatus.dataset.browserChromeScrollEdge = "bottom"; }
         setViewportFeedback("Already at bottom.");
       } else if (dx < 0 && x <= 0) {
         shell.dataset.edgeScrollReason = "left";
+        if (topStatus) { topStatus.dataset.browserChromeScrollEdge = "left"; }
         setViewportFeedback("Already at left edge.");
       } else if (dx > 0 && x >= maxX) {
         shell.dataset.edgeScrollReason = "right";
+        if (topStatus) { topStatus.dataset.browserChromeScrollEdge = "right"; }
         setViewportFeedback("Already at right edge.");
       } else {
         shell.dataset.edgeScrollReason = "same-position";
+        if (topStatus) { topStatus.dataset.browserChromeScrollEdge = "same-position"; }
         setViewportFeedback("Viewport is already at that position.");
       }
       return null;
@@ -11865,6 +11880,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.dataset.browserViewportScrollActionState = "queued";
       status.dataset.browserViewportPreservedX = String(numberData("viewportX"));
       status.dataset.browserViewportPreservedY = String(numberData("viewportY"));
+    }
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.dataset.browserChromeScrollInputSource = inputSource;
+      topStatus.dataset.browserChromeScrollActionState = "queued";
+      topStatus.dataset.browserChromeScrollPreservedX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromeScrollPreservedY = String(numberData("viewportY"));
     }
     clearDeferredClickForScroll();
     pendingScrollDx += dx;
@@ -12029,6 +12051,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.dataset.clickNavigationState = "missed";
       shell.dataset.clickMissState = "missed";
       shell.dataset.clickMissReason = "outside-raster";
+      const topStatus = chromeStatus();
+      if (topStatus) {
+        topStatus.dataset.browserChromeClickMissState = "missed";
+        topStatus.dataset.browserChromeClickMissReason = "outside-raster";
+      }
       setClickStatus("Click missed the rendered page image; move pointer inside the raster or retry with an exact point.");
       setViewportFeedback("Click missed the rendered page image; retry on a visible link/button.");
       return;
@@ -12036,6 +12063,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("data-drag-suppressed-click");
     shell.removeAttribute("data-click-miss-state");
     shell.removeAttribute("data-click-miss-reason");
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.removeAttribute("data-browser-chrome-click-miss-state");
+      topStatus.removeAttribute("data-browser-chrome-click-miss-reason");
+    }
     shell.dataset.clickActionState = "intentional";
     shell.dataset.clickNavigationState = "ready";
     moveClickMarker(point);
@@ -14154,7 +14186,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -14274,9 +14306,11 @@ fn render_browser_session_chrome_status(
         );
     }
     if let Some(feedback) = browser_session_scroll_feedback_text(payload) {
+        let scroll_state_attrs = browser_session_scroll_feedback_state_attrs(feedback);
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback{scroll_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            scroll_state_attrs = scroll_state_attrs,
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14938,6 +14972,25 @@ fn browser_session_scroll_feedback_text(payload: &BrowserSessionPayload) -> Opti
             || feedback.starts_with("Viewport is already")
             || feedback.starts_with("Already at")
     })
+}
+
+fn browser_session_scroll_feedback_state_attrs(feedback: &str) -> String {
+    let (outcome, edge) = if feedback.starts_with("Already at top") {
+        ("boundary", "top")
+    } else if feedback.starts_with("Already at bottom") {
+        ("boundary", "bottom")
+    } else if feedback.starts_with("Already at left edge") {
+        ("boundary", "left")
+    } else if feedback.starts_with("Already at right edge") {
+        ("boundary", "right")
+    } else if feedback.starts_with("Viewport is already") {
+        ("boundary", "same-position")
+    } else {
+        ("success", "none")
+    };
+    format!(
+        r#" data-browser-chrome-scroll-outcome="{outcome}" data-browser-chrome-scroll-edge="{edge}" data-browser-chrome-scroll-feedback-mode="compact""#
+    )
 }
 
 fn render_browser_session_viewport_feedback(payload: &BrowserSessionPayload) -> String {

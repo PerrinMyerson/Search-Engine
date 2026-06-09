@@ -3741,7 +3741,15 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const queueViewportScroll"));
     assert!(html.contains("const queueViewportScroll = (dx, dy, inputSource = \"manual\") =>"));
     assert!(html.contains(r#"shell.dataset.scrollInputSource = inputSource"#));
+    assert!(html.contains(
+        r#"const chromeStatus = () => document.querySelector("[data-browser-chrome-status]")"#
+    ));
     assert!(html.contains(r#"status.dataset.browserViewportInputSource = inputSource"#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeScrollInputSource = inputSource"#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeScrollActionState = "queued""#));
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromeScrollPreservedX = String(numberData("viewportX"))"#
+    ));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(pending.x)"#));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(pending.y)"#));
     assert!(html.contains(r#"queueViewportScroll(dx, dy, "wheel")"#));
@@ -9846,7 +9854,10 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
     assert!(html.contains(r#"shell.dataset.clickMissState = "missed""#));
     assert!(html.contains(r#"shell.dataset.clickMissReason = "outside-raster""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeClickMissState = "missed""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeClickMissReason = "outside-raster""#));
     assert!(html.contains(r#"shell.removeAttribute("data-click-miss-state")"#));
+    assert!(html.contains(r#"topStatus.removeAttribute("data-browser-chrome-click-miss-state")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
     assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
@@ -10017,6 +10028,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"shell.dataset.edgeScrollViewportY = String(y)"#));
     assert!(html.contains(r#"shell.dataset.edgeScrollReason = "top""#));
     assert!(html.contains(r#"shell.dataset.edgeScrollReason = "bottom""#));
+    assert!(html.contains(r#"status.dataset.browserViewportScrollEdgeState = "blocked""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeScrollEdgeState = "blocked""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeScrollEdge = "top""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "queued""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "idle""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "edge""#));
@@ -10127,6 +10141,12 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
         "data-browser-chrome-feedback-source=\"{}\"",
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-status-control-order="navigation address actions feedback tools""#
+    ));
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-status-primary-feedback="action-outcome""#)
+    );
     assert!(topbar_html.contains(r#"data-browser-chrome-feedback-history-position="2""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-feedback-history-length="2""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-feedback-can-back="true""#));
