@@ -6723,6 +6723,435 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
 }
 
 #[tokio::test]
+async fn visible_color_image_rendering_pack_attaches_css_srcset_picture_color() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..8 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /app.css ") {
+                let body = b".hero { background-image: image-set(url('/bg.avif') type('image/avif') 1x, url('/bg-redirect') type('image/png') 2x); min-height: 24px; }";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /bg-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /bg-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /img-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /img-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /picture-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /picture-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            let (content_type, body) = if first_line.contains(" /bg-final ") {
+                ("text/plain", png_bytes.clone())
+            } else if first_line.contains(" /img-final ") {
+                ("application/octet-stream", png_bytes.clone())
+            } else if first_line.contains(" /picture-final ") {
+                ("image/png", png_bytes.clone())
+            } else {
+                assert!(first_line.contains(" /page.html "), "{first_line}");
+                (
+                    "text/html",
+                    br#"<html><head>
+                        <link rel="stylesheet" href="/app.css">
+                    </head><body>
+                        <p>Before visible pack</p>
+                        <section class="hero">CSS background hero</section>
+                        <img
+                            loading="lazy"
+                            src="/fallback.gif"
+                            srcset="/dead.avif 80w, /img-redirect 160w, /img-large 640w"
+                            sizes="160px"
+                            alt="Lazy responsive hero"
+                            width="160"
+                            height="24">
+                        <picture>
+                            <source media="print" type="image/png" srcset="/print.png 160w">
+                            <source media="screen" type="image/png" srcset="/picture-redirect 160w" sizes="160px">
+                            <img src="/picture-fallback.gif" alt="Picture hero" width="160" height="24">
+                        </picture>
+                        <p>After visible pack</p>
+                    </body></html>"#
+                        .to_vec(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let stylesheet_url = format!("http://{addr}/app.css");
+    let bg_selected_url = format!("http://{addr}/bg-redirect");
+    let img_selected_url = format!("http://{addr}/img-redirect");
+    let picture_selected_url = format!("http://{addr}/picture-redirect");
+    let bg_final_url = format!("http://{addr}/bg-final");
+    let img_final_url = format!("http://{addr}/img-final");
+    let picture_final_url = format!("http://{addr}/picture-final");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 64,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let stylesheet_report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(stylesheet_report.stylesheet_count, 1);
+    assert_eq!(stylesheet_report.applied, 1);
+    assert_eq!(stylesheet_report.failed, 0);
+    assert_eq!(
+        stylesheet_report.fetches[0].resource.resolved,
+        stylesheet_url
+    );
+    assert_eq!(stylesheet_report.fetches[0].status, "fetched");
+    assert_eq!(
+        stylesheet_report.fetches[0].content_type.as_deref(),
+        Some("text/css")
+    );
+
+    let image_report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(image_report.image_count, 3);
+    assert_eq!(image_report.decoded, 3);
+    assert_eq!(image_report.failed, 0);
+    assert_eq!(image_report.skipped, 0);
+    assert!(!image_report.fetches.iter().any(|fetch| {
+        matches!(
+            fetch.resource.url.as_str(),
+            "/bg.avif"
+                | "/dead.avif"
+                | "/img-large"
+                | "/fallback.gif"
+                | "/print.png"
+                | "/picture-fallback.gif"
+        )
+    }));
+
+    for (resource_url, selected_url, final_url, content_type, kind, initiator) in [
+        (
+            "/bg-redirect",
+            bg_selected_url.as_str(),
+            bg_final_url.as_str(),
+            "text/plain",
+            "background_image",
+            "css",
+        ),
+        (
+            "/img-redirect",
+            img_selected_url.as_str(),
+            img_final_url.as_str(),
+            "application/octet-stream",
+            "image",
+            "img",
+        ),
+        (
+            "/picture-redirect",
+            picture_selected_url.as_str(),
+            picture_final_url.as_str(),
+            "image/png",
+            "image",
+            "img",
+        ),
+    ] {
+        let fetch = image_report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.url == resource_url)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.resource.resolved, selected_url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.source.as_deref(), Some(final_url));
+        assert_eq!(fetch.content_type.as_deref(), Some(content_type));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+        assert_eq!(fetch.decoded_width, Some(2));
+        assert_eq!(fetch.decoded_height, Some(2));
+        assert_eq!(fetch.decoded_has_alpha, Some(false));
+        assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(
+            fetch.decoded_color_hash.as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before visible pack"));
+    assert!(render.text.contains("After visible pack"));
+    for selected_url in [&bg_selected_url, &img_selected_url, &picture_selected_url] {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.url == *selected_url)
+            .unwrap();
+        assert_eq!(rendered_image.pixel_hash, expected_hash);
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(
+            rendered_image.image.rgb_pixels.as_deref(),
+            Some(expected_rgb.as_slice())
+        );
+    }
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &bg_selected_url && hash == &expected_hash
+        )
+    }));
+    for selected_url in [&img_selected_url, &picture_selected_url] {
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == selected_url && hash == &expected_hash
+            )
+        }));
+    }
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let good_path = dir.path().join("good.png");
+    let undecoded_path = dir.path().join("broken.png");
+    let unsupported_path = dir.path().join("unsupported.bin");
+    let missing_path = dir.path().join("missing.jpg");
+    let capped_page = dir.path().join("capped.html");
+    let capped_path = dir.path().join("capped.png");
+    fs::write(&good_path, &png_bytes).unwrap();
+    fs::write(&undecoded_path, b"not actually a png").unwrap();
+    fs::write(
+        &unsupported_path,
+        b"\x00\x00\x00\x10ftypavif\x00\x00\x00\x00",
+    )
+    .unwrap();
+    fs::write(&capped_path, &png_bytes).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <img src="good.png" alt="Good" width="16" height="24">
+            <img src="broken.png" alt="Broken" width="16" height="24">
+            <img src="unsupported.bin" alt="Unsupported" width="16" height="24">
+            <img src="missing.jpg" alt="Missing" width="16" height="24">
+            <img src="ftp://example.test/color.png" alt="Skipped" width="16" height="24">
+        </body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &capped_page,
+        r#"<html><body><img src="capped.png" alt="Capped" width="16" height="24"></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 5);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 2);
+    assert_eq!(report.skipped, 1);
+
+    let good_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == good_path.display().to_string())
+        .unwrap();
+    assert_eq!(good_fetch.status, "fetched");
+    assert_eq!(good_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(
+        good_fetch.image_byte_signature.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(good_fetch.decoded_width, Some(2));
+    assert_eq!(good_fetch.decoded_height, Some(2));
+    assert_eq!(good_fetch.decoded_has_alpha, Some(false));
+    assert_eq!(
+        good_fetch.decoded_hash.as_deref(),
+        Some(expected_hash.as_str())
+    );
+    assert!(
+        good_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let undecoded_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == undecoded_path.display().to_string())
+        .unwrap();
+    assert_eq!(undecoded_fetch.status, "fetched");
+    assert_eq!(
+        undecoded_fetch.image_decode_status.as_deref(),
+        Some("undecoded")
+    );
+    assert_eq!(
+        undecoded_fetch.image_decode_error_kind.as_deref(),
+        Some("unrecognized_bytes")
+    );
+    assert_eq!(undecoded_fetch.image_byte_signature, None);
+    assert_eq!(undecoded_fetch.decoded_width, None);
+    assert_eq!(undecoded_fetch.decoded_height, None);
+
+    let unsupported_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == unsupported_path.display().to_string())
+        .unwrap();
+    assert_eq!(unsupported_fetch.status, "fetched");
+    assert_eq!(
+        unsupported_fetch.image_decode_status.as_deref(),
+        Some("unsupported_format")
+    );
+    assert_eq!(
+        unsupported_fetch.image_decode_error_kind.as_deref(),
+        Some("unsupported_signature")
+    );
+    assert_eq!(
+        unsupported_fetch.image_byte_signature.as_deref(),
+        Some("image/avif")
+    );
+    assert_eq!(unsupported_fetch.decoded_hash, None);
+
+    let missing_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == missing_path.display().to_string())
+        .unwrap();
+    assert_eq!(missing_fetch.status, "failed");
+    assert_eq!(missing_fetch.error_kind.as_deref(), Some("error"));
+    assert_eq!(
+        missing_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        missing_fetch.image_decode_error_kind.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(missing_fetch.image_byte_signature, None);
+
+    let skipped_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == "ftp://example.test/color.png")
+        .unwrap();
+    assert_eq!(skipped_fetch.status, "skipped");
+    assert_eq!(
+        skipped_fetch.error_kind.as_deref(),
+        Some("unsupported_scheme")
+    );
+    assert_eq!(
+        skipped_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        skipped_fetch.image_decode_error_kind.as_deref(),
+        Some("not_fetched")
+    );
+
+    let mut capped_session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    capped_session
+        .navigate(&capped_page.display().to_string())
+        .await
+        .unwrap();
+    let capped_report = capped_session.render_current_with_images(1).await.unwrap();
+    assert_eq!(capped_report.image_count, 1);
+    assert_eq!(capped_report.decoded, 0);
+    assert_eq!(capped_report.failed, 1);
+    assert_eq!(capped_report.skipped, 0);
+    let capped_fetch = capped_report.fetches.first().unwrap();
+    assert_eq!(
+        capped_fetch.resource.resolved,
+        capped_path.display().to_string()
+    );
+    assert_eq!(capped_fetch.status, "failed");
+    assert_eq!(capped_fetch.error_kind.as_deref(), Some("byte_cap"));
+    assert!(
+        capped_fetch
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("exceeds byte cap"))
+    );
+    assert_eq!(
+        capped_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        capped_fetch.image_decode_error_kind.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(capped_fetch.image_byte_signature, None);
+    assert_eq!(capped_fetch.decoded_hash, None);
+}
+
+#[tokio::test]
 async fn image_raster_fidelity_decodes_indexed_png_resource_pixels() {
     let png_bytes = tiny_test_indexed_png_with_transparency();
     let decoded = decode_simple_png(&png_bytes).unwrap();

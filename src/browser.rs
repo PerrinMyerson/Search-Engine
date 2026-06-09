@@ -3635,6 +3635,10 @@ impl BrowserSession {
             .iter()
             .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
             .count();
+        let skipped = fetches
+            .iter()
+            .filter(|fetch| fetch.status == "skipped")
+            .count();
         self.entries[current_index].page_state.cached_images = cached_images;
         let render = self.render_entry_page_state(current_index);
         self.set_entry_render(current_index, render);
@@ -3644,6 +3648,7 @@ impl BrowserSession {
             image_count: fetches.len(),
             decoded,
             failed,
+            skipped,
             cached_resource_count: self.resource_cache.len(),
             cached_resource_bytes: self.resource_cache.total_bytes(),
             decoded_image_bytes,

@@ -171,6 +171,8 @@ pub struct BrowserImageRenderReport {
     pub decoded: usize,
     pub failed: usize,
     #[serde(default)]
+    pub skipped: usize,
+    #[serde(default)]
     pub cached_resource_count: usize,
     #[serde(default)]
     pub cached_resource_bytes: usize,
