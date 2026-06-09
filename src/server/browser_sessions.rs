@@ -10052,7 +10052,7 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11144,7 +11144,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
   } catch (_) {}
   let lastClickPagePoint = null;
-  const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip]"));
+  const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip], [data-browser-chrome-scroll-actions]"));
   const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
   const clickStatusTargets = () => Array.from(document.querySelectorAll("[data-browser-click-status]"));
   const setViewportFeedback = (message) => {
@@ -11164,6 +11164,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     shell.dataset.pendingViewportX = String(target.x);
     shell.dataset.pendingViewportY = String(target.y);
+    for (const control of viewportControls()) {
+      control.dataset.pendingViewportX = String(target.x);
+      control.dataset.pendingViewportY = String(target.y);
+      if (control.hasAttribute("data-browser-chrome-scroll-actions")) {
+        control.dataset.browserChromeScrollPendingState = "pending";
+        control.dataset.browserChromeScrollTargetX = String(target.x);
+        control.dataset.browserChromeScrollTargetY = String(target.y);
+      }
+    }
     const status = viewportStatus();
     if (status) {
       status.dataset.pendingViewportX = String(target.x);
@@ -11210,6 +11219,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.removeAttribute("aria-busy");
     for (const control of viewportControls()) {
       control.removeAttribute("data-scroll-pending");
+      control.removeAttribute("data-pending-viewport-x");
+      control.removeAttribute("data-pending-viewport-y");
+      control.removeAttribute("data-browser-chrome-scroll-target-x");
+      control.removeAttribute("data-browser-chrome-scroll-target-y");
+      if (control.hasAttribute("data-browser-chrome-scroll-actions")) {
+        control.dataset.browserChromeScrollPendingState = "idle";
+        control.dataset.browserChromeScrollTargetX = String(numberData("viewportX"));
+        control.dataset.browserChromeScrollTargetY = String(numberData("viewportY"));
+      }
       control.removeAttribute("aria-busy");
     }
     const status = viewportStatus();

@@ -2665,6 +2665,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-coalescing=\"queued-target\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-flush-delay-ms=\"18\""));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-pending-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-y="0""#));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-scroll-max-bytes=\"{}\"",
         payload.max_bytes
@@ -3261,6 +3264,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("shell.dataset.viewportState = \"pending\""));
     assert!(html.contains("shell.dataset.pendingViewportX = String(target.x)"));
     assert!(html.contains("shell.dataset.pendingViewportY = String(target.y)"));
+    assert!(html.contains(r#"[data-browser-viewport-controls], [data-browser-viewport-command-strip], [data-browser-chrome-scroll-actions]"#));
+    assert!(html.contains("control.dataset.browserChromeScrollPendingState = \"pending\""));
+    assert!(html.contains("control.dataset.browserChromeScrollTargetX = String(target.x)"));
+    assert!(html.contains("control.dataset.browserChromeScrollTargetY = String(target.y)"));
     assert!(html.contains("shell.dataset.viewportState = \"settled\""));
     assert!(html.contains("shell.dataset.settledViewportX = String(numberData(\"viewportX\"))"));
     assert!(html.contains("shell.dataset.settledViewportY = String(numberData(\"viewportY\"))"));
@@ -3504,6 +3511,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains(r#"control.dataset.scrollPending = "true""#));
     assert!(html.contains(r#"control.removeAttribute("data-scroll-pending")"#));
+    assert!(html.contains(r#"control.removeAttribute("data-browser-chrome-scroll-target-x")"#));
+    assert!(html.contains("control.dataset.browserChromeScrollPendingState = \"idle\""));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
     assert!(html.contains(r#"status.removeAttribute("data-viewport-pending")"#));
     assert!(html.contains("const scrollMessage"));
