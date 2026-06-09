@@ -2919,8 +2919,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-target-y="0""#));
     assert!(html.contains(r#"data-browser-viewport-current-x="0""#));
     assert!(html.contains(r#"data-browser-viewport-current-y="0""#));
-    assert!(html.contains(r#"data-browser-viewport-input-sources="wheel keyboard controls""#));
-    assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
+    assert!(html.contains(r#"data-browser-viewport-input-sources="wheel keyboard controls drag""#));
+    assert!(
+        html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / drag / keys scroll</span>"#)
+    );
     assert!(html.contains(r#"aria-label="Manual viewport scroll controls; x 0 of "#));
     assert!(html.contains(r#"data-scroll-x="0""#));
     assert!(html.contains(r#"data-scroll-y="0""#));
@@ -3361,7 +3363,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-state="summary""#));
     assert!(html.contains(r#"data-scroll-x-state="horizontal scroll available""#));
     assert!(html.contains(r#"data-scroll-y-state="vertical scroll available""#));
-    assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
+    assert!(
+        html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / drag / keys scroll</span>"#)
+    );
     assert!(html.contains(r#"data-browser-viewport-pending-state="idle""#));
     assert!(html.contains(r#"data-browser-viewport-target-x="8""#));
     assert!(html.contains(r#"data-browser-viewport-target-y="4""#));
@@ -3412,10 +3416,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-settled-viewport-y="4""#));
     assert!(html.contains(r#"tabindex="0" role="region""#));
     assert!(html.contains(
-        r#"aria-label="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
+        r#"aria-label="Rendered browser viewport; click links and buttons in this image, or use wheel, drag, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
     assert!(html.contains(
-        r#"title="Rendered browser viewport; click links and buttons in this image, or use wheel, arrows, Page Up, Page Down, Home, and End to scroll""#
+        r#"title="Rendered browser viewport; click links and buttons in this image, or use wheel, drag, arrows, Page Up, Page Down, Home, and End to scroll""#
     ));
     let raster_index = html.find(r#"class="browser-raster-shell""#).unwrap();
     let chrome_index = html.find(r#"data-browser-chrome"#).unwrap();
@@ -3724,13 +3728,21 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(pending.x)"#));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(pending.y)"#));
     assert!(html.contains(r#"queueViewportScroll(dx, dy, "wheel")"#));
+    assert!(html.contains(r#"data-browser-drag-scroll-mode="pointer-pan""#));
+    assert!(html.contains(r#"data-browser-drag-scroll-owner="viewport""#));
+    assert!(html.contains(r#"data-browser-drag-scroll-threshold="4""#));
+    assert!(html.contains("let dragScrollStart = null"));
+    assert!(html.contains(r#"shell.addEventListener("pointerdown""#));
+    assert!(html.contains(r#"shell.addEventListener("pointermove""#));
+    assert!(html.contains(r#"queueViewportScroll(dx, dy, "drag")"#));
+    assert!(html.contains("suppressNextClickAfterDrag"));
     assert!(html.contains(r#"queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls")"#));
     assert!(html.contains(r#"queueViewportScroll(delta.dx, delta.dy, "keyboard")"#));
     assert!(html.contains("const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 18, 0, 120);"));
     assert!(html.contains(r#"data-browser-wheel-scroll-mode="coalesced""#));
     assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
     assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
-    assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls""#));
+    assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls drag""#));
     assert!(html.contains(r#"data-browser-scroll-input-source="idle""#));
     assert!(html.contains(r#"data-browser-scroll-line-step="2""#));
     assert!(html.contains(r#"data-browser-scroll-page-step-x="20""#));
