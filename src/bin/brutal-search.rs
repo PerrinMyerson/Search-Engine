@@ -1965,6 +1965,15 @@ fn storage_pressure_rollup_lines(
             brave_results_bytes,
             crawl_bytes
         ),
+        search_browser_storage_hygiene_pack_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+            largest_component,
+            largest_component_bytes,
+        ),
         format!("storage_pressure_total_bytes: {}", stats.total_bytes),
         format!("storage_pressure_core_index_bytes: {core_bytes}"),
         format!("storage_pressure_web_bytes: {}", web_summary.bytes),
@@ -1974,6 +1983,60 @@ fn storage_pressure_rollup_lines(
         ),
         format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
     ]
+}
+
+fn search_browser_storage_hygiene_pack_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+    largest_component: &str,
+    largest_component_bytes: u64,
+) -> String {
+    let retention_config = web_storage_retention_config();
+    let candidate_artifacts = usize::from(web_cache_bytes > 0)
+        .saturating_add(usize::from(brave_results_bytes > 0))
+        .saturating_add(usize::from(stats.browser_document_bytes > 0))
+        .saturating_add(usize::from(crawl_bytes > 0));
+    let duplicate_rows = web_summary
+        .duplicate_entries
+        .saturating_add(stats.browser_document_duplicate_rows)
+        .saturating_add(stats.crawl_snapshot_duplicate_entries);
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let cap_bytes = index_storage_budget_bytes();
+    let web_cap_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+    let next_action = if stats.total_bytes > cap_bytes {
+        "review-largest-artifact-before-cleanup"
+    } else if duplicate_rows > 0 || duplicate_bytes > 0 || web_summary.suggested_dry_runs > 0 {
+        "run-storage-hygiene-dry-run"
+    } else if web_summary.bytes > web_cap_bytes {
+        "review-web-cache-caps"
+    } else if stats.browser_document_large_row_count > 0 {
+        "review-browser-session-row-size"
+    } else {
+        "storage-hygiene-low"
+    };
+
+    format!(
+        "search_browser_storage_hygiene_pack: report_only=true deletes=false compacts=false candidate_artifacts={candidate_artifacts} total_bytes={} budget_bytes={cap_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_document_bytes={} snapshot_bytes={crawl_bytes} web_rows={} brave_archive_rows={} browser_document_rows={} snapshot_rows={} duplicate_rows={duplicate_rows} duplicate_bytes={duplicate_bytes} largest_artifact={largest_component} largest_artifact_bytes={largest_component_bytes} web_cap_bytes={web_cap_bytes} browser_large_row_count={} next_action={next_action}",
+        stats.total_bytes,
+        stats.browser_document_bytes,
+        web_summary.result_rows,
+        stats
+            .web_artifacts
+            .iter()
+            .find(|artifact| artifact.name == "brave-results.jsonl")
+            .map(|artifact| artifact.result_rows)
+            .unwrap_or(0),
+        stats.browser_document_rows,
+        stats.crawl_snapshot_entries,
+        stats.browser_document_large_row_count,
+    )
 }
 
 fn storage_budget_pressure_lines(
@@ -5068,11 +5131,14 @@ mod tests {
         std::fs::write(index.join("web-cache.jsonl"), web_cache).unwrap();
         let brave_results = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n";
         std::fs::write(index.join("brave-results.jsonl"), brave_results).unwrap();
+        let browser_docs = b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(index.join("browser-documents.jsonl"), browser_docs).unwrap();
         let crawl_docs =
             b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
         std::fs::write(index.join("crawl-docs.jsonl"), crawl_docs).unwrap();
         let before_cache = std::fs::read(index.join("web-cache.jsonl")).unwrap();
         let before_results = std::fs::read(index.join("brave-results.jsonl")).unwrap();
+        let before_browser_docs = std::fs::read(index.join("browser-documents.jsonl")).unwrap();
         let before_snapshot = std::fs::read(index.join("crawl-docs.jsonl")).unwrap();
 
         let stats = collect_index_storage_stats(index).unwrap();
@@ -5088,6 +5154,10 @@ mod tests {
             std::fs::read(index.join("brave-results.jsonl")).unwrap()
         );
         assert_eq!(
+            before_browser_docs,
+            std::fs::read(index.join("browser-documents.jsonl")).unwrap()
+        );
+        assert_eq!(
             before_snapshot,
             std::fs::read(index.join("crawl-docs.jsonl")).unwrap()
         );
@@ -5099,6 +5169,23 @@ mod tests {
                 && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
                 && line.contains("generated_artifact_bytes=not-scanned")
                 && line.contains("next_action=run-storage-dry-run-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("search_browser_storage_hygiene_pack: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("candidate_artifacts=4")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("browser_document_bytes={}", browser_docs.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("web_rows=3")
+                && line.contains("brave_archive_rows=1")
+                && line.contains("browser_document_rows=2")
+                && line.contains("snapshot_rows=2")
+                && line.contains("duplicate_rows=3")
+                && line.contains("largest_artifact=web-artifacts")
+                && line.contains("next_action=run-storage-hygiene-dry-run")
         }));
     }
 
