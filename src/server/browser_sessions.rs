@@ -11270,6 +11270,16 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.dataset.browserChromePendingState = "idle";
+      topStatus.dataset.browserChromePendingAction = "none";
+      topStatus.dataset.browserChromeClickPendingState = "idle";
+      topStatus.removeAttribute("data-browser-chrome-pending-viewport-x");
+      topStatus.removeAttribute("data-browser-chrome-pending-viewport-y");
+      topStatus.removeAttribute("data-browser-chrome-pending-source");
+      topStatus.removeAttribute("data-browser-chrome-pending-max-bytes");
+    }
   };
   const markStaleViewportResponse = (message) => {
     if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
@@ -11449,6 +11459,52 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       input.value = currentY;
     }
   };
+  const browserActionFromLink = (link) => {
+    if (link.dataset.browserPrimaryNavAction) {
+      return link.dataset.browserPrimaryNavAction;
+    }
+    if (link.hasAttribute("data-browser-chrome-current-action")) {
+      return "current";
+    }
+    if (link.hasAttribute("data-browser-chrome-reload-action")) {
+      return "reload";
+    }
+    if (link.hasAttribute("data-browser-chrome-images-action")) {
+      return "images";
+    }
+    return "browser-action";
+  };
+  const markBrowserActionPending = (link) => {
+    if (!link || !link.href) {
+      return;
+    }
+    const action = browserActionFromLink(link);
+    const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
+    link.href = url.toString();
+    link.dataset.browserChromeActionPending = "true";
+    link.dataset.browserChromeActionPendingName = action;
+    link.dataset.browserChromeActionPendingViewportX = String(numberData("viewportX"));
+    link.dataset.browserChromeActionPendingViewportY = String(numberData("viewportY"));
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.dataset.browserChromePendingState = "pending";
+      topStatus.dataset.browserChromePendingAction = action;
+      topStatus.dataset.browserChromePendingViewportX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromePendingViewportY = String(numberData("viewportY"));
+      topStatus.dataset.browserChromePendingSource = shell.dataset.pageSource || "";
+      topStatus.dataset.browserChromePendingMaxBytes = shell.dataset.maxBytes || "";
+    }
+  };
+  document.addEventListener("click", (event) => {
+    const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+    const link = eventTarget && typeof eventTarget.closest === "function"
+      ? eventTarget.closest("a[data-browser-primary-nav-action], a[data-browser-chrome-current-action], a[data-browser-chrome-reload-action], a[data-browser-chrome-images-action]")
+      : null;
+    if (!link) {
+      return;
+    }
+    markBrowserActionPending(link);
+  });
   const submitViewportClick = (point, messagePrefix) => {
     const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));
     const size = rasterSize();
@@ -11465,6 +11521,16 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.lastClickY = String(point.y);
     shell.dataset.lastClickPageX = String(point.pageX);
     shell.dataset.lastClickPageY = String(point.pageY);
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.dataset.browserChromeClickPendingState = "pending";
+      topStatus.dataset.browserChromeClickPendingX = String(point.x);
+      topStatus.dataset.browserChromeClickPendingY = String(point.y);
+      topStatus.dataset.browserChromeClickPendingPageX = String(point.pageX);
+      topStatus.dataset.browserChromeClickPendingPageY = String(point.pageY);
+      topStatus.dataset.browserChromeClickPendingViewportX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromeClickPendingViewportY = String(numberData("viewportY"));
+    }
     const message = `${messagePrefix} ${pointMessage(point)}...`;
     setClickStatus(message);
     replaceViewportPartial(url, message, {
@@ -14186,7 +14252,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
