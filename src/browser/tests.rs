@@ -21086,6 +21086,249 @@ async fn css_protocol_relative_background_redirect_keeps_color_evidence() {
 }
 
 #[tokio::test]
+async fn redirected_responsive_candidates_keep_color_resource_state_and_attachment() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..7 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /img-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /img-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+            if first_line.contains(" /picture-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /picture-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+            if first_line.contains(" /css-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /css-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /img-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+            if first_line.contains(" /picture-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+            if first_line.contains(" /css-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = br#"<html><body>
+                <p>Before responsive redirect images</p>
+                <section style="background-image: image-set(url(data:image/avif;base64,AAAA) type('image/avif') 1x, url('/css-redirect') type('image/png') 2x); min-height: 48px">Redirected CSS candidate</section>
+                <img src="/placeholder.gif" srcset="/dead-img.avif 40w, /img-redirect 80w, /huge-img.avif 640w" sizes="80px" alt="Redirected srcset" width="80" height="24">
+                <picture>
+                    <source media="print" type="image/png" srcset="/print-only.png 1x">
+                    <source media="screen" type="image/png" srcset="/dead-picture.avif 40w, /picture-redirect 80w, /huge-picture.avif 640w" sizes="80px">
+                    <img src="/fallback-picture.png" alt="Redirected picture" width="80" height="24">
+                </picture>
+                <p>After responsive redirect images</p>
+            </body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let img_selected = format!("http://{addr}/img-redirect");
+    let img_final = format!("http://{addr}/img-final");
+    let picture_selected = format!("http://{addr}/picture-redirect");
+    let picture_final = format!("http://{addr}/picture-final");
+    let css_selected = format!("http://{addr}/css-redirect");
+    let css_final = format!("http://{addr}/css-final");
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 80,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 3);
+    assert_eq!(report.decoded, 3);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.skipped, 0);
+    for skipped_candidate in [
+        "data:image/avif;base64,AAAA",
+        "/dead-img.avif",
+        "/huge-img.avif",
+        "/dead-picture.avif",
+        "/huge-picture.avif",
+        "/print-only.png",
+        "/fallback-picture.png",
+        "/placeholder.gif",
+    ] {
+        assert!(
+            !report.fetches.iter().any(|fetch| {
+                fetch.resource.url == skipped_candidate
+                    || fetch.resource.resolved.ends_with(skipped_candidate)
+            }),
+            "unexpected fetch for {skipped_candidate}"
+        );
+    }
+
+    for (resource_url, selected_url, final_url, content_type, kind, initiator, attachment_kind) in [
+        (
+            "/css-redirect",
+            css_selected.as_str(),
+            css_final.as_str(),
+            Some("application/octet-stream"),
+            "background_image",
+            "section",
+            "background_image",
+        ),
+        (
+            "/img-redirect",
+            img_selected.as_str(),
+            img_final.as_str(),
+            Some("text/plain"),
+            "image",
+            "img",
+            "image",
+        ),
+        (
+            "/picture-redirect",
+            picture_selected.as_str(),
+            picture_final.as_str(),
+            None,
+            "image",
+            "img",
+            "image",
+        ),
+    ] {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == selected_url)
+            .unwrap();
+        assert_eq!(fetch.resource.url, resource_url);
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.source.as_deref(), Some(final_url));
+        assert_eq!(fetch.content_type.as_deref(), content_type);
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+        assert_eq!(fetch.image_resource_state.as_deref(), Some("decoded_color"));
+        assert_eq!(
+            fetch.image_visibility_state.as_deref(),
+            Some("render_attached")
+        );
+        assert_eq!(fetch.decoded_width, Some(2));
+        assert_eq!(fetch.decoded_height, Some(2));
+        assert_eq!(fetch.decoded_has_alpha, Some(false));
+        assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(
+            fetch.decoded_color_hash.as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+        assert_eq!(fetch.render_attached, Some(true));
+        assert_eq!(
+            fetch.render_attachment_kind.as_deref(),
+            Some(attachment_kind)
+        );
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before responsive redirect images"));
+    assert!(render.text.contains("After responsive redirect images"));
+    for selected_url in [&css_selected, &img_selected, &picture_selected] {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.url == *selected_url)
+            .unwrap();
+        assert_eq!(rendered_image.pixel_hash, expected_hash);
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(
+            rendered_image.image.rgb_pixels.as_deref(),
+            Some(expected_rgb.as_slice())
+        );
+    }
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &css_selected && hash == &expected_hash
+        )
+    }));
+    for selected_url in [&img_selected, &picture_selected] {
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == selected_url && hash == &expected_hash
+            )
+        }));
+    }
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn image_background_width_template_selects_visible_rgb_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
