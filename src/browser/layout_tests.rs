@@ -18014,3 +18014,202 @@ fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
         ]
     );
 }
+
+#[test]
+fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
+    let image_url = "mem://inline-color-flow-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![34, 132, 216]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://inline-color-image-flow",
+        format!(
+            r#"
+            <html><body>
+              <div style="height:24px"></div>
+              <p>Lead <a href="/photo"><img src="{image_url}" width="16" height="12" alt="chart"></a> <a href="/next">Next</a></p>
+              <p>Tail row</p>
+            </body></html>
+            "#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render inline decoded image and link flow fixture");
+    let render = profiled.render;
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("inline decoded image command");
+    let lead_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Lead") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("leading inline text command");
+    let next_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Next") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("following inline link command");
+    assert_eq!(
+        image.1, lead_text.1,
+        "decoded image should stay in the same inline row as preceding text"
+    );
+    assert_eq!(
+        next_text.1, image.1,
+        "following link text should stay in the same inline row as the decoded image"
+    );
+    assert!(
+        image.0 >= lead_text.0.saturating_add("Lead".len()),
+        "image should be placed after leading text, lead={lead_text:?} image={image:?}"
+    );
+    let next_text_offset = next_text
+        .2
+        .chars()
+        .position(|ch| ch == 'N')
+        .expect("next link text should contain N");
+    let next_hit_x = next_text.0.saturating_add(next_text_offset);
+    assert!(
+        next_hit_x >= image.0.saturating_add(image.2),
+        "following link should be placed after inline image, next={next_text:?} image={image:?}"
+    );
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: image.1,
+            width: 40,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, image.1);
+    let first_row_commands = viewport
+        .visible_commands
+        .iter()
+        .filter(|command| command.visible_y == 0)
+        .map(|command| command.kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        first_row_commands.contains(&"Text")
+            && first_row_commands.contains(&"Image")
+            && first_row_commands.contains(&"StyledText"),
+        "scrolled viewport should report text, image, and link in one visible inline row: {first_row_commands:?}"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, image.0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/photo".to_owned()),
+        "inline decoded image click should map to its image link"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "following inline text link should map to its own URL"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize inline image/link row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let image_pixel_x = options
+        .padding_x
+        .saturating_add(image.0.saturating_mul(options.cell_width));
+    assert_eq!(
+        pixel(image_pixel_x, options.padding_y),
+        &[34, 132, 216, 255],
+        "scrolled raster should paint the decoded inline image color in the shared row"
+    );
+    let next_pixel_start = options
+        .padding_x
+        .saturating_add(next_hit_x.saturating_mul(options.cell_width));
+    let next_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (next_pixel_start
+                ..next_pixel_start
+                    .saturating_add(options.cell_width.saturating_mul("Next".len()))
+                    .min(rgba.width))
+                .any(|x| {
+                    let pixel = pixel(x, y);
+                    pixel[3] == 255 && pixel != rgba.background && pixel != [34, 132, 216, 255]
+                })
+        });
+    assert!(
+        next_has_ink,
+        "following link text should remain readable beside the inline image"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
+    assert_eq!(after.viewport.y, image.1.saturating_add(1));
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, image.0, 0),
+        None,
+        "inline image link should not remain hittable after it scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0),
+        None,
+        "inline text link should not remain hittable after it scrolls out"
+    );
+}
