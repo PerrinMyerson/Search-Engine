@@ -7564,6 +7564,324 @@ async fn color_image_viewport_paint_parity_pack_reports_scrolled_color_pixels() 
 }
 
 #[tokio::test]
+async fn lazy_deferred_image_enters_viewport_with_color_attachment_evidence() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let loading = dir.path().join("loading.gif");
+    let normal = dir.path().join("normal.png");
+    let lazy = dir.path().join("lazy-hero.png");
+    let picture = dir.path().join("picture.png");
+    let background = dir.path().join("background.png");
+    let viewport_background = dir.path().join("viewport-background.png");
+    fs::write(&loading, tiny_test_gif_palette()).unwrap();
+    for path in [&normal, &lazy, &picture, &background, &viewport_background] {
+        fs::write(path, &png_bytes).unwrap();
+    }
+    fs::write(
+        &page,
+        r#"<html><head>
+            <style>
+                .deferred-bg {
+                    background-image: image-set(url('dead.avif') type('image/avif') 1x, url('background.png') type('image/png') 2x);
+                    background-repeat: no-repeat;
+                    min-height: 64px;
+                }
+            </style>
+        </head><body>
+            <p>Before normal image</p>
+            <img src="normal.png" alt="Initial color" width="16" height="24">
+            <p>Above deferred one</p>
+            <p>Above deferred two</p>
+            <p>Above deferred three</p>
+            <p>Above deferred four</p>
+            <p>Above deferred five</p>
+            <img loading="lazy" src="loading.gif" data-lazy-src="lazy-hero.png" alt="Deferred lazy color" width="16" height="24">
+            <picture>
+                <source media="print" type="image/png" srcset="print-only.png 1x">
+                <source media="screen" type="image/png" srcset="picture.png 1x">
+                <img src="loading.gif" alt="Deferred picture color" width="16" height="24">
+            </picture>
+            <section class="deferred-bg">Deferred background color</section>
+            <section
+                data-bgset="viewport-background.png 48w, wide-background.png 320w"
+                data-bg-sizes="100vw"
+                width="48">Viewport selected background color</section>
+            <p>Below deferred images</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 5);
+    assert_eq!(report.decoded, 5);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.skipped, 0);
+    assert!(!report.fetches.iter().any(|fetch| {
+        matches!(
+            fetch.resource.url.as_str(),
+            "loading.gif" | "print-only.png" | "dead.avif" | "wide-background.png"
+        ) || fetch.resource.resolved == loading.display().to_string()
+    }));
+
+    let normal_url = normal.display().to_string();
+    let lazy_url = lazy.display().to_string();
+    let picture_url = picture.display().to_string();
+    let background_url = background.display().to_string();
+    let viewport_background_url = viewport_background.display().to_string();
+    for (path, source_url, kind, initiator, original_url, attachment_kind) in [
+        (&normal, &normal_url, "image", "img", "normal.png", "image"),
+        (&lazy, &lazy_url, "image", "img", "lazy-hero.png", "image"),
+        (
+            &picture,
+            &picture_url,
+            "image",
+            "img",
+            "picture.png",
+            "image",
+        ),
+        (
+            &background,
+            &background_url,
+            "background_image",
+            "css",
+            "background.png",
+            "background_image",
+        ),
+        (
+            &viewport_background,
+            &viewport_background_url,
+            "background_image",
+            "section",
+            "viewport-background.png",
+            "background_image",
+        ),
+    ] {
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == path.display().to_string())
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.resource.url, original_url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.source.as_deref(), Some(source_url.as_str()));
+        assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+        assert_eq!(fetch.image_resource_state.as_deref(), Some("decoded_color"));
+        assert_eq!(
+            fetch.image_visibility_state.as_deref(),
+            Some("render_attached")
+        );
+        assert_eq!(fetch.decoded_width, Some(2));
+        assert_eq!(fetch.decoded_height, Some(2));
+        assert_eq!(fetch.decoded_has_alpha, Some(false));
+        assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(
+            fetch.decoded_color_hash.as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+        assert_eq!(fetch.render_attached, Some(true));
+        assert_eq!(
+            fetch.render_attachment_kind.as_deref(),
+            Some(attachment_kind)
+        );
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before normal image"));
+    assert!(render.text.contains("Below deferred images"));
+
+    let bounds_for = |target_url: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Image {
+                    y,
+                    height,
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                }
+                | DisplayCommand::BackgroundImage {
+                    y,
+                    height,
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == target_url && hash == &expected_hash => Some((*y, *height)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (normal_y, normal_height) = bounds_for(&normal_url);
+    let (lazy_y, lazy_height) = bounds_for(&lazy_url);
+    let (picture_y, picture_height) = bounds_for(&picture_url);
+    let (background_y, background_height) = bounds_for(&background_url);
+    let (viewport_background_y, viewport_background_height) = bounds_for(&viewport_background_url);
+    assert!(lazy_y > normal_y.saturating_add(normal_height));
+    assert!(picture_y >= lazy_y);
+    assert!(background_y >= picture_y);
+    assert!(viewport_background_y >= background_y);
+
+    for target_url in [
+        &normal_url,
+        &lazy_url,
+        &picture_url,
+        &background_url,
+        &viewport_background_url,
+    ] {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.url == *target_url)
+            .unwrap();
+        assert_eq!(rendered_image.pixel_hash, expected_hash);
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(
+            rendered_image.image.rgb_pixels.as_deref(),
+            Some(expected_rgb.as_slice())
+        );
+    }
+    for target_url in [&normal_url, &lazy_url, &picture_url] {
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == target_url && hash == &expected_hash
+            )
+        }));
+    }
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &background_url && hash == &expected_hash
+        )
+    }));
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &viewport_background_url && hash == &expected_hash
+        )
+    }));
+
+    let initial_bottom = normal_y.saturating_add(normal_height).max(lazy_y);
+    let initial_options = BrowserRasterOptions {
+        cell_width: 8,
+        cell_height: 8,
+        viewport_y: Some(0),
+        viewport_width: Some(render.viewport_width),
+        viewport_height: Some(initial_bottom.max(1)),
+        ..BrowserRasterOptions::default()
+    };
+    let initial_raster = rasterize_render_rgba(render, initial_options).unwrap();
+    let initial_report = rgba_raster_report(render, &initial_raster, initial_options);
+    assert_eq!(initial_report.visible_decoded_image_count, 1);
+    assert_eq!(initial_report.culled_decoded_image_count, 4);
+    assert_eq!(
+        initial_report.image_visibility_state,
+        "visible_color_pixels"
+    );
+    assert!(initial_report.color_pixels > 0);
+
+    let scrolled_bottom = [
+        lazy_y.saturating_add(lazy_height),
+        picture_y.saturating_add(picture_height),
+        background_y.saturating_add(background_height),
+        viewport_background_y.saturating_add(viewport_background_height),
+    ]
+    .into_iter()
+    .max()
+    .unwrap();
+    let scrolled_height = scrolled_bottom.saturating_sub(lazy_y).max(1);
+    let scrolled_options = BrowserRasterOptions {
+        cell_width: 8,
+        cell_height: 8,
+        viewport_y: Some(lazy_y),
+        viewport_width: Some(render.viewport_width),
+        viewport_height: Some(scrolled_height),
+        ..BrowserRasterOptions::default()
+    };
+    let scrolled_raster = rasterize_render_rgba(render, scrolled_options).unwrap();
+    let scrolled_report = rgba_raster_report(render, &scrolled_raster, scrolled_options);
+    assert_eq!(scrolled_report.raster_viewport_y, Some(lazy_y));
+    assert_eq!(
+        scrolled_report.raster_viewport_height,
+        Some(scrolled_height)
+    );
+    assert_eq!(scrolled_report.visible_decoded_image_count, 4);
+    assert_eq!(scrolled_report.culled_decoded_image_count, 1);
+    assert_eq!(
+        scrolled_report.image_visibility_state,
+        "visible_color_pixels"
+    );
+    assert!(scrolled_report.color_pixels > 0);
+    assert!(
+        scrolled_raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        scrolled_raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220 && pixel[3] == 255 })
+    );
+    assert!(
+        scrolled_raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+
+    let lazy_attachment = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                y,
+                height,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &lazy_url && hash == &expected_hash => Some((*y, *height)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(lazy_attachment, (lazy_y, lazy_height));
+}
+
+#[tokio::test]
 async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
