@@ -126,6 +126,8 @@ pub struct BrowserResourceFetch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_height: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoded_has_alpha: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_color_hash: Option<String>,
@@ -330,6 +332,7 @@ impl BrowserResourceFetch {
             image_byte_signature,
             decoded_width,
             decoded_height,
+            decoded_has_alpha,
             decoded_hash,
             decoded_color_hash,
             decoded_color_bytes,
@@ -342,12 +345,13 @@ impl BrowserResourceFetch {
                     report.byte_signature.map(str::to_owned),
                     report.width,
                     report.height,
+                    report.has_alpha,
                     report.pixel_hash,
                     report.color_pixel_hash,
                     report.color_bytes,
                 )
             })
-            .unwrap_or((None, None, None, None, None, None, None, None, None));
+            .unwrap_or((None, None, None, None, None, None, None, None, None, None));
         let diagnostic = resource_fetch_diagnostic(
             &args.status,
             args.error_kind.as_deref(),
@@ -388,6 +392,7 @@ impl BrowserResourceFetch {
             image_byte_signature,
             decoded_width,
             decoded_height,
+            decoded_has_alpha,
             decoded_hash,
             decoded_color_hash,
             decoded_color_bytes,
@@ -438,6 +443,7 @@ fn image_resource_fetch_decode_report(
             byte_signature: None,
             width: None,
             height: None,
+            has_alpha: None,
             pixel_hash: None,
             color_pixel_hash: None,
             color_bytes: None,
@@ -3132,6 +3138,7 @@ mod tests {
             image_byte_signature: None,
             decoded_width: None,
             decoded_height: None,
+            decoded_has_alpha: None,
             decoded_hash: None,
             decoded_color_hash: None,
             decoded_color_bytes: None,

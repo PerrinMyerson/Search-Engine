@@ -53,6 +53,7 @@ pub(super) struct DecodedImageInfo {
     pub(super) url: String,
     pub(super) width: usize,
     pub(super) height: usize,
+    pub(super) has_alpha: bool,
     pub(super) pixel_hash: String,
     pub(super) color_pixel_hash: Option<String>,
     pub(super) color_bytes: Option<usize>,
@@ -66,6 +67,7 @@ pub(super) struct ImageDecodeDiagnostic {
     pub(super) byte_signature: Option<&'static str>,
     pub(super) width: Option<usize>,
     pub(super) height: Option<usize>,
+    pub(super) has_alpha: Option<bool>,
     pub(super) pixel_hash: Option<String>,
     pub(super) color_pixel_hash: Option<String>,
     pub(super) color_bytes: Option<usize>,
@@ -86,6 +88,7 @@ impl DecodedImageEntry {
             url: self.url.clone(),
             width: self.width,
             height: self.height,
+            has_alpha: false,
             pixel_hash: self.pixel_hash.clone(),
             color_pixel_hash: self.image.color_pixel_hash(),
             color_bytes: self.image.rgb_pixels.as_ref().map(Vec::len),
@@ -165,6 +168,7 @@ pub(super) fn image_decode_diagnostic(
             byte_signature: image_byte_signature(bytes),
             width: Some(decoded.width),
             height: Some(decoded.height),
+            has_alpha: Some(decoded_image_bytes_have_alpha(url, content_type, bytes)),
             pixel_hash: Some(decoded.pixel_hash()),
             color_pixel_hash: decoded.color_pixel_hash(),
             color_bytes: decoded.rgb_pixels.as_ref().map(Vec::len),
@@ -179,6 +183,7 @@ pub(super) fn image_decode_diagnostic(
             byte_signature: image_byte_signature(bytes),
             width: None,
             height: None,
+            has_alpha: None,
             pixel_hash: None,
             color_pixel_hash: None,
             color_bytes: None,
@@ -200,6 +205,7 @@ pub(super) fn image_decode_diagnostic(
         byte_signature: image_byte_signature(bytes),
         width: None,
         height: None,
+        has_alpha: None,
         pixel_hash: None,
         color_pixel_hash: None,
         color_bytes: None,
@@ -375,6 +381,103 @@ fn supported_image_signature(bytes: &[u8]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn decoded_image_bytes_have_alpha(url: &str, content_type: Option<&str>, bytes: &[u8]) -> bool {
+    let content_type = content_type
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase());
+    let extension = Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            Path::new(url.path())
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|value| value.to_ascii_lowercase())
+        })
+        .or_else(|| image_type_from_path(Path::new(url)).map(|value| value.to_ascii_lowercase()));
+    match (content_type.as_deref(), extension.as_deref()) {
+        (Some("image/png" | "image/x-png" | "image/apng"), _) | (_, Some("png" | "apng")) => {
+            png_bytes_have_alpha(bytes)
+        }
+        (Some("image/gif"), _) | (_, Some("gif")) => gif_bytes_have_alpha(bytes),
+        (Some("image/webp" | "image/x-webp"), _) | (_, Some("webp")) => {
+            webp_bytes_have_alpha(bytes)
+        }
+        (Some("image/bmp" | "image/x-bmp" | "image/x-ms-bmp"), _) | (_, Some("bmp" | "dib")) => {
+            bmp_bytes_have_alpha(bytes)
+        }
+        (Some("image/jpeg" | "image/jpg" | "image/jpe" | "image/jfif"), _)
+        | (_, Some("jpg" | "jpeg" | "jpe" | "jfif" | "pjpeg" | "pjp")) => false,
+        (Some("image/svg+xml" | "image/svg"), _) | (_, Some("svg")) => false,
+        _ if is_png_bytes(bytes) => png_bytes_have_alpha(bytes),
+        _ if is_gif_bytes(bytes) => gif_bytes_have_alpha(bytes),
+        _ if is_webp_bytes(bytes) => webp_bytes_have_alpha(bytes),
+        _ if is_bmp_bytes(bytes) => bmp_bytes_have_alpha(bytes),
+        _ => false,
+    }
+}
+
+fn png_bytes_have_alpha(bytes: &[u8]) -> bool {
+    if !is_png_bytes(bytes) {
+        return false;
+    }
+    let mut cursor = 8usize;
+    while cursor.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        let length = match bytes.get(cursor..cursor + 4) {
+            Some(length) => {
+                u32::from_be_bytes([length[0], length[1], length[2], length[3]]) as usize
+            }
+            None => break,
+        };
+        let chunk_type_start = cursor + 4;
+        let chunk_data_start = cursor + 8;
+        let Some(chunk_type) = bytes.get(chunk_type_start..chunk_data_start) else {
+            break;
+        };
+        let Some(chunk_data_end) = chunk_data_start.checked_add(length) else {
+            break;
+        };
+        let Some(next_cursor) = chunk_data_end.checked_add(4) else {
+            break;
+        };
+        if next_cursor > bytes.len() {
+            break;
+        }
+        if chunk_type == b"IHDR" {
+            if bytes
+                .get(chunk_data_start + 9)
+                .is_some_and(|color_type| matches!(color_type, 4 | 6))
+            {
+                return true;
+            }
+        } else if chunk_type == b"tRNS" && length > 0 {
+            return true;
+        } else if chunk_type == b"IEND" {
+            break;
+        }
+        cursor = next_cursor;
+    }
+    false
+}
+
+fn gif_bytes_have_alpha(bytes: &[u8]) -> bool {
+    is_gif_bytes(bytes)
+        && bytes.windows(4).any(|window| {
+            window[0] == 0x21 && window[1] == 0xf9 && window[2] == 0x04 && window[3] & 1 != 0
+        })
+}
+
+fn webp_bytes_have_alpha(bytes: &[u8]) -> bool {
+    image::codecs::webp::WebPDecoder::new(Cursor::new(bytes))
+        .ok()
+        .is_some_and(|decoder| image_color_type_has_alpha(decoder.color_type()))
+}
+
+fn bmp_bytes_have_alpha(bytes: &[u8]) -> bool {
+    image::codecs::bmp::BmpDecoder::new(Cursor::new(bytes))
+        .ok()
+        .is_some_and(|decoder| image_color_type_has_alpha(decoder.color_type()))
 }
 
 fn is_jpeg_bytes(bytes: &[u8]) -> bool {
@@ -1873,6 +1976,13 @@ fn decode_gif_image_frame(
         pixels,
         rgb_pixels: Some(rgb_pixels),
     })
+}
+
+fn image_color_type_has_alpha(color_type: ColorType) -> bool {
+    matches!(
+        color_type,
+        ColorType::La8 | ColorType::La16 | ColorType::Rgba8 | ColorType::Rgba16
+    )
 }
 
 fn decode_gif_lzw_indices(data: &[u8], min_code_size: u8, expected_len: usize) -> Option<Vec<u8>> {
