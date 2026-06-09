@@ -17846,6 +17846,199 @@ fn scrolled_control_nearby_visual_hit_prefers_visible_button_after_scroll() {
 }
 
 #[test]
+fn scrolled_inline_form_control_and_link_raster_hits_stay_aligned() {
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://inline-form-control-flow",
+        br#"
+            <html><body>
+              <div style="height:24px"></div>
+              <p>Find <input name="q" value="rust"> <a href="/next">Next</a></p>
+              <button style="display:block">Search</button>
+              <a href="/after">After</a>
+              <div style="height:48px"></div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+    .expect("render scrolled inline form control fixture");
+    let render = profiled.render;
+
+    let input_fill = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE && *width > "rust".len() => {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("inline input should paint a visual fill");
+    let leading_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Find") =>
+            {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("leading text should render beside input");
+    let next_link = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Next") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("following link should render beside input");
+    assert_eq!(
+        input_fill.1, leading_text.1,
+        "inline input should stay in the same row as adjacent text"
+    );
+    assert_eq!(
+        next_link.1, input_fill.1,
+        "following link should stay in the same inline row as the input"
+    );
+    let next_text_offset = next_link
+        .2
+        .chars()
+        .position(|ch| ch == 'N')
+        .expect("next link text should contain N");
+    let next_hit_x = next_link.0.saturating_add(next_text_offset);
+
+    let block_button = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Search") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("display:block button text should render");
+    assert!(
+        block_button.1 > input_fill.1,
+        "display:block form control should start below the inline input row"
+    );
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: input_fill.1,
+            width: 48,
+            height: input_fill.3,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, input_fill.1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, input_fill.0, 0),
+        hit_test_target_node(&render, input_fill.0, input_fill.1),
+        "viewport input hit should match document input hit after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "following inline link should keep its URL hit beside the input"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize inline control row");
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let control_pixel_x = options
+        .padding_x
+        .saturating_add(input_fill.0.saturating_mul(options.cell_width));
+    assert_eq!(
+        pixel(control_pixel_x, options.padding_y),
+        &[
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            255
+        ],
+        "scrolled raster should paint the inline input control border"
+    );
+    let next_pixel_start = options
+        .padding_x
+        .saturating_add(next_hit_x.saturating_mul(options.cell_width));
+    let next_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (next_pixel_start
+                ..next_pixel_start
+                    .saturating_add(options.cell_width.saturating_mul("Next".len()))
+                    .min(rgba.width))
+                .any(|x| {
+                    let pixel = pixel(x, y);
+                    pixel[3] == 255 && pixel != rgba.background
+                })
+        });
+    assert!(
+        next_has_ink,
+        "following link text should remain readable beside the inline input"
+    );
+
+    let stale_input_x = input_fill.0.saturating_add(input_fill.2.saturating_sub(1));
+    let after = browser_document_viewport_after_scroll(
+        &render,
+        viewport.viewport,
+        0,
+        input_fill.3 as isize,
+    );
+    assert!(after.viewport.y > input_fill.1);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, stale_input_x, 0),
+        None,
+        "inline input should not remain hittable after it scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        None,
+        "inline link should not leave a stale hit after it scrolls out"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
