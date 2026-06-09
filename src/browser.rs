@@ -5457,6 +5457,25 @@ fn display_command_projected_visible_bounds_for_viewport(
     Some((command_bounds, visible_bounds))
 }
 
+fn display_command_report_bounds_for_viewport(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+) -> Option<(DisplayCommandBounds, DisplayCommandBounds)> {
+    if !matches!(
+        command,
+        DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+    ) && let Some(bounds) =
+        display_command_exact_hit_bounds_for_viewport(render, command_index, command, viewport)
+    {
+        let visible_bounds = intersect_display_bounds_with_viewport(bounds, viewport)?;
+        return Some((bounds, visible_bounds));
+    }
+
+    display_command_projected_visible_bounds_for_viewport(render, command_index, command, viewport)
+}
+
 fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) -> (usize, usize) {
     let visible = visible_display_commands(render, viewport).len();
     (visible, render.display_list.len().saturating_sub(visible))
@@ -5471,13 +5490,12 @@ fn visible_display_commands(
         .iter()
         .enumerate()
         .filter_map(|(command_index, command)| {
-            let (command_bounds, visible_bounds) =
-                display_command_projected_visible_bounds_for_viewport(
-                    render,
-                    command_index,
-                    command,
-                    viewport,
-                )?;
+            let (command_bounds, visible_bounds) = display_command_report_bounds_for_viewport(
+                render,
+                command_index,
+                command,
+                viewport,
+            )?;
             Some(BrowserVisibleDisplayCommand {
                 command_index,
                 kind: display_command_kind(command).to_owned(),
