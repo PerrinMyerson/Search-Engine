@@ -4417,45 +4417,60 @@ fn hit_test_nearby_text_target_node_for_viewport_matching(
     y: usize,
     mut include: impl FnMut(&BrowserRender, usize) -> bool,
 ) -> Option<usize> {
-    render
-        .display_list
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(command_index, command)| {
-            if !include(render, command_index) {
-                return None;
-            }
-            if !matches!(
-                command,
-                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
-            ) {
-                return None;
-            }
-            let viewport_fixed = display_command_viewport_fixed(render, command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let command_bounds = display_command_bounds_for_viewport(
+    let mut best: Option<(usize, usize)> = None;
+    for (command_index, command) in render.display_list.iter().enumerate().rev() {
+        if !include(render, command_index) {
+            continue;
+        }
+        if !matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) {
+            continue;
+        }
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let command_bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        let pinned = viewport_fixed || viewport_sticky_top.is_some();
+        let visible_bounds = if pinned {
+            command_bounds
+        } else {
+            let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
+                render,
+                command_index,
                 command,
                 viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
-            let pinned = viewport_fixed || viewport_sticky_top.is_some();
-            let visible_bounds = if pinned {
-                command_bounds
-            } else {
-                intersect_display_bounds_with_viewport(command_bounds, viewport)?
+            ) else {
+                continue;
             };
-            let y_tolerance = if pinned { 1 } else { 0 };
-            if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, y_tolerance) {
-                return None;
-            }
-            let column = clamped_bounds_column(command_bounds, x);
-            render
-                .hit_targets
-                .get(command_index)
-                .and_then(|target| target.target_near_column(column, 2))
-        })
+            visible_bounds
+        };
+        let y_tolerance = if pinned { 1 } else { 0 };
+        if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, y_tolerance) {
+            continue;
+        }
+        let column = clamped_bounds_column(command_bounds, x);
+        let Some(target_node) = render
+            .hit_targets
+            .get(command_index)
+            .and_then(|target| target.target_near_column(column, 2))
+        else {
+            continue;
+        };
+        let distance = point_distance_to_bounds(visible_bounds, x, y);
+        if distance == 0 {
+            return Some(target_node);
+        }
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, target_node));
+        }
+    }
+    best.map(|(_, target_node)| target_node)
 }
 
 fn hit_test_visual_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
@@ -4871,6 +4886,26 @@ fn bounds_contains_with_tolerance(
             .y
             .saturating_add(bounds.height)
             .saturating_add(y_tolerance)
+}
+
+fn point_distance_to_bounds(bounds: DisplayCommandBounds, x: usize, y: usize) -> usize {
+    let end_x = bounds.x.saturating_add(bounds.width);
+    let end_y = bounds.y.saturating_add(bounds.height);
+    let dx = if x < bounds.x {
+        bounds.x.saturating_sub(x)
+    } else if x >= end_x {
+        x.saturating_sub(end_x.saturating_sub(1))
+    } else {
+        0
+    };
+    let dy = if y < bounds.y {
+        bounds.y.saturating_sub(y)
+    } else if y >= end_y {
+        y.saturating_sub(end_y.saturating_sub(1))
+    } else {
+        0
+    };
+    dx.saturating_add(dy)
 }
 
 fn clamped_bounds_column(bounds: DisplayCommandBounds, x: usize) -> usize {
