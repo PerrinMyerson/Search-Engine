@@ -9645,6 +9645,33 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-x="{link_x}""#)));
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-feedback-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-feedback-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-feedback-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-history-position="2""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-history-length="2""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-can-back="true""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-can-forward="false""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-viewport-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-viewport-y="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-width="48""#));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-feedback-height=\"{}\"",
+        payload.height
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-feedback-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert_address_submit_state(topbar_html, &payload, &back_href);
     assert!(topbar_html.contains(r#"data-browser-location-strip"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
@@ -9678,7 +9705,10 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains("data-browser-chrome-scroll-x=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-y=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"48\""));
-    assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-height=\"{}\"",
+        payload.height
+    )));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-scroll-max-bytes=\"{}\"",
         payload.max_bytes
@@ -9698,13 +9728,19 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains("data-browser-chrome-page-viewport-x=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-page-viewport-y=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-page-width=\"48\""));
-    assert!(topbar_html.contains("data-browser-chrome-page-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-height=\"{}\"",
+        payload.height
+    )));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-page-max-bytes=\"{}\"",
         payload.max_bytes
     )));
     assert!(topbar_html.contains("data-browser-primary-nav-width=\"48\""));
-    assert!(topbar_html.contains("data-browser-primary-nav-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-primary-nav-height=\"{}\"",
+        payload.height
+    )));
     assert!(topbar_html.contains(&format!(
         "data-browser-primary-nav-max-bytes=\"{}\"",
         payload.max_bytes
@@ -9724,7 +9760,10 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains("data-browser-chrome-status-viewport-x=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-status-viewport-y=\"0\""));
     assert!(topbar_html.contains("data-browser-chrome-status-width=\"48\""));
-    assert!(topbar_html.contains("data-browser-chrome-status-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-status-height=\"{}\"",
+        payload.height
+    )));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-status-max-bytes=\"{}\"",
         payload.max_bytes
