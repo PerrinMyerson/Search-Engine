@@ -17846,6 +17846,183 @@ fn scrolled_control_nearby_visual_hit_prefers_visible_button_after_scroll() {
 }
 
 #[test]
+fn viewport_hit_tolerance_requires_visible_control_bounds_after_scroll() {
+    let image_url = "mem://viewport-hit-tolerance-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![42, 132, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://viewport-hit-tolerance".to_owned(),
+        title: String::new(),
+        viewport_width: 14,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 5,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 5,
+                width: 2,
+                height: 2,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 10,
+                y: 6,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Lead\nNext\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 14,
+        height: 1,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(&render, start, &[(0, 1)], options)
+        .expect("render scrolled hit tolerance frame");
+    let frame = frames.first().expect("one scroll frame should render");
+    assert_eq!(frame.report.viewport.viewport.y, 6);
+    assert_eq!(
+        frame
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(2, "Rect", 0), (3, "StyledText", 0)]
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 4, 0),
+        Some(12),
+        "exact hit should still activate the visible control row after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 6, 0),
+        None,
+        "nearby fallback should not expand a partially clipped control beyond its painted cells"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 10, 0),
+        Some(77),
+        "visible link text should remain clickable beside the clipped control"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 0),
+        None,
+        "stale image target should not remain hittable after it scrolls out"
+    );
+
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let control_x = frame
+        .report
+        .padding_x
+        .saturating_add(4usize.saturating_mul(frame.report.cell_width));
+    assert_eq!(
+        pixel(control_x, frame.report.padding_y),
+        [
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            255,
+        ],
+        "raster should paint the visible clipped control row"
+    );
+    let link_x = frame
+        .report
+        .padding_x
+        .saturating_add(10usize.saturating_mul(frame.report.cell_width));
+    let link_has_ink = (frame.report.padding_y
+        ..frame
+            .report
+            .padding_y
+            .saturating_add(frame.report.cell_height)
+            .min(frame.raster.height))
+        .any(|y| {
+            (link_x
+                ..link_x
+                    .saturating_add(frame.report.cell_width)
+                    .min(frame.raster.width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "raster should paint the visible linked text beside the control"
+    );
+}
+
+#[test]
 fn scrolled_inline_form_control_and_link_raster_hits_stay_aligned() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://inline-form-control-flow",
