@@ -9801,6 +9801,25 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"url.searchParams.set("y""#));
     assert!(html.contains(r#"url.searchParams.set("raster_width""#));
     assert!(html.contains(r#"url.searchParams.set("raster_height""#));
+    assert!(html.contains(r#"data-browser-click-action-state="idle""#));
+    assert!(html.contains(r#"data-browser-click-navigation-state="ready""#));
+    assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
+    assert!(html.contains(r#"data-browser-click-feedback-mode="compact""#));
+    assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "submitting""#));
+    assert!(
+        html.contains(r#"shell.dataset.clickPreservedViewportX = String(numberData("viewportX"))"#)
+    );
+    assert!(
+        html.contains(r#"shell.dataset.clickPreservedViewportY = String(numberData("viewportY"))"#)
+    );
+    assert!(html.contains(r#"shell.dataset.clickActionState = "suppressed-after-drag""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "suppressed""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
     assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
     assert!(html.contains("shell.dataset.deferredClickY = String(point.y)"));
     assert!(html.contains("shell.dataset.deferredClickPageX = String(point.pageX)"));
@@ -9905,6 +9924,25 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
     assert!(html.contains(r#"url.searchParams.set("raster_width""#));
     assert!(html.contains(r#"url.searchParams.set("raster_height""#));
+    assert!(html.contains(r#"data-browser-click-action-state="idle""#));
+    assert!(html.contains(r#"data-browser-click-navigation-state="ready""#));
+    assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
+    assert!(html.contains(r#"data-browser-click-feedback-mode="compact""#));
+    assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "submitting""#));
+    assert!(
+        html.contains(r#"shell.dataset.clickPreservedViewportX = String(numberData("viewportX"))"#)
+    );
+    assert!(
+        html.contains(r#"shell.dataset.clickPreservedViewportY = String(numberData("viewportY"))"#)
+    );
+    assert!(html.contains(r#"shell.dataset.clickActionState = "suppressed-after-drag""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "suppressed""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
+    assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
 
     let (link_x, link_y) = {
         let sessions = registry.sessions.lock().await;

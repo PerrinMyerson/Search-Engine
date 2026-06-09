@@ -1757,6 +1757,7 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
             stats.browser_document_large_row_count
         ),
         browser_session_artifact_footprint_line(stats),
+        browser_runtime_footprint_bounds_line(stats),
         format!(
             "browser_document_storage_unique_rows: {}",
             stats.browser_document_unique_rows
@@ -1842,6 +1843,41 @@ fn browser_session_artifact_footprint_line(stats: &IndexStorageStats) -> String 
         BROWSER_DOCUMENT_LARGE_ROW_BYTES,
         stats.browser_document_duplicate_rows,
         stats.browser_document_duplicate_row_bytes,
+    )
+}
+
+fn browser_runtime_footprint_bounds_line(stats: &IndexStorageStats) -> String {
+    let resource_cache_bytes = 0u64;
+    let resource_cache_status = "not-scanned";
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-duplicate-large-browser-runtime-rows"
+    } else if stats.browser_document_large_row_count > 0
+        || stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES
+    {
+        "inspect-large-browser-runtime-rows"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-duplicate-browser-runtime-rows"
+    } else if stats.browser_document_bytes.saturating_mul(2) >= index_storage_budget_bytes() {
+        "monitor-browser-runtime-footprint-budget"
+    } else if stats.browser_document_rows > 0 {
+        "browser-runtime-footprint-ok"
+    } else {
+        "browser-runtime-footprint-empty"
+    };
+
+    format!(
+        "browser_runtime_footprint_bounds: report_only=true deletes=false compacts=false sessions={} browser_document_rows={} browser_document_bytes={} largest_session_payload_bytes={} large_row_count={} duplicate_rows={} duplicate_row_bytes={} resource_cache_bytes={resource_cache_bytes} resource_cache_status={resource_cache_status} suggested_session_payload_cap_bytes={} storage_budget_bytes={} next_action={next_action}",
+        stats.browser_document_session_count,
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
+        stats.browser_document_large_row_count,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+        BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+        index_storage_budget_bytes(),
     )
 }
 
@@ -6091,6 +6127,14 @@ mod tests {
             stats.browser_document_max_row_bytes,
             BROWSER_DOCUMENT_LARGE_ROW_BYTES,
             stats.browser_document_duplicate_row_bytes
+        )));
+        assert!(lines.contains(&format!(
+            "browser_runtime_footprint_bounds: report_only=true deletes=false compacts=false sessions=2 browser_document_rows=3 browser_document_bytes={} largest_session_payload_bytes={} large_row_count=2 duplicate_rows=1 duplicate_row_bytes={} resource_cache_bytes=0 resource_cache_status=not-scanned suggested_session_payload_cap_bytes={} storage_budget_bytes={} next_action=inspect-duplicate-large-browser-runtime-rows",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            index_storage_budget_bytes()
         )));
     }
 
