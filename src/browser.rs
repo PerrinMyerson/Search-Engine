@@ -458,6 +458,21 @@ pub struct BrowserViewportState {
     pub height: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserViewportTransition {
+    Initial,
+    Moved,
+    ClampedNoop,
+    ExplicitRerender,
+}
+
+impl Default for BrowserViewportTransition {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserViewportRect {
     pub x: usize,
@@ -476,6 +491,8 @@ pub struct BrowserDocumentViewportReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<BrowserViewportState>,
     pub viewport: BrowserViewportState,
+    #[serde(default)]
+    pub transition: BrowserViewportTransition,
     pub max_scroll_x: usize,
     pub max_scroll_y: usize,
     pub scroll_delta_x: isize,
@@ -5774,6 +5791,16 @@ pub fn browser_document_viewport(
             normalize_browser_viewport_state(state),
         )
     });
+    let transition = match previous {
+        None => BrowserViewportTransition::Initial,
+        Some(previous_state)
+            if previous_state.x != viewport_state.x || previous_state.y != viewport_state.y =>
+        {
+            BrowserViewportTransition::Moved
+        }
+        Some(_) if requested == viewport_state => BrowserViewportTransition::ExplicitRerender,
+        Some(_) => BrowserViewportTransition::ClampedNoop,
+    };
     let viewport = raster_viewport_from_state(viewport_state);
     let visible_commands = visible_display_commands(render, viewport);
     let visible_command_count = visible_commands.len();
@@ -5786,9 +5813,9 @@ pub fn browser_document_viewport(
     let (mut invalidated_regions, full_repaint) =
         browser_viewport_invalidated_regions(previous, viewport_state);
     if !full_repaint && let Some(previous_state) = previous {
-        let viewport_moved =
-            previous_state.x != viewport_state.x || previous_state.y != viewport_state.y;
-        let explicit_same_viewport_rerender = requested == viewport_state;
+        let viewport_moved = transition == BrowserViewportTransition::Moved;
+        let explicit_same_viewport_rerender =
+            transition == BrowserViewportTransition::ExplicitRerender;
         if viewport_moved {
             append_viewport_positioned_invalidated_regions(
                 render,
@@ -5854,6 +5881,7 @@ pub fn browser_document_viewport(
         requested,
         previous,
         viewport: viewport_state,
+        transition,
         max_scroll_x: document_width.saturating_sub(viewport_state.width),
         max_scroll_y: document_height.saturating_sub(viewport_state.height),
         scroll_delta_x: browser_viewport_signed_delta(viewport_state.x, previous_state.x),
@@ -5885,7 +5913,19 @@ pub fn browser_document_viewport_after_scroll(
         y: apply_signed_scroll_delta(current.y, delta_y),
         ..current
     };
-    browser_document_viewport(render, requested, Some(current))
+    let mut report = browser_document_viewport(render, requested, Some(current));
+    if (delta_x != 0 || delta_y != 0)
+        && report.viewport == current
+        && report.scroll_delta_x == 0
+        && report.scroll_delta_y == 0
+    {
+        report.transition = BrowserViewportTransition::ClampedNoop;
+        report.invalidated_regions.clear();
+        report.invalidated_area = 0;
+        report.reused_area = report.viewport.width.saturating_mul(report.viewport.height);
+        report.full_repaint = false;
+    }
+    report
 }
 
 pub fn browser_document_viewport_after_page_scroll(
@@ -5909,9 +5949,17 @@ pub fn browser_viewport_frame(
     render: &BrowserRender,
     requested: BrowserViewportState,
     previous: Option<BrowserViewportState>,
-    mut raster_options: BrowserRasterOptions,
+    raster_options: BrowserRasterOptions,
 ) -> Result<BrowserViewportFrame> {
     let viewport = browser_document_viewport(render, requested, previous);
+    browser_viewport_frame_from_report(render, viewport, raster_options)
+}
+
+fn browser_viewport_frame_from_report(
+    render: &BrowserRender,
+    viewport: BrowserDocumentViewportReport,
+    mut raster_options: BrowserRasterOptions,
+) -> Result<BrowserViewportFrame> {
     raster_options.viewport_x = Some(viewport.viewport.x);
     raster_options.viewport_y = Some(viewport.viewport.y);
     raster_options.viewport_width = Some(viewport.viewport.width);
@@ -5960,8 +6008,7 @@ pub fn browser_viewport_frame_sequence(
     let mut frames = Vec::with_capacity(scroll_deltas.len());
     for (delta_x, delta_y) in scroll_deltas {
         let viewport = browser_document_viewport_after_scroll(render, previous, *delta_x, *delta_y);
-        let frame =
-            browser_viewport_frame(render, viewport.requested, Some(previous), raster_options)?;
+        let frame = browser_viewport_frame_from_report(render, viewport, raster_options)?;
         previous = frame.report.viewport.viewport;
         frames.push(frame);
     }
