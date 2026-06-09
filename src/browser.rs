@@ -767,6 +767,20 @@ impl BrowserRgbaRaster {
             .count()
     }
 
+    pub fn color_pixels(&self) -> usize {
+        self.pixels
+            .chunks_exact(4)
+            .filter(|pixel| {
+                pixel[3] > 0
+                    && pixel[0]
+                        .max(pixel[1])
+                        .max(pixel[2])
+                        .saturating_sub(pixel[0].min(pixel[1]).min(pixel[2]))
+                        > 16
+            })
+            .count()
+    }
+
     pub fn encode_png(&self) -> Result<Vec<u8>> {
         use std::io::Write as _;
 
@@ -814,6 +828,10 @@ pub struct BrowserRasterReport {
     pub visible_command_count: usize,
     #[serde(default)]
     pub culled_command_count: usize,
+    #[serde(default)]
+    pub visible_decoded_image_count: usize,
+    #[serde(default)]
+    pub culled_decoded_image_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster_viewport_x: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -840,6 +858,10 @@ pub struct BrowserRgbaRasterReport {
     pub visible_command_count: usize,
     #[serde(default)]
     pub culled_command_count: usize,
+    #[serde(default)]
+    pub visible_decoded_image_count: usize,
+    #[serde(default)]
+    pub culled_decoded_image_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster_viewport_x: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -849,6 +871,8 @@ pub struct BrowserRgbaRasterReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster_viewport_height: Option<usize>,
     pub non_background_pixels: usize,
+    #[serde(default)]
+    pub color_pixels: usize,
     pub pixel_hash: String,
     pub artifact_format: String,
 }
@@ -5548,6 +5572,41 @@ fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) ->
     (visible, render.display_list.len().saturating_sub(visible))
 }
 
+fn decoded_image_command_visibility_counts(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> (usize, usize) {
+    let mut total = 0usize;
+    let mut visible = 0usize;
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !display_command_has_decoded_image(command) {
+            continue;
+        }
+        total = total.saturating_add(1);
+        if display_command_report_bounds_for_viewport(render, command_index, command, viewport)
+            .is_some()
+        {
+            visible = visible.saturating_add(1);
+        }
+    }
+    (visible, total.saturating_sub(visible))
+}
+
+fn display_command_has_decoded_image(command: &DisplayCommand) -> bool {
+    matches!(
+        command,
+        DisplayCommand::Image {
+            url: Some(_),
+            decoded_hash: Some(_),
+            ..
+        } | DisplayCommand::BackgroundImage {
+            url: Some(_),
+            decoded_hash: Some(_),
+            ..
+        }
+    )
+}
+
 fn visible_display_commands(
     render: &BrowserRender,
     viewport: RasterViewport,
@@ -7316,6 +7375,8 @@ pub fn raster_report(
 ) -> BrowserRasterReport {
     let viewport = effective_raster_viewport(render, options);
     let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    let (visible_decoded_image_count, culled_decoded_image_count) =
+        decoded_image_command_visibility_counts(render, viewport);
     BrowserRasterReport {
         source: render.source.clone(),
         viewport_width: render.viewport_width,
@@ -7326,6 +7387,8 @@ pub fn raster_report(
         display_command_count: render.display_list.len(),
         visible_command_count,
         culled_command_count,
+        visible_decoded_image_count,
+        culled_decoded_image_count,
         raster_viewport_x: viewport.active.then_some(viewport.x),
         raster_viewport_y: viewport.active.then_some(viewport.y),
         raster_viewport_width: viewport.active.then_some(viewport.width),
@@ -7342,6 +7405,8 @@ pub fn rgba_raster_report(
 ) -> BrowserRgbaRasterReport {
     let viewport = effective_raster_viewport(render, options);
     let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
+    let (visible_decoded_image_count, culled_decoded_image_count) =
+        decoded_image_command_visibility_counts(render, viewport);
     BrowserRgbaRasterReport {
         source: render.source.clone(),
         viewport_width: render.viewport_width,
@@ -7353,11 +7418,14 @@ pub fn rgba_raster_report(
         display_command_count: render.display_list.len(),
         visible_command_count,
         culled_command_count,
+        visible_decoded_image_count,
+        culled_decoded_image_count,
         raster_viewport_x: viewport.active.then_some(viewport.x),
         raster_viewport_y: viewport.active.then_some(viewport.y),
         raster_viewport_width: viewport.active.then_some(viewport.width),
         raster_viewport_height: viewport.active.then_some(viewport.height),
         non_background_pixels: raster.non_background_pixels(),
+        color_pixels: raster.color_pixels(),
         pixel_hash: raster.pixel_hash(),
         artifact_format: "png-rgba8".to_owned(),
     }
