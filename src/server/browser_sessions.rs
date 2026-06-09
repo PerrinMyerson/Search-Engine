@@ -11182,6 +11182,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (status) {
       status.dataset.pendingViewportX = String(target.x);
       status.dataset.pendingViewportY = String(target.y);
+      status.dataset.browserViewportPendingState = "pending";
+      status.dataset.browserViewportTargetX = String(target.x);
+      status.dataset.browserViewportTargetY = String(target.y);
     }
   };
   const setViewportPending = (message, target) => {
@@ -11241,6 +11244,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.removeAttribute("data-pending-viewport-x");
       status.removeAttribute("data-pending-viewport-y");
       status.removeAttribute("data-stale-viewport-response");
+      status.dataset.browserViewportPendingState = "idle";
+      status.dataset.browserViewportTargetX = String(numberData("viewportX"));
+      status.dataset.browserViewportTargetY = String(numberData("viewportY"));
+      status.dataset.browserViewportCurrentX = String(numberData("viewportX"));
+      status.dataset.browserViewportCurrentY = String(numberData("viewportY"));
       status.removeAttribute("aria-busy");
       status.removeAttribute("aria-label");
     }
@@ -14326,8 +14334,10 @@ fn render_browser_session_viewport_status(payload: &BrowserSessionPayload) -> St
     let click_status = browser_session_click_status(payload);
     let click_hint = browser_session_click_hint(payload);
     format!(
-        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter"><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        r#"<div class="viewport-status compact" data-browser-viewport-status data-browser-first-view-status="compact" data-browser-viewport-status-layout="summary feedback meter" data-browser-viewport-pending-state="idle" data-browser-viewport-target-x="{x}" data-browser-viewport-target-y="{y}" data-browser-viewport-current-x="{x}" data-browser-viewport-current-y="{y}" data-browser-viewport-max-x="{max_x}" data-browser-viewport-max-y="{max_y}" data-browser-viewport-input-sources="wheel keyboard controls"><div class="viewport-status-text"><span class="viewport-scroll-summary" data-browser-scroll-state="summary" data-scroll-x-state="{horizontal_state}" data-scroll-y-state="{vertical_state}">{scroll_summary}</span><span data-browser-scroll-input-hint hidden>{input_hint}</span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span><span class="viewport-state-chip" data-browser-click-status aria-live="polite">{click_status}</span><span data-browser-click-hint hidden>{click_hint}</span></div><div class="viewport-scroll-meter" role="progressbar" aria-label="Vertical scroll position" aria-valuemin="0" aria-valuemax="{max_y}" aria-valuenow="{y}" aria-valuetext="y {y} of {max_y}"><span style="width: {meter_percent}%;"></span></div></div>"#,
+        x = payload.viewport_x,
         y = payload.viewport_y,
+        max_x = payload.max_scroll_x,
         max_y = payload.max_scroll_y,
         horizontal_state = horizontal_state,
         vertical_state = vertical_state,
