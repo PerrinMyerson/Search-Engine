@@ -13256,6 +13256,151 @@ fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
 }
 
 #[test]
+fn viewport_nearby_text_hit_prefers_closest_visible_link_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://viewport-nearby-text-closest".to_owned(),
+        title: String::new(),
+        viewport_width: 14,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Go".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Old".len(),
+                target_node: Some(88),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 4,
+                y: 5,
+                text: "Go".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 14,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::StyledText {
+                x: 8,
+                y: 5,
+                text: "Old".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer keeps adjacent scroll available".to_owned(),
+            },
+        ],
+        text: "Intro\nGo  Old\nFooter keeps adjacent scroll available".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 14,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, viewport, None);
+    assert_eq!(report.viewport.y, 5);
+    assert_eq!(
+        report
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, "StyledText", 0),
+            (2, "ColorRect", 1),
+            (3, "StyledText", 0)
+        ]
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 6, 0),
+        Some(77),
+        "nearby fallback should choose the closest visible linked text after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 7, 0),
+        Some(88),
+        "clicks closer to the later visible link should still resolve to that link"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize nearby text hit slice");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let visible_link_x = options
+        .padding_x
+        .saturating_add(4usize.saturating_mul(options.cell_width));
+    let visible_link_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (visible_link_x..visible_link_x.saturating_add(options.cell_width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        visible_link_has_ink,
+        "raster should show the closer visible linked text row"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, report.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 6, 0),
+        None,
+        "nearby text fallback should not keep either link hittable after the row scrolls out"
+    );
+}
+
+#[test]
 fn scrolled_wrapped_link_visible_row_keeps_raster_and_hit_target_aligned() {
     let render = BrowserRender {
         source: "mem://wrapped-link-hit-continuity".to_owned(),
