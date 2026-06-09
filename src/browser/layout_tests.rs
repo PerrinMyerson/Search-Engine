@@ -13841,6 +13841,186 @@ fn repeated_small_scroll_slices_drop_stale_link_hits_after_visible_rows_move() {
 }
 
 #[test]
+fn scrolled_readable_text_bounds_match_raster_and_drop_raw_stale_hits() {
+    let image_url = "mem://readable-text-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![44, 132, 216]),
+    };
+    let render = BrowserRender {
+        source: "mem://readable-text-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "OOppeenn".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 4,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 5,
+                text: "OOppeenn".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 12,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Lead\nOpen\nFooter".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 4,
+        width: 12,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, viewport, None);
+    assert_eq!(report.viewport.y, 4);
+    assert_eq!(
+        report
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y,
+                command.visible_width,
+            ))
+            .collect::<Vec<_>>(),
+        vec![(1, "Image", 0, 2), (2, "StyledText", 1, "Open".len())],
+        "visible command bounds should match the readable raster text width"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 1, 0),
+        Some(41),
+        "decoded image should remain hittable in the scrolled top row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 1, 1),
+        Some(77),
+        "visible readable link text should be hittable in its painted row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 8, 1),
+        None,
+        "raw repeated glyph cells beyond readable nearby tolerance should not stay hittable"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize readable text slice");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let target_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(target_x, options.padding_y),
+        [44, 132, 216, 255],
+        "scrolled raster should paint the decoded image in the visible top row"
+    );
+    let link_has_ink = (options.padding_y.saturating_add(options.cell_height)
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height.saturating_mul(2))
+            .min(rgba.height))
+        .any(|y| {
+            (target_x
+                ..target_x
+                    .saturating_add(options.cell_width.saturating_mul("Open".len()))
+                    .min(rgba.width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "scrolled raster should paint the readable linked text below the image"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, report.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 5);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 1, 0),
+        Some(77),
+        "link should move to the top viewport row after adjacent scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 1, 1),
+        None,
+        "offscreen decoded image target should not remain clickable after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 8, 0),
+        None,
+        "raw repeated glyph width should not leak into the next scrolled slice beyond nearby tolerance"
+    );
+}
+
+#[test]
 fn adjacent_scroll_frames_shift_visible_rows_without_stale_targets() {
     let image_url = "mem://adjacent-frame-continuity-image".to_owned();
     let decoded = DecodedImage {
