@@ -17664,7 +17664,14 @@ fn render_node(
             }
             if let Some(label) = form_control_render_text(dom, node_id, element) {
                 if !label.is_empty() {
+                    let block_control = style.display.is_block_flow() && !is_row_item;
+                    if block_control {
+                        renderer.break_line();
+                    }
                     renderer.push_inline_widget(&label, Some(node_id));
+                    if block_control {
+                        renderer.break_line();
+                    }
                 }
                 exit_outer_contexts(
                     renderer,
