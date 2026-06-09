@@ -4454,15 +4454,20 @@ fn hit_test_nearby_text_target_node_for_viewport_matching(
             };
             visible_bounds
         };
+        let x_tolerance = if pinned || visible_bounds == command_bounds {
+            2
+        } else {
+            0
+        };
         let y_tolerance = if pinned { 1 } else { 0 };
-        if !bounds_contains_with_tolerance(visible_bounds, x, y, 2, y_tolerance) {
+        if !bounds_contains_with_tolerance(visible_bounds, x, y, x_tolerance, y_tolerance) {
             continue;
         }
         let column = clamped_bounds_column(command_bounds, x);
         let Some(target_node) = render
             .hit_targets
             .get(command_index)
-            .and_then(|target| target.target_near_column(column, 2))
+            .and_then(|target| target.target_near_column(column, x_tolerance))
         else {
             continue;
         };
@@ -4728,7 +4733,12 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
             .hit_targets
             .get(command_index)
             .is_some_and(|target| target.source_bounds.is_some());
-        let tolerance = if clipped { 0 } else { 1 };
+        let partially_visible = visible_bounds != exact_bounds;
+        let tolerance = if clipped || (!pinned && partially_visible) {
+            0
+        } else {
+            1
+        };
         let y_tolerance = if pinned { tolerance } else { 0 };
         if !bounds_contains_with_tolerance(visible_bounds, x, y, tolerance, y_tolerance) {
             continue;
