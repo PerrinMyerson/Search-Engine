@@ -2808,6 +2808,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
     assert!(html.contains(r#"data-browser-controls-tray-role="secondary-tools""#));
+    assert!(html.contains(r#"data-browser-controls-tray-density="compact""#));
+    assert!(html.contains(r#"data-browser-controls-tray-primary-flow="false""#));
     assert!(html.contains(r#"data-browser-controls-tray-default="collapsed""#));
     assert!(html.contains(">Bottom</a>"));
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
@@ -3741,6 +3743,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"shell.addEventListener("pointerdown""#));
     assert!(html.contains(r#"shell.addEventListener("pointermove""#));
     assert!(html.contains(r#"queueViewportScroll(dx, dy, "drag")"#));
+    assert!(html.contains("shell.dataset.dragScrollTargetX = String(dragTarget.x)"));
+    assert!(html.contains("shell.dataset.dragScrollTargetY = String(dragTarget.y)"));
+    assert!(html.contains(r#"shell.dataset.dragSuppressedClick = "true""#));
+    assert!(html.contains("Drag scroll completed; click again to activate page target."));
+    assert!(html.contains(r#"shell.removeAttribute("data-drag-suppressed-click")"#));
     assert!(html.contains("suppressNextClickAfterDrag"));
     assert!(html.contains(r#"queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls")"#));
     assert!(html.contains(r#"queueViewportScroll(delta.dx, delta.dy, "keyboard")"#));
@@ -3756,6 +3763,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(
         html.contains(r#"data-browser-shell-click-scroll-separation="defer-click-during-scroll""#)
     );
+    assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
     assert!(
         html.contains(r#"data-browser-scroll-preserves="session from source viewport max-bytes""#)
     );
