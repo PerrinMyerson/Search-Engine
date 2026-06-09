@@ -18935,6 +18935,273 @@ fn continuous_small_scroll_state_keeps_mixed_rows_and_clamped_hits_stable() {
 }
 
 #[test]
+fn successive_scroll_frames_reuse_rows_without_mixed_content_stutter() {
+    let image_url = "mem://scroll-frame-reuse-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![46, 138, 226]),
+    };
+    let render = BrowserRender {
+        source: "mem://scroll-frame-reuse".to_owned(),
+        title: String::new(),
+        viewport_width: 14,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 1,
+        layout_boxes: vec![BrowserLayoutBox {
+            id: 0,
+            parent: None,
+            node_id: 12,
+            tag: "input".to_owned(),
+            kind: "form-control".to_owned(),
+            x: 4,
+            y: 3,
+            width: 3,
+            height: 1,
+            children: Vec::new(),
+            command_indices: vec![2],
+        }],
+        paint_command_count: 8,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 3,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 3,
+                width: 3,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 9,
+                y: 3,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 14,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Body".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Lead\nNext\nBody\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 2,
+        width: 14,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames =
+        browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1), (0, 1)], options)
+            .expect("render scroll frame reuse sequence");
+    assert_eq!(frames.len(), 3);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![3, 4, 5],
+        "successive one-row scroll frames should advance by one viewport row"
+    );
+
+    let expected_rows = [
+        vec![
+            (1, "Image", 0),
+            (2, "Rect", 0),
+            (3, "StyledText", 0),
+            (4, "ColorRect", 1),
+            (5, "Text", 2),
+        ],
+        vec![(4, "ColorRect", 0), (5, "Text", 1), (6, "Text", 2)],
+        vec![(5, "Text", 0), (6, "Text", 1), (7, "Text", 2)],
+    ];
+    for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+        assert!(!frame.report.viewport.full_repaint);
+        assert_eq!(
+            frame
+                .report
+                .viewport
+                .visible_commands
+                .iter()
+                .map(|command| (
+                    command.command_index,
+                    command.kind.as_str(),
+                    command.visible_y
+                ))
+                .collect::<Vec<_>>(),
+            expected_rows[index],
+            "frame {index} should project visible command rows without duplicates or stale rows"
+        );
+        let frame_area = frame
+            .report
+            .frame_width
+            .saturating_mul(frame.report.frame_height);
+        assert!(
+            frame.report.reused_pixel_area > 0,
+            "frame {index} should preserve reusable pixels after a small scroll"
+        );
+        assert!(
+            frame.report.dirty_pixel_area < frame_area,
+            "frame {index} should not degrade into a full-frame repaint"
+        );
+        let bottom_row = start.height.saturating_sub(1);
+        assert!(
+            frame.report.dirty_pixel_regions.iter().any(|region| {
+                bottom_row >= region.viewport_y
+                    && bottom_row < region.viewport_y.saturating_add(region.viewport_height)
+            }),
+            "frame {index} should dirty the newly exposed bottom row"
+        );
+        assert!(
+            frame.report.dirty_pixel_regions.iter().all(|region| {
+                region.viewport_x.saturating_add(region.viewport_width)
+                    <= frame.report.viewport.viewport.width
+                    && region.viewport_y.saturating_add(region.viewport_height)
+                        <= frame.report.viewport.viewport.height
+            }),
+            "frame {index} should keep dirty metadata inside the current viewport"
+        );
+    }
+    assert!(
+        frames[0]
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .any(|region| region.viewport_y == 0 && region.viewport_x <= 4),
+        "first frame should dirty the visible mixed media/control row"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "visible decoded image should remain hittable in the first frame"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 4, 0),
+        Some(12),
+        "visible control should remain hittable in the first frame"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 9, 0),
+        Some(77),
+        "visible link should remain hittable in the first frame"
+    );
+    for (index, frame) in frames.iter().enumerate().skip(1) {
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 0),
+            None,
+            "frame {index} should not keep a stale image hit after the mixed row scrolls out"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 4, 0),
+            None,
+            "frame {index} should not keep a stale control hit after the mixed row scrolls out"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 9, 0),
+            None,
+            "frame {index} should not keep a stale link hit after the mixed row scrolls out"
+        );
+    }
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], image_x, options.padding_y),
+        [46, 138, 226, 255],
+        "first frame should paint the decoded image at the top row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_x, options.padding_y),
+        [46, 138, 226, 255],
+        "second frame should not leave stale decoded image pixels at the top row"
+    );
+    assert_eq!(
+        pixel(&frames[1], options.padding_x, options.padding_y),
+        [236, 244, 248, 255],
+        "second frame should move the following color row to the top without visual stutter"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
