@@ -11063,7 +11063,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11083,7 +11083,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11734,7 +11734,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
-  const queueViewportScroll = (dx, dy) => {
+  const queueViewportScroll = (dx, dy, inputSource = "manual") => {
+    shell.dataset.scrollInputSource = inputSource;
     clearDeferredClickForScroll();
     pendingScrollDx += dx;
     pendingScrollDy += dy;
@@ -11769,6 +11770,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.pendingViewportY = String(pending.y);
     shell.dataset.queuedScrollDx = String(pending.dx);
     shell.dataset.queuedScrollDy = String(pending.dy);
+    shell.dataset.queuedScrollTargetX = String(pending.x);
+    shell.dataset.queuedScrollTargetY = String(pending.y);
     setPendingViewportTarget(pending);
     setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`, pending);
     if (pendingScrollTimer) {
@@ -11796,7 +11799,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const dy = wheelCells(event.deltaY, event.deltaMode, numberData("viewportHeight"));
     if (dx || dy) {
       event.preventDefault();
-      queueViewportScroll(dx, dy);
+      queueViewportScroll(dx, dy, "wheel");
     }
   }, { passive: false });
   let hoverPointTimer = null;
@@ -11869,7 +11872,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const targetUrl = new URL(target.href, window.location.href);
     const scrollDelta = scrollDeltaFromUrl(targetUrl);
     if (scrollDelta) {
-      queueViewportScroll(scrollDelta.dx, scrollDelta.dy);
+      queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls");
       return;
     }
     if (partialRequestInFlight || shell.dataset.viewportPending === "true") {
@@ -11914,7 +11917,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return false;
     }
     event.preventDefault();
-    queueViewportScroll(delta.dx, delta.dy);
+    queueViewportScroll(delta.dx, delta.dy, "keyboard");
     return true;
   };
   const isInteractiveTarget = (target) => {
