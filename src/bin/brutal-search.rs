@@ -1760,6 +1760,44 @@ fn storage_pressure_rollup_lines(
         .as_ref()
         .map(|frontier| frontier.total)
         .unwrap_or(0);
+    let web_cache_bytes = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let brave_results_bytes = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let components = [
+        ("core-index", core_bytes),
+        ("web-artifacts", web_summary.bytes),
+        ("browser-documents", stats.browser_document_bytes),
+        ("crawl-artifacts", crawl_bytes),
+    ];
+    let (largest_component, largest_component_bytes) = components
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let budget_status = if stats.total_bytes > index_storage_budget_bytes() {
+        "over-budget"
+    } else if web_summary.duplicate_entries > 0
+        || web_summary.suggested_dry_runs > 0
+        || stats.crawl_snapshot_duplicate_entries > 0
+    {
+        "dry-run-recommended"
+    } else {
+        "within-budget"
+    };
+    let budget_next_action = match budget_status {
+        "over-budget" => "review-largest-artifact-before-cleanup",
+        "dry-run-recommended" => "run-storage-dry-run-before-cleanup",
+        _ => "storage-size-low",
+    };
     let export_needs_review = stats.total_bytes > index_storage_budget_bytes()
         || web_summary.duplicate_entries > 0
         || stats.browser_document_duplicate_rows > 0
@@ -1820,6 +1858,14 @@ fn storage_pressure_rollup_lines(
             web_summary.duplicate_entries,
             stats.crawl_snapshot_entries,
             frontier_records
+        ),
+        format!(
+            "local_artifact_size_budget: report_only=true status={budget_status} total_bytes={} budget_bytes={} web_cache_bytes={} brave_results_bytes={} snapshot_bytes={} generated_artifact_bytes=not-scanned largest_artifact={largest_component} largest_artifact_bytes={largest_component_bytes} next_action={budget_next_action}",
+            stats.total_bytes,
+            index_storage_budget_bytes(),
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes
         ),
         format!("storage_pressure_total_bytes: {}", stats.total_bytes),
         format!("storage_pressure_core_index_bytes: {core_bytes}"),
@@ -4620,6 +4666,53 @@ mod tests {
         assert!(lines.contains(&"storage_pressure_browser_document_bytes: 50".to_owned()));
         assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&format!(
+            "local_artifact_size_budget: report_only=true status=dry-run-recommended total_bytes=1000 budget_bytes={} web_cache_bytes=0 brave_results_bytes=0 snapshot_bytes=300 generated_artifact_bytes=not-scanned largest_artifact=core-index largest_artifact_bytes=350 next_action=run-storage-dry-run-before-cleanup",
+            index_storage_budget_bytes()
+        )));
+    }
+
+    #[test]
+    fn local_artifact_size_budget_reports_temp_artifacts_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path();
+        std::fs::write(index.join("docs.bin"), b"core-index-bytes").unwrap();
+        let web_cache = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n";
+        std::fs::write(index.join("web-cache.jsonl"), web_cache).unwrap();
+        let brave_results = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n";
+        std::fs::write(index.join("brave-results.jsonl"), brave_results).unwrap();
+        let crawl_docs =
+            b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(index.join("crawl-docs.jsonl"), crawl_docs).unwrap();
+        let before_cache = std::fs::read(index.join("web-cache.jsonl")).unwrap();
+        let before_results = std::fs::read(index.join("brave-results.jsonl")).unwrap();
+        let before_snapshot = std::fs::read(index.join("crawl-docs.jsonl")).unwrap();
+
+        let stats = collect_index_storage_stats(index).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let lines = storage_pressure_rollup_lines(&stats, &web_summary);
+
+        assert_eq!(
+            before_cache,
+            std::fs::read(index.join("web-cache.jsonl")).unwrap()
+        );
+        assert_eq!(
+            before_results,
+            std::fs::read(index.join("brave-results.jsonl")).unwrap()
+        );
+        assert_eq!(
+            before_snapshot,
+            std::fs::read(index.join("crawl-docs.jsonl")).unwrap()
+        );
+        assert!(lines.iter().any(|line| {
+            line.starts_with("local_artifact_size_budget: report_only=true")
+                && line.contains("status=dry-run-recommended")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("generated_artifact_bytes=not-scanned")
+                && line.contains("next_action=run-storage-dry-run-before-cleanup")
+        }));
     }
 
     #[test]
