@@ -133,6 +133,10 @@ pub struct BrowserResourceFetch {
     pub decoded_color_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_color_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_attached: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_attachment_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +402,8 @@ impl BrowserResourceFetch {
             decoded_hash,
             decoded_color_hash,
             decoded_color_bytes,
+            render_attached: None,
+            render_attachment_kind: None,
         }
     }
 
@@ -3144,6 +3150,8 @@ mod tests {
             decoded_hash: None,
             decoded_color_hash: None,
             decoded_color_bytes: None,
+            render_attached: None,
+            render_attachment_kind: None,
         };
 
         let serialized = serde_json::to_value(&fetch).unwrap();
