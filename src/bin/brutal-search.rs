@@ -2787,6 +2787,7 @@ fn web_storage_pressure_summary_lines(
         format!(
             "brave_result_archive_guard: report_only=true status={brave_archive_status} persisted_rows={brave_persisted_rows} duplicate_rows={brave_duplicate_rows} duplicate_row_bytes={brave_duplicate_row_bytes} malformed_rows={brave_invalid_rows} mutates_files=false next_action={brave_archive_next_action}"
         ),
+        brave_result_archive_retention_line(artifacts),
     ];
     if summary.suggested_dry_runs > 0 {
         lines.push(format!(
@@ -2798,6 +2799,51 @@ fn web_storage_pressure_summary_lines(
         artifacts, &summary, now, stale_secs,
     ));
     lines
+}
+
+fn brave_result_archive_retention_line(artifacts: &[WebStorageArtifactStats]) -> String {
+    let config = web_storage_retention_config();
+    let brave_results = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let archive_candidates = usize::from(brave_results.is_some());
+    let archive_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archive_bytes = brave_results.map(|artifact| artifact.bytes).unwrap_or(0);
+    let duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let max_entries_per_query = brave_results
+        .map(|artifact| artifact.max_entries_per_query)
+        .unwrap_or(0);
+    let query_buckets = brave_results
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let (largest_artifact, largest_artifact_bytes) = brave_results
+        .map(|artifact| (artifact.name, artifact.bytes))
+        .unwrap_or(("none", 0));
+    let next_action = if duplicate_rows > 0 || duplicate_row_bytes > 0 {
+        "review-brave-archive-duplicates-dry-run"
+    } else if archive_bytes >= config.result_log_max_bytes {
+        "review-brave-archive-byte-cap"
+    } else if max_entries_per_query > config.result_log_max_entries_per_query {
+        "review-brave-archive-query-cap"
+    } else if archive_rows > 0 {
+        "brave-archive-retention-ok"
+    } else {
+        "no-brave-archive-rows"
+    };
+
+    format!(
+        "brave_result_archive_retention: report_only=true deletes=false compacts=false archive_candidates={archive_candidates} archive_rows={archive_rows} archive_bytes={archive_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} result_log_max_entries={} result_log_max_bytes={} result_log_max_entries_per_query={} next_action={next_action}",
+        config.result_log_max_entries,
+        config.result_log_max_bytes,
+        config.result_log_max_entries_per_query,
+    )
 }
 
 fn web_storage_cache_pressure_next_action(summary: &WebStoragePressureSummary) -> &'static str {
@@ -6326,6 +6372,23 @@ mod tests {
                 && line.contains("malformed_rows=0")
                 && line.contains("mutates_files=false")
                 && line.contains("next_action=run-web-cache-dry-run-before-apply")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("brave_result_archive_retention: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("archive_candidates=1")
+                && line.contains("archive_rows=2")
+                && line.contains(&format!("archive_bytes={}", result_log_contents.len()))
+                && line.contains("duplicate_rows=1")
+                && line.contains("query_buckets=1")
+                && line.contains("max_entries_per_query=2")
+                && line.contains("largest_artifact=brave-results.jsonl")
+                && line.contains(&format!(
+                    "largest_artifact_bytes={}",
+                    result_log_contents.len()
+                ))
+                && line.contains("next_action=review-brave-archive-duplicates-dry-run")
         }));
     }
 
