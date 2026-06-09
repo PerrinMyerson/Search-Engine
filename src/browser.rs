@@ -4606,6 +4606,28 @@ fn display_command_exact_hit_bounds_for_viewport(
     let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
     let bounds =
         display_command_bounds_for_viewport(command, viewport, viewport_fixed, viewport_sticky_top);
+    if let DisplayCommand::BackgroundImage {
+        url: Some(url),
+        size,
+        position,
+        repeat: BackgroundImageRepeat::NoRepeat,
+        ..
+    } = command
+        && let Some(decoded) = render.decoded_image(url)
+    {
+        let source_bounds = display_command_source_bounds_for_viewport(
+            render,
+            command_index,
+            display_command_bounds(command),
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        let painted_bounds =
+            background_image_no_repeat_painted_bounds(source_bounds, *size, *position, decoded)?;
+        return intersect_display_bounds(painted_bounds, bounds)
+            .and_then(|bounds| intersect_display_bounds_with_viewport(bounds, viewport));
+    }
     let clipped_normal_flow_visual = render
         .hit_targets
         .get(command_index)
@@ -4696,10 +4718,15 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
             viewport_sticky_top,
         );
         let pinned = viewport_fixed || viewport_sticky_top.is_some();
+        let Some(exact_bounds) =
+            display_command_exact_hit_bounds_for_viewport(render, command_index, command, viewport)
+        else {
+            continue;
+        };
         let Some(visible_bounds) = (if pinned {
-            Some(bounds)
+            Some(exact_bounds)
         } else {
-            intersect_display_bounds_with_viewport(bounds, viewport)
+            intersect_display_bounds_with_viewport(exact_bounds, viewport)
         }) else {
             continue;
         };
@@ -8991,6 +9018,45 @@ fn background_image_tile_size(
             }
         }
     }
+}
+
+fn background_image_no_repeat_painted_bounds(
+    container: DisplayCommandBounds,
+    size: BackgroundImageSize,
+    position: BackgroundImagePosition,
+    decoded: &DecodedImage,
+) -> Option<DisplayCommandBounds> {
+    if container.width == 0 || container.height == 0 || decoded.width == 0 || decoded.height == 0 {
+        return None;
+    }
+    let (tile_width, tile_height) =
+        background_image_tile_size(container.width, container.height, size, decoded);
+    if tile_width == 0 || tile_height == 0 {
+        return None;
+    }
+    let tile_x = background_position_offset(container.width, tile_width, position.x_percent);
+    let tile_y = background_position_offset(container.height, tile_height, position.y_percent);
+    let container_left = container.x as i128;
+    let container_top = container.y as i128;
+    let container_right = container_left.saturating_add(container.width as i128);
+    let container_bottom = container_top.saturating_add(container.height as i128);
+    let tile_left = container_left.saturating_add(tile_x as i128);
+    let tile_top = container_top.saturating_add(tile_y as i128);
+    let tile_right = tile_left.saturating_add(tile_width as i128);
+    let tile_bottom = tile_top.saturating_add(tile_height as i128);
+    let left = container_left.max(tile_left);
+    let top = container_top.max(tile_top);
+    let right = container_right.min(tile_right);
+    let bottom = container_bottom.min(tile_bottom);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(DisplayCommandBounds {
+        x: left.min(usize::MAX as i128) as usize,
+        y: top.min(usize::MAX as i128) as usize,
+        width: right.saturating_sub(left).min(usize::MAX as i128) as usize,
+        height: bottom.saturating_sub(top).min(usize::MAX as i128) as usize,
+    })
 }
 
 fn scale_ceil(value: usize, numerator: usize, denominator: usize) -> usize {
