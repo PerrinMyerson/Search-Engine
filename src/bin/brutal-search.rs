@@ -3195,6 +3195,24 @@ fn web_storage_compaction_snapshot_readiness_lines(
     } else {
         "cleanup-pointless"
     };
+    let reclaimable_rows = cache_removed_entries.saturating_add(result_log_removed_entries);
+    let reclaimable_duplicates =
+        cache_removed_duplicates.saturating_add(result_log_removed_duplicates);
+    let plan_status = if report.skipped {
+        "skipped"
+    } else if zero_removal {
+        "noop"
+    } else if reclaimable_duplicates > 0 || projected_removed_bytes > 0 || reclaimable_rows > 0 {
+        "pressure"
+    } else {
+        "review"
+    };
+    let plan_next_action = match plan_status {
+        "pressure" => "run-compact-web-cache-dry-run-before-apply",
+        "noop" => "compaction-not-useful",
+        "skipped" => "review-skipped-compaction-inputs",
+        _ => "inspect-web-artifact-compaction-plan",
+    };
 
     vec![
         format!(
@@ -3250,6 +3268,10 @@ fn web_storage_compaction_snapshot_readiness_lines(
         ),
         format!(
             "web_storage_compaction_evidence_next_action: report_only=true action={compaction_evidence_next_action} dry_run={} zero_removal={zero_removal}",
+            report.dry_run
+        ),
+        format!(
+            "web_storage_compaction_plan_preview: report_only=true status={plan_status} dry_run={} mutates_files=false cache_reclaimable_rows={cache_removed_entries} cache_reclaimable_bytes={cache_removed_bytes} cache_reclaimable_duplicates={cache_removed_duplicates} result_log_reclaimable_rows={result_log_removed_entries} result_log_reclaimable_bytes={result_log_removed_bytes} result_log_reclaimable_duplicates={result_log_removed_duplicates} total_reclaimable_rows={reclaimable_rows} total_reclaimable_bytes={projected_removed_bytes} total_reclaimable_duplicates={reclaimable_duplicates} next_action={plan_next_action}",
             report.dry_run
         ),
         format!("web_storage_snapshot_zero_removal: {zero_removal}"),
@@ -6844,6 +6866,56 @@ mod tests {
         report.result_log_projected_after = report.result_log_before;
         let zero_lines = web_storage_compaction_snapshot_readiness_lines(&report);
         assert!(zero_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=cleanup-pointless dry_run=true zero_removal=true".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_plan_preview_reports_reclaimable_pressure() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_compaction_plan_preview: report_only=true status=pressure dry_run=true mutates_files=false cache_reclaimable_rows=2 cache_reclaimable_bytes=40 cache_reclaimable_duplicates=2 result_log_reclaimable_rows=1 result_log_reclaimable_bytes=20 result_log_reclaimable_duplicates=1 total_reclaimable_rows=3 total_reclaimable_bytes=60 total_reclaimable_duplicates=3 next_action=run-compact-web-cache-dry-run-before-apply".to_owned()));
     }
 
     #[test]
