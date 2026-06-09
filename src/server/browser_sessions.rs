@@ -13956,26 +13956,18 @@ fn browser_scroll_axis_state(
 }
 
 fn render_browser_session_controls_tray_summary(payload: &BrowserSessionPayload) -> String {
-    let scroll_label = if payload.max_scroll_x > 0 || payload.max_scroll_y > 0 {
-        "scroll"
-    } else {
-        "static"
-    };
-    let resource_label = if payload.resource_count > 0 {
-        "resources"
-    } else {
-        "no-resources"
-    };
-    let form_label = if payload.form_count > 0 {
-        "forms"
-    } else {
-        "no-forms"
-    };
+    let scroll_available = payload.max_scroll_x > 0 || payload.max_scroll_y > 0;
+    let find_available = !payload.find_query.is_empty() || payload.find_match_count > 0;
+    let forms_available = payload.form_count > 0;
+    let resources_available = payload.resource_count > 0;
+    let text_available = !payload.viewport.trim().is_empty();
     format!(
-        r#"<summary data-browser-controls-summary data-browser-controls-summary-scroll="{scroll_label}" data-browser-controls-summary-resources="{resource_label}" data-browser-controls-summary-forms="{form_label}"><span class="browser-controls-summary"><strong>More browser tools</strong><span>Scroll, jump, find, diagnostics</span></span></summary>"#,
-        scroll_label = scroll_label,
-        resource_label = resource_label,
-        form_label = form_label,
+        r#"<summary data-browser-controls-summary data-browser-controls-summary-density="compact" data-browser-controls-summary-label="Tools" data-browser-controls-summary-scroll="{scroll_available}" data-browser-controls-summary-find="{find_available}" data-browser-controls-summary-forms="{forms_available}" data-browser-controls-summary-resources="{resources_available}" data-browser-controls-summary-text="{text_available}" data-browser-controls-summary-diagnostics="secondary"><span class="browser-controls-summary"><strong>Tools</strong><span>Scroll, jump, find, resources</span></span></summary>"#,
+        scroll_available = scroll_available,
+        find_available = find_available,
+        forms_available = forms_available,
+        resources_available = resources_available,
+        text_available = text_available,
     )
 }
 
