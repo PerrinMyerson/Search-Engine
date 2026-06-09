@@ -1491,6 +1491,19 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         } else {
             "cache-pressure-low"
         };
+    let session_storage_pressure_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-repeated-large-browser-session-records"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-repeated-browser-session-records"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-session-records"
+    } else if stats.browser_document_session_count > 1 {
+        "monitor-multi-session-storage"
+    } else {
+        "session-pressure-low"
+    };
     let row_size_pressure_action = if stats.browser_document_large_row_count > 0
         && stats.browser_document_duplicate_row_bytes > 0
     {
@@ -1532,6 +1545,16 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
             stats.browser_document_bytes,
             stats.browser_document_duplicate_rows,
             stats.browser_document_duplicate_row_bytes
+        ),
+        format!(
+            "browser_session_storage_pressure: report_only=true sessions={} rows={} bytes={} duplicate_rows={} duplicate_row_bytes={} max_row_bytes={} large_row_count={} next_action={session_storage_pressure_action}",
+            stats.browser_document_session_count,
+            stats.browser_document_rows,
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_duplicate_row_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_large_row_count
         ),
         format!(
             "browser_document_storage_unique_rows: {}",
@@ -4727,6 +4750,37 @@ mod tests {
         assert!(lines.contains(&format!(
             "browser_session_cache_pressure: report_only=true sessions=2 rows=3 bytes={} duplicate_rows=1 duplicate_row_bytes={} next_action=inspect-multi-session-duplicates",
             stats.browser_document_bytes, stats.browser_document_duplicate_row_bytes
+        )));
+    }
+
+    #[test]
+    fn browser_session_storage_pressure_reports_document_row_pressure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_session_count, 2);
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert_eq!(stats.browser_document_large_row_count, 2);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+        assert!(lines.contains(&format!(
+            "browser_session_storage_pressure: report_only=true sessions=2 rows=3 bytes={} duplicate_rows=1 duplicate_row_bytes={} max_row_bytes={} large_row_count=2 next_action=inspect-repeated-large-browser-session-records",
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            stats.browser_document_max_row_bytes
         )));
     }
 
