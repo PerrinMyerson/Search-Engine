@@ -56,6 +56,7 @@ const WEB_STORAGE_PROVIDER_GROWTH_LIMIT: usize = 3;
 const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+const BROWSER_DOCUMENT_LARGE_ROW_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Brutally fast static HTML text search.")]
@@ -860,6 +861,8 @@ struct IndexStorageStats {
     browser_document_duplicate_rows: usize,
     browser_document_unique_row_bytes: u64,
     browser_document_duplicate_row_bytes: u64,
+    browser_document_max_row_bytes: u64,
+    browser_document_large_row_count: usize,
     crawl_frontier_bytes: u64,
     crawl_frontier_stats: Option<FrontierStats>,
     crawl_snapshot_bytes: u64,
@@ -1072,6 +1075,8 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
         browser_document_duplicate_rows: 0,
         browser_document_unique_row_bytes: 0,
         browser_document_duplicate_row_bytes: 0,
+        browser_document_max_row_bytes: 0,
+        browser_document_large_row_count: 0,
         crawl_frontier_bytes: 0,
         crawl_frontier_stats: None,
         crawl_snapshot_bytes: 0,
@@ -1117,6 +1122,8 @@ fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
                 stats.browser_document_duplicate_rows = documents.duplicate_rows;
                 stats.browser_document_unique_row_bytes = documents.unique_row_bytes;
                 stats.browser_document_duplicate_row_bytes = documents.duplicate_row_bytes;
+                stats.browser_document_max_row_bytes = documents.max_row_bytes;
+                stats.browser_document_large_row_count = documents.large_row_count;
             }
             _ => {}
         }
@@ -1421,6 +1428,15 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         } else {
             "cache-pressure-low"
         };
+    let row_size_pressure_action = if stats.browser_document_large_row_count > 0
+        && stats.browser_document_duplicate_row_bytes > 0
+    {
+        "inspect-duplicate-and-large-browser-document-rows"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-document-rows"
+    } else {
+        "row-size-low"
+    };
     let mut lines = vec![
         format!(
             "browser_document_storage_summary: bytes={} rows={} unique_rows={} duplicate_rows={} projected_rows_after={} projected_rows_removed={} projected_row_bytes_after={} projected_row_bytes_removed={} zero_removal={}",
@@ -1457,6 +1473,15 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         format!(
             "browser_document_storage_unique_rows: {}",
             stats.browser_document_unique_rows
+        ),
+        format!(
+            "browser_document_storage_row_size_pressure: report_only=true action={row_size_pressure_action} bytes={} rows={} max_row_bytes={} large_row_count={} large_row_threshold_bytes={} duplicate_row_bytes={}",
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_large_row_count,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
         ),
         format!(
             "browser_document_storage_duplicate_rows: {}",
@@ -1906,6 +1931,8 @@ struct BrowserDocumentArtifactStats {
     duplicate_rows: usize,
     unique_row_bytes: u64,
     duplicate_row_bytes: u64,
+    max_row_bytes: u64,
+    large_row_count: usize,
 }
 
 fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifactStats> {
@@ -1917,6 +1944,8 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
     let mut duplicate_rows = 0usize;
     let mut unique_row_bytes = 0u64;
     let mut duplicate_row_bytes = 0u64;
+    let mut max_row_bytes = 0u64;
+    let mut large_row_count = 0usize;
     let mut keys = HashSet::new();
     let mut sessions = HashSet::new();
 
@@ -1928,6 +1957,10 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
         }
         rows = rows.saturating_add(1);
         let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        max_row_bytes = max_row_bytes.max(row_bytes);
+        if row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES {
+            large_row_count = large_row_count.saturating_add(1);
+        }
         let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
             format!("decode browser document jsonl artifact {}", path.display())
         })?;
@@ -1955,6 +1988,8 @@ fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifac
         duplicate_rows,
         unique_row_bytes,
         duplicate_row_bytes,
+        max_row_bytes,
+        large_row_count,
     })
 }
 
@@ -3444,6 +3479,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 50,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3510,6 +3547,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 80,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3551,6 +3590,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 50,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3618,6 +3659,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 0,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 50,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 2,
@@ -3695,6 +3738,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3748,6 +3793,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3794,6 +3841,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
@@ -3834,6 +3883,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -3882,6 +3933,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
@@ -3919,6 +3972,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 200,
@@ -3965,6 +4020,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 50,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4032,6 +4089,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4084,6 +4143,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4134,6 +4195,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4192,6 +4255,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 20,
             browser_document_duplicate_row_bytes: 5,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4240,6 +4305,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 100,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4320,6 +4387,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 80,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4376,6 +4445,8 @@ mod tests {
             browser_document_duplicate_rows: 1,
             browser_document_unique_row_bytes: 35,
             browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 80,
             crawl_frontier_stats: Some(FrontierStats {
                 queued: 1,
@@ -4422,6 +4493,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
@@ -4462,6 +4535,8 @@ mod tests {
             browser_document_duplicate_rows: 0,
             browser_document_unique_row_bytes: 25,
             browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
             crawl_frontier_bytes: 40,
             crawl_frontier_stats: None,
             crawl_snapshot_bytes: 60,
@@ -4582,6 +4657,47 @@ mod tests {
         assert!(stats.browser_document_duplicate_row_bytes > 0);
         assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
         assert!(lines.contains(&"browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data".to_owned()));
+    }
+
+    #[test]
+    fn browser_document_storage_row_size_pressure_reports_large_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert_eq!(stats.browser_document_large_row_count, 2);
+        assert!(stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&format!(
+            "browser_document_storage_row_size_pressure: report_only=true action=inspect-duplicate-and-large-browser-document-rows bytes={} rows=3 max_row_bytes={} large_row_count=2 large_row_threshold_bytes={} duplicate_row_bytes={}",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
+        )));
+
+        let clean_path = dir.path().join("browser-documents-clean.jsonl");
+        std::fs::write(
+            &clean_path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n",
+        )
+        .unwrap();
+        let clean_stats = browser_document_artifact_stats(&clean_path).unwrap();
+        assert_eq!(clean_stats.large_row_count, 0);
+        assert!(clean_stats.max_row_bytes < BROWSER_DOCUMENT_LARGE_ROW_BYTES);
     }
 
     #[test]
