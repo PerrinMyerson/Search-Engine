@@ -6583,23 +6583,12 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        for _ in 0..4 {
+        for _ in 0..3 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).await.unwrap();
             let request = String::from_utf8_lossy(&buf[..n]);
             let first_line = request.lines().next().unwrap_or_default();
-            if first_line.contains(" /style.css ") {
-                let body = b".hero { background-image: url('/sheet-bg-redirect'); background-repeat: no-repeat; min-height: 24px; }";
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.write_all(body).await.unwrap();
-                continue;
-            }
-
             if first_line.contains(" /sheet-bg-redirect ") {
                 stream
                     .write_all(
@@ -6622,7 +6611,9 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
 
             assert!(first_line.contains(" /page.html "), "{first_line}");
             let body = br#"<html><head>
-                <link rel="stylesheet" href="/style.css">
+                <style>
+                    .hero { background-image: image-set(url('/sheet-bg.avif') type('image/avif') 1x, url('/sheet-bg-redirect') type('image/png') 2x); background-repeat: no-repeat; min-height: 24px; }
+                </style>
             </head><body>
                 <p>Before stylesheet background redirect</p>
                 <section class="hero">Stylesheet background redirect</section>
@@ -6638,7 +6629,6 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
     });
 
     let page_url = format!("http://{addr}/page.html");
-    let stylesheet_url = format!("http://{addr}/style.css");
     let selected_url = format!("http://{addr}/sheet-bg-redirect");
     let final_url = format!("http://{addr}/sheet-bg-final");
     let mut session = BrowserSession::new(BrowserRenderOptions {
@@ -6647,24 +6637,17 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
     });
     session.navigate(&page_url).await.unwrap();
 
-    let stylesheet_report = session.render_current_with_stylesheets(1024).await.unwrap();
-    assert_eq!(stylesheet_report.stylesheet_count, 1);
-    assert_eq!(stylesheet_report.applied, 1);
-    assert_eq!(stylesheet_report.failed, 0);
-    assert_eq!(
-        stylesheet_report.fetches[0].resource.resolved,
-        stylesheet_url
-    );
-    assert_eq!(stylesheet_report.fetches[0].status, "fetched");
-    assert_eq!(
-        stylesheet_report.fetches[0].content_type.as_deref(),
-        Some("text/css")
-    );
-
     let image_report = session.render_current_with_images(1024).await.unwrap();
     assert_eq!(image_report.image_count, 1);
     assert_eq!(image_report.decoded, 1);
     assert_eq!(image_report.failed, 0);
+    assert!(
+        !image_report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "/sheet-bg.avif"
+                || fetch.resource.resolved.ends_with("/sheet-bg.avif"))
+    );
 
     let fetch = image_report.fetches.first().unwrap();
     assert_eq!(fetch.resource.kind, "background_image");
@@ -6677,6 +6660,11 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
     assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
     assert_eq!(fetch.image_decode_error_kind, None);
     assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_resource_state.as_deref(), Some("decoded_color"));
+    assert_eq!(
+        fetch.image_visibility_state.as_deref(),
+        Some("render_attached")
+    );
     assert_eq!(fetch.decoded_width, Some(2));
     assert_eq!(fetch.decoded_height, Some(2));
     assert_eq!(fetch.decoded_has_alpha, Some(false));
@@ -6686,6 +6674,11 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
         Some(expected_color_hash.as_str())
     );
     assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+    assert_eq!(fetch.render_attached, Some(true));
+    assert_eq!(
+        fetch.render_attachment_kind.as_deref(),
+        Some("background_image")
+    );
 
     let render = session.current().unwrap();
     assert!(
@@ -6718,6 +6711,12 @@ async fn stylesheet_background_redirect_sniffs_color_and_attaches() {
             } if url == &selected_url && hash == &expected_hash
         )
     }));
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    let raster_report = rgba_raster_report(render, &raster, BrowserRasterOptions::default());
+    assert_eq!(raster_report.visible_decoded_image_count, 1);
+    assert_eq!(raster_report.culled_decoded_image_count, 0);
+    assert_eq!(raster_report.image_visibility_state, "visible_color_pixels");
+    assert!(raster_report.color_pixels > 0);
 
     server.await.unwrap();
 }
