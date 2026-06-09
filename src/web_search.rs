@@ -284,7 +284,7 @@ impl WebSearchService {
 
         let results = match &self.config.provider {
             ThirdPartySearchProvider::Brave { api_key } => {
-                fetch_brave_web_search(
+                match fetch_brave_web_search(
                     &self.client,
                     api_key,
                     query,
@@ -292,9 +292,55 @@ impl WebSearchService {
                     &self.config.country,
                     &self.config.search_lang,
                 )
-                .await?
+                .await
+                {
+                    Ok(results) => results,
+                    Err(error) => {
+                        let replayed = result_log_results_for_query(
+                            &self.config.result_log_path,
+                            &normalized_query,
+                            limit,
+                        )?;
+                        if !replayed.is_empty() {
+                            let returned_results = replayed.len();
+                            return Ok(WebSearchLookup {
+                                provider: self.provider_name(),
+                                cache_hit: false,
+                                cache_status: "provider-error-result-log-hit",
+                                retained_cache_results: 0,
+                                returned_results,
+                                durable_result_rows: returned_results,
+                                persistence_gap_rows: 0,
+                                persistence_status: "result-log-replay",
+                                fetched: false,
+                                results: replayed,
+                            });
+                        }
+                        return Err(error);
+                    }
+                }
             }
             ThirdPartySearchProvider::CacheOnly => {
+                let replayed = result_log_results_for_query(
+                    &self.config.result_log_path,
+                    &normalized_query,
+                    limit,
+                )?;
+                if !replayed.is_empty() {
+                    let returned_results = replayed.len();
+                    return Ok(WebSearchLookup {
+                        provider: self.provider_name(),
+                        cache_hit: false,
+                        cache_status: "result-log-hit",
+                        retained_cache_results: 0,
+                        returned_results,
+                        durable_result_rows: returned_results,
+                        persistence_gap_rows: 0,
+                        persistence_status: "result-log-replay",
+                        fetched: false,
+                        results: replayed,
+                    });
+                }
                 return Ok(WebSearchLookup {
                     provider: self.provider_name(),
                     cache_hit: false,
@@ -315,6 +361,28 @@ impl WebSearchService {
         };
 
         let storage_results = web_results_for_storage(&results);
+        if storage_results.is_empty() {
+            let replayed = result_log_results_for_query(
+                &self.config.result_log_path,
+                &normalized_query,
+                limit,
+            )?;
+            if !replayed.is_empty() {
+                let returned_results = replayed.len();
+                return Ok(WebSearchLookup {
+                    provider: self.provider_name(),
+                    cache_hit: false,
+                    cache_status: "provider-empty-result-log-hit",
+                    retained_cache_results: 0,
+                    returned_results,
+                    durable_result_rows: returned_results,
+                    persistence_gap_rows: 0,
+                    persistence_status: "result-log-replay",
+                    fetched: true,
+                    results: replayed,
+                });
+            }
+        }
         let returned_results = results.len();
         let durable_result_rows = storage_results.len();
         let persistence_gap_rows = returned_results.saturating_sub(durable_result_rows);
@@ -990,6 +1058,63 @@ fn append_result_log(
     file.flush()?;
     enforce_result_log_retention(path, max_entries, max_bytes)?;
     Ok(())
+}
+
+fn result_log_results_for_query(
+    path: &Path,
+    normalized_query: &str,
+    limit: usize,
+) -> Result<Vec<WebSearchResult>> {
+    if limit == 0 || !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("open web search result log {}", path.display()))?;
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web search result log {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = match serde_json::from_str::<WebSearchResultLogEntry>(&line) {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "web search result log skipped invalid line {} in {}: {error}",
+                    line_no + 1,
+                    path.display()
+                );
+                continue;
+            }
+        };
+        if entry.normalized_query != normalized_query {
+            continue;
+        }
+        let dedupe_key = result_log_dedupe_key(&entry);
+        if !seen.insert(dedupe_key) {
+            continue;
+        }
+        results.push(WebSearchResult {
+            title: entry.title,
+            url: entry.url,
+            snippet: entry.snippet,
+            score: entry.score,
+            fetched_at_unix: entry.fetched_at_unix,
+            provider: entry.provider,
+        });
+        if results.len() >= limit {
+            break;
+        }
+    }
+    Ok(results)
 }
 
 fn enforce_result_log_retention(path: &Path, max_entries: usize, max_bytes: u64) -> Result<()> {
@@ -1915,6 +2040,70 @@ mod tests {
         assert!(stored[0].title.is_char_boundary(stored[0].title.len()));
         assert!(stored[0].snippet.is_char_boundary(stored[0].snippet.len()));
         assert_eq!(stored[0].url, results[0].url);
+    }
+
+    #[tokio::test]
+    async fn cache_only_search_replays_result_log_on_cache_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_result_log(
+            &result_log_path,
+            "Replay Query",
+            "replay query",
+            "brave",
+            &[
+                web_result("https://example.com/replay-a", now),
+                web_result("https://example.com/replay-b", now),
+                web_result("https://example.com/replay-b", now),
+            ],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+
+        let service = WebSearchService {
+            client: reqwest::Client::builder().build().unwrap(),
+            config: WebSearchConfig {
+                provider: ThirdPartySearchProvider::CacheOnly,
+                cache_path: cache_path.clone(),
+                result_log_path: result_log_path.clone(),
+                result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
+                result_log_max_bytes: DEFAULT_RESULT_LOG_MAX_BYTES,
+                cache_max_bytes: DEFAULT_CACHE_MAX_BYTES,
+                cache_ttl_secs: 60,
+                min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
+                max_results: DEFAULT_MAX_WEB_RESULTS,
+                country: "us".to_owned(),
+                search_lang: "en".to_owned(),
+            },
+            cache: std::sync::Arc::new(tokio::sync::Mutex::new(
+                WebResultCache::load(
+                    cache_path.clone(),
+                    60,
+                    DEFAULT_CACHE_MAX_ENTRIES,
+                    DEFAULT_CACHE_MAX_BYTES,
+                )
+                .unwrap(),
+            )),
+        };
+
+        let lookup = service.search("  Replay   Query ", 10).await.unwrap();
+
+        assert_eq!(lookup.provider, "brave-cache");
+        assert!(!lookup.cache_hit);
+        assert_eq!(lookup.cache_status, "result-log-hit");
+        assert_eq!(lookup.retained_cache_results, 0);
+        assert_eq!(lookup.returned_results, 2);
+        assert_eq!(lookup.durable_result_rows, 2);
+        assert_eq!(lookup.persistence_gap_rows, 0);
+        assert_eq!(lookup.persistence_status, "result-log-replay");
+        assert!(!lookup.fetched);
+        assert_eq!(lookup.results.len(), 2);
+        assert_eq!(lookup.results[0].url, "https://example.com/replay-a");
+        assert_eq!(lookup.results[1].url, "https://example.com/replay-b");
+        assert!(!cache_path.exists());
     }
 
     #[tokio::test]
