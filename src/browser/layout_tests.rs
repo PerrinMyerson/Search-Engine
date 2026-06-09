@@ -11804,6 +11804,156 @@ fn viewport_exact_hit_respects_clipped_normal_flow_stack_after_adjacent_scroll()
 }
 
 #[test]
+fn no_repeat_background_hit_uses_painted_tile_after_scroll() {
+    let background_url = "mem://no-repeat-background-hit".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![32, 140, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://no-repeat-background-hit-page".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: background_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::node(Some(42)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 5,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::BackgroundImage {
+                x: 0,
+                y: 5,
+                width: 4,
+                height: 2,
+                shade: 210,
+                url: Some(background_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+                size: BackgroundImageSize::Contain,
+                position: BackgroundImagePosition {
+                    x_percent: 100,
+                    y_percent: 0,
+                },
+                repeat: BackgroundImageRepeat::NoRepeat,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 7,
+                width: 10,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+        ],
+        text: "Intro\nOpen".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 10,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, viewport, None);
+    assert_eq!(report.viewport.y, 5);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 0, 0),
+        Some(77),
+        "blank no-repeat background cells should not steal the visible link hit"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 2, 0),
+        Some(42),
+        "painted no-repeat background tile should remain hittable"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize no-repeat background hit");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let link_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (options.padding_x..options.padding_x.saturating_add(options.cell_width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "scrolled raster should keep linked text visible in the blank background cell"
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(2)),
+            options.padding_y
+        ),
+        [32, 140, 220, 255],
+        "scrolled raster should paint the decoded no-repeat background tile"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, report.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 0, 0),
+        None,
+        "blank no-repeat background cells should not invent a stale hit after the link scrolls out"
+    );
+}
+
+#[test]
 fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
     let image_url = "mem://rerender-dirty-image".to_owned();
     let background_url = "mem://rerender-dirty-background".to_owned();
