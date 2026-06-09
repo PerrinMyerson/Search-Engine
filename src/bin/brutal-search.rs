@@ -2771,6 +2771,18 @@ fn web_storage_cache_size_budget_line(
     artifacts: &[WebStorageArtifactStats],
     summary: &WebStoragePressureSummary,
 ) -> String {
+    web_storage_cache_size_budget_line_with_config(
+        artifacts,
+        summary,
+        web_storage_retention_config(),
+    )
+}
+
+fn web_storage_cache_size_budget_line_with_config(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+    config: WebStorageRetentionConfig,
+) -> String {
     let cache_bytes = artifacts
         .iter()
         .find(|artifact| artifact.name == "web-cache.jsonl")
@@ -2782,10 +2794,10 @@ fn web_storage_cache_size_budget_line(
         .map(|artifact| artifact.bytes)
         .unwrap_or(0);
     let over_budget_bytes = cache_bytes
-        .saturating_sub(DEFAULT_CACHE_MAX_BYTES)
-        .saturating_add(result_log_bytes.saturating_sub(DEFAULT_RESULT_LOG_MAX_BYTES));
-    let near_budget = cache_bytes.saturating_mul(4) >= DEFAULT_CACHE_MAX_BYTES.saturating_mul(3)
-        || result_log_bytes.saturating_mul(4) >= DEFAULT_RESULT_LOG_MAX_BYTES.saturating_mul(3);
+        .saturating_sub(config.cache_max_bytes)
+        .saturating_add(result_log_bytes.saturating_sub(config.result_log_max_bytes));
+    let near_budget = cache_bytes.saturating_mul(4) >= config.cache_max_bytes.saturating_mul(3)
+        || result_log_bytes.saturating_mul(4) >= config.result_log_max_bytes.saturating_mul(3);
     let status = if over_budget_bytes > 0 {
         "over-budget"
     } else if summary.duplicate_row_bytes > 0 || summary.duplicate_entries > 0 {
@@ -2803,8 +2815,11 @@ fn web_storage_cache_size_budget_line(
     };
 
     format!(
-        "web_storage_cache_size_budget: report_only=true status={status} cache_bytes={cache_bytes} cache_budget_bytes={DEFAULT_CACHE_MAX_BYTES} result_log_bytes={result_log_bytes} result_log_budget_bytes={DEFAULT_RESULT_LOG_MAX_BYTES} over_budget_bytes={over_budget_bytes} duplicate_row_bytes={} duplicate_rows={} next_action={next_action}",
-        summary.duplicate_row_bytes, summary.duplicate_entries
+        "web_storage_cache_size_budget: report_only=true status={status} cache_bytes={cache_bytes} cache_budget_bytes={} result_log_bytes={result_log_bytes} result_log_budget_bytes={} over_budget_bytes={over_budget_bytes} duplicate_row_bytes={} duplicate_rows={} next_action={next_action}",
+        config.cache_max_bytes,
+        config.result_log_max_bytes,
+        summary.duplicate_row_bytes,
+        summary.duplicate_entries
     )
 }
 
@@ -6330,6 +6345,49 @@ mod tests {
         assert!(lines.contains(
             &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
         ));
+    }
+
+    #[test]
+    fn web_storage_cache_size_budget_reports_configured_over_budget_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"budget\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"budget\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 120, 60);
+        let line = web_storage_cache_size_budget_line_with_config(
+            &artifacts,
+            &summary,
+            WebStorageRetentionConfig {
+                cache_max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+                cache_max_bytes: 8,
+                result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
+                result_log_max_bytes: 8,
+                result_log_max_entries_per_query: 0,
+            },
+        );
+
+        assert!(
+            line.starts_with("web_storage_cache_size_budget: report_only=true status=over-budget")
+        );
+        assert!(line.contains("cache_budget_bytes=8"));
+        assert!(line.contains("result_log_budget_bytes=8"));
+        assert!(line.contains("next_action=run-web-cache-dry-run-before-apply"));
+        assert!(!line.contains("over_budget_bytes=0"));
     }
 
     #[test]
