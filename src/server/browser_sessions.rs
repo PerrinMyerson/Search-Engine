@@ -10400,11 +10400,10 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-surface-state .primary-action {{ min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #2457d6; border-radius: 6px; padding: 0 9px; background: #2457d6; color: #fff; font-size: 12px; font-weight: 800; white-space: nowrap; }}
 .viewport-scroll-controls {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 10px; }}
 .viewport-scroll-control-group {{ display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }}
-.viewport-scroll-control-group[data-browser-scroll-control-group="page"] {{ order: 1; }}
-.viewport-scroll-control-group[data-browser-scroll-control-group="line"] {{ order: 2; }}
-.viewport-scroll-control-group[data-browser-scroll-control-group="horizontal"] {{ order: 3; }}
-.viewport-scroll-control-group[data-browser-scroll-control-group="exact"] {{ order: 4; }}
-.viewport-scroll-controls > .viewport-scroll-feedback {{ order: 5; }}
+.viewport-scroll-control-group[data-browser-scroll-control-group="line"] {{ order: 1; }}
+.viewport-scroll-control-group[data-browser-scroll-control-group="horizontal"] {{ order: 2; }}
+.viewport-scroll-control-group[data-browser-scroll-control-group="exact"] {{ order: 3; }}
+.viewport-scroll-controls > .viewport-scroll-feedback {{ order: 4; }}
 .viewport-scroll-controls a, .viewport-scroll-controls span {{ min-height: 32px; display: inline-flex; align-items: center; border: 1px solid #c6cbd2; border-radius: 6px; padding: 0 10px; background: #fff; color: #20242a; font-size: 13px; font-weight: 700; }}
 .viewport-scroll-controls span {{ color: #8a929d; background: #eef0f3; }}
 .viewport-scroll-controls .viewport-scroll-control-group {{ min-height: 0; border: 0; padding: 0; background: transparent; }}
@@ -14241,7 +14240,6 @@ fn render_browser_session_surface_action_feedback(payload: &BrowserSessionPayloa
 }
 
 fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPayload) -> String {
-    let top_href = browser_session_action_href(&payload.id, "top", &[], payload);
     let horizontal_step = if payload.max_scroll_x == 0 {
         0
     } else {
@@ -14253,17 +14251,14 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
         &[("dx", format!("-{horizontal_step}"))],
         payload,
     );
-    let page_up_href = browser_session_action_href(&payload.id, "page-up", &[], payload);
     let line_up_href = browser_session_action_href(&payload.id, "line-up", &[], payload);
     let line_down_href = browser_session_action_href(&payload.id, "line-down", &[], payload);
-    let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], payload);
     let right_href = browser_session_action_href(
         &payload.id,
         "scroll",
         &[("dx", horizontal_step.to_string())],
         payload,
     );
-    let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], payload);
     let can_scroll_left = payload.viewport_x > 0;
     let can_scroll_right = payload.viewport_x < payload.max_scroll_x;
     let can_scroll_up = payload.viewport_y > 0;
@@ -14276,7 +14271,7 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     }
     .max((payload.max_scroll_y > 0) as usize);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-viewport-page-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="page line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="page" aria-label="Page scroll actions">{top}{page_up}{page_down}{bottom}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
         max_x = payload.max_scroll_x,
@@ -14288,20 +14283,12 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
         can_scroll_right = can_scroll_right,
         can_scroll_up = can_scroll_up,
         can_scroll_down = can_scroll_down,
-        top = scroll_nav_control(can_scroll_up, "Top", &top_href, "Already at top"),
         left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
-        page_up = scroll_nav_control(can_scroll_up, "Page up", &page_up_href, "Already at top"),
         line_up = scroll_nav_control(can_scroll_up, "Line up", &line_up_href, "Already at top"),
         line_down = scroll_nav_control(
             can_scroll_down,
             "Line down",
             &line_down_href,
-            "Already at bottom"
-        ),
-        page_down = scroll_nav_control(
-            can_scroll_down,
-            "Page down",
-            &page_down_href,
             "Already at bottom"
         ),
         right = scroll_nav_control(
@@ -14310,7 +14297,6 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
             &right_href,
             "Already at right edge"
         ),
-        bottom = scroll_nav_control(can_scroll_down, "Bottom", &bottom_href, "Already at bottom"),
         viewport_feedback = viewport_feedback,
     )
 }

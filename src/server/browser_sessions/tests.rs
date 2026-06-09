@@ -2508,9 +2508,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(payload.max_scroll_y > 0);
     assert!(payload.viewport.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
     let html = render_browser_session_page(&payload, "/search?q=wide");
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Top</span>"#
-    ));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(r#"data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-chrome-status"#));
@@ -2522,6 +2519,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"data-browser-action-source="{}""#,
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
+    assert!(topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="top" data-browser-chrome-scroll-disabled="Already at top">Top</span>"#
+    ));
     assert!(topbar_html.contains(r#"data-browser-action-viewport-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-action-viewport-y="0""#));
     assert!(topbar_html.contains(r#"data-browser-action-width="40""#));
@@ -2575,27 +2575,25 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="page-up" data-browser-chrome-scroll-disabled="Already at top">Page up</span>"#
     ));
     assert!(html.contains(r#"data-browser-viewport-controls"#));
-    assert!(html.contains(r#"data-browser-viewport-controls data-browser-viewport-page-controls"#));
     assert!(
-        html.contains(
-            r#"data-browser-scroll-control-layout="page line horizontal exact feedback""#
-        )
+        controls_html
+            .contains(r#"data-browser-scroll-control-layout="line horizontal exact feedback""#)
     );
+    assert!(!controls_html.contains(r#"data-browser-scroll-control-group="page""#));
+    assert!(!controls_html.contains(">Top</a>"));
+    assert!(!controls_html.contains(">Page up</a>"));
+    assert!(!controls_html.contains(">Page down</a>"));
+    assert!(!controls_html.contains(">Bottom</a>"));
     assert!(
-        html.contains(
-            r#"data-browser-scroll-control-group="page" aria-label="Page scroll actions""#
-        )
-    );
-    assert!(
-        html.contains(
+        controls_html.contains(
             r#"data-browser-scroll-control-group="line" aria-label="Line scroll actions""#
         )
     );
-    assert!(html.contains(
+    assert!(controls_html.contains(
         r#"data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions""#
     ));
     assert!(
-        html.contains(
+        controls_html.contains(
             r#"data-browser-scroll-control-group="exact" aria-label="Exact scroll action""#
         )
     );
@@ -2640,9 +2638,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"href="{}">Right</a>"#,
         html_escape::encode_double_quoted_attribute(&right_href)
     )));
-    assert!(html.contains(r#"data-browser-viewport-page-controls"#));
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Page up</span>"#
+    assert!(controls_html.contains(
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
     ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
@@ -2867,25 +2864,24 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("viewport 40x16 at x=8 y=4"));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(
-        html.contains(
-            r#"data-browser-scroll-control-layout="page line horizontal exact feedback""#
-        )
+        controls_html
+            .contains(r#"data-browser-scroll-control-layout="line horizontal exact feedback""#)
     );
+    assert!(!controls_html.contains(r#"data-browser-scroll-control-group="page""#));
+    assert!(!controls_html.contains(">Top</a>"));
+    assert!(!controls_html.contains(">Page up</a>"));
+    assert!(!controls_html.contains(">Page down</a>"));
+    assert!(!controls_html.contains(">Bottom</a>"));
     assert!(
-        html.contains(
-            r#"data-browser-scroll-control-group="page" aria-label="Page scroll actions""#
-        )
-    );
-    assert!(
-        html.contains(
+        controls_html.contains(
             r#"data-browser-scroll-control-group="line" aria-label="Line scroll actions""#
         )
     );
-    assert!(html.contains(
+    assert!(controls_html.contains(
         r#"data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions""#
     ));
     assert!(
-        html.contains(
+        controls_html.contains(
             r#"data-browser-scroll-control-group="exact" aria-label="Exact scroll action""#
         )
     );
@@ -3086,7 +3082,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
             .unwrap();
     let manual_scroll_controls_index = controls_tray_index
         + html[controls_tray_index..]
-            .find(r#"data-browser-viewport-page-controls"#)
+            .find(r#"data-browser-viewport-controls"#)
             .unwrap();
     let command_strip_index = controls_tray_index
         + html[controls_tray_index..]
@@ -3661,12 +3657,23 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
     let bottom_top_href = browser_session_action_href(&payload.id, "top", &[], &payload);
     let bottom_page_up_href = browser_session_action_href(&payload.id, "page-up", &[], &payload);
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Page down</span>"#
+    let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
+    let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
+    let controls_html = &html[controls_tray_index..debug_index];
+    assert!(bottom_topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="page-down" data-browser-chrome-scroll-disabled="Already at bottom">Page down</span>"#
     ));
-    assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Bottom</span>"#
+    assert!(bottom_topbar_html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="bottom" data-browser-chrome-scroll-disabled="Already at bottom">Bottom</span>"#
     ));
+    assert!(!controls_html.contains(">Top</a>"));
+    assert!(!controls_html.contains(">Page up</a>"));
+    assert!(!controls_html.contains(">Page down</a>"));
+    assert!(!controls_html.contains(">Bottom</a>"));
+    assert!(controls_html.contains(
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
+    ));
+    assert!(controls_html.contains(r#"data-browser-scroll-step-form"#));
     assert!(html.contains(r#">Top</a>"#));
     assert!(html.contains(r#">Page up</a>"#));
     assert!(bottom_topbar_html.contains(r#"data-browser-chrome-scroll-x="12""#));
@@ -3684,12 +3691,6 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         r#"href="{}" data-browser-chrome-scroll-action="page-up">Page up</a>"#,
         html_escape::encode_double_quoted_attribute(&bottom_page_up_href)
     )));
-    assert!(bottom_topbar_html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="page-down" data-browser-chrome-scroll-disabled="Already at bottom">Page down</span>"#
-    ));
-    assert!(bottom_topbar_html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-chrome-scroll-action="bottom" data-browser-chrome-scroll-disabled="Already at bottom">Bottom</span>"#
-    ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
     assert!(html.contains(r#"data-scroll-y-state="at bottom""#));
     assert!(html.contains(r#"data-browser-scroll-step-form"#));
