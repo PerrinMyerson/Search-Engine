@@ -18694,6 +18694,247 @@ fn successive_scroll_delta_frames_canonicalize_mixed_dirty_rows_and_hits() {
 }
 
 #[test]
+fn continuous_small_scroll_state_keeps_mixed_rows_and_clamped_hits_stable() {
+    let image_url = "mem://continuous-scroll-state-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![92],
+        rgb_pixels: Some(vec![44, 136, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://continuous-scroll-state".to_owned(),
+        title: String::new(),
+        viewport_width: 14,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 7,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 4,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 4,
+                width: 3,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 9,
+                y: 4,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 14,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Lead\nNext\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 14,
+        height: 2,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames =
+        browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1), (0, 1), (0, 1)], options)
+            .expect("render continuous small scroll state frames");
+    assert_eq!(frames.len(), 4);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![4, 5, 6, 6],
+        "viewport_y should advance monotonically and then clamp at the bottom"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.scroll_delta_y)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 1, 0],
+        "scroll deltas should reflect actual clamped viewport movement"
+    );
+
+    assert_eq!(
+        frames[0]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, "Image", 0),
+            (2, "Rect", 0),
+            (3, "StyledText", 0),
+            (4, "ColorRect", 1)
+        ],
+        "first scroll step should expose the mixed image/control/link row and following row"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(4, "ColorRect", 0), (5, "Text", 1)],
+        "next scroll step should drop the mixed row without duplicating it"
+    );
+    assert!(
+        frames[3].report.viewport.invalidated_regions.is_empty(),
+        "repeated scroll after clamping should not invent dirty document rows"
+    );
+    assert!(
+        frames[3].report.dirty_pixel_regions.is_empty(),
+        "repeated scroll after clamping should not invent dirty raster rows"
+    );
+    assert_eq!(
+        frames[3].report.reused_pixel_area,
+        frames[3]
+            .report
+            .frame_width
+            .saturating_mul(frames[3].report.frame_height),
+        "clamped no-op frame should report full raster reuse"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "decoded image hit should align with the visible mixed row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 4, 0),
+        Some(12),
+        "control hit should align with the visible mixed row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 9, 0),
+        Some(77),
+        "link hit should align with the visible mixed row"
+    );
+    for (index, frame) in frames.iter().enumerate().skip(1) {
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 0),
+            None,
+            "frame {index} should not keep stale image hits after the mixed row scrolls out"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 4, 0),
+            None,
+            "frame {index} should not keep stale control hits after the mixed row scrolls out"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 9, 0),
+            None,
+            "frame {index} should not keep stale link hits after the mixed row scrolls out"
+        );
+    }
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], image_x, options.padding_y),
+        [44, 136, 224, 255],
+        "first scroll frame should paint the decoded image in the visible row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_x, options.padding_y),
+        [44, 136, 224, 255],
+        "next scroll frame should not keep stale image pixels in the top row"
+    );
+    assert_eq!(
+        pixel(&frames[1], options.padding_x, options.padding_y),
+        [236, 244, 248, 255],
+        "next scroll frame should project the following color row to the top"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
