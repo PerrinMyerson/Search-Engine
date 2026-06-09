@@ -12139,6 +12139,193 @@ fn clamped_bottom_raster_slice_keeps_media_text_and_hits_aligned() {
 }
 
 #[test]
+fn consecutive_scroll_frame_sequence_keeps_media_link_and_hits_aligned() {
+    let image_url = "mem://sequence-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![36, 128, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://sequence-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 6,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Details".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 1,
+                width: 10,
+                height: 1,
+                shade: 238,
+                red: 238,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 3,
+                text: "Details".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Body row".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Footer".to_owned(),
+            },
+        ],
+        text: "Intro\nDetails\nBody row\nFooter".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames =
+        browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1), (0, 1)], options)
+            .expect("render consecutive scroll frame sequence");
+    assert_eq!(frames.len(), 3);
+
+    for (index, frame) in frames.iter().enumerate() {
+        let expected_y = index + 1;
+        assert_eq!(frame.report.viewport.viewport.y, expected_y);
+        assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+        assert_eq!(frame.report.frame.raster_viewport_y, Some(expected_y));
+        assert_eq!(
+            frame.report.frame.visible_command_count, frame.report.viewport.visible_command_count,
+            "frame and document report should agree for scroll slice {expected_y}"
+        );
+        assert!(
+            frame
+                .report
+                .dirty_pixel_regions
+                .iter()
+                .any(|region| region.viewport_y == start.height - 1 && region.viewport_height == 1),
+            "scroll slice {expected_y} should dirty the newly exposed bottom row"
+        );
+    }
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 1),
+        Some(41),
+        "image target should move down one viewport row in the first slice"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 0),
+        Some(41),
+        "image target should move to the top row in the next slice"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[2].report.viewport.viewport, 1, 0),
+        Some(77),
+        "linked text should occupy the top row after the image scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[2].report.viewport.viewport, 1, 2),
+        None,
+        "image target should not remain hittable after it leaves the viewport"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(
+            &frames[0],
+            image_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [36, 128, 220, 255],
+        "decoded image should appear on the second row of the first slice"
+    );
+    assert_eq!(
+        pixel(&frames[1], image_x, options.padding_y),
+        [36, 128, 220, 255],
+        "decoded image should move up one row on the second slice"
+    );
+    let link_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(frames[2].raster.height))
+        .any(|y| {
+            (image_x
+                ..image_x
+                    .saturating_add(options.cell_width)
+                    .min(frames[2].raster.width))
+                .any(|x| pixel(&frames[2], x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "linked text should replace the image at the top row in the third slice"
+    );
+}
+
+#[test]
 fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://flow-only-scroll-height",

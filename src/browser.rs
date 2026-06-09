@@ -5560,6 +5560,24 @@ pub fn browser_viewport_frame(
     Ok(BrowserViewportFrame { report, raster })
 }
 
+pub fn browser_viewport_frame_sequence(
+    render: &BrowserRender,
+    start: BrowserViewportState,
+    scroll_deltas: &[(isize, isize)],
+    raster_options: BrowserRasterOptions,
+) -> Result<Vec<BrowserViewportFrame>> {
+    let mut previous = browser_document_viewport(render, start, None).viewport;
+    let mut frames = Vec::with_capacity(scroll_deltas.len());
+    for (delta_x, delta_y) in scroll_deltas {
+        let viewport = browser_document_viewport_after_scroll(render, previous, *delta_x, *delta_y);
+        let frame =
+            browser_viewport_frame(render, viewport.viewport, Some(previous), raster_options)?;
+        previous = frame.report.viewport.viewport;
+        frames.push(frame);
+    }
+    Ok(frames)
+}
+
 fn normalize_browser_viewport_state(state: BrowserViewportState) -> BrowserViewportState {
     BrowserViewportState {
         width: state.width.max(1),
