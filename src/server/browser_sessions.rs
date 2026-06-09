@@ -10395,7 +10395,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill strong, .browser-tab-pill span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-tab-pill strong {{ font-size: 13px; font-weight: 800; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
-.browser-location-strip {{ display: flex; min-width: 0; align-items: baseline; gap: 8px; color: #5d636b; font-size: 11px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
+.browser-location-strip {{ display: flex; min-width: 0; align-items: baseline; gap: 8px; margin-top: -1px; color: #5d636b; font-size: 10px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
 .browser-location-strip strong {{ flex: 0 1 auto; min-width: 0; color: #20242a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-location-strip .meta {{ flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-page-summary {{ margin: 4px 0 8px; color: #3a3f45; }}
@@ -10596,7 +10596,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <body>
 <main>
 <header class="browser-topbar" data-browser-first-viewport-chrome="compact" data-browser-debug-default="secondary">
-<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address status">
+<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address location actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address location status">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control data-browser-primary-nav-session="{id}" data-browser-primary-nav-from="{back_href}" data-browser-primary-nav-source="{source_attr}" data-browser-primary-nav-viewport-x="{viewport_x}" data-browser-primary-nav-viewport-y="{viewport_y}" data-browser-primary-nav-width="{width}" data-browser-primary-nav-height="{height}" data-browser-primary-nav-max-bytes="{max_bytes}" data-browser-primary-nav-history-position="{primary_nav_history_position}" data-browser-primary-nav-history-length="{history_len}" data-browser-primary-nav-can-back="{can_back}" data-browser-primary-nav-can-forward="{can_forward}" data-browser-primary-nav-order="search back forward actions"><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
 <form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
@@ -10612,7 +10612,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
-<div class="browser-location-strip" data-browser-location-strip><strong>{heading}</strong><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
+<div class="browser-location-strip" data-browser-location-strip data-browser-location-placement="under-address" data-browser-location-density="compact" data-browser-location-session="{id}" data-browser-location-from="{back_href}" data-browser-location-source="{source_attr}" data-browser-location-viewport-x="{viewport_x}" data-browser-location-viewport-y="{viewport_y}" data-browser-location-width="{width}" data-browser-location-height="{height}" data-browser-location-max-bytes="{max_bytes}"><strong>{heading}</strong><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
 {primary_tab_strip}
 </header>
 {auto_visual_bootstrap}
