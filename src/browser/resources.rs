@@ -118,6 +118,10 @@ pub struct BrowserResourceFetch {
     )]
     pub image_decode_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_decode_error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_byte_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_width: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decoded_height: Option<usize>,
@@ -322,6 +326,8 @@ impl BrowserResourceFetch {
         let (
             image_decode_status,
             image_decode_error,
+            image_decode_error_kind,
+            image_byte_signature,
             decoded_width,
             decoded_height,
             decoded_hash,
@@ -332,6 +338,8 @@ impl BrowserResourceFetch {
                 (
                     Some(report.status.to_owned()),
                     report.error,
+                    report.error_kind.map(str::to_owned),
+                    report.byte_signature.map(str::to_owned),
                     report.width,
                     report.height,
                     report.pixel_hash,
@@ -339,7 +347,7 @@ impl BrowserResourceFetch {
                     report.color_bytes,
                 )
             })
-            .unwrap_or((None, None, None, None, None, None, None));
+            .unwrap_or((None, None, None, None, None, None, None, None, None));
         let diagnostic = resource_fetch_diagnostic(
             &args.status,
             args.error_kind.as_deref(),
@@ -376,6 +384,8 @@ impl BrowserResourceFetch {
             diagnostic,
             image_decode_status,
             image_decode_error,
+            image_decode_error_kind,
+            image_byte_signature,
             decoded_width,
             decoded_height,
             decoded_hash,
@@ -424,6 +434,8 @@ fn image_resource_fetch_decode_report(
             status: "not_fetched",
             error: (!matches!(status, "fetched" | "cached"))
                 .then(|| format!("resource {status} before decode")),
+            error_kind: Some("not_fetched"),
+            byte_signature: None,
             width: None,
             height: None,
             pixel_hash: None,
@@ -3116,6 +3128,8 @@ mod tests {
             diagnostic: Some("network_timeout".to_owned()),
             image_decode_status: None,
             image_decode_error: Some(error.clone()),
+            image_decode_error_kind: Some("timeout".to_owned()),
+            image_byte_signature: None,
             decoded_width: None,
             decoded_height: None,
             decoded_hash: None,

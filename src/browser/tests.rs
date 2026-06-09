@@ -9607,21 +9607,31 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
     let decoded_path = dir.path().join("decoded.png");
-    let unsupported_path = dir.path().join("spinner.gif");
+    let gif_path = dir.path().join("spinner.gif");
     let undecoded_path = dir.path().join("broken.png");
+    let empty_path = dir.path().join("empty.png");
+    let unsupported_path = dir.path().join("unsupported.bin");
     let missing_path = dir.path().join("missing.jpg");
     fs::write(&decoded_path, png_bytes).unwrap();
-    fs::write(&unsupported_path, gif_bytes).unwrap();
+    fs::write(&gif_path, gif_bytes).unwrap();
     let gif_expected_hash = decode_image_reference(&page.display().to_string(), "spinner.gif")
         .expect("test GIF decodes")
         .pixel_hash();
     fs::write(&undecoded_path, b"not actually a png").unwrap();
+    fs::write(&empty_path, []).unwrap();
+    fs::write(
+        &unsupported_path,
+        b"\x00\x00\x00\x10ftypavif\x00\x00\x00\x00",
+    )
+    .unwrap();
     fs::write(
         &page,
         r#"<html><body>
             <img src="decoded.png" alt="Decoded" width="16" height="24">
-            <img src="spinner.gif" alt="Unsupported" width="16" height="24">
+            <img src="spinner.gif" alt="GIF" width="16" height="24">
             <img src="broken.png" alt="Undecoded" width="16" height="24">
+            <img src="empty.png" alt="Empty" width="16" height="24">
+            <img src="unsupported.bin" alt="Unsupported" width="16" height="24">
             <img src="missing.jpg" alt="Missing" width="16" height="24">
         </body></html>"#,
     )
@@ -9634,7 +9644,7 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 4);
+    assert_eq!(report.image_count, 6);
     assert_eq!(report.decoded, 2);
     assert_eq!(report.failed, 1);
 
@@ -9654,12 +9664,18 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
         decoded_fetch.decoded_hash.as_deref(),
         Some(expected_hash.as_str())
     );
+    assert_eq!(decoded_fetch.decoded_color_bytes, Some(12));
+    assert_eq!(
+        decoded_fetch.image_byte_signature.as_deref(),
+        Some("image/png")
+    );
+    assert_eq!(decoded_fetch.image_decode_error_kind, None);
     assert_eq!(decoded_fetch.image_decode_error, None);
 
     let gif_fetch = report
         .fetches
         .iter()
-        .find(|fetch| fetch.resource.resolved == unsupported_path.display().to_string())
+        .find(|fetch| fetch.resource.resolved == gif_path.display().to_string())
         .unwrap();
     assert_eq!(gif_fetch.status, "fetched");
     assert_eq!(gif_fetch.image_decode_status.as_deref(), Some("decoded"));
@@ -9669,6 +9685,8 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
         gif_fetch.decoded_hash.as_deref(),
         Some(gif_expected_hash.as_str())
     );
+    assert_eq!(gif_fetch.image_byte_signature.as_deref(), Some("image/gif"));
+    assert_eq!(gif_fetch.image_decode_error_kind, None);
     assert_eq!(gif_fetch.image_decode_error, None);
 
     let undecoded_fetch = report
@@ -9685,6 +9703,55 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
         undecoded_fetch.image_decode_error.as_deref(),
         Some("image bytes did not match a supported decoder")
     );
+    assert_eq!(
+        undecoded_fetch.image_decode_error_kind.as_deref(),
+        Some("unrecognized_bytes")
+    );
+    assert_eq!(undecoded_fetch.image_byte_signature, None);
+
+    let empty_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == empty_path.display().to_string())
+        .unwrap();
+    assert_eq!(empty_fetch.status, "fetched");
+    assert_eq!(
+        empty_fetch.image_decode_status.as_deref(),
+        Some("undecoded")
+    );
+    assert_eq!(
+        empty_fetch.image_decode_error.as_deref(),
+        Some("image resource had no bytes")
+    );
+    assert_eq!(
+        empty_fetch.image_decode_error_kind.as_deref(),
+        Some("empty_bytes")
+    );
+    assert_eq!(empty_fetch.bytes, 0);
+    assert_eq!(empty_fetch.image_byte_signature, None);
+
+    let unsupported_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == unsupported_path.display().to_string())
+        .unwrap();
+    assert_eq!(unsupported_fetch.status, "fetched");
+    assert_eq!(
+        unsupported_fetch.image_decode_status.as_deref(),
+        Some("unsupported_format")
+    );
+    assert_eq!(
+        unsupported_fetch.image_decode_error.as_deref(),
+        Some("unsupported image byte signature: image/avif")
+    );
+    assert_eq!(
+        unsupported_fetch.image_decode_error_kind.as_deref(),
+        Some("unsupported_signature")
+    );
+    assert_eq!(
+        unsupported_fetch.image_byte_signature.as_deref(),
+        Some("image/avif")
+    );
 
     let missing_fetch = report
         .fetches
@@ -9700,6 +9767,11 @@ async fn image_resource_reporting_distinguishes_decode_outcomes() {
         missing_fetch.image_decode_error.as_deref(),
         Some("resource failed before decode")
     );
+    assert_eq!(
+        missing_fetch.image_decode_error_kind.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(missing_fetch.image_byte_signature, None);
 }
 
 #[tokio::test]

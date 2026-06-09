@@ -62,6 +62,8 @@ pub(super) struct DecodedImageInfo {
 pub(super) struct ImageDecodeDiagnostic {
     pub(super) status: &'static str,
     pub(super) error: Option<String>,
+    pub(super) error_kind: Option<&'static str>,
+    pub(super) byte_signature: Option<&'static str>,
     pub(super) width: Option<usize>,
     pub(super) height: Option<usize>,
     pub(super) pixel_hash: Option<String>,
@@ -159,6 +161,8 @@ pub(super) fn image_decode_diagnostic(
         return ImageDecodeDiagnostic {
             status: "decoded",
             error: None,
+            error_kind: None,
+            byte_signature: image_byte_signature(bytes),
             width: Some(decoded.width),
             height: Some(decoded.height),
             pixel_hash: Some(decoded.pixel_hash()),
@@ -167,10 +171,12 @@ pub(super) fn image_decode_diagnostic(
         };
     }
 
-    if let Some(error) = unsupported_image_format_error(url, content_type, bytes) {
+    if let Some((error_kind, error)) = unsupported_image_format_error(url, content_type, bytes) {
         return ImageDecodeDiagnostic {
             status: "unsupported_format",
             error: Some(error),
+            error_kind: Some(error_kind),
+            byte_signature: image_byte_signature(bytes),
             width: None,
             height: None,
             pixel_hash: None,
@@ -181,7 +187,17 @@ pub(super) fn image_decode_diagnostic(
 
     ImageDecodeDiagnostic {
         status: "undecoded",
-        error: Some("image bytes did not match a supported decoder".to_owned()),
+        error: Some(if bytes.is_empty() {
+            "image resource had no bytes".to_owned()
+        } else {
+            "image bytes did not match a supported decoder".to_owned()
+        }),
+        error_kind: Some(if bytes.is_empty() {
+            "empty_bytes"
+        } else {
+            "unrecognized_bytes"
+        }),
+        byte_signature: image_byte_signature(bytes),
         width: None,
         height: None,
         pixel_hash: None,
@@ -194,22 +210,32 @@ fn unsupported_image_format_error(
     url: &str,
     content_type: Option<&str>,
     bytes: &[u8],
-) -> Option<String> {
+) -> Option<(&'static str, String)> {
     if let Some(content_type) = content_type
         && image_content_type_declares_unsupported_format(content_type)
     {
-        return Some(format!(
-            "unsupported image content type: {}",
-            normalized_image_mime_type(content_type)
+        return Some((
+            "unsupported_content_type",
+            format!(
+                "unsupported image content type: {}",
+                normalized_image_mime_type(content_type)
+            ),
         ));
     }
     if let Some(extension) = image_extension_from_url(url)
         && unsupported_image_extension(&extension)
     {
-        return Some(format!("unsupported image extension: .{extension}"));
+        return Some((
+            "unsupported_extension",
+            format!("unsupported image extension: .{extension}"),
+        ));
     }
-    unsupported_image_signature(bytes)
-        .map(|format| format!("unsupported image byte signature: {format}"))
+    unsupported_image_signature(bytes).map(|format| {
+        (
+            "unsupported_signature",
+            format!("unsupported image byte signature: {format}"),
+        )
+    })
 }
 
 fn image_content_type_declares_unsupported_format(content_type: &str) -> bool {
@@ -324,6 +350,28 @@ fn decode_sniffed_image_bytes(bytes: &[u8]) -> Option<DecodedImage> {
         decode_bmp(bytes)
     } else if is_svg_bytes(bytes) {
         decode_simple_svg(bytes, None)
+    } else {
+        None
+    }
+}
+
+fn image_byte_signature(bytes: &[u8]) -> Option<&'static str> {
+    supported_image_signature(bytes).or_else(|| unsupported_image_signature(bytes))
+}
+
+fn supported_image_signature(bytes: &[u8]) -> Option<&'static str> {
+    if is_jpeg_bytes(bytes) {
+        Some("image/jpeg")
+    } else if is_png_bytes(bytes) {
+        Some("image/png")
+    } else if is_webp_bytes(bytes) {
+        Some("image/webp")
+    } else if is_gif_bytes(bytes) {
+        Some("image/gif")
+    } else if is_bmp_bytes(bytes) {
+        Some("image/bmp")
+    } else if is_svg_bytes(bytes) {
+        Some("image/svg+xml")
     } else {
         None
     }
