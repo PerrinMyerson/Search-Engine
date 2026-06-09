@@ -4672,53 +4672,62 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
     y: usize,
     mut include: impl FnMut(&BrowserRender, usize) -> bool,
 ) -> Option<usize> {
-    render
-        .display_list
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(command_index, command)| {
-            if !include(render, command_index) {
-                return None;
-            }
-            if matches!(
-                command,
-                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
-            ) {
-                return None;
-            }
-            let viewport_fixed = display_command_viewport_fixed(render, command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let bounds = display_command_bounds_for_viewport(
-                command,
-                viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
-            let pinned = viewport_fixed || viewport_sticky_top.is_some();
-            let visible_bounds = if pinned {
-                bounds
-            } else {
-                intersect_display_bounds_with_viewport(bounds, viewport)?
-            };
-            let clipped = render
-                .hit_targets
-                .get(command_index)
-                .is_some_and(|target| target.source_bounds.is_some());
-            let tolerance = if clipped || !pinned { 0 } else { 1 };
-            let y_tolerance = if pinned { tolerance } else { 0 };
-            if !bounds_contains_with_tolerance(visible_bounds, x, y, tolerance, y_tolerance) {
-                return None;
-            }
-            if clipped && !visible_bounds.contains(x, y) {
-                return None;
-            }
-            let column = clamped_bounds_column(bounds, x);
-            render
-                .hit_targets
-                .get(command_index)
-                .and_then(|target| target.target_near_column(column, tolerance))
-        })
+    let mut best: Option<(usize, usize)> = None;
+    for (command_index, command) in render.display_list.iter().enumerate().rev() {
+        if !include(render, command_index) {
+            continue;
+        }
+        if matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) {
+            continue;
+        }
+        let viewport_fixed = display_command_viewport_fixed(render, command_index);
+        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+        let bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        let pinned = viewport_fixed || viewport_sticky_top.is_some();
+        let Some(visible_bounds) = (if pinned {
+            Some(bounds)
+        } else {
+            intersect_display_bounds_with_viewport(bounds, viewport)
+        }) else {
+            continue;
+        };
+        let clipped = render
+            .hit_targets
+            .get(command_index)
+            .is_some_and(|target| target.source_bounds.is_some());
+        let tolerance = if clipped { 0 } else { 1 };
+        let y_tolerance = if pinned { tolerance } else { 0 };
+        if !bounds_contains_with_tolerance(visible_bounds, x, y, tolerance, y_tolerance) {
+            continue;
+        }
+        if clipped && !visible_bounds.contains(x, y) {
+            continue;
+        }
+        let column = clamped_bounds_column(bounds, x);
+        let Some(target_node) = render
+            .hit_targets
+            .get(command_index)
+            .and_then(|target| target.target_near_column(column, tolerance))
+        else {
+            continue;
+        };
+        let distance = point_distance_to_bounds(visible_bounds, x, y);
+        if distance == 0 {
+            return Some(target_node);
+        }
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, target_node));
+        }
+    }
+    best.map(|(_, target_node)| target_node)
 }
 
 pub fn layer_tree_render(render: &BrowserRender) -> BrowserLayerTreeReport {
