@@ -4711,12 +4711,6 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
         }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let bounds = display_command_bounds_for_viewport(
-            command,
-            viewport,
-            viewport_fixed,
-            viewport_sticky_top,
-        );
         let pinned = viewport_fixed || viewport_sticky_top.is_some();
         let Some(exact_bounds) =
             display_command_exact_hit_bounds_for_viewport(render, command_index, command, viewport)
@@ -4742,7 +4736,7 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
         if clipped && !visible_bounds.contains(x, y) {
             continue;
         }
-        let column = clamped_bounds_column(bounds, x);
+        let column = clamped_bounds_column(visible_bounds, x);
         let Some(target_node) = render
             .hit_targets
             .get(command_index)
