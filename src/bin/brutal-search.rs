@@ -2039,9 +2039,64 @@ fn storage_cache_growth_guardrail_lines(
             web_summary.result_rows,
             stats.browser_document_rows
         ),
+        storage_runtime_cache_pressure_line(stats, web_summary),
         "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index"
             .to_owned(),
     ]
+}
+
+fn storage_runtime_cache_pressure_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> String {
+    let browser_session_bytes = stats.browser_document_bytes;
+    let candidate_count = web_summary
+        .artifact_count
+        .saturating_add(usize::from(browser_session_bytes > 0));
+    let candidate_bytes = web_summary.bytes.saturating_add(browser_session_bytes);
+    let (largest_artifact, largest_artifact_bytes) = stats
+        .web_artifacts
+        .iter()
+        .map(|artifact| (artifact.name, artifact.bytes))
+        .chain(std::iter::once((
+            "browser-documents.jsonl",
+            browser_session_bytes,
+        )))
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let next_action =
+        if web_summary.duplicate_row_bytes > 0 && stats.browser_document_duplicate_row_bytes > 0 {
+            "inspect-web-and-browser-runtime-cache"
+        } else if web_summary.duplicate_row_bytes > 0
+            || web_summary.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        {
+            "inspect-web-runtime-cache"
+        } else if stats.browser_document_duplicate_row_bytes > 0
+            || browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        {
+            "inspect-browser-runtime-cache"
+        } else if candidate_bytes > 0 {
+            "runtime-cache-monitor"
+        } else {
+            "runtime-cache-low"
+        };
+
+    format!(
+        "storage_runtime_cache_pressure: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={candidate_bytes} web_rows={} brave_archive_rows={} browser_session_rows={} duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cache_budget_bytes={} result_log_budget_bytes={} next_action={next_action}",
+        web_summary.result_rows,
+        stats
+            .web_artifacts
+            .iter()
+            .find(|artifact| artifact.name == "brave-results.jsonl")
+            .map(|artifact| artifact.result_rows)
+            .unwrap_or(0),
+        stats.browser_document_rows,
+        web_storage_retention_config().cache_max_bytes,
+        web_storage_retention_config().result_log_max_bytes,
+    )
 }
 
 fn search_index_retention_audit_lines(
@@ -4547,6 +4602,61 @@ mod tests {
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES
         )));
         assert!(lines.contains(&"storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index".to_owned()));
+    }
+
+    #[test]
+    fn storage_runtime_cache_pressure_reports_runtime_cache_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let web_cache_path = dir.path().join("web-cache.jsonl");
+        let web_cache = b"{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n";
+        std::fs::write(&web_cache_path, web_cache).unwrap();
+        let brave_results_path = dir.path().join("brave-results.jsonl");
+        let brave_results = b"{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n";
+        std::fs::write(&brave_results_path, brave_results).unwrap();
+        let browser_documents_path = dir.path().join("browser-documents.jsonl");
+        let browser_documents = b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(&browser_documents_path, browser_documents).unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let lines = storage_cache_growth_guardrail_lines(&stats, &web_summary);
+        let expected_bytes = web_summary.bytes + stats.browser_document_bytes;
+        let (largest_artifact, largest_artifact_bytes) = stats
+            .web_artifacts
+            .iter()
+            .map(|artifact| (artifact.name, artifact.bytes))
+            .chain(std::iter::once((
+                "browser-documents.jsonl",
+                stats.browser_document_bytes,
+            )))
+            .max_by_key(|(_, bytes)| *bytes)
+            .unwrap();
+        let duplicate_bytes = web_summary
+            .duplicate_row_bytes
+            .saturating_add(stats.browser_document_duplicate_row_bytes);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_runtime_cache_pressure: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(" candidates=3 ")
+                && line.contains(&format!(" bytes={expected_bytes} "))
+                && line.contains(" web_rows=3 ")
+                && line.contains(" brave_archive_rows=1 ")
+                && line.contains(" browser_session_rows=2 ")
+                && line.contains(&format!(" duplicate_bytes={duplicate_bytes} "))
+                && line.contains(&format!(" largest_artifact={largest_artifact} "))
+                && line.contains(&format!(
+                    " largest_artifact_bytes={largest_artifact_bytes} "
+                ))
+                && line.contains(" next_action=inspect-web-and-browser-runtime-cache")
+        }));
+        assert_eq!(std::fs::read(&web_cache_path).unwrap(), web_cache);
+        assert_eq!(std::fs::read(&brave_results_path).unwrap(), brave_results);
+        assert_eq!(
+            std::fs::read(&browser_documents_path).unwrap(),
+            browser_documents
+        );
     }
 
     #[test]
