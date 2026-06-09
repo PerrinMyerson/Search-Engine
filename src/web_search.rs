@@ -1098,17 +1098,17 @@ fn result_log_results_for_query(
         if entry.normalized_query != normalized_query {
             continue;
         }
-        let dedupe_key = result_log_dedupe_key(&entry);
-        if !seen.insert(dedupe_key) {
+        let replay_url = entry.url.clone();
+        if !seen.insert(replay_url.clone()) {
             continue;
         }
         results.push(WebSearchResult {
             title: entry.title,
-            url: entry.url,
+            url: replay_url,
             snippet: entry.snippet,
             score: entry.score,
             fetched_at_unix: entry.fetched_at_unix,
-            provider: entry.provider,
+            provider: format!("{}-result-log", entry.provider),
         });
         if results.len() >= limit {
             break;
@@ -2103,6 +2103,78 @@ mod tests {
         assert_eq!(lookup.results.len(), 2);
         assert_eq!(lookup.results[0].url, "https://example.com/replay-a");
         assert_eq!(lookup.results[1].url, "https://example.com/replay-b");
+        assert!(!cache_path.exists());
+    }
+
+    #[tokio::test]
+    async fn result_log_replay_dedupes_urls_across_provider_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_result_log(
+            &result_log_path,
+            "Dedup Query",
+            "dedup query",
+            "brave",
+            &[
+                web_result("https://example.com/shared", now),
+                web_result("https://example.com/unique", now),
+            ],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+        append_result_log(
+            &result_log_path,
+            "Dedup Query",
+            "dedup query",
+            "brave-cache",
+            &[web_result(
+                "https://example.com/shared",
+                now.saturating_add(1),
+            )],
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+
+        let service = WebSearchService {
+            client: reqwest::Client::builder().build().unwrap(),
+            config: WebSearchConfig {
+                provider: ThirdPartySearchProvider::CacheOnly,
+                cache_path: cache_path.clone(),
+                result_log_path: result_log_path.clone(),
+                result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
+                result_log_max_bytes: DEFAULT_RESULT_LOG_MAX_BYTES,
+                cache_max_bytes: DEFAULT_CACHE_MAX_BYTES,
+                cache_ttl_secs: 60,
+                min_local_results: DEFAULT_MIN_LOCAL_RESULTS,
+                max_results: DEFAULT_MAX_WEB_RESULTS,
+                country: "us".to_owned(),
+                search_lang: "en".to_owned(),
+            },
+            cache: std::sync::Arc::new(tokio::sync::Mutex::new(
+                WebResultCache::load(
+                    cache_path.clone(),
+                    60,
+                    DEFAULT_CACHE_MAX_ENTRIES,
+                    DEFAULT_CACHE_MAX_BYTES,
+                )
+                .unwrap(),
+            )),
+        };
+
+        let lookup = service.search("dedup query", 10).await.unwrap();
+
+        assert_eq!(lookup.cache_status, "result-log-hit");
+        assert_eq!(lookup.persistence_status, "result-log-replay");
+        assert_eq!(lookup.returned_results, 2);
+        assert_eq!(lookup.durable_result_rows, 2);
+        assert_eq!(lookup.results[0].url, "https://example.com/shared");
+        assert_eq!(lookup.results[0].provider, "brave-result-log");
+        assert_eq!(lookup.results[1].url, "https://example.com/unique");
+        assert_eq!(lookup.results[1].provider, "brave-result-log");
         assert!(!cache_path.exists());
     }
 
