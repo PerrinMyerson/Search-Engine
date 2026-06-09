@@ -9817,6 +9817,138 @@ async fn redirected_image_resource_keeps_original_url_and_decoded_color_attachme
 }
 
 #[tokio::test]
+async fn picture_srcset_redirected_candidate_keeps_color_and_url_evidence() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /picture-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /picture-final.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            let (content_type, body) = if first_line.contains(" /picture-final.png ") {
+                ("application/octet-stream", png_bytes.clone())
+            } else {
+                assert!(first_line.contains(" /page.html "), "{first_line}");
+                (
+                    "text/html",
+                    br#"<html><body>
+                        <p>Before picture srcset</p>
+                        <picture>
+                            <source type="image/png" sizes="120px" srcset="/dead.avif 80w, /picture-redirect 160w, /picture-large 320w">
+                            <img src="/fallback.gif" alt="Picture srcset color" width="80" height="24">
+                        </picture>
+                        <p>After picture srcset</p>
+                    </body></html>"#
+                        .to_vec(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let selected_url = format!("http://{addr}/picture-redirect");
+    let final_url = format!("http://{addr}/picture-final.png");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "/dead.avif"
+                || fetch.resource.url == "/picture-large"
+                || fetch.resource.url == "/fallback.gif")
+    );
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "/picture-redirect");
+    assert_eq!(fetch.resource.resolved, selected_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(
+        fetch.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before picture srcset"));
+    assert!(render.text.contains("After picture srcset"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == selected_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb.as_slice())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &expected_hash
+        )
+    }));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn image_resource_reporting_distinguishes_decode_outcomes() {
     let png_bytes = tiny_test_png_rgb_with_sub_filter();
     let decoded = decode_simple_png(&png_bytes).unwrap();
