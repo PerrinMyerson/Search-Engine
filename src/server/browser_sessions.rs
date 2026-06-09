@@ -14348,9 +14348,15 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     }
     .max((payload.max_scroll_y > 0) as usize);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-browser-scroll-control-session="{id}" data-browser-scroll-control-from="{back_href}" data-browser-scroll-control-source="{source_attr}" data-browser-scroll-control-viewport-x="{x}" data-browser-scroll-control-viewport-y="{y}" data-browser-scroll-control-width="{width}" data-browser-scroll-control-height="{height}" data-browser-scroll-control-max-bytes="{max_bytes}" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
+        source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
         max_x = payload.max_scroll_x,
         max_y = payload.max_scroll_y,
         common = browser_session_common_hidden_inputs(payload),
@@ -14360,19 +14366,33 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
         can_scroll_right = can_scroll_right,
         can_scroll_up = can_scroll_up,
         can_scroll_down = can_scroll_down,
-        left = scroll_nav_control(can_scroll_left, "Left", &left_href, "Already at left edge"),
-        line_up = scroll_nav_control(can_scroll_up, "Line up", &line_up_href, "Already at top"),
+        left = scroll_nav_control(
+            can_scroll_left,
+            "left",
+            "Left",
+            &left_href,
+            "Already at left edge",
+        ),
+        line_up = scroll_nav_control(
+            can_scroll_up,
+            "line-up",
+            "Line up",
+            &line_up_href,
+            "Already at top"
+        ),
         line_down = scroll_nav_control(
             can_scroll_down,
+            "line-down",
             "Line down",
             &line_down_href,
-            "Already at bottom"
+            "Already at bottom",
         ),
         right = scroll_nav_control(
             can_scroll_right,
+            "right",
             "Right",
             &right_href,
-            "Already at right edge"
+            "Already at right edge",
         ),
         viewport_feedback = viewport_feedback,
     )
@@ -16687,13 +16707,25 @@ fn browser_chrome_scroll_action(
     )
 }
 
-fn scroll_nav_control(enabled: bool, label: &str, href: &str, disabled_reason: &str) -> String {
+fn scroll_nav_control(
+    enabled: bool,
+    action: &str,
+    label: &str,
+    href: &str,
+    disabled_reason: &str,
+) -> String {
     if enabled {
-        return nav_control(true, label, href);
+        return format!(
+            r#"<a href="{href}" data-browser-scroll-control-action="{action}">{label}</a>"#,
+            href = html_escape::encode_double_quoted_attribute(href),
+            action = html_escape::encode_double_quoted_attribute(action),
+            label = html_escape::encode_text(label),
+        );
     }
     format!(
-        r#"<span aria-disabled="true" title="{reason}" data-browser-scroll-disabled="{reason}">{label}</span>"#,
+        r#"<span aria-disabled="true" title="{reason}" data-browser-scroll-control-action="{action}" data-browser-scroll-disabled="{reason}">{label}</span>"#,
         reason = html_escape::encode_double_quoted_attribute(disabled_reason),
+        action = html_escape::encode_double_quoted_attribute(action),
         label = html_escape::encode_text(label),
     )
 }

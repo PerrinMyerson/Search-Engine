@@ -2718,9 +2718,29 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-can-scroll-right="true""#));
     assert!(html.contains(r#"data-can-scroll-up="false""#));
     assert!(html.contains(r#"data-can-scroll-down="true""#));
+    assert!(controls_html.contains(&format!(
+        r#"data-browser-scroll-control-session="{}""#,
+        payload.id
+    )));
+    assert!(controls_html.contains(&format!(
+        r#"data-browser-scroll-control-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.back_href)
+    )));
+    assert!(controls_html.contains(&format!(
+        r#"data-browser-scroll-control-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(controls_html.contains(r#"data-browser-scroll-control-viewport-x="0""#));
+    assert!(controls_html.contains(r#"data-browser-scroll-control-viewport-y="0""#));
+    assert!(controls_html.contains(r#"data-browser-scroll-control-width="40""#));
+    assert!(controls_html.contains(r#"data-browser-scroll-control-height="16""#));
+    assert!(controls_html.contains(&format!(
+        r#"data-browser-scroll-control-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(html.contains("Ready to scroll."));
     assert!(html.contains(
-        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-disabled="Already at left edge">Left</span>"#
+        r#"<span aria-disabled="true" title="Already at left edge" data-browser-scroll-control-action="left" data-browser-scroll-disabled="Already at left edge">Left</span>"#
     ));
     let right_href = browser_session_action_href(
         &payload.id,
@@ -2729,11 +2749,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         &payload,
     );
     assert!(html.contains(&format!(
-        r#"href="{}">Right</a>"#,
+        r#"href="{}" data-browser-scroll-control-action="right">Right</a>"#,
         html_escape::encode_double_quoted_attribute(&right_href)
     )));
     assert!(controls_html.contains(
-        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-disabled="Already at top">Line up</span>"#
+        r#"<span aria-disabled="true" title="Already at top" data-browser-scroll-control-action="line-up" data-browser-scroll-disabled="Already at top">Line up</span>"#
     ));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at top""#));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at left edge""#));
@@ -3079,11 +3099,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         html_escape::encode_double_quoted_attribute(&reload_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Left</a>"#,
+        r#"href="{}" data-browser-scroll-control-action="left">Left</a>"#,
         html_escape::encode_double_quoted_attribute(&page_left_href)
     )));
     assert!(html.contains(&format!(
-        r#"href="{}">Right</a>"#,
+        r#"href="{}" data-browser-scroll-control-action="right">Right</a>"#,
         html_escape::encode_double_quoted_attribute(&page_right_href)
     )));
     assert!(html.contains(r#"class="viewport-command-jump""#));
@@ -3766,7 +3786,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(!controls_html.contains(">Page down</a>"));
     assert!(!controls_html.contains(">Bottom</a>"));
     assert!(controls_html.contains(
-        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
+        r#"<span aria-disabled="true" title="Already at bottom" data-browser-scroll-control-action="line-down" data-browser-scroll-disabled="Already at bottom">Line down</span>"#
     ));
     assert!(controls_html.contains(r#"data-browser-scroll-step-form"#));
     assert!(html.contains(r#">Top</a>"#));
