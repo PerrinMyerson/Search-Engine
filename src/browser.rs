@@ -4653,21 +4653,30 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
             ) {
                 return None;
             }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
             let bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
-                display_command_viewport_fixed(render, command_index),
-                display_command_viewport_sticky_top(render, command_index),
+                viewport_fixed,
+                viewport_sticky_top,
             );
+            let pinned = viewport_fixed || viewport_sticky_top.is_some();
+            let visible_bounds = if pinned {
+                bounds
+            } else {
+                intersect_display_bounds_with_viewport(bounds, viewport)?
+            };
             let clipped = render
                 .hit_targets
                 .get(command_index)
                 .is_some_and(|target| target.source_bounds.is_some());
             let tolerance = if clipped { 0 } else { 1 };
-            if !bounds_contains_with_tolerance(bounds, x, y, tolerance, tolerance) {
+            let y_tolerance = if pinned { tolerance } else { 0 };
+            if !bounds_contains_with_tolerance(visible_bounds, x, y, tolerance, y_tolerance) {
                 return None;
             }
-            if clipped && !bounds.contains(x, y) {
+            if clipped && !visible_bounds.contains(x, y) {
                 return None;
             }
             let column = clamped_bounds_column(bounds, x);
