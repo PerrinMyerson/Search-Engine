@@ -12441,6 +12441,203 @@ fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
 }
 
 #[test]
+fn scrolled_viewport_reports_visible_command_rows_matching_raster_and_hits() {
+    let image_url = "mem://visible-command-report-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![44, 132, 220]),
+    };
+    let render = BrowserRender {
+        source: "mem://visible-command-report".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Press".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 3,
+                text: "Press".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 4,
+                width: 12,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Footer keeps scrolling available".to_owned(),
+            },
+        ],
+        text: "Intro\nPress\nFooter keeps scrolling available".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 2,
+        width: 12,
+        height: 3,
+    };
+    let frame = browser_viewport_frame(
+        &render,
+        viewport,
+        None,
+        BrowserRasterOptions {
+            viewport_width: Some(viewport.width),
+            viewport_height: Some(viewport.height),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("render visible command report frame");
+    assert_eq!(frame.report.viewport.viewport.y, 2);
+    assert_eq!(
+        frame.report.viewport.visible_command_count,
+        frame.report.viewport.visible_commands.len()
+    );
+    assert_eq!(
+        frame.report.frame.visible_command_count,
+        frame.report.viewport.visible_commands.len(),
+        "frame raster report and document viewport report should count the same visible commands"
+    );
+    let rows = frame
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .map(|command| {
+            (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![(1, "Image", 0), (2, "StyledText", 1), (3, "ColorRect", 2)]
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 0),
+        Some(41),
+        "reported image row should match viewport hit geometry"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 1),
+        Some(77),
+        "reported linked text row should match viewport hit geometry"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(viewport.width),
+        viewport_height: Some(viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image = frame
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.kind == "Image")
+        .expect("visible image command should be reported");
+    let image_x = options
+        .padding_x
+        .saturating_add(image.visible_x.saturating_mul(options.cell_width));
+    let image_y = options
+        .padding_y
+        .saturating_add(image.visible_y.saturating_mul(options.cell_height));
+    assert_eq!(
+        pixel(image_x, image_y),
+        [44, 132, 220, 255],
+        "reported image visible row should match the decoded raster pixel"
+    );
+    let link = frame
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.kind == "StyledText")
+        .expect("visible linked text command should be reported");
+    let link_x = options
+        .padding_x
+        .saturating_add(link.visible_x.saturating_mul(options.cell_width));
+    let link_y = options
+        .padding_y
+        .saturating_add(link.visible_y.saturating_mul(options.cell_height));
+    let link_has_ink = (link_y
+        ..link_y
+            .saturating_add(options.cell_height)
+            .min(frame.raster.height))
+        .any(|y| {
+            (link_x..link_x.saturating_add(options.cell_width))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        link_has_ink,
+        "reported linked text row should contain visible raster ink"
+    );
+}
+
+#[test]
 fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry() {
     let (page_state, profiled) = render_html_prepared_with_state(
         "mem://flow-only-scroll-height",
