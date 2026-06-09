@@ -12326,6 +12326,230 @@ fn consecutive_scroll_frame_sequence_keeps_media_link_and_hits_aligned() {
 }
 
 #[test]
+fn multi_row_scroll_keeps_text_image_link_raster_and_hits_aligned() {
+    let image_url = "mem://multi-row-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![88],
+        rgb_pixels: Some(vec![38, 128, 218]),
+    };
+    let render = BrowserRender {
+        source: "mem://multi-row-scroll-continuity".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 7,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Top".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 3,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 4,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 12,
+                height: 1,
+                shade: 235,
+                red: 235,
+                green: 244,
+                blue: 250,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Top\nLead\nOpen\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 12,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(&render, start, &[(0, 3), (0, 1)], options)
+        .expect("render multi-row scroll frame sequence");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].report.viewport.viewport.y, 3);
+    assert_eq!(frames[0].report.viewport.scroll_delta_y, 3);
+    assert_eq!(frames[1].report.viewport.viewport.y, 4);
+    assert_eq!(frames[1].report.viewport.scroll_delta_y, 1);
+
+    let first_rows = frames[0]
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .map(|command| {
+            (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        first_rows,
+        vec![(2, "Image", 0), (3, "StyledText", 1), (4, "ColorRect", 2)],
+        "multi-row scroll should report only the visible image, link, and background rows"
+    );
+    let second_rows = frames[1]
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .map(|command| {
+            (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        second_rows,
+        vec![(3, "StyledText", 0), (4, "ColorRect", 1), (5, "Text", 2)],
+        "adjacent scroll should move the same commands up by one row without stale image content"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "decoded image hit should align with the first scrolled raster row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 1),
+        Some(77),
+        "link hit should align with its first scrolled raster row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 0),
+        Some(77),
+        "link hit should move to the top row after adjacent scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 1),
+        None,
+        "image target should not remain hittable after it scrolls out"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], image_x, options.padding_y),
+        [38, 128, 218, 255],
+        "multi-row scrolled raster should paint the decoded image at the top row"
+    );
+    let first_link_y = options.padding_y.saturating_add(options.cell_height);
+    let first_link_has_ink = (first_link_y
+        ..first_link_y
+            .saturating_add(options.cell_height)
+            .min(frames[0].raster.height))
+        .any(|y| {
+            (image_x..image_x.saturating_add(options.cell_width))
+                .any(|x| pixel(&frames[0], x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        first_link_has_ink,
+        "link text should paint on the second row of the first scrolled slice"
+    );
+    let second_link_has_ink = (options.padding_y
+        ..options
+            .padding_y
+            .saturating_add(options.cell_height)
+            .min(frames[1].raster.height))
+        .any(|y| {
+            (image_x..image_x.saturating_add(options.cell_width))
+                .any(|x| pixel(&frames[1], x, y) == [0, 0, 0, 255])
+        });
+    assert!(
+        second_link_has_ink,
+        "adjacent scrolled raster should move link text to the top row"
+    );
+    assert_eq!(
+        pixel(
+            &frames[1],
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [235, 244, 250, 255],
+        "adjacent scrolled raster should show the background after the link row"
+    );
+}
+
+#[test]
 fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
     let render = BrowserRender {
         source: "mem://viewport-text-hit-continuity".to_owned(),

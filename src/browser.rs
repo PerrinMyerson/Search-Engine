@@ -4361,7 +4361,13 @@ fn hit_test_text_target_node_for_viewport(
             let visible_bounds = if pinned {
                 bounds
             } else {
-                intersect_display_bounds_with_viewport(bounds, viewport)?
+                display_command_projected_visible_bounds_for_viewport(
+                    render,
+                    command_index,
+                    command,
+                    viewport,
+                )?
+                .1
             };
             if !visible_bounds.contains(x, y) {
                 return None;
@@ -5365,6 +5371,22 @@ fn display_command_bounds_for_viewport(
     bounds
 }
 
+fn display_command_projected_visible_bounds_for_viewport(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+) -> Option<(DisplayCommandBounds, DisplayCommandBounds)> {
+    let command_bounds = display_command_bounds_for_viewport(
+        command,
+        viewport,
+        display_command_viewport_fixed(render, command_index),
+        display_command_viewport_sticky_top(render, command_index),
+    );
+    let visible_bounds = intersect_display_bounds_with_viewport(command_bounds, viewport)?;
+    Some((command_bounds, visible_bounds))
+}
+
 fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) -> (usize, usize) {
     let visible = visible_display_commands(render, viewport).len();
     (visible, render.display_list.len().saturating_sub(visible))
@@ -5379,15 +5401,13 @@ fn visible_display_commands(
         .iter()
         .enumerate()
         .filter_map(|(command_index, command)| {
-            let viewport_fixed = display_command_viewport_fixed(render, command_index);
-            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let command_bounds = display_command_bounds_for_viewport(
-                command,
-                viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
-            let visible_bounds = intersect_display_bounds_with_viewport(command_bounds, viewport)?;
+            let (command_bounds, visible_bounds) =
+                display_command_projected_visible_bounds_for_viewport(
+                    render,
+                    command_index,
+                    command,
+                    viewport,
+                )?;
             Some(BrowserVisibleDisplayCommand {
                 command_index,
                 kind: display_command_kind(command).to_owned(),
@@ -6223,14 +6243,12 @@ pub fn rasterize_render(
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(
+        let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
+            render,
+            command_index,
             command,
             viewport,
-            viewport_fixed,
-            viewport_sticky_top,
-        );
-        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
-        else {
+        ) else {
             continue;
         };
         match command {
@@ -6716,14 +6734,12 @@ pub fn rasterize_render_rgba(
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(
+        let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
+            render,
+            command_index,
             command,
             viewport,
-            viewport_fixed,
-            viewport_sticky_top,
-        );
-        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
-        else {
+        ) else {
             continue;
         };
         match command {
