@@ -2770,6 +2770,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-viewport-feedback aria-live="polite""#));
     assert!(html.contains(r#"data-browser-first-view-status="compact""#));
     assert!(html.contains(r#"data-browser-viewport-status-layout="summary feedback meter""#));
+    assert!(html.contains(r#"data-browser-viewport-pending-state="idle""#));
+    assert!(html.contains(r#"data-browser-viewport-target-x="0""#));
+    assert!(html.contains(r#"data-browser-viewport-target-y="0""#));
+    assert!(html.contains(r#"data-browser-viewport-current-x="0""#));
+    assert!(html.contains(r#"data-browser-viewport-current-y="0""#));
+    assert!(html.contains(r#"data-browser-viewport-input-sources="wheel keyboard controls""#));
     assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
     assert!(html.contains(r#"aria-label="Manual viewport scroll controls; x 0 of "#));
     assert!(html.contains(r#"data-scroll-x="0""#));
@@ -3212,6 +3218,19 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-scroll-x-state="horizontal scroll available""#));
     assert!(html.contains(r#"data-scroll-y-state="vertical scroll available""#));
     assert!(html.contains(r#"data-browser-scroll-input-hint hidden>Wheel / keys scroll</span>"#));
+    assert!(html.contains(r#"data-browser-viewport-pending-state="idle""#));
+    assert!(html.contains(r#"data-browser-viewport-target-x="8""#));
+    assert!(html.contains(r#"data-browser-viewport-target-y="4""#));
+    assert!(html.contains(r#"data-browser-viewport-current-x="8""#));
+    assert!(html.contains(r#"data-browser-viewport-current-y="4""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-max-x="{}""#,
+        payload.max_scroll_x
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-viewport-max-y="{}""#,
+        payload.max_scroll_y
+    )));
     assert!(html.contains(&format!(r#"aria-valuemax="{}""#, payload.max_scroll_y)));
     assert!(html.contains(r#"aria-valuenow="4""#));
     assert!(html.contains(&format!(
@@ -3579,7 +3598,21 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"control.removeAttribute("data-browser-chrome-scroll-target-x")"#));
     assert!(html.contains("control.dataset.browserChromeScrollPendingState = \"idle\""));
     assert!(html.contains(r#"status.dataset.viewportPending = "true""#));
+    assert!(html.contains(r#"status.dataset.browserViewportPendingState = "pending""#));
+    assert!(html.contains(r#"status.dataset.browserViewportTargetX = String(target.x)"#));
+    assert!(html.contains(r#"status.dataset.browserViewportTargetY = String(target.y)"#));
     assert!(html.contains(r#"status.removeAttribute("data-viewport-pending")"#));
+    assert!(html.contains(r#"status.dataset.browserViewportPendingState = "idle""#));
+    assert!(
+        html.contains(
+            r#"status.dataset.browserViewportCurrentX = String(numberData("viewportX"))"#
+        )
+    );
+    assert!(
+        html.contains(
+            r#"status.dataset.browserViewportCurrentY = String(numberData("viewportY"))"#
+        )
+    );
     assert!(html.contains("const scrollMessage"));
     assert!(html.contains("Moving visual viewport left..."));
     assert!(html.contains("Moving visual viewport right..."));
