@@ -139,6 +139,8 @@ pub struct BrowserResourceFetch {
     pub render_attachment_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_visibility_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_resource_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,6 +368,13 @@ impl BrowserResourceFetch {
             args.cache_outcome.as_deref(),
             image_decode_status.as_deref(),
         );
+        let image_resource_state = image_resource_visibility_state(
+            &args.status,
+            args.error_kind.as_deref(),
+            image_decode_status.as_deref(),
+            decoded_color_bytes,
+        )
+        .map(str::to_owned);
 
         Self {
             resource: args.resource,
@@ -407,6 +416,7 @@ impl BrowserResourceFetch {
             render_attached: None,
             render_attachment_kind: None,
             image_visibility_state: None,
+            image_resource_state,
         }
     }
 
@@ -432,6 +442,30 @@ impl BrowserResourceFetch {
             self.cache_outcome.as_deref(),
             self.image_decode_status.as_deref(),
         );
+    }
+}
+
+fn image_resource_visibility_state(
+    status: &str,
+    error_kind: Option<&str>,
+    image_decode_status: Option<&str>,
+    decoded_color_bytes: Option<usize>,
+) -> Option<&'static str> {
+    match status {
+        "skipped" => Some("skipped"),
+        "failed" if error_kind == Some("byte_cap") => Some("byte_limited"),
+        "failed" => Some("not_fetched"),
+        "fetched" | "cached" => match image_decode_status {
+            Some("decoded") if decoded_color_bytes.is_some_and(|bytes| bytes > 0) => {
+                Some("decoded_color")
+            }
+            Some("decoded") => Some("decoded_monochrome"),
+            Some("unsupported_format") => Some("unsupported_type"),
+            Some("undecoded") => Some("decode_failed"),
+            Some("not_fetched") => Some("not_fetched"),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3156,6 +3190,7 @@ mod tests {
             render_attached: None,
             render_attachment_kind: None,
             image_visibility_state: None,
+            image_resource_state: None,
         };
 
         let serialized = serde_json::to_value(&fetch).unwrap();
