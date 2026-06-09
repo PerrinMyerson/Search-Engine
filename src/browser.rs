@@ -5628,10 +5628,31 @@ pub fn browser_document_viewport(
                 viewport_state,
                 &mut invalidated_regions,
             );
+            append_viewport_form_control_invalidated_regions(
+                render,
+                viewport_state,
+                0,
+                0,
+                &mut invalidated_regions,
+            );
+            append_viewport_form_control_invalidated_regions(
+                render,
+                previous_state,
+                browser_viewport_signed_delta(previous_state.x, viewport_state.x),
+                browser_viewport_signed_delta(previous_state.y, viewport_state.y),
+                &mut invalidated_regions,
+            );
         } else {
             append_viewport_media_invalidated_regions(
                 render,
                 viewport_state,
+                &mut invalidated_regions,
+            );
+            append_viewport_form_control_invalidated_regions(
+                render,
+                viewport_state,
+                0,
+                0,
                 &mut invalidated_regions,
             );
         }
@@ -5913,6 +5934,29 @@ fn append_viewport_media_invalidated_regions(
     }
 }
 
+fn append_viewport_form_control_invalidated_regions(
+    render: &BrowserRender,
+    viewport_state: BrowserViewportState,
+    output_shift_x: isize,
+    output_shift_y: isize,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let viewport = raster_viewport_from_state(viewport_state);
+    for layout_box in &render.layout_boxes {
+        if layout_box.kind != "form-control" {
+            continue;
+        }
+        append_layout_box_viewport_dirty_region(
+            render,
+            layout_box,
+            viewport,
+            output_shift_x,
+            output_shift_y,
+            regions,
+        );
+    }
+}
+
 fn append_viewport_positioned_invalidated_regions(
     render: &BrowserRender,
     previous: BrowserViewportState,
@@ -6005,6 +6049,36 @@ fn append_viewport_readable_context_rows(
         };
         append_non_overlapping_viewport_rect(regions, rect);
     }
+}
+
+fn append_layout_box_viewport_dirty_region(
+    render: &BrowserRender,
+    layout_box: &BrowserLayoutBox,
+    viewport: RasterViewport,
+    output_shift_x: isize,
+    output_shift_y: isize,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let command_bounds = layout_box_viewport_bounds(render, layout_box, viewport);
+    let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+    else {
+        return;
+    };
+    let Some(rect) = shift_and_clip_viewport_rect(
+        BrowserViewportRect {
+            x: visible_bounds.x.saturating_sub(viewport.x),
+            y: visible_bounds.y.saturating_sub(viewport.y),
+            width: visible_bounds.width,
+            height: visible_bounds.height,
+        },
+        output_shift_x,
+        output_shift_y,
+        viewport.width,
+        viewport.height,
+    ) else {
+        return;
+    };
+    append_non_overlapping_viewport_rect(regions, rect);
 }
 
 fn append_display_command_viewport_dirty_region(

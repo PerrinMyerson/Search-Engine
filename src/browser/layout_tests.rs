@@ -18039,6 +18039,230 @@ fn scrolled_inline_form_control_and_link_raster_hits_stay_aligned() {
 }
 
 #[test]
+fn repeated_scroll_mixed_image_form_link_rows_keep_raster_hits_and_dirty_regions_aligned() {
+    let image_url = "mem://mixed-scroll-form-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![38, 130, 218]),
+    };
+    let decoded_entry = DecodedImageEntry {
+        url: image_url.clone(),
+        width: decoded.width,
+        height: decoded.height,
+        pixel_hash: decoded.pixel_hash(),
+        image: decoded,
+    };
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://mixed-scroll-form-continuity",
+        format!(
+            r#"
+            <html><body>
+              <div style="height:24px"></div>
+              <p>Lead <a href="/photo"><img src="{image_url}" width="16" height="12" alt="chart"></a> <input name="q" value="rust"> <a href="/next">Next</a></p>
+              <p>Body row keeps scrolling</p>
+              <div style="height:48px"></div>
+            </body></html>
+            "#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 64,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[decoded_entry],
+        },
+    )
+    .expect("render mixed scroll form continuity fixture");
+    let render = profiled.render;
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                url,
+                ..
+            } if url.as_deref() == Some(image_url.as_str()) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("decoded image should render");
+    let input_fill = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE && *y == image.1 => {
+                Some((*x, *y, *width, *height))
+            }
+            _ => None,
+        })
+        .expect("inline input should paint a visual fill in the mixed row");
+    let next_link = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text.contains("Next") => {
+                Some((*x, *y, text.as_str()))
+            }
+            _ => None,
+        })
+        .expect("following link should render");
+    assert_eq!(input_fill.1, image.1);
+    assert_eq!(next_link.1, image.1);
+    let next_hit_x = next_link.0.saturating_add(
+        next_link
+            .2
+            .chars()
+            .position(|ch| ch == 'N')
+            .expect("next link should contain N"),
+    );
+
+    let previous = BrowserViewportState {
+        x: 0,
+        y: image.1.saturating_sub(1),
+        width: 64,
+        height: 3,
+    };
+    let current = BrowserViewportState {
+        y: image.1,
+        ..previous
+    };
+    let frame = browser_viewport_frame(
+        &render,
+        current,
+        Some(previous),
+        BrowserRasterOptions {
+            viewport_width: Some(current.width),
+            viewport_height: Some(current.height),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("render mixed scroll form continuity frame");
+    assert_eq!(frame.report.viewport.viewport.y, image.1);
+    assert_eq!(frame.report.viewport.scroll_delta_y, 1);
+    assert!(!frame.report.viewport.full_repaint);
+
+    let form_box = frame
+        .report
+        .viewport
+        .visible_layout_boxes
+        .iter()
+        .find(|layout_box| layout_box.kind == "form-control")
+        .expect("visible form-control layout box should be reported");
+    assert_eq!(form_box.visible_y, 0);
+    let rect_covers = |rect: &BrowserViewportRect, x: usize, y: usize| {
+        x >= rect.x
+            && x < rect.x.saturating_add(rect.width)
+            && y >= rect.y
+            && y < rect.y.saturating_add(rect.height)
+    };
+    assert!(
+        frame
+            .report
+            .viewport
+            .invalidated_regions
+            .iter()
+            .any(|region| rect_covers(region, form_box.visible_x, form_box.visible_y)),
+        "form-control visible cells should be included in document dirty regions after scroll"
+    );
+    assert!(
+        frame.report.dirty_pixel_regions.iter().any(|region| {
+            form_box.visible_x >= region.viewport_x
+                && form_box.visible_x < region.viewport_x.saturating_add(region.viewport_width)
+                && form_box.visible_y >= region.viewport_y
+                && form_box.visible_y < region.viewport_y.saturating_add(region.viewport_height)
+        }),
+        "form-control visible cells should be included in frame dirty pixel regions after scroll"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, image.0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/photo".to_owned()),
+        "visible image hit should map to the image link"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, input_fill.0, 0),
+        hit_test_target_node(&render, input_fill.0, input_fill.1),
+        "visible input hit should match document hit"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        Some("/next".to_owned()),
+        "visible link hit should map to the following URL"
+    );
+
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &frame.raster.pixels[index..index.saturating_add(4)]
+    };
+    let image_pixel_x = frame
+        .report
+        .padding_x
+        .saturating_add(image.0.saturating_mul(frame.report.cell_width));
+    assert_eq!(
+        pixel(image_pixel_x, frame.report.padding_y),
+        &[38, 130, 218, 255],
+        "scrolled raster should paint the decoded image in the visible mixed row"
+    );
+    let input_pixel_x = frame
+        .report
+        .padding_x
+        .saturating_add(input_fill.0.saturating_mul(frame.report.cell_width));
+    assert_eq!(
+        pixel(input_pixel_x, frame.report.padding_y),
+        &[
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            255,
+        ],
+        "scrolled raster should paint the input border in the visible mixed row"
+    );
+
+    let after = browser_document_viewport_after_scroll(
+        &render,
+        frame.report.viewport.viewport,
+        0,
+        input_fill.3 as isize,
+    );
+    assert!(after.viewport.y > input_fill.1);
+    let stale_input_x = input_fill.0.saturating_add(input_fill.2.saturating_sub(1));
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, stale_input_x, 0),
+        None,
+        "input target should not remain hittable after the mixed row scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
+        None,
+        "link target should not remain hittable after the mixed row scrolls out"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
