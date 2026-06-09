@@ -6318,8 +6318,8 @@ async fn image_external_stylesheet_background_resource_renders_visible_color() {
     assert_eq!(stylesheet_report.applied, 1);
     assert_eq!(stylesheet_report.failed, 0);
     assert_eq!(
-        stylesheet_report.fetches[0].resource.resolved,
-        stylesheet.display().to_string()
+        fs::canonicalize(&stylesheet_report.fetches[0].resource.resolved).unwrap(),
+        fs::canonicalize(&stylesheet).unwrap()
     );
 
     let image_report = session.render_current_with_images(1024).await.unwrap();
@@ -6384,6 +6384,107 @@ async fn image_external_stylesheet_background_resource_renders_visible_color() {
             .pixels
             .chunks_exact(4)
             .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
+async fn image_external_stylesheet_relative_background_url_resolves_from_stylesheet_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let css_dir = dir.path().join("css").join("app");
+    let image_dir = dir.path().join("css").join("img");
+    fs::create_dir_all(&pages).unwrap();
+    fs::create_dir_all(&css_dir).unwrap();
+    fs::create_dir_all(&image_dir).unwrap();
+    let page = pages.join("index.html");
+    let stylesheet = css_dir.join("site.css");
+    let hero = image_dir.join("hero-bg.gif");
+    fs::write(&hero, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &stylesheet,
+        ".hero { background-image: url('../img/hero-bg.gif'); background-repeat: no-repeat; min-height: 24px; }",
+    )
+    .unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <link rel="stylesheet" href="../css/app/site.css">
+        </head><body>
+            <section class="hero">Nested stylesheet background</section>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let stylesheet_report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(stylesheet_report.stylesheet_count, 1);
+    assert_eq!(stylesheet_report.applied, 1);
+    assert_eq!(stylesheet_report.failed, 0);
+    assert_eq!(
+        fs::canonicalize(&stylesheet_report.fetches[0].resource.resolved).unwrap(),
+        fs::canonicalize(&stylesheet).unwrap()
+    );
+
+    let image_report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(image_report.image_count, 1);
+    assert_eq!(image_report.decoded, 1);
+    assert_eq!(image_report.failed, 0);
+
+    let hero_canonical = fs::canonicalize(&hero).unwrap();
+    let fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| {
+            fs::canonicalize(&fetch.resource.resolved)
+                .is_ok_and(|resolved| resolved == hero_canonical)
+        })
+        .expect("stylesheet-relative background image should resolve from stylesheet directory");
+    assert_eq!(fetch.resource.kind, "background_image");
+    assert_eq!(fetch.resource.initiator, "css");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::BackgroundImage {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if fs::canonicalize(url).is_ok_and(|resolved| resolved == hero_canonical)
+                && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 }),
+        "stylesheet-relative decoded background should paint visible red pixels"
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 }),
+        "stylesheet-relative decoded background should paint visible green pixels"
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 }),
+        "stylesheet-relative decoded background should paint visible blue pixels"
     );
 }
 

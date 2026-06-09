@@ -3490,7 +3490,11 @@ impl BrowserSession {
             if matches!(fetch.status.as_str(), "fetched" | "cached")
                 && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
             {
-                stylesheet_text.push(String::from_utf8_lossy(bytes).into_owned());
+                let sheet = String::from_utf8_lossy(bytes);
+                stylesheet_text.push(rebase_stylesheet_relative_urls(
+                    sheet.as_ref(),
+                    &fetch.resource.resolved,
+                ));
             }
             fetches.push(fetch);
         }
@@ -15489,6 +15493,114 @@ fn parse_css_image_url_token(value: &str) -> Option<String> {
         url
     };
     (!url.is_empty()).then(|| url.to_owned())
+}
+
+fn rebase_stylesheet_relative_urls(css: &str, stylesheet_source: &str) -> String {
+    let lower = css.to_ascii_lowercase();
+    let mut out = String::with_capacity(css.len());
+    let mut cursor = 0usize;
+    while let Some(offset) = lower[cursor..].find("url(") {
+        let function_start = cursor.saturating_add(offset);
+        let value_start = function_start.saturating_add("url(".len());
+        let Some(value_end) = css_url_function_end(css, value_start) else {
+            break;
+        };
+        let raw_value = &css[value_start..value_end];
+        let trimmed = raw_value.trim();
+        let leading = raw_value.len().saturating_sub(raw_value.trim_start().len());
+        let trailing = raw_value.len().saturating_sub(raw_value.trim_end().len());
+        let token_start = value_start.saturating_add(leading);
+        let token_end = value_start
+            .saturating_add(raw_value.len())
+            .saturating_sub(trailing);
+        let rebased = css_url_token_rebased(trimmed, stylesheet_source);
+        if let Some(rebased) = rebased {
+            out.push_str(&css[cursor..token_start]);
+            out.push_str(&rebased);
+            cursor = token_end;
+        } else {
+            out.push_str(&css[cursor..value_end.saturating_add(1)]);
+            cursor = value_end.saturating_add(1);
+        }
+    }
+    out.push_str(&css[cursor..]);
+    out
+}
+
+fn css_url_function_end(css: &str, value_start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = value_start;
+    while index < css.len() {
+        let ch = css[index..].chars().next()?;
+        let next = index.saturating_add(ch.len_utf8());
+        if escaped {
+            escaped = false;
+            index = next;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            index = next;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            index = next;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            index = next;
+            continue;
+        }
+        if ch == ')' {
+            return Some(index);
+        }
+        index = next;
+    }
+    None
+}
+
+fn css_url_token_rebased(token: &str, stylesheet_source: &str) -> Option<String> {
+    let quote = token.as_bytes().first().copied();
+    let url = if let Some(quote) = quote
+        && matches!(quote, b'\'' | b'"')
+        && token.as_bytes().last() == Some(&quote)
+    {
+        &token[1..token.len().saturating_sub(1)]
+    } else {
+        token
+    };
+    if !css_url_should_rebase(url) {
+        return None;
+    }
+    let resolved = resolve_browser_href(stylesheet_source, url);
+    match quote {
+        Some(quote) if matches!(quote, b'\'' | b'"') => {
+            let quote = quote as char;
+            Some(format!("{quote}{resolved}{quote}"))
+        }
+        _ => Some(resolved),
+    }
+}
+
+fn css_url_should_rebase(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("//")
+    {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("data:") {
+        return false;
+    }
+    Url::parse(trimmed).is_err()
 }
 
 fn css_image_url_supported(url: &str, candidate: &str) -> bool {
