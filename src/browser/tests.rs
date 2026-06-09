@@ -7112,6 +7112,139 @@ async fn image_real_page_resources_dedupes_selected_image_fetches() {
 }
 
 #[tokio::test]
+async fn repeated_redirected_image_reuses_decode_cache_and_reports_once() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let expected_byte_len = png_bytes.len();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /repeat-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /repeat-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /repeat-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = br#"<html><body>
+                <p>Before repeated redirect</p>
+                <img src="/repeat-redirect" alt="Repeated first" width="16" height="16">
+                <img src="/repeat-redirect" alt="Repeated second" width="16" height="16">
+                <p>After repeated redirect</p>
+            </body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let original_url = format!("http://{addr}/repeat-redirect");
+    let final_url = format!("http://{addr}/repeat-final");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.fetches.len(), 1);
+    assert_eq!(report.cached_resource_count, 1);
+    assert_eq!(report.cached_resource_bytes, expected_byte_len);
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "/repeat-redirect");
+    assert_eq!(fetch.resource.resolved, original_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(fetch.content_type, None);
+    assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before repeated redirect"));
+    assert!(render.text.contains("After repeated redirect"));
+    let rendered_images: Vec<_> = render
+        .decoded_images
+        .iter()
+        .filter(|image| image.url == original_url && image.pixel_hash == expected_hash)
+        .collect();
+    assert!(!rendered_images.is_empty());
+    let rendered_image = rendered_images.first().unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb.as_slice())
+    );
+    let decoded_image_commands = render
+        .display_list
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &original_url && hash == &expected_hash
+            )
+        })
+        .count();
+    assert_eq!(decoded_image_commands, 2);
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn image_srcset_dimensions_use_width_for_auto_lazy_sources() {
     let gif_bytes = tiny_test_gif_palette();
     let dir = tempfile::tempdir().unwrap();
