@@ -1075,6 +1075,8 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut active_worktree_count = 0usize;
     let mut generated_review_count = 0usize;
     let mut generated_review_bytes = 0u64;
+    let mut generated_oldest_age_secs = 0u64;
+    let mut generated_newest_age_secs: Option<u64> = None;
     let mut total_bytes = 0u64;
     for (path, bytes, classification, modified_age_secs, mtime_unix_secs) in entries {
         total_bytes = total_bytes.saturating_add(bytes);
@@ -1097,6 +1099,12 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         if classification.kind == "generated-output" {
             generated_review_count += 1;
             generated_review_bytes = generated_review_bytes.saturating_add(bytes);
+            generated_oldest_age_secs = generated_oldest_age_secs.max(modified_age_secs);
+            generated_newest_age_secs = Some(
+                generated_newest_age_secs
+                    .map(|age_secs| age_secs.min(modified_age_secs))
+                    .unwrap_or(modified_age_secs),
+            );
         }
         if classification.kind == "unknown-dir" || classification.status == "git-status-unavailable"
         {
@@ -1134,6 +1142,15 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     lines.push(format!(
         "storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count={active_worktree_count} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} old_target_count={old_target_count} total_bytes={total_bytes} next_action={generated_next_action}"
     ));
+    lines.push(format!(
+        "storage_generated_report_retention_dry_run: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} next_action={}",
+        generated_newest_age_secs.unwrap_or(0),
+        temp_cleanup_generated_retention_next_action(
+            generated_review_count,
+            generated_review_bytes,
+            generated_oldest_age_secs,
+        )
+    ));
     lines.push(
         "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
             .to_owned(),
@@ -1170,6 +1187,22 @@ fn temp_cleanup_generated_pressure_next_action(
         "remove-old-merged-targets"
     } else {
         "cleanup-low"
+    }
+}
+
+fn temp_cleanup_generated_retention_next_action(
+    generated_review_count: usize,
+    generated_review_bytes: u64,
+    oldest_age_secs: u64,
+) -> &'static str {
+    if generated_review_count == 0 {
+        "generated-report-retention-low"
+    } else if oldest_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS {
+        "review-stale-generated-reports"
+    } else if generated_review_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "review-large-generated-reports"
+    } else {
+        "review-generated-reports-before-cleanup"
     }
 }
 
@@ -4245,6 +4278,45 @@ mod tests {
         assert_eq!(
             temp_cleanup_generated_pressure_next_action(0, 1, 1),
             "review-generated-output"
+        );
+    }
+
+    #[test]
+    fn storage_generated_report_retention_dry_run_reports_generated_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("search-engine-generated-report-output");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let report_path = report_dir.join("operator-report.txt");
+        std::fs::write(&report_path, b"report").unwrap();
+        let cache_dir = dir.path().join("search-engine-render-cache-artifacts");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let cache_path = cache_dir.join("cache.bin");
+        std::fs::write(&cache_path, b"cache-bytes").unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_generated_report_retention_dry_run: report_only=true deletes=false",
+            ) && line.contains(" candidates=2 ")
+                && line.contains(" bytes=17 ")
+                && line.contains(" oldest_age_secs=")
+                && line.contains(" newest_age_secs=")
+                && line.contains(" next_action=review-generated-reports-before-cleanup")
+        }));
+        assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
+        assert_eq!(std::fs::read(&cache_path).unwrap(), b"cache-bytes");
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(0, 0, 0),
+            "generated-report-retention-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(1, 1, TEMP_CLEANUP_OLD_TARGET_SECS),
+            "review-stale-generated-reports"
+        );
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(1, INDEX_ARTIFACT_HIGH_GROWTH_BYTES, 0),
+            "review-large-generated-reports"
         );
     }
 
