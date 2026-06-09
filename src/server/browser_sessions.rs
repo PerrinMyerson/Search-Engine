@@ -10236,9 +10236,23 @@ fn render_browser_session_page_with_diagnostics(
         );
     }
     chrome_tab_actions.push_str("</div>");
-    let chrome_image_action = render_browser_session_chrome_image_action(payload);
+    let chrome_image_href = browser_session_resource_action_urls(payload).load_images;
+    let chrome_image_href_attr = chrome_image_href.as_deref().unwrap_or_default();
+    let current_action_attrs = browser_session_chrome_page_action_state_attrs(
+        payload,
+        back_href,
+        &current_href,
+        "current",
+    );
+    let reload_action_attrs =
+        browser_session_chrome_page_action_state_attrs(payload, back_href, &reload_href, "reload");
+    let chrome_image_action = render_browser_session_chrome_image_action(
+        payload,
+        back_href,
+        chrome_image_href.as_deref(),
+    );
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}"><a href="{current_href}" data-browser-chrome-current-action>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action>Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}" data-browser-chrome-page-current-href="{current_href}" data-browser-chrome-page-reload-href="{reload_href}" data-browser-chrome-page-images-href="{chrome_image_href}"><a href="{current_href}" data-browser-chrome-current-action{current_action_attrs}>Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action{reload_action_attrs}>Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -10249,6 +10263,9 @@ fn render_browser_session_page_with_diagnostics(
         max_bytes = payload.max_bytes,
         current_href = html_escape::encode_double_quoted_attribute(&current_href),
         reload_href = html_escape::encode_double_quoted_attribute(&reload_href),
+        chrome_image_href = html_escape::encode_double_quoted_attribute(chrome_image_href_attr),
+        current_action_attrs = current_action_attrs,
+        reload_action_attrs = reload_action_attrs,
         chrome_image_action = chrome_image_action,
         chrome_scroll_actions = chrome_scroll_actions,
         chrome_tab_actions = chrome_tab_actions,
@@ -14015,13 +14032,41 @@ fn browser_session_chrome_form_state(payload: &BrowserSessionPayload) -> String 
     String::new()
 }
 
-fn render_browser_session_chrome_image_action(payload: &BrowserSessionPayload) -> String {
-    let Some(href) = browser_session_resource_action_urls(payload).load_images else {
+fn browser_session_chrome_page_action_state_attrs(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    href: &str,
+    action: &str,
+) -> String {
+    format!(
+        r#" data-browser-chrome-{action}-href="{href}" data-browser-chrome-{action}-session="{id}" data-browser-chrome-{action}-from="{from}" data-browser-chrome-{action}-source="{source}" data-browser-chrome-{action}-viewport-x="{viewport_x}" data-browser-chrome-{action}-viewport-y="{viewport_y}" data-browser-chrome-{action}-width="{width}" data-browser-chrome-{action}-height="{height}" data-browser-chrome-{action}-max-bytes="{max_bytes}""#,
+        action = action,
+        href = html_escape::encode_double_quoted_attribute(href),
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        from = html_escape::encode_double_quoted_attribute(back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
+    )
+}
+
+fn render_browser_session_chrome_image_action(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    href: Option<&str>,
+) -> String {
+    let Some(href) = href else {
         return String::new();
     };
+    let image_action_attrs =
+        browser_session_chrome_page_action_state_attrs(payload, back_href, href, "images");
     format!(
-        r#"<a class="browser-chrome-tool" href="{href}" data-browser-resource-action data-browser-chrome-images-action data-browser-resource-status="Loading images...">Images</a>"#,
-        href = html_escape::encode_double_quoted_attribute(&href),
+        r#"<a class="browser-chrome-tool" href="{href}" data-browser-resource-action data-browser-chrome-images-action{image_action_attrs} data-browser-resource-status="Loading images...">Images</a>"#,
+        href = html_escape::encode_double_quoted_attribute(href),
+        image_action_attrs = image_action_attrs,
     )
 }
 

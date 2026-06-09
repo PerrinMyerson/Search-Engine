@@ -72,6 +72,92 @@ fn assert_address_submit_state(
         payload.max_bytes
     )));
 }
+
+fn assert_chrome_page_action_state(
+    topbar_html: &str,
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    current_href: &str,
+    reload_href: &str,
+    image_href: Option<&str>,
+) {
+    let page_actions_index = topbar_html
+        .find(r#"data-browser-chrome-page-actions"#)
+        .unwrap();
+    let scroll_actions_index = topbar_html
+        .find(r#"data-browser-chrome-scroll-actions"#)
+        .unwrap();
+    let page_actions_html = &topbar_html[page_actions_index..scroll_actions_index];
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-page-current-href="{}""#,
+        html_escape::encode_double_quoted_attribute(current_href)
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-page-reload-href="{}""#,
+        html_escape::encode_double_quoted_attribute(reload_href)
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-page-images-href="{}""#,
+        html_escape::encode_double_quoted_attribute(image_href.unwrap_or_default())
+    )));
+    for (action, href) in [("current", current_href), ("reload", reload_href)] {
+        assert_chrome_page_action_link_state(page_actions_html, payload, back_href, action, href);
+    }
+    if let Some(image_href) = image_href {
+        assert_chrome_page_action_link_state(
+            page_actions_html,
+            payload,
+            back_href,
+            "images",
+            image_href,
+        );
+    }
+}
+
+fn assert_chrome_page_action_link_state(
+    page_actions_html: &str,
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    action: &str,
+    href: &str,
+) {
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-href="{}""#,
+        html_escape::encode_double_quoted_attribute(href)
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-session="{}""#,
+        payload.id
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-from="{}""#,
+        html_escape::encode_double_quoted_attribute(back_href)
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-width="{}""#,
+        payload.width
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-height="{}""#,
+        payload.height
+    )));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+}
 #[tokio::test]
 async fn browser_session_registry_keeps_history_across_link_navigation() {
     let dir = tempfile::tempdir().unwrap();
@@ -9385,14 +9471,21 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     ));
     assert!(html.contains(&expected_feedback));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
+    let topbar_html =
+        &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
     assert!(current_href.contains(&format!("id={}", payload.id)));
     assert!(current_href.contains("action=current"));
     assert!(current_href.contains("viewport_x=0"));
     assert!(current_href.contains("viewport_y=0"));
-    assert!(html.contains(&format!(
-        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
-        html_escape::encode_double_quoted_attribute(&current_href)
-    )));
+    assert_chrome_page_action_state(
+        topbar_html,
+        &payload,
+        "/search?q=button",
+        &current_href,
+        &reload_href,
+        None,
+    );
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
 }
 
@@ -9597,14 +9690,19 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
+    let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
     assert!(current_href.contains(&format!("id={}", payload.id)));
     assert!(current_href.contains("action=current"));
     assert!(current_href.contains("viewport_x=0"));
     assert!(current_href.contains("viewport_y=0"));
-    assert!(html.contains(&format!(
-        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
-        html_escape::encode_double_quoted_attribute(&current_href)
-    )));
+    assert_chrome_page_action_state(
+        topbar_html,
+        &payload,
+        &back_href,
+        &current_href,
+        &reload_href,
+        None,
+    );
 }
 
 #[tokio::test]
@@ -12165,19 +12263,15 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(image_href.contains("action=load-images"));
     assert!(image_href.contains("viewport_y=2"));
     assert!(image_href.contains("max_bytes=2097152"));
-    assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
-        html_escape::encode_double_quoted_attribute(&current_href)
-    )));
-    assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-reload-action>Reload</a>"#,
-        html_escape::encode_double_quoted_attribute(&reload_href)
-    )));
+    assert_chrome_page_action_state(
+        topbar_html,
+        &payload,
+        &back_href,
+        &current_href,
+        &reload_href,
+        Some(&image_href),
+    );
     assert!(!topbar_html.contains(r#">Read</a>"#));
-    assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-resource-action data-browser-chrome-images-action data-browser-resource-status="Loading images...">Images</a>"#,
-        html_escape::encode_double_quoted_attribute(&image_href)
-    )));
     let page_actions_index = topbar_html
         .find(r#"data-browser-chrome-page-actions"#)
         .unwrap();
@@ -13867,23 +13961,17 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#".toolbar { display: flex; align-items: center; flex-wrap: nowrap;"#));
     assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 auto; }"#));
     assert!(html.contains(r#".address-bar button.browser-background-tab { display: none; }"#));
-    assert!(topbar_html.contains(r#"name="action" value="open">Go</button>"#));
-    assert!(topbar_html.contains(
-        r#"class="browser-new-tab" type="submit" name="action" value="open-new-session">New tab</button>"#
-    ));
-    assert!(topbar_html.contains(
-        r#"class="browser-background-tab" type="submit" name="action" value="open-background-session">Background</button>"#
-    ));
+    assert_address_submit_state(topbar_html, &payload, &back_href);
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
-    assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-current-action>Refresh</a>"#,
-        html_escape::encode_double_quoted_attribute(&current_href)
-    )));
-    assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-reload-action>Reload</a>"#,
-        html_escape::encode_double_quoted_attribute(&reload_href)
-    )));
+    assert_chrome_page_action_state(
+        topbar_html,
+        &payload,
+        &back_href,
+        &current_href,
+        &reload_href,
+        None,
+    );
     let page_actions_index = topbar_html
         .find(r#"data-browser-chrome-page-actions"#)
         .unwrap();
