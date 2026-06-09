@@ -10257,7 +10257,7 @@ fn render_browser_session_page_with_diagnostics(
         chrome_image_href.as_deref(),
     );
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-chrome-primary-actions data-browser-chrome-primary-actions-order="current reload images scroll" data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}" data-browser-chrome-page-current-href="{current_href}" data-browser-chrome-page-reload-href="{reload_href}" data-browser-chrome-page-images-href="{chrome_image_href}"><a href="{current_href}" data-browser-chrome-current-action{current_action_attrs} aria-label="Refresh current viewport" title="Refresh current viewport">Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action{reload_action_attrs} aria-label="Reload current page" title="Reload current page">Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-chrome-primary-actions data-browser-chrome-actions-density="compact" data-browser-chrome-actions-debug-placement="tools" data-browser-chrome-primary-actions-order="current reload images scroll" data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}" data-browser-chrome-page-current-href="{current_href}" data-browser-chrome-page-reload-href="{reload_href}" data-browser-chrome-page-images-href="{chrome_image_href}"><a href="{current_href}" data-browser-chrome-current-action{current_action_attrs} aria-label="Refresh current viewport" title="Refresh current viewport">Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action{reload_action_attrs} aria-label="Reload current page" title="Reload current page">Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11089,7 +11089,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if let Some(image) = &payload.viewport_image {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-shell-interaction-mode="browser" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-shell-interaction-mode="browser" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11112,7 +11112,7 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-browser-shell-interaction-mode="browser" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-browser-shell-interaction-mode="browser" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11413,7 +11413,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const syncChromeViewportState = () => {
     const currentX = String(numberData("viewportX"));
     const currentY = String(numberData("viewportY"));
-    const updateHref = (selector, hrefAttr) => {
+    const updateHref = (selector, hrefAttr, statePrefix = null) => {
       const link = document.querySelector(selector);
       if (!link || !link.href) {
         return;
@@ -11421,12 +11421,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
       link.href = url.toString();
       link.setAttribute(hrefAttr, url.toString());
+      if (statePrefix) {
+        link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX);
+        link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY);
+        link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "");
+        link.setAttribute(`${statePrefix}-preserved-max-bytes`, shell.dataset.maxBytes || "");
+      }
     };
-    updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href");
-    updateHref("[data-browser-chrome-reload-action]", "data-browser-chrome-reload-href");
-    updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href");
-    updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href");
-    updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href");
+    updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current");
+    updateHref("[data-browser-chrome-reload-action]", "data-browser-chrome-reload-href", "data-browser-chrome-reload");
+    updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href", "data-browser-chrome-images");
+    updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back");
+    updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href", "data-browser-primary-nav-forward");
     for (const element of document.querySelectorAll("[data-browser-address-form], [data-browser-address], [data-browser-address-submit], [data-browser-primary-nav], [data-browser-chrome-status]")) {
       element.dataset.browserAddressViewportX = currentX;
       element.dataset.browserAddressViewportY = currentY;
@@ -11740,19 +11746,27 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const appliedDy = nextY - y;
     if (appliedDx === 0 && appliedDy === 0) {
       shell.dataset.scrollActionState = "edge";
+      shell.dataset.edgeScrollState = "blocked";
+      shell.dataset.edgeScrollViewportX = String(x);
+      shell.dataset.edgeScrollViewportY = String(y);
       const status = viewportStatus();
       if (status) {
         status.dataset.browserViewportScrollActionState = "edge";
       }
       if (dy < 0 && y <= 0) {
+        shell.dataset.edgeScrollReason = "top";
         setViewportFeedback("Already at top.");
       } else if (dy > 0 && y >= maxY) {
+        shell.dataset.edgeScrollReason = "bottom";
         setViewportFeedback("Already at bottom.");
       } else if (dx < 0 && x <= 0) {
+        shell.dataset.edgeScrollReason = "left";
         setViewportFeedback("Already at left edge.");
       } else if (dx > 0 && x >= maxX) {
+        shell.dataset.edgeScrollReason = "right";
         setViewportFeedback("Already at right edge.");
       } else {
+        shell.dataset.edgeScrollReason = "same-position";
         setViewportFeedback("Viewport is already at that position.");
       }
       return null;
@@ -12013,11 +12027,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.dataset.clickMissClearedDeferred = "true";
       shell.dataset.clickActionState = "missed";
       shell.dataset.clickNavigationState = "missed";
+      shell.dataset.clickMissState = "missed";
+      shell.dataset.clickMissReason = "outside-raster";
       setClickStatus("Click missed the rendered page image; move pointer inside the raster or retry with an exact point.");
       setViewportFeedback("Click missed the rendered page image; retry on a visible link/button.");
       return;
     }
     shell.removeAttribute("data-drag-suppressed-click");
+    shell.removeAttribute("data-click-miss-state");
+    shell.removeAttribute("data-click-miss-reason");
     shell.dataset.clickActionState = "intentional";
     shell.dataset.clickNavigationState = "ready";
     moveClickMarker(point);

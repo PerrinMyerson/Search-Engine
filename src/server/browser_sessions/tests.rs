@@ -3557,20 +3557,29 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-y")"#));
     assert!(html.contains("const stampCurrentViewportUrl"));
     assert!(html.contains("const syncChromeViewportState = () =>"));
+    assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY)"#));
     assert!(html.contains(
-        r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href")"#
+        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
     ));
     assert!(html.contains(
-        r#"updateHref("[data-browser-chrome-reload-action]", "data-browser-chrome-reload-href")"#
+        r#"link.setAttribute(`${statePrefix}-preserved-max-bytes`, shell.dataset.maxBytes || "")"#
     ));
     assert!(html.contains(
-        r#"updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href")"#
+        r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#
     ));
     assert!(html.contains(
-        r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href")"#
+        r#"updateHref("[data-browser-chrome-reload-action]", "data-browser-chrome-reload-href", "data-browser-chrome-reload")"#
     ));
     assert!(html.contains(
-        r#"updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href")"#
+        r#"updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href", "data-browser-chrome-images")"#
+    ));
+    assert!(html.contains(
+        r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#
+    ));
+    assert!(html.contains(
+        r#"updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href", "data-browser-primary-nav-forward")"#
     ));
     assert!(html.contains(r#"document.querySelectorAll("input[name=\"viewport_x\"]")"#));
     assert!(html.contains(r#"document.querySelectorAll("input[name=\"viewport_y\"]")"#));
@@ -3760,10 +3769,15 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(
         html.contains(r#"data-browser-shell-preserves="session from source viewport max-bytes""#)
     );
+    assert!(html.contains(
+        r#"data-browser-shell-navigation-preserves="session source viewport max-bytes""#
+    ));
     assert!(
         html.contains(r#"data-browser-shell-click-scroll-separation="defer-click-during-scroll""#)
     );
     assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
+    assert!(html.contains(r#"data-browser-edge-scroll-state="idle""#));
+    assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
     assert!(
         html.contains(r#"data-browser-scroll-preserves="session from source viewport max-bytes""#)
     );
@@ -9806,6 +9820,18 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
     assert!(html.contains(r#"data-browser-click-feedback-mode="compact""#));
     assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
+    assert!(html.contains(
+        r#"data-browser-shell-navigation-preserves="session source viewport max-bytes""#
+    ));
+    assert!(html.contains(r#"data-browser-edge-scroll-state="idle""#));
+    assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
+    assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
+    assert!(html.contains(
+        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
+    ));
+    assert!(html.contains(r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#));
+    assert!(html.contains(r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "submitting""#));
     assert!(
@@ -9818,6 +9844,9 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "suppressed""#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "missed""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickMissState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickMissReason = "outside-raster""#));
+    assert!(html.contains(r#"shell.removeAttribute("data-click-miss-state")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
     assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
@@ -9929,6 +9958,18 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
     assert!(html.contains(r#"data-browser-click-feedback-mode="compact""#));
     assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
+    assert!(html.contains(
+        r#"data-browser-shell-navigation-preserves="session source viewport max-bytes""#
+    ));
+    assert!(html.contains(r#"data-browser-edge-scroll-state="idle""#));
+    assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
+    assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
+    assert!(html.contains(
+        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
+    ));
+    assert!(html.contains(r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#));
+    assert!(html.contains(r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "submitting""#));
     assert!(
@@ -9941,6 +9982,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "suppressed""#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "missed""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickMissState = "missed""#));
+    assert!(html.contains(r#"shell.dataset.clickMissReason = "outside-raster""#));
+    assert!(html.contains(r#"shell.removeAttribute("data-click-miss-state")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
     assert!(html.contains(&format!(
@@ -9968,6 +10012,11 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"shell.dataset.scrollActionState = "queued""#));
     assert!(html.contains(r#"shell.dataset.scrollActionState = "submitting""#));
     assert!(html.contains(r#"shell.dataset.scrollActionState = "edge""#));
+    assert!(html.contains(r#"shell.dataset.edgeScrollState = "blocked""#));
+    assert!(html.contains(r#"shell.dataset.edgeScrollViewportX = String(x)"#));
+    assert!(html.contains(r#"shell.dataset.edgeScrollViewportY = String(y)"#));
+    assert!(html.contains(r#"shell.dataset.edgeScrollReason = "top""#));
+    assert!(html.contains(r#"shell.dataset.edgeScrollReason = "bottom""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "queued""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "idle""#));
     assert!(html.contains(r#"status.dataset.browserViewportScrollActionState = "edge""#));
@@ -12743,6 +12792,8 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(topbar_html.contains(r#"data-browser-shell-viewport title="viewport "#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions-density="compact""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions-debug-placement="tools""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-primary-actions"#));
     assert!(
         topbar_html.contains(
