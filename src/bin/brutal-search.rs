@@ -1949,6 +1949,18 @@ fn search_index_retention_audit_lines(
         .saturating_add(index_storage_artifact_bytes(stats, "field_docs.bin"))
         .saturating_add(index_storage_artifact_bytes(stats, "texts.bin"));
     let drift_rows = cache_rows.abs_diff(result_log_rows);
+    let durable_not_indexed_rows = web_summary
+        .durable_result_rows
+        .saturating_sub(indexed_documents as usize);
+    let index_gap_next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-result-rows"
+    } else if result_log_only_rows > 0 || missing_query_buckets > 0 {
+        "backfill-web-cache-replay-from-brave-results"
+    } else if durable_not_indexed_rows > 0 {
+        "backfill-local-index-from-retained-web-results"
+    } else {
+        "replay-index-aligned"
+    };
     let status = if web_summary.result_rows == 0 && indexed_documents == 0 {
         "empty"
     } else if web_summary.incomplete_result_rows > 0
@@ -1978,6 +1990,9 @@ fn search_index_retention_audit_lines(
             "search_index_retention_audit: report_only=true status={status} web_cache_rows={cache_rows} brave_result_rows={result_log_rows} durable_web_rows={} incomplete_web_rows={} result_log_only_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} indexed_document_bytes={indexed_document_bytes} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} drift_rows={drift_rows} next_action={next_action}",
             web_summary.durable_result_rows,
             web_summary.incomplete_result_rows
+        ),
+        format!(
+            "brave_web_replay_index_gap: report_only=true replayable_rows={cache_rows} durable_provider_rows={result_log_rows} durable_not_replayable_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} durable_not_indexed_rows={durable_not_indexed_rows} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} next_action={index_gap_next_action}"
         ),
         "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned(),
     ]
@@ -5812,6 +5827,7 @@ mod tests {
         let lines = search_index_retention_audit_lines(&stats, &summary);
 
         assert!(lines.contains(&"search_index_retention_audit: report_only=true status=needs-review web_cache_rows=0 brave_result_rows=2 durable_web_rows=2 incomplete_web_rows=0 result_log_only_rows=2 missing_query_buckets=2 indexed_documents=3 indexed_document_bytes=100 web_cache_bytes=0 brave_result_bytes=90 drift_rows=2 next_action=rebuild-web-cache-replay".to_owned()));
+        assert!(lines.contains(&"brave_web_replay_index_gap: report_only=true replayable_rows=0 durable_provider_rows=2 durable_not_replayable_rows=2 missing_query_buckets=2 indexed_documents=3 durable_not_indexed_rows=0 web_cache_bytes=0 brave_result_bytes=90 next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
         assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned()));
     }
 
