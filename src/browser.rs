@@ -4426,12 +4426,13 @@ fn hit_test_topmost_normal_layer_for_viewport(
             if !bounds.contains(x, y) {
                 return None;
             }
-            Some(
-                render
-                    .hit_targets
-                    .get(command_index)
-                    .and_then(|target| target.target_at_column(x.saturating_sub(bounds.x))),
-            )
+            let hit_target = render.hit_targets.get(command_index);
+            let target_node =
+                hit_target.and_then(|target| target.target_at_column(x.saturating_sub(bounds.x)));
+            if target_node.is_some() || hit_target.is_none_or(|target| !target.has_target()) {
+                return Some(target_node);
+            }
+            None
         })
 }
 
@@ -4845,7 +4846,7 @@ fn hit_test_nearby_visual_target_node_for_viewport_matching(
         if clipped && !visible_bounds.contains(x, y) {
             continue;
         }
-        let column = clamped_bounds_column(visible_bounds, x);
+        let column = clamped_bounds_column(exact_bounds, x);
         let Some(target_node) = render
             .hit_targets
             .get(command_index)

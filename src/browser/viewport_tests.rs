@@ -234,3 +234,205 @@ fn viewport_frame_maps_dirty_regions_to_rgba_pixels() {
     assert_eq!(scrolled.report.frame.raster_viewport_height, Some(3));
     assert_eq!(scrolled.raster.pixels.len(), 40 * 44 * 4);
 }
+
+#[test]
+fn repeated_scroll_projection_keeps_visual_hits_and_raster_rows_aligned() {
+    let image_url = "mem://viewport-scroll-projection-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![40, 136, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://viewport-scroll-projection".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![
+                TextHitTargetRun {
+                    start: 1,
+                    width: 1,
+                    target_node: Some(12),
+                },
+                TextHitTargetRun {
+                    start: 6,
+                    width: 1,
+                    target_node: Some(77),
+                },
+            ]),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(88),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 4,
+                width: 8,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 9,
+                y: 4,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 12,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Lead\nNext\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 12,
+        height: 2,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1)], options)
+        .expect("render repeated scrolled viewport projection frames");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![4, 5],
+        "repeated small scrolls should advance the viewport one row at a time"
+    );
+    assert_eq!(
+        frames[0]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(1, "Image", 0), (2, "StyledText", 0), (3, "ColorRect", 1),],
+        "first scroll frame should project the image/link row and following row without duplicates"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(3, "ColorRect", 0), (4, "Text", 1)],
+        "second scroll frame should drop the mixed row and move the following row to the top"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 5, 0),
+        Some(77),
+        "viewport click should use the visible image hit column after scroll, not an inactive exact visual column"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 9, 0),
+        Some(88),
+        "adjacent visible text link should remain clickable in the same scrolled row"
+    );
+    assert_ne!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 5, 0),
+        Some(12),
+        "stale hit metadata from another image column should not win the scrolled click"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 5, 0),
+        None,
+        "image target should not remain hittable after the mixed row scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 9, 0),
+        None,
+        "text link target should not remain hittable after the mixed row scrolls out"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let image_pixel_x = options
+        .padding_x
+        .saturating_add(5usize.saturating_mul(options.cell_width));
+    assert_eq!(
+        pixel(&frames[0], image_pixel_x, options.padding_y),
+        [40, 136, 224, 255],
+        "decoded image color should remain visible at the first scrolled viewport row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_pixel_x, options.padding_y),
+        [40, 136, 224, 255],
+        "next scroll frame should not leave stale image pixels at the top row"
+    );
+    assert_eq!(
+        pixel(&frames[1], options.padding_x, options.padding_y),
+        [236, 244, 248, 255],
+        "next scroll frame should project the following color row to the top"
+    );
+}
