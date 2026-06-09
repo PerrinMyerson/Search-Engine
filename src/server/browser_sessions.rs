@@ -10510,6 +10510,9 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .browser-viewport-primary {{ margin: 10px 0 18px; scroll-margin-top: 76px; }}
 .browser-controls-tray {{ border: 1px solid #dfe2e6; border-radius: 6px; background: #fff; margin: 12px 0 16px; }}
 .browser-controls-tray > summary {{ cursor: pointer; padding: 10px 12px; color: #20242a; font-size: 13px; font-weight: 900; }}
+.browser-controls-summary {{ min-width: 0; display: inline-flex; align-items: baseline; gap: 8px; }}
+.browser-controls-summary strong {{ color: #20242a; font-size: 13px; }}
+.browser-controls-summary span {{ color: #5d636b; font-size: 12px; font-weight: 700; }}
 .browser-controls-content {{ display: grid; gap: 10px; padding: 0 12px 12px; border-top: 1px solid #eef0f3; }}
 .viewport-input {{ display: grid; gap: 8px; margin: 8px 0 12px; }}
 .viewport-input form {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: 8px; align-items: center; }}
@@ -10605,7 +10608,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 {viewport_status}
 {viewport_interaction_controls}
 {primary_input_controls}
-<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray><summary>More browser tools</summary><div class="browser-controls-content">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
+<details id="browser-controls-tray" class="browser-controls-tray" data-browser-controls-tray data-browser-controls-tray-scrollable="{controls_scrollable}" data-browser-controls-tray-find="{controls_find}" data-browser-controls-tray-forms="{controls_forms}" data-browser-controls-tray-resources="{controls_resources}">{controls_tray_summary}<div class="browser-controls-content" data-browser-controls-content data-browser-controls-content-order="scroll find jump resources text">{viewport_scroll_controls}{find_controls}{viewport_command_strip}{resource_quick_actions}{viewport_text}</div></details>
 </section>
 {diagnostics_section}
 {keyboard_controls_script}
@@ -10628,6 +10631,11 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         address_source_input = browser_session_source_hidden_input(&payload.source),
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
+        controls_scrollable = payload.max_scroll_x > 0 || payload.max_scroll_y > 0,
+        controls_find = !payload.find_query.is_empty() || payload.find_match_count > 0,
+        controls_forms = payload.form_count > 0,
+        controls_resources = payload.resource_count > 0,
+        controls_tray_summary = render_browser_session_controls_tray_summary(payload),
         viewport_status = viewport_status,
         viewport_scroll_controls = viewport_scroll_controls,
         pending_primary_page_state = pending_primary_page_state.unwrap_or_default(),
@@ -13880,6 +13888,30 @@ fn browser_scroll_axis_state(
     } else {
         middle_label
     }
+}
+
+fn render_browser_session_controls_tray_summary(payload: &BrowserSessionPayload) -> String {
+    let scroll_label = if payload.max_scroll_x > 0 || payload.max_scroll_y > 0 {
+        "scroll"
+    } else {
+        "static"
+    };
+    let resource_label = if payload.resource_count > 0 {
+        "resources"
+    } else {
+        "no-resources"
+    };
+    let form_label = if payload.form_count > 0 {
+        "forms"
+    } else {
+        "no-forms"
+    };
+    format!(
+        r#"<summary data-browser-controls-summary data-browser-controls-summary-scroll="{scroll_label}" data-browser-controls-summary-resources="{resource_label}" data-browser-controls-summary-forms="{form_label}"><span class="browser-controls-summary"><strong>More browser tools</strong><span>Scroll, jump, find, diagnostics</span></span></summary>"#,
+        scroll_label = scroll_label,
+        resource_label = resource_label,
+        form_label = form_label,
+    )
 }
 
 fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_href: &str) -> String {
