@@ -10193,6 +10193,142 @@ async fn picture_srcset_redirected_candidate_keeps_color_and_url_evidence() {
 }
 
 #[tokio::test]
+async fn picture_media_protocol_relative_srcset_redirect_attaches_color() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let protocol_relative = format!("//{addr}/responsive-redirect");
+    let protocol_large = format!("//{addr}/responsive-large");
+    let server_protocol_relative = protocol_relative.clone();
+    let server_protocol_large = protocol_large.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /responsive-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /responsive-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /responsive-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = format!(
+                r#"<html><body>
+                    <p>Before responsive picture</p>
+                    <picture>
+                        <source type="image/png" media="(min-width: 900px)" srcset="/wide-redirect 160w" sizes="160px">
+                        <source type="image/png" media="(max-width: 400px)" srcset="/dead.avif 80w, {server_protocol_relative} 160w, {server_protocol_large} 640w" sizes="160px">
+                        <img src="/fallback.gif" alt="Responsive picture color" width="160" height="24">
+                    </picture>
+                    <p>After responsive picture</p>
+                </body></html>"#
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let selected_url = format!("http://{addr}/responsive-redirect");
+    let final_url = format!("http://{addr}/responsive-final");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!report.fetches.iter().any(|fetch| {
+        fetch.resource.url == "/wide-redirect"
+            || fetch.resource.url == "/dead.avif"
+            || fetch.resource.url == protocol_large
+            || fetch.resource.url == "/fallback.gif"
+    }));
+
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, protocol_relative);
+    assert_eq!(fetch.resource.resolved, selected_url);
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(fetch.content_type, None);
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.decoded_width, Some(2));
+    assert_eq!(fetch.decoded_height, Some(2));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before responsive picture"));
+    assert!(render.text.contains("After responsive picture"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == selected_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb.as_slice())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &expected_hash
+        )
+    }));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn img_srcset_protocol_relative_redirect_sniffs_color_and_attaches() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
