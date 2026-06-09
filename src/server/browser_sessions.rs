@@ -14786,12 +14786,30 @@ fn browser_session_click_feedback_text(payload: &BrowserSessionPayload) -> Optio
 }
 
 fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
-    let Some((x, y, page_x, page_y)) = browser_session_click_feedback_points(feedback) else {
-        return String::new();
+    let action = if feedback.starts_with("Click selector") {
+        "click-selector"
+    } else {
+        "click-at"
     };
-    format!(
-        r#" data-browser-chrome-click-x="{x}" data-browser-chrome-click-y="{y}" data-browser-chrome-click-page-x="{page_x}" data-browser-chrome-click-page-y="{page_y}""#
-    )
+    let (outcome, target) = if feedback.starts_with("No click") {
+        ("miss", "none")
+    } else if feedback.contains("opened ") {
+        ("success", "navigation")
+    } else if feedback.contains("page updated") {
+        ("success", "page-update")
+    } else {
+        ("reported", "dom")
+    };
+    let mut attrs = format!(
+        r#" data-browser-chrome-click-action="{action}" data-browser-chrome-click-outcome="{outcome}" data-browser-chrome-click-target="{target}""#
+    );
+    if let Some((x, y, page_x, page_y)) = browser_session_click_feedback_points(feedback) {
+        let _ = write!(
+            attrs,
+            r#" data-browser-chrome-click-x="{x}" data-browser-chrome-click-y="{y}" data-browser-chrome-click-page-x="{page_x}" data-browser-chrome-click-page-y="{page_y}""#
+        );
+    }
+    attrs
 }
 
 fn browser_session_click_feedback_points(feedback: &str) -> Option<(usize, usize, usize, usize)> {
