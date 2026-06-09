@@ -5548,6 +5548,132 @@ async fn image_load_paint_webp_placeholder_uses_lazy_rgb_source() {
 }
 
 #[tokio::test]
+async fn image_lazy_data_url_candidate_skips_placeholder_visible_rgb() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let data_url = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAAAAAAAAAAAFklEQVR4AWNgYGD4//8/438GBkaG/wAh9gT+AAAAAAAAAABJRU5EAAAAAA=="
+    );
+    fs::write(
+        &page,
+        format!(
+            r#"<html><body>
+                <p>Before lazy data image</p>
+                <img src="/assets/loading.gif" data-lazy-src="{data_url}" alt="Lazy data PNG" width="32" height="32">
+                <p>After lazy data image</p>
+            </body></html>"#
+        ),
+    )
+    .unwrap();
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions::default());
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.url.contains("loading.gif"))
+    );
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == data_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image");
+    assert_eq!(resource_fetch.resource.initiator, "img");
+    assert_eq!(resource_fetch.resource.url, data_url);
+    assert_eq!(resource_fetch.status, "cached");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert!(resource_fetch.decoded_hash.is_some());
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url.contains("loading.gif"))
+    );
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == data_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, data_url);
+    assert_eq!(fetch.status, "cached");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/png"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before lazy data image"));
+    assert!(render.text.contains("After lazy data image"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == data_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    let saturated_color_pixels = raster
+        .pixels
+        .chunks_exact(4)
+        .filter(|pixel| {
+            let min = pixel[0].min(pixel[1]).min(pixel[2]);
+            let max = pixel[0].max(pixel[1]).max(pixel[2]);
+            pixel[3] == 255 && max > 150 && max.saturating_sub(min) > 100
+        })
+        .count();
+    assert!(saturated_color_pixels > 0);
+}
+
+#[tokio::test]
 async fn image_visible_priority_skips_icon_placeholder_for_lazy_rgb_source() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
