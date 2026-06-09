@@ -2653,6 +2653,10 @@ async fn image_inline_color_svg_data_named_colors_decode_and_attach() {
         fetch.decoded_color_hash.as_deref(),
         Some(expected_color_hash.as_str())
     );
+    assert_eq!(
+        fetch.decoded_color_bytes,
+        Some(decoded.width * decoded.height * 3)
+    );
 
     let render = session.current().unwrap();
     let rendered_image = render
@@ -2675,6 +2679,19 @@ async fn image_inline_color_svg_data_named_colors_decode_and_attach() {
                 ..
             } if url == data_url && *hash == expected_hash
         )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > 240 && (140..=190).contains(&pixel[1]) && pixel[2] < 30)
+    );
+    assert!(raster.pixels.chunks_exact(4).any(|pixel| {
+        (90..=120).contains(&pixel[0])
+            && (40..=70).contains(&pixel[1])
+            && (140..=170).contains(&pixel[2])
     }));
 }
 
