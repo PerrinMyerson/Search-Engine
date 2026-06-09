@@ -534,7 +534,8 @@ async fn browser_session_page_can_omit_heavy_diagnostics_for_default_route() {
     let slim_html = render_browser_session_page_with_diagnostics(&payload, &back_href, false);
     assert!(slim_html.contains(r#"data-browser-primary-surface"#));
     assert!(slim_html.contains(r#"class="browser-raster-shell""#));
-    assert!(slim_html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(slim_html.contains(r#"data-browser-controls-summary"#));
+    assert!(slim_html.contains(r#"<strong>More browser tools</strong>"#));
     assert!(slim_html.contains("Open diagnostics"));
     assert!(slim_html.contains("debug=1"));
     assert!(!slim_html.contains(r#"<summary>Diagnostics</summary>"#));
@@ -2626,6 +2627,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     let controls_tray_index = html.find(r#"data-browser-controls-tray"#).unwrap();
     let debug_index = html.find(r#"data-browser-tools-tray"#).unwrap();
     let controls_html = &html[controls_tray_index..debug_index];
+    assert!(controls_html.contains(r#"data-browser-controls-summary"#));
+    assert!(controls_html.contains(r#"<strong>More browser tools</strong>"#));
+    assert!(controls_html.contains(r#"data-browser-controls-tray-scrollable="true""#));
+    assert!(
+        controls_html
+            .contains(r#"data-browser-controls-content-order="scroll find jump resources text""#)
+    );
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-actions"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-y="0""#));
@@ -3184,7 +3192,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(controls_tray_index < manual_scroll_controls_index);
     assert!(manual_scroll_controls_index < command_strip_index);
     assert!(controls_tray_index < command_strip_index);
-    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"data-browser-controls-summary"#));
+    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(
         html.contains(
@@ -14015,7 +14024,8 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-page-details"#));
     assert!(html.contains(r#"<summary>Page details</summary>"#));
     assert!(html.find(r#"<summary>Page details</summary>"#).unwrap() > debug_index);
-    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"data-browser-controls-summary"#));
+    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
     assert!(html.contains(r#"class="debug-stack-content""#));
@@ -14594,7 +14604,8 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"window.setTimeout(() => window.location.replace(retryUrl), 900)"#));
     assert!(html.contains("Still opening; retrying once in this tab..."));
     assert!(html.contains("Still opening; use Continue loading to retry in this tab."));
-    assert!(html.contains(r#"<summary>More browser tools</summary>"#));
+    assert!(html.contains(r#"data-browser-controls-summary"#));
+    assert!(html.contains(r#"<strong>More browser tools</strong>"#));
     assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains(r#"data-viewport-state="loading""#));
