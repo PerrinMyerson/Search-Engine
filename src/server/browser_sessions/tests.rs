@@ -3015,6 +3015,24 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(">Top</a>"));
     assert_address_submit_state(topbar_html, &payload, &back_href);
     assert!(topbar_html.contains(r#"data-browser-location-strip"#));
+    assert!(topbar_html.contains(r#"data-browser-location-placement="under-address""#));
+    assert!(topbar_html.contains(r#"data-browser-location-density="compact""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-location-session="{}""#,
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-location-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-location-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-location-viewport-y="{}""#,
+        payload.viewport_y
+    )));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     assert!(html.contains(">Page up</a>"));
     assert!(html.contains(">Page down</a>"));
@@ -14085,17 +14103,16 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-first-viewport-chrome="compact""#));
     assert!(topbar_html.contains(r#"data-browser-debug-default="secondary""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-density="compact""#));
-    assert!(
-        topbar_html.contains(
-            r#"data-browser-chrome-primary-controls="navigation address actions status""#
-        )
-    );
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-primary-controls="navigation address location actions status""#
+    ));
     assert!(
         topbar_html
             .contains(r#"data-browser-chrome-secondary-controls="tools diagnostics manual-input""#)
     );
     assert!(
-        topbar_html.contains(r#"data-browser-chrome-toolbar-order="navigation address status""#)
+        topbar_html
+            .contains(r#"data-browser-chrome-toolbar-order="navigation address location status""#)
     );
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(
@@ -14166,6 +14183,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-action-feedback]"#));
     assert!(html.contains(r#".toolbar { display: flex; align-items: center; flex-wrap: nowrap;"#));
     assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 auto; }"#));
+    assert!(html.contains(r#".browser-location-strip { display: flex; min-width: 0; align-items: baseline; gap: 8px; margin-top: -1px;"#));
     assert!(html.contains(r#".address-bar button.browser-background-tab { display: none; }"#));
     assert_address_submit_state(topbar_html, &payload, &back_href);
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
