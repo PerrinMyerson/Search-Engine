@@ -201,6 +201,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(
         r#"data-browser-chrome-history data-browser-history-position="1" data-browser-history-length="1" title="history 1/1">history 1/1</span>"#
     ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="1""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="1""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="false""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
     ));
@@ -236,6 +240,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(
         r#"data-browser-chrome-history data-browser-history-position="2" data-browser-history-length="2" title="history 2/2">history 2/2</span>"#
     ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
     assert!(topbar_html.contains(r#"data-browser-primary-nav-action="back">Back</a>"#));
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
@@ -248,11 +256,14 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_feedback.as_str())
     );
+    assert!(topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert!(topbar_html.contains(&format!(
-        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
-        html_escape::encode_double_quoted_attribute(&expected_feedback),
-        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_feedback))
+        r#"title="{}""#,
+        html_escape::encode_double_quoted_attribute(&expected_feedback)
     )));
+    assert!(topbar_html.contains(
+        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_feedback)).as_ref()
+    ));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, true, false, false, false, false);
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
@@ -278,6 +289,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(
         r#"data-browser-chrome-history data-browser-history-position="1" data-browser-history-length="2" title="history 1/2">history 1/2</span>"#
     ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="1""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="false""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="true""#));
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="No back history" data-browser-primary-nav-action="back" data-browser-primary-nav-disabled="No back history">Back</span>"#
     ));
@@ -290,11 +305,17 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_back_feedback.as_str())
     );
+    assert!(topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert!(topbar_html.contains(&format!(
-        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
-        html_escape::encode_double_quoted_attribute(&expected_back_feedback),
-        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_back_feedback))
+        r#"title="{}""#,
+        html_escape::encode_double_quoted_attribute(&expected_back_feedback)
     )));
+    assert!(
+        topbar_html.contains(
+            html_escape::encode_text(&browser_session_feedback_excerpt(&expected_back_feedback))
+                .as_ref()
+        )
+    );
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, true, false, false, false, false);
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
@@ -323,6 +344,10 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="No forward history" data-browser-primary-nav-action="forward" data-browser-primary-nav-disabled="No forward history">Forward</span>"#
     ));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
     let expected_forward_feedback = format!(
         "Went forward; opened local page: {}; viewport settled at x 0, y 0",
         browser_session_feedback_excerpt(&second.display().to_string())
@@ -331,13 +356,19 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
         payload.action_feedback.as_deref(),
         Some(expected_forward_feedback.as_str())
     );
+    assert!(topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert!(topbar_html.contains(&format!(
-        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
-        html_escape::encode_double_quoted_attribute(&expected_forward_feedback),
-        html_escape::encode_text(&browser_session_feedback_excerpt(
-            &expected_forward_feedback
-        ))
+        r#"title="{}""#,
+        html_escape::encode_double_quoted_attribute(&expected_forward_feedback)
     )));
+    assert!(
+        topbar_html.contains(
+            html_escape::encode_text(&browser_session_feedback_excerpt(
+                &expected_forward_feedback
+            ))
+            .as_ref()
+        )
+    );
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
 
     let reload = RequestTarget {
@@ -362,12 +393,22 @@ async fn browser_session_registry_keeps_history_across_link_navigation() {
     let html = render_browser_session_page(&payload, "/search?q=local");
     let topbar_html =
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
+    assert!(topbar_html.contains(r#"data-browser-chrome-navigation-feedback"#));
     assert!(topbar_html.contains(&format!(
-        r#"data-browser-chrome-navigation-feedback title="{}">{}"#,
-        html_escape::encode_double_quoted_attribute(&expected_reload_feedback),
-        html_escape::encode_text(&browser_session_feedback_excerpt(&expected_reload_feedback))
+        r#"title="{}""#,
+        html_escape::encode_double_quoted_attribute(&expected_reload_feedback)
     )));
+    assert!(
+        topbar_html.contains(
+            html_escape::encode_text(&browser_session_feedback_excerpt(&expected_reload_feedback))
+                .as_ref()
+        )
+    );
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-position="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-history-length="2""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-back="true""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-can-forward="false""#));
     assert!(!topbar_html.contains(r#"data-browser-navigation-state"#));
     assert!(html.contains(r#"data-browser-navigation-history-position="2""#));
     assert!(html.contains(r#"data-browser-navigation-history-length="2""#));
