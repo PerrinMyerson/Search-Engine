@@ -57,6 +57,9 @@ pub struct WebSearchLookup {
     pub cache_status: &'static str,
     pub retained_cache_results: usize,
     pub returned_results: usize,
+    pub provider_result_rows: usize,
+    pub cache_replay_result_rows: usize,
+    pub result_log_replay_result_rows: usize,
     pub durable_result_rows: usize,
     pub persistence_gap_rows: usize,
     pub persistence_status: &'static str,
@@ -250,6 +253,9 @@ impl WebSearchService {
                 cache_status: "skipped-empty-query",
                 retained_cache_results: 0,
                 returned_results: 0,
+                provider_result_rows: 0,
+                cache_replay_result_rows: 0,
+                result_log_replay_result_rows: 0,
                 durable_result_rows: 0,
                 persistence_gap_rows: 0,
                 persistence_status: "skipped-no-results",
@@ -273,6 +279,9 @@ impl WebSearchService {
                     cache_status: "hit",
                     retained_cache_results,
                     returned_results,
+                    provider_result_rows: 0,
+                    cache_replay_result_rows: returned_results,
+                    result_log_replay_result_rows: 0,
                     durable_result_rows: retained_cache_results,
                     persistence_gap_rows: 0,
                     persistence_status: "cache-hit",
@@ -309,6 +318,9 @@ impl WebSearchService {
                                 cache_status: "provider-error-result-log-hit",
                                 retained_cache_results: 0,
                                 returned_results,
+                                provider_result_rows: 0,
+                                cache_replay_result_rows: 0,
+                                result_log_replay_result_rows: returned_results,
                                 durable_result_rows: returned_results,
                                 persistence_gap_rows: 0,
                                 persistence_status: "result-log-replay",
@@ -334,6 +346,9 @@ impl WebSearchService {
                         cache_status: "result-log-hit",
                         retained_cache_results: 0,
                         returned_results,
+                        provider_result_rows: 0,
+                        cache_replay_result_rows: 0,
+                        result_log_replay_result_rows: returned_results,
                         durable_result_rows: returned_results,
                         persistence_gap_rows: 0,
                         persistence_status: "result-log-replay",
@@ -351,6 +366,9 @@ impl WebSearchService {
                     },
                     retained_cache_results: 0,
                     returned_results: 0,
+                    provider_result_rows: 0,
+                    cache_replay_result_rows: 0,
+                    result_log_replay_result_rows: 0,
                     durable_result_rows: 0,
                     persistence_gap_rows: 0,
                     persistence_status: "cache-miss-no-fetch",
@@ -375,6 +393,9 @@ impl WebSearchService {
                     cache_status: "provider-empty-result-log-hit",
                     retained_cache_results: 0,
                     returned_results,
+                    provider_result_rows: 0,
+                    cache_replay_result_rows: 0,
+                    result_log_replay_result_rows: returned_results,
                     durable_result_rows: returned_results,
                     persistence_gap_rows: 0,
                     persistence_status: "result-log-replay",
@@ -421,6 +442,9 @@ impl WebSearchService {
             },
             retained_cache_results: 0,
             returned_results,
+            provider_result_rows: returned_results,
+            cache_replay_result_rows: 0,
+            result_log_replay_result_rows: 0,
             durable_result_rows,
             persistence_gap_rows,
             persistence_status,
@@ -2096,6 +2120,9 @@ mod tests {
         assert_eq!(lookup.cache_status, "result-log-hit");
         assert_eq!(lookup.retained_cache_results, 0);
         assert_eq!(lookup.returned_results, 2);
+        assert_eq!(lookup.provider_result_rows, 0);
+        assert_eq!(lookup.cache_replay_result_rows, 0);
+        assert_eq!(lookup.result_log_replay_result_rows, 2);
         assert_eq!(lookup.durable_result_rows, 2);
         assert_eq!(lookup.persistence_gap_rows, 0);
         assert_eq!(lookup.persistence_status, "result-log-replay");
@@ -2170,6 +2197,9 @@ mod tests {
         assert_eq!(lookup.cache_status, "result-log-hit");
         assert_eq!(lookup.persistence_status, "result-log-replay");
         assert_eq!(lookup.returned_results, 2);
+        assert_eq!(lookup.provider_result_rows, 0);
+        assert_eq!(lookup.cache_replay_result_rows, 0);
+        assert_eq!(lookup.result_log_replay_result_rows, 2);
         assert_eq!(lookup.durable_result_rows, 2);
         assert_eq!(lookup.results[0].url, "https://example.com/shared");
         assert_eq!(lookup.results[0].provider, "brave-result-log");
@@ -2222,6 +2252,9 @@ mod tests {
         assert_eq!(hit.cache_status, "hit");
         assert_eq!(hit.retained_cache_results, 1);
         assert_eq!(hit.returned_results, 1);
+        assert_eq!(hit.provider_result_rows, 0);
+        assert_eq!(hit.cache_replay_result_rows, 1);
+        assert_eq!(hit.result_log_replay_result_rows, 0);
         assert_eq!(hit.durable_result_rows, 1);
         assert_eq!(hit.persistence_gap_rows, 0);
         assert_eq!(hit.persistence_status, "cache-hit");
@@ -2235,6 +2268,9 @@ mod tests {
         assert_eq!(miss.cache_status, "miss");
         assert_eq!(miss.retained_cache_results, 0);
         assert_eq!(miss.returned_results, 0);
+        assert_eq!(miss.provider_result_rows, 0);
+        assert_eq!(miss.cache_replay_result_rows, 0);
+        assert_eq!(miss.result_log_replay_result_rows, 0);
         assert_eq!(miss.durable_result_rows, 0);
         assert_eq!(miss.persistence_gap_rows, 0);
         assert_eq!(miss.persistence_status, "cache-miss-no-fetch");
