@@ -7565,6 +7565,262 @@ async fn color_image_viewport_paint_parity_pack_reports_scrolled_color_pixels() 
 }
 
 #[tokio::test]
+async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states() {
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let background = dir.path().join("background.png");
+    let inline = dir.path().join("inline.png");
+    let picture = dir.path().join("picture.png");
+    let offscreen = dir.path().join("offscreen.png");
+    let preload = dir.path().join("preload.png");
+    let broken = dir.path().join("broken.png");
+    let unsupported = dir.path().join("unsupported.bin");
+    let missing = dir.path().join("missing.png");
+    let capped_page = dir.path().join("capped.html");
+    let capped = dir.path().join("capped.png");
+    for path in [
+        &background,
+        &inline,
+        &picture,
+        &offscreen,
+        &preload,
+        &capped,
+    ] {
+        fs::write(path, &png_bytes).unwrap();
+    }
+    fs::write(&broken, b"not actually a png").unwrap();
+    fs::write(&unsupported, b"\x00\x00\x00\x10ftypavif\x00\x00\x00\x00").unwrap();
+    fs::write(
+        &page,
+        r#"<html><head>
+            <style>
+                .hero { background-image: url('background.png'); min-height: 64px; }
+            </style>
+            <link rel="preload" as="image" href="preload.png">
+        </head><body>
+            <p>Intro one</p>
+            <p>Intro two</p>
+            <section class="hero">Visible CSS background</section>
+            <img src="inline.png" alt="Visible inline" width="16" height="96">
+            <picture>
+                <source media="print" type="image/png" srcset="print.png 1x">
+                <source media="screen" type="image/png" srcset="picture.png 1x">
+                <img src="fallback.png" alt="Clipped picture" width="16" height="96">
+            </picture>
+            <img src="broken.png" alt="Broken" width="16" height="24">
+            <img src="unsupported.bin" alt="Unsupported" width="16" height="24">
+            <img src="missing.png" alt="Missing" width="16" height="24">
+            <img src="ftp://example.test/skipped.png" alt="Skipped" width="16" height="24">
+            <p>Spacer one</p>
+            <p>Spacer two</p>
+            <p>Spacer three</p>
+            <p>Spacer four</p>
+            <p>Spacer five</p>
+            <p>Spacer six</p>
+            <img src="offscreen.png" alt="Offscreen" width="16" height="24">
+        </body></html>"#,
+    )
+    .unwrap();
+    fs::write(
+        &capped_page,
+        r#"<html><body><img src="capped.png" alt="Capped" width="16" height="24"></body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+    let image_report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(image_report.image_count, 9);
+    assert_eq!(image_report.decoded, 5);
+    assert_eq!(image_report.failed, 2);
+    assert_eq!(image_report.skipped, 1);
+
+    for (path, attachment_kind) in [
+        (&background, "background_image"),
+        (&inline, "image"),
+        (&picture, "image"),
+        (&offscreen, "image"),
+    ] {
+        let resolved = path.display().to_string();
+        let fetch = image_report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(
+            fetch.decoded_color_hash.as_deref(),
+            Some(expected_color_hash.as_str())
+        );
+        assert_eq!(fetch.render_attached, Some(true));
+        assert_eq!(
+            fetch.render_attachment_kind.as_deref(),
+            Some(attachment_kind)
+        );
+        assert_eq!(
+            fetch.image_visibility_state.as_deref(),
+            Some("render_attached")
+        );
+    }
+
+    let preload_fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == preload.display().to_string())
+        .unwrap();
+    assert_eq!(
+        preload_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(preload_fetch.render_attached, Some(false));
+    assert_eq!(
+        preload_fetch.image_visibility_state.as_deref(),
+        Some("decoded_unattached")
+    );
+
+    let broken_fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == broken.display().to_string())
+        .unwrap();
+    assert_eq!(
+        broken_fetch.image_decode_status.as_deref(),
+        Some("undecoded")
+    );
+    assert_eq!(
+        broken_fetch.image_visibility_state.as_deref(),
+        Some("decode_failed")
+    );
+
+    let unsupported_fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == unsupported.display().to_string())
+        .unwrap();
+    assert_eq!(
+        unsupported_fetch.image_decode_status.as_deref(),
+        Some("unsupported_format")
+    );
+    assert_eq!(
+        unsupported_fetch.image_visibility_state.as_deref(),
+        Some("unsupported_type")
+    );
+
+    let missing_fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == missing.display().to_string())
+        .unwrap();
+    assert_eq!(missing_fetch.status, "failed");
+    assert_eq!(
+        missing_fetch.image_visibility_state.as_deref(),
+        Some("not_fetched")
+    );
+
+    let skipped_fetch = image_report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == "ftp://example.test/skipped.png")
+        .unwrap();
+    assert_eq!(skipped_fetch.status, "skipped");
+    assert_eq!(
+        skipped_fetch.image_visibility_state.as_deref(),
+        Some("skipped")
+    );
+
+    let render = session.current().unwrap();
+    let background_url = background.display().to_string();
+    let picture_url = picture.display().to_string();
+    let offscreen_url = offscreen.display().to_string();
+    let background_y = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::BackgroundImage {
+                y,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &background_url && hash == &expected_hash => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    let (picture_y, picture_height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                y,
+                height,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &picture_url && hash == &expected_hash => Some((*y, *height)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(picture_height > 1);
+    let offscreen_y = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                y,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &offscreen_url && hash == &expected_hash => Some(*y),
+            _ => None,
+        })
+        .unwrap();
+    let viewport_y = background_y;
+    let viewport_height = picture_y.saturating_sub(viewport_y).saturating_add(1);
+    assert!(offscreen_y >= viewport_y.saturating_add(viewport_height));
+    let raster_options = BrowserRasterOptions {
+        cell_width: 8,
+        cell_height: 8,
+        viewport_y: Some(viewport_y),
+        viewport_width: Some(render.viewport_width),
+        viewport_height: Some(viewport_height),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render_rgba(render, raster_options).unwrap();
+    let raster_report = rgba_raster_report(render, &raster, raster_options);
+    assert_eq!(raster_report.visible_decoded_image_count, 3);
+    assert_eq!(raster_report.culled_decoded_image_count, 1);
+    assert_eq!(raster_report.clipped_decoded_image_count, 2);
+    assert!(raster_report.color_pixels > 0);
+    assert_eq!(
+        raster_report.image_visibility_state,
+        "visible_color_pixels_clipped"
+    );
+
+    let mut capped_session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    capped_session
+        .navigate(&capped_page.display().to_string())
+        .await
+        .unwrap();
+    let capped_report = capped_session.render_current_with_images(1).await.unwrap();
+    let capped_fetch = capped_report.fetches.first().unwrap();
+    assert_eq!(capped_fetch.error_kind.as_deref(), Some("byte_cap"));
+    assert_eq!(
+        capped_fetch.image_visibility_state.as_deref(),
+        Some("not_fetched")
+    );
+}
+
+#[tokio::test]
 async fn image_raster_fidelity_decodes_indexed_png_resource_pixels() {
     let png_bytes = tiny_test_indexed_png_with_transparency();
     let decoded = decode_simple_png(&png_bytes).unwrap();

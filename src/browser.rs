@@ -832,6 +832,8 @@ pub struct BrowserRasterReport {
     pub visible_decoded_image_count: usize,
     #[serde(default)]
     pub culled_decoded_image_count: usize,
+    #[serde(default)]
+    pub clipped_decoded_image_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster_viewport_x: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -862,6 +864,8 @@ pub struct BrowserRgbaRasterReport {
     pub visible_decoded_image_count: usize,
     #[serde(default)]
     pub culled_decoded_image_count: usize,
+    #[serde(default)]
+    pub clipped_decoded_image_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster_viewport_x: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -873,6 +877,8 @@ pub struct BrowserRgbaRasterReport {
     pub non_background_pixels: usize,
     #[serde(default)]
     pub color_pixels: usize,
+    #[serde(default)]
+    pub image_visibility_state: String,
     pub pixel_hash: String,
     pub artifact_format: String,
 }
@@ -3701,12 +3707,32 @@ fn annotate_image_fetch_render_attachments(
         let Some(decoded_hash) = fetch.decoded_hash.as_deref() else {
             fetch.render_attached = Some(false);
             fetch.render_attachment_kind = None;
+            fetch.image_visibility_state = Some(image_fetch_visibility_state(fetch).to_owned());
             continue;
         };
         let attachment_kind =
             image_render_attachment_kind(render, &fetch.resource.resolved, decoded_hash);
         fetch.render_attached = Some(attachment_kind.is_some());
         fetch.render_attachment_kind = attachment_kind.map(str::to_owned);
+        fetch.image_visibility_state = Some(image_fetch_visibility_state(fetch).to_owned());
+    }
+}
+
+fn image_fetch_visibility_state(fetch: &BrowserResourceFetch) -> &'static str {
+    if fetch.status == "skipped" {
+        return "skipped";
+    }
+    if !matches!(fetch.status.as_str(), "fetched" | "cached") {
+        return "not_fetched";
+    }
+    match fetch.image_decode_status.as_deref() {
+        Some("decoded") if fetch.render_attached == Some(true) => "render_attached",
+        Some("decoded") => "decoded_unattached",
+        Some("unsupported_format") => "unsupported_type",
+        Some("undecoded") => "decode_failed",
+        Some("not_fetched") => "not_fetched",
+        Some(_) => "unknown",
+        None => "unknown",
     }
 }
 
@@ -5575,21 +5601,27 @@ fn raster_visibility_counts(render: &BrowserRender, viewport: RasterViewport) ->
 fn decoded_image_command_visibility_counts(
     render: &BrowserRender,
     viewport: RasterViewport,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let mut total = 0usize;
     let mut visible = 0usize;
+    let mut clipped = 0usize;
     for (command_index, command) in render.display_list.iter().enumerate() {
         if !display_command_has_decoded_image(command) {
             continue;
         }
         total = total.saturating_add(1);
-        if display_command_report_bounds_for_viewport(render, command_index, command, viewport)
-            .is_some()
+        if let Some((command_bounds, visible_bounds)) =
+            display_command_report_bounds_for_viewport(render, command_index, command, viewport)
         {
             visible = visible.saturating_add(1);
+            if visible_bounds.width < command_bounds.width
+                || visible_bounds.height < command_bounds.height
+            {
+                clipped = clipped.saturating_add(1);
+            }
         }
     }
-    (visible, total.saturating_sub(visible))
+    (visible, total.saturating_sub(visible), clipped)
 }
 
 fn display_command_has_decoded_image(command: &DisplayCommand) -> bool {
@@ -5605,6 +5637,25 @@ fn display_command_has_decoded_image(command: &DisplayCommand) -> bool {
             ..
         }
     )
+}
+
+fn rgba_image_visibility_state(
+    visible_decoded_images: usize,
+    culled_decoded_images: usize,
+    clipped_decoded_images: usize,
+    color_pixels: usize,
+) -> &'static str {
+    if visible_decoded_images > 0 && color_pixels > 0 && clipped_decoded_images > 0 {
+        "visible_color_pixels_clipped"
+    } else if visible_decoded_images > 0 && color_pixels > 0 {
+        "visible_color_pixels"
+    } else if visible_decoded_images > 0 {
+        "visible_without_color_pixels"
+    } else if culled_decoded_images > 0 {
+        "attached_but_offscreen"
+    } else {
+        "no_decoded_images"
+    }
 }
 
 fn visible_display_commands(
@@ -7375,7 +7426,7 @@ pub fn raster_report(
 ) -> BrowserRasterReport {
     let viewport = effective_raster_viewport(render, options);
     let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
-    let (visible_decoded_image_count, culled_decoded_image_count) =
+    let (visible_decoded_image_count, culled_decoded_image_count, clipped_decoded_image_count) =
         decoded_image_command_visibility_counts(render, viewport);
     BrowserRasterReport {
         source: render.source.clone(),
@@ -7389,6 +7440,7 @@ pub fn raster_report(
         culled_command_count,
         visible_decoded_image_count,
         culled_decoded_image_count,
+        clipped_decoded_image_count,
         raster_viewport_x: viewport.active.then_some(viewport.x),
         raster_viewport_y: viewport.active.then_some(viewport.y),
         raster_viewport_width: viewport.active.then_some(viewport.width),
@@ -7405,8 +7457,9 @@ pub fn rgba_raster_report(
 ) -> BrowserRgbaRasterReport {
     let viewport = effective_raster_viewport(render, options);
     let (visible_command_count, culled_command_count) = raster_visibility_counts(render, viewport);
-    let (visible_decoded_image_count, culled_decoded_image_count) =
+    let (visible_decoded_image_count, culled_decoded_image_count, clipped_decoded_image_count) =
         decoded_image_command_visibility_counts(render, viewport);
+    let color_pixels = raster.color_pixels();
     BrowserRgbaRasterReport {
         source: render.source.clone(),
         viewport_width: render.viewport_width,
@@ -7420,12 +7473,20 @@ pub fn rgba_raster_report(
         culled_command_count,
         visible_decoded_image_count,
         culled_decoded_image_count,
+        clipped_decoded_image_count,
         raster_viewport_x: viewport.active.then_some(viewport.x),
         raster_viewport_y: viewport.active.then_some(viewport.y),
         raster_viewport_width: viewport.active.then_some(viewport.width),
         raster_viewport_height: viewport.active.then_some(viewport.height),
         non_background_pixels: raster.non_background_pixels(),
-        color_pixels: raster.color_pixels(),
+        color_pixels,
+        image_visibility_state: rgba_image_visibility_state(
+            visible_decoded_image_count,
+            culled_decoded_image_count,
+            clipped_decoded_image_count,
+            color_pixels,
+        )
+        .to_owned(),
         pixel_hash: raster.pixel_hash(),
         artifact_format: "png-rgba8".to_owned(),
     }
