@@ -15204,6 +15204,166 @@ fn inline_widgets_paint_light_fill_and_border_without_losing_hit_box() {
 }
 
 #[test]
+fn scrolled_form_control_visible_command_raster_and_hit_rows_align() {
+    let render = render_html(
+        "mem://form-control-scroll-hit",
+        br#"
+            <html><head><style>
+              .spacer { height: 32px; }
+              .tail { height: 48px; }
+            </style></head><body>
+              <div class="spacer"></div>
+              <form><button>Search</button></form>
+              <div class="tail"></div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (fill_index, fill) = render
+        .display_list
+        .iter()
+        .enumerate()
+        .find_map(|(index, command)| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if *shade == INLINE_WIDGET_BACKGROUND_SHADE => {
+                Some((index, (*x, *y, *width, *height)))
+            }
+            _ => None,
+        })
+        .expect("button should paint a form-control visual box");
+    assert!(
+        fill.1 > 0,
+        "fixture should require a nonzero scroll viewport"
+    );
+    assert!(fill.3 >= 2);
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: fill.1,
+        width: 40,
+        height: fill.3,
+    };
+    let frame = browser_viewport_frame(
+        &render,
+        viewport,
+        None,
+        BrowserRasterOptions {
+            viewport_width: Some(viewport.width),
+            viewport_height: Some(viewport.height),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("render scrolled form-control frame");
+    assert_eq!(frame.report.viewport.viewport.y, fill.1);
+    let visible_fill = frame
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.command_index == fill_index)
+        .expect("form-control fill should be reported in the scrolled viewport");
+    assert_eq!(visible_fill.visible_x, fill.0);
+    assert_eq!(visible_fill.visible_y, 0);
+    assert_eq!(visible_fill.visible_width, fill.2);
+    assert_eq!(visible_fill.visible_height, fill.3);
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, fill.0, 0),
+        hit_test_target_node(&render, fill.0, fill.1),
+        "viewport hit should resolve the same button target as document hit"
+    );
+    assert!(
+        hit_test_target_node_in_viewport(
+            &render,
+            frame.report.viewport.viewport,
+            fill.0,
+            fill.3 - 1
+        )
+        .is_some(),
+        "full visible form-control box should remain hittable after scroll"
+    );
+
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let top_border_x = frame
+        .report
+        .padding_x
+        .saturating_add(fill.0.saturating_mul(frame.report.cell_width));
+    assert_eq!(
+        pixel(top_border_x, frame.report.padding_y),
+        [
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            INLINE_WIDGET_BORDER_SHADE,
+            255
+        ],
+        "scrolled raster should paint the visible button border at the reported row"
+    );
+    let button_text = frame
+        .report
+        .viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.kind == "Text" && command.visible_y == 0)
+        .expect("button text should be visible in the same viewport row");
+    let text_x = frame.report.padding_x.saturating_add(
+        button_text
+            .visible_x
+            .saturating_mul(frame.report.cell_width),
+    );
+    let text_end_x = text_x.saturating_add(
+        button_text
+            .visible_width
+            .saturating_mul(frame.report.cell_width),
+    );
+    let text_ink_pixels = (frame.report.padding_y
+        ..frame
+            .report
+            .padding_y
+            .saturating_add(frame.report.cell_height)
+            .min(frame.raster.height))
+        .flat_map(|y| (text_x..text_end_x.min(frame.raster.width)).map(move |x| pixel(x, y)))
+        .filter(|rgba| rgba[0] < 64 && rgba[1] < 64 && rgba[2] < 64 && rgba[3] == 255)
+        .count();
+    assert!(
+        text_ink_pixels >= 4,
+        "button text ink should align with the reported visible command row"
+    );
+
+    let after = browser_document_viewport_after_scroll(
+        &render,
+        frame.report.viewport.viewport,
+        0,
+        fill.3 as isize,
+    );
+    assert!(
+        after.viewport.y >= fill.1.saturating_add(fill.3),
+        "fixture should scroll the button fully out of the viewport"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, fill.0, 0),
+        None,
+        "form-control target should not stay hittable after it leaves the viewport"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
