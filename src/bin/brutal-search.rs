@@ -2111,6 +2111,7 @@ fn web_storage_pressure_summary_lines(
     stale_secs: u64,
 ) -> Vec<String> {
     let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
+    let cache_pressure_action = web_storage_cache_pressure_next_action(&summary);
     let mut lines = vec![
         format!(
             "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
@@ -2190,6 +2191,17 @@ fn web_storage_pressure_summary_lines(
             "web_storage_pressure_suggested_dry_runs: {}",
             summary.suggested_dry_runs
         ),
+        format!(
+            "web_storage_cache_pressure: report_only=true action={cache_pressure_action} total_rows={} total_bytes={} entries={} duplicate_rows={} duplicate_row_bytes={} max_entries_per_query={} stale_artifacts={} suggested_dry_runs={}",
+            summary.result_rows,
+            summary.bytes,
+            summary.entries,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes,
+            summary.max_entries_per_query,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
+        ),
     ];
     if summary.suggested_dry_runs > 0 {
         lines.push(format!(
@@ -2201,6 +2213,19 @@ fn web_storage_pressure_summary_lines(
         artifacts, &summary, now, stale_secs,
     ));
     lines
+}
+
+fn web_storage_cache_pressure_next_action(summary: &WebStoragePressureSummary) -> &'static str {
+    if summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0 {
+        "inspect-web-cache-duplicates"
+    } else if summary.suggested_dry_runs > 0
+        || summary.entries >= WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
+        || summary.bytes >= DEFAULT_CACHE_MAX_BYTES
+    {
+        "inspect-web-cache-growth"
+    } else {
+        "web-cache-low"
+    }
 }
 
 fn web_storage_export_readiness_lines(
@@ -4985,6 +5010,59 @@ mod tests {
             Some("brutal-search compact-web-cache --dry-run --min-entries 1")
         );
         assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
+    }
+
+    #[test]
+    fn web_storage_cache_pressure_reports_rows_bytes_and_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"alpha\"}]}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"beta\"}]}\n",
+        )
+        .unwrap();
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats.clone()], 120, 60);
+
+        assert_eq!(cache_stats.entries, 2);
+        assert_eq!(cache_stats.result_rows, 2);
+        assert_eq!(cache_stats.duplicate_entries, 1);
+        assert!(cache_stats.bytes > 0);
+        assert!(cache_stats.duplicate_row_bytes > 0);
+        assert!(lines.contains(&format!(
+            "web_storage_cache_pressure: report_only=true action=inspect-web-cache-duplicates total_rows=2 total_bytes={} entries=2 duplicate_rows=1 duplicate_row_bytes={} max_entries_per_query=2 stale_artifacts=0 suggested_dry_runs=1",
+            cache_stats.bytes,
+            cache_stats.duplicate_row_bytes
+        )));
+
+        let growth_summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: DEFAULT_CACHE_MAX_BYTES,
+            entries: 1,
+            result_rows: 1,
+            durable_result_rows: 1,
+            incomplete_result_rows: 0,
+            unique_entries: 1,
+            duplicate_entries: 0,
+            unique_row_bytes: DEFAULT_CACHE_MAX_BYTES,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        assert_eq!(
+            web_storage_cache_pressure_next_action(&growth_summary),
+            "inspect-web-cache-growth"
+        );
+        let low_summary = WebStoragePressureSummary {
+            bytes: 1,
+            ..growth_summary
+        };
+        assert_eq!(
+            web_storage_cache_pressure_next_action(&low_summary),
+            "web-cache-low"
+        );
     }
 
     #[test]
