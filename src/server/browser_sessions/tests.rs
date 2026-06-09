@@ -9670,6 +9670,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-x="{link_x}""#)));
     assert!(topbar_html.contains(&format!(r#"data-browser-chrome-click-page-y="{link_y}""#)));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-action="click-at""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-outcome="success""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-target="navigation""#));
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-feedback-session=\"{}\"",
         payload.id
@@ -10313,9 +10316,12 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
-    assert!(html.contains(
-        r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback title="Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved">Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved</span>"#
-    ));
+    assert!(html.contains(r#"data-browser-chrome-click-feedback"#));
+    assert!(html.contains(r#"data-browser-chrome-click-action="click-at""#));
+    assert!(html.contains(r#"data-browser-chrome-click-outcome="success""#));
+    assert!(html.contains(r#"data-browser-chrome-click-target="page-update""#));
+    assert!(html.contains(r#"data-browser-chrome-click-page-x="0""#));
+    assert!(html.contains(r#"data-browser-chrome-click-page-y="0""#));
     assert!(
         html.contains("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
@@ -10512,6 +10518,9 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-chrome-last-action="click""#));
     assert!(html.contains(r#"data-browser-chrome-last-outcome="miss""#));
+    assert!(html.contains(r#"data-browser-chrome-click-action="click-at""#));
+    assert!(html.contains(r#"data-browser-chrome-click-outcome="miss""#));
+    assert!(html.contains(r#"data-browser-chrome-click-target="none""#));
     assert!(html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
     assert!(html.contains(r#"data-browser-chrome-outcome-display="compact""#));
     assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-last-outcome="miss"] [data-browser-chrome-click-feedback]"#));
