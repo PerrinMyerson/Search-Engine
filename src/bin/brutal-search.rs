@@ -1070,6 +1070,10 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut safe_candidates = 0usize;
     let mut review_required = 0usize;
     let mut old_target_count = 0usize;
+    let mut target_candidate_count = 0usize;
+    let mut target_candidate_bytes = 0u64;
+    let mut target_largest_path = String::from("none");
+    let mut target_largest_bytes = 0u64;
     let mut dirty_worktree_count = 0usize;
     let mut unknown_review_count = 0usize;
     let mut active_worktree_count = 0usize;
@@ -1085,10 +1089,16 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         } else {
             review_required += 1;
         }
-        if classification.kind == "validation-target"
-            && modified_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS
-        {
-            old_target_count += 1;
+        if classification.kind == "validation-target" {
+            target_candidate_count += 1;
+            target_candidate_bytes = target_candidate_bytes.saturating_add(bytes);
+            if bytes > target_largest_bytes {
+                target_largest_bytes = bytes;
+                target_largest_path = path.display().to_string();
+            }
+            if modified_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS {
+                old_target_count += 1;
+            }
         }
         if classification.status == "dirty" {
             dirty_worktree_count += 1;
@@ -1134,6 +1144,14 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     lines.push(format!(
         "storage_temp_cleanup_age_pressure: report_only=true old_target_count={old_target_count} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} total_bytes={total_bytes} next_action={age_next_action} old_target_threshold_secs={TEMP_CLEANUP_OLD_TARGET_SECS}"
     ));
+    lines.push(format!(
+        "storage_build_target_footprint_dry_run: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} next_action={}",
+        temp_cleanup_target_footprint_next_action(
+            target_candidate_count,
+            target_candidate_bytes,
+            old_target_count,
+        )
+    ));
     let generated_next_action = temp_cleanup_generated_pressure_next_action(
         active_worktree_count,
         generated_review_count,
@@ -1156,6 +1174,22 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
             .to_owned(),
     );
     Ok(lines)
+}
+
+fn temp_cleanup_target_footprint_next_action(
+    target_candidate_count: usize,
+    target_candidate_bytes: u64,
+    old_target_count: usize,
+) -> &'static str {
+    if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else if target_candidate_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "review-large-validation-targets"
+    } else if target_candidate_count > 0 {
+        "review-validation-target-footprint"
+    } else {
+        "target-footprint-low"
+    }
 }
 
 fn temp_cleanup_age_pressure_next_action(
@@ -4324,6 +4358,54 @@ mod tests {
         assert_eq!(
             temp_cleanup_generated_pressure_next_action(0, 1, 1),
             "review-generated-output"
+        );
+    }
+
+    #[test]
+    fn storage_build_target_footprint_dry_run_reports_target_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let small_target = dir
+            .path()
+            .join("search-engine-storage-small-target-53a24a5");
+        std::fs::create_dir_all(&small_target).unwrap();
+        let small_path = small_target.join("small.o");
+        let small_bytes = b"small";
+        std::fs::write(&small_path, small_bytes).unwrap();
+        let large_target = dir
+            .path()
+            .join("search-engine-storage-large-target-53a24a5");
+        std::fs::create_dir_all(&large_target).unwrap();
+        let large_path = large_target.join("large.o");
+        let large_bytes = b"larger-target";
+        std::fs::write(&large_path, large_bytes).unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let expected_target_bytes = small_bytes.len() + large_bytes.len();
+        let expected_largest_bytes = large_bytes.len();
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_build_target_footprint_dry_run: report_only=true deletes=false",
+            ) && line.contains(" target_candidates=2 ")
+                && line.contains(&format!(" target_bytes={expected_target_bytes} "))
+                && line.contains("search-engine-storage-large-target-53a24a5")
+                && line.contains(&format!(" largest_target_bytes={expected_largest_bytes} "))
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" next_action=review-validation-target-footprint")
+        }));
+        assert_eq!(std::fs::read(&small_path).unwrap(), small_bytes);
+        assert_eq!(std::fs::read(&large_path).unwrap(), large_bytes);
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(0, 0, 0),
+            "target-footprint-low"
+        );
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(1, INDEX_ARTIFACT_HIGH_GROWTH_BYTES, 0),
+            "review-large-validation-targets"
+        );
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(1, 1, 1),
+            "remove-old-merged-targets"
         );
     }
 
