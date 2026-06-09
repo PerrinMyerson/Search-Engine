@@ -738,3 +738,216 @@ fn successive_scroll_dirty_regions_merge_without_stale_mixed_raster_hits() {
         "clamped no-op scroll should preserve visible decoded image color"
     );
 }
+
+#[test]
+fn continuous_scroll_reports_moved_clamped_and_rerendered_viewports() {
+    let image_url = "mem://continuous-scroll-transition-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![128],
+        rgb_pixels: Some(vec![208, 84, 52]),
+    };
+    let render = BrowserRender {
+        source: "mem://continuous-scroll-transition".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 7,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Link".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(91)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Head".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 128,
+                alt: None,
+                url: Some(image_url.clone()),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 4,
+                y: 2,
+                text: "Link".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 3,
+                width: 12,
+                height: 1,
+                shade: 232,
+                red: 232,
+                green: 240,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Middle".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 2,
+                y: 5,
+                width: 2,
+                height: 1,
+                shade: 128,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Head\nLink\nMiddle\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 1,
+        width: 12,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(
+        &render,
+        start,
+        &[(0, -1), (0, -1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1)],
+        options,
+    )
+    .expect("render continuous viewport scroll transition frames");
+
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1, 2, 3, 4, 4],
+        "small scroll deltas should move monotonically and clamp at both document edges"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.transition)
+            .collect::<Vec<_>>(),
+        vec![
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::ClampedNoop,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::ClampedNoop,
+        ],
+        "viewport reports should distinguish moved frames from clamped no-op scrolls"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.scroll_delta_y)
+            .collect::<Vec<_>>(),
+        vec![-1, 0, 1, 1, 1, 1, 0],
+        "reported scroll deltas should reflect the actual clamped viewport movement"
+    );
+    assert!(
+        frames[1].report.dirty_pixel_regions.is_empty()
+            && frames[6].report.dirty_pixel_regions.is_empty(),
+        "top and bottom clamped no-op scrolls should not mark stale raster rows dirty"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let first_image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[3], first_image_x, options.padding_y),
+        [208, 84, 52, 255],
+        "decoded image color should move one viewport row at a time with the raster slice"
+    );
+    assert_ne!(
+        pixel(&frames[4], first_image_x, options.padding_y),
+        [208, 84, 52, 255],
+        "after the upper image scrolls away, its color should not remain stale in the top row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[3].report.viewport.viewport, 1, 0),
+        Some(41),
+        "partially scrolled visible image target should remain hittable"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[4].report.viewport.viewport, 1, 0),
+        None,
+        "stale upper image target should disappear after it leaves the viewport"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[5].report.viewport.viewport, 2, 1),
+        Some(91),
+        "lower decoded image target should remain aligned near the bottom clamp"
+    );
+
+    let rerender = browser_viewport_frame(
+        &render,
+        frames[5].report.viewport.viewport,
+        Some(frames[5].report.viewport.viewport),
+        options,
+    )
+    .expect("render explicit same-viewport rerender frame");
+    assert_eq!(
+        rerender.report.viewport.transition,
+        BrowserViewportTransition::ExplicitRerender,
+        "same requested and clamped viewport should be reported as an explicit rerender"
+    );
+    assert!(
+        rerender.report.dirty_pixel_area > 0,
+        "explicit same-viewport rerender should refresh visible media/control rows without masquerading as scroll movement"
+    );
+}
