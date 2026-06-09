@@ -17605,7 +17605,7 @@ fn render_node(
                         image_source.as_deref(),
                         Some(node_id),
                     );
-                } else if is_row_item {
+                } else if is_row_item || !style.display.is_block_flow() {
                     renderer.push_inline_image_placeholder(
                         image_width,
                         image_height,
