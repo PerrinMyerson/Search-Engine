@@ -4349,13 +4349,21 @@ fn hit_test_text_target_node_for_viewport(
             ) {
                 return None;
             }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
             let bounds = display_command_bounds_for_viewport(
                 command,
                 viewport,
-                display_command_viewport_fixed(render, command_index),
-                display_command_viewport_sticky_top(render, command_index),
+                viewport_fixed,
+                viewport_sticky_top,
             );
-            if !bounds.contains(x, y) {
+            let pinned = viewport_fixed || viewport_sticky_top.is_some();
+            let visible_bounds = if pinned {
+                bounds
+            } else {
+                intersect_display_bounds_with_viewport(bounds, viewport)?
+            };
+            if !visible_bounds.contains(x, y) {
                 return None;
             }
             render
