@@ -264,14 +264,15 @@ impl WebSearchService {
             });
         }
 
-        let limit = requested_limit
+        let display_limit = requested_limit
             .min(self.config.max_results)
             .min(BRAVE_MAX_COUNT);
+        let provider_fetch_limit = self.config.max_results.min(BRAVE_MAX_COUNT);
         if self.config.cache_ttl_secs > 0 {
             let cache = self.cache.lock().await;
             if let Some(results) = cache.lookup(&normalized_query, now_unix()) {
                 let retained_cache_results = results.len();
-                let results = take_results(results, limit);
+                let results = take_results(results, display_limit);
                 let returned_results = results.len();
                 return Ok(WebSearchLookup {
                     provider: self.provider_name(),
@@ -297,7 +298,7 @@ impl WebSearchService {
                     &self.client,
                     api_key,
                     query,
-                    limit,
+                    provider_fetch_limit,
                     &self.config.country,
                     &self.config.search_lang,
                 )
@@ -308,7 +309,7 @@ impl WebSearchService {
                         let replayed = result_log_results_for_query(
                             &self.config.result_log_path,
                             &normalized_query,
-                            limit,
+                            display_limit,
                         )?;
                         if !replayed.is_empty() {
                             let returned_results = replayed.len();
@@ -336,7 +337,7 @@ impl WebSearchService {
                 let replayed = result_log_results_for_query(
                     &self.config.result_log_path,
                     &normalized_query,
-                    limit,
+                    display_limit,
                 )?;
                 if !replayed.is_empty() {
                     let returned_results = replayed.len();
@@ -383,7 +384,7 @@ impl WebSearchService {
             let replayed = result_log_results_for_query(
                 &self.config.result_log_path,
                 &normalized_query,
-                limit,
+                display_limit,
             )?;
             if !replayed.is_empty() {
                 let returned_results = replayed.len();
@@ -404,9 +405,9 @@ impl WebSearchService {
                 });
             }
         }
-        let returned_results = results.len();
+        let provider_result_rows = results.len();
         let durable_result_rows = storage_results.len();
-        let persistence_gap_rows = returned_results.saturating_sub(durable_result_rows);
+        let persistence_gap_rows = provider_result_rows.saturating_sub(durable_result_rows);
         let persistence_status = if persistence_gap_rows == 0 {
             "persisted"
         } else {
@@ -431,6 +432,8 @@ impl WebSearchService {
             self.config.result_log_max_entries,
             self.config.result_log_max_bytes,
         )?;
+        let results = take_results(results, display_limit);
+        let returned_results = results.len();
 
         Ok(WebSearchLookup {
             provider: self.provider_name(),
@@ -442,7 +445,7 @@ impl WebSearchService {
             },
             retained_cache_results: 0,
             returned_results,
-            provider_result_rows: returned_results,
+            provider_result_rows,
             cache_replay_result_rows: 0,
             result_log_replay_result_rows: 0,
             durable_result_rows,
@@ -1929,6 +1932,38 @@ mod tests {
         assert!(lines.contains("https://example.com/one"));
         assert!(lines.contains(r#""rank":2"#));
         assert!(lines.contains("https://example.com/two"));
+    }
+
+    #[test]
+    fn provider_results_are_durable_before_display_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brave-results.jsonl");
+        let provider_results = vec![
+            web_result("https://example.com/provider-one", 100),
+            web_result("https://example.com/provider-two", 101),
+            web_result("https://example.com/provider-three", 102),
+        ];
+        let displayed_results = take_results(provider_results.clone(), 1);
+        let storage_results = web_results_for_storage(&provider_results);
+
+        append_result_log(
+            &path,
+            "Provider Rows",
+            "provider rows",
+            "brave",
+            &storage_results,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+        )
+        .unwrap();
+
+        let lines = fs::read_to_string(path).unwrap();
+        assert_eq!(displayed_results.len(), 1);
+        assert_eq!(storage_results.len(), 3);
+        assert_eq!(lines.lines().count(), 3);
+        assert!(lines.contains("https://example.com/provider-one"));
+        assert!(lines.contains("https://example.com/provider-two"));
+        assert!(lines.contains("https://example.com/provider-three"));
     }
 
     #[test]
