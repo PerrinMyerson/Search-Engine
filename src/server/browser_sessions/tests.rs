@@ -2512,6 +2512,21 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(topbar_html.contains(r#"data-browser-chrome-can-scroll-up="false""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-can-scroll-down="true""#));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-from=\"/search?q=wide\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"40\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(topbar_html.contains(
         r#"<span aria-disabled="true" title="Already at top" data-browser-chrome-scroll-action="top" data-browser-chrome-scroll-disabled="Already at top">Top</span>"#
     ));
@@ -2717,6 +2732,46 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(topbar_html.contains("data-browser-primary-nav-viewport-x=\"8\""));
     assert!(topbar_html.contains("data-browser-primary-nav-viewport-y=\"4\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-x=\"8\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-y=\"4\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"40\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-page-viewport-x=\"8\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-viewport-y=\"4\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-width=\"40\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-height=\"16\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(topbar_html.contains("data-browser-primary-nav-width=\"40\""));
     assert!(topbar_html.contains("data-browser-primary-nav-height=\"16\""));
     assert!(topbar_html.contains(&format!(
@@ -9426,6 +9481,46 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     )));
     assert!(topbar_html.contains("data-browser-primary-nav-viewport-x=\"0\""));
     assert!(topbar_html.contains("data-browser-primary-nav-viewport-y=\"0\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-x=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-y=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"48\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-scroll-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-session=\"{}\"",
+        payload.id
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-from=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&back_href)
+    )));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-source=\"{}\"",
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(topbar_html.contains("data-browser-chrome-page-viewport-x=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-viewport-y=\"0\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-width=\"48\""));
+    assert!(topbar_html.contains("data-browser-chrome-page-height=\"14\""));
+    assert!(topbar_html.contains(&format!(
+        "data-browser-chrome-page-max-bytes=\"{}\"",
+        payload.max_bytes
+    )));
     assert!(topbar_html.contains("data-browser-primary-nav-width=\"48\""));
     assert!(topbar_html.contains("data-browser-primary-nav-height=\"14\""));
     assert!(topbar_html.contains(&format!(
