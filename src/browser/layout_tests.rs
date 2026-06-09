@@ -16591,6 +16591,146 @@ fn scrolled_form_control_visible_command_raster_and_hit_rows_align() {
 }
 
 #[test]
+fn scrolled_control_nearby_visual_hit_prefers_visible_button_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://scrolled-control-nearby-hit".to_owned(),
+        title: String::new(),
+        viewport_width: 14,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 5,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(77)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(88)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 5,
+                width: 2,
+                height: 1,
+                shade: INLINE_WIDGET_BACKGROUND_SHADE,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 14,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Rect {
+                x: 8,
+                y: 5,
+                width: 2,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Footer keeps adjacent scroll available".to_owned(),
+            },
+        ],
+        text: "Intro\nFooter keeps adjacent scroll available".to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 5,
+        width: 14,
+        height: 2,
+    };
+    let report = browser_document_viewport(&render, viewport, None);
+    assert_eq!(report.viewport.y, 5);
+    assert_eq!(
+        report
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(1, "Rect", 0), (2, "ColorRect", 1), (3, "Rect", 0)]
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 6, 0),
+        Some(77),
+        "nearby visual fallback should choose the closest visible control after scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, report.viewport, 7, 0),
+        Some(88),
+        "clicks closer to the later visible control should still resolve to that target"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(report.viewport.y),
+        viewport_width: Some(report.viewport.width),
+        viewport_height: Some(report.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options).expect("rasterize scrolled control hit");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let visible_control_x = options
+        .padding_x
+        .saturating_add(4usize.saturating_mul(options.cell_width));
+    assert_eq!(
+        pixel(visible_control_x, options.padding_y),
+        [
+            INLINE_WIDGET_BACKGROUND_SHADE,
+            INLINE_WIDGET_BACKGROUND_SHADE,
+            INLINE_WIDGET_BACKGROUND_SHADE,
+            255
+        ],
+        "raster should show the closer visible control row"
+    );
+    assert_eq!(
+        pixel(
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height)
+        ),
+        [236, 244, 248, 255],
+        "adjacent row should show the non-target background"
+    );
+
+    let after = browser_document_viewport_after_scroll(&render, report.viewport, 0, 1);
+    assert_eq!(after.viewport.y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, after.viewport, 6, 0),
+        None,
+        "nearby visual fallback should not keep either control hittable after the row scrolls out"
+    );
+}
+
+#[test]
 fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
     let image_url = "mem://link-underlined-image".to_owned();
     let decoded = DecodedImage {
