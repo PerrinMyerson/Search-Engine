@@ -304,6 +304,10 @@ impl DisplayHitTarget {
         })
     }
 
+    fn has_target(&self) -> bool {
+        self.target_node.is_some() || self.text_runs.iter().any(|run| run.target_node.is_some())
+    }
+
     fn with_viewport_fixed(mut self, viewport_fixed: bool) -> Self {
         self.viewport_fixed = viewport_fixed;
         self
@@ -7417,6 +7421,7 @@ fn raster_text_context_overlay_rows(
 ) -> Vec<usize> {
     let mut row_has_text = vec![false; viewport.height];
     let mut row_has_visual = vec![false; viewport.height];
+    let mut row_has_hit_target = vec![false; viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
@@ -7433,6 +7438,20 @@ fn raster_text_context_overlay_rows(
         let end_row = start_row
             .saturating_add(visible.height)
             .min(viewport.height);
+        let visible_target_should_keep_row_clear = render
+            .hit_targets
+            .get(command_index)
+            .is_some_and(DisplayHitTarget::has_target)
+            && (display_command_text(command).is_some()
+                || !display_command_is_visual_fill(command)
+                || !large_text_viewport_visual_fill(viewport, visible));
+        if visible_target_should_keep_row_clear {
+            for row in start_row..end_row {
+                if let Some(has_hit_target) = row_has_hit_target.get_mut(row) {
+                    *has_hit_target = true;
+                }
+            }
+        }
         if display_command_is_visual_fill(command) {
             for row in start_row..end_row {
                 if let Some(has_visual) = row_has_visual.get_mut(row) {
@@ -7455,7 +7474,10 @@ fn raster_text_context_overlay_rows(
         row_has_visual
             .iter()
             .zip(row_has_text.iter())
-            .map(|(has_visual, has_text)| *has_visual && !*has_text),
+            .zip(row_has_hit_target.iter())
+            .map(|((has_visual, has_text), has_hit_target)| {
+                *has_visual && !*has_text && !*has_hit_target
+            }),
         preferred_context_overlay_row(viewport, context_bounds),
         line_count,
     )

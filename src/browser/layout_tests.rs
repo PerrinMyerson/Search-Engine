@@ -13542,6 +13542,127 @@ fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
 }
 
 #[test]
+fn readable_context_overlay_preserves_visible_click_target_rows_after_scroll() {
+    let render = BrowserRender {
+        source: "mem://readable-overlay-click-target".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(42)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 6,
+                shade: 224,
+                red: 232,
+                green: 240,
+                blue: 248,
+            },
+            DisplayCommand::ColorRect {
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 1,
+                shade: 192,
+                red: 220,
+                green: 80,
+                blue: 80,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Readable article copy remains available below media".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "More details after the visual area".to_owned(),
+            },
+        ],
+        text: "Readable article copy remains available below media\nMore details after the visual area"
+            .to_owned(),
+    };
+
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 3,
+    };
+    let raster_viewport = raster_viewport_from_state(viewport);
+    let overlay_rows = readable_context_overlay_viewport_rows(&render, raster_viewport);
+    assert!(
+        !overlay_rows.is_empty(),
+        "media-heavy viewport should still get readable context overlay rows"
+    );
+    assert!(
+        !overlay_rows.contains(&1),
+        "readable context overlay should not cover the visible clickable visual row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport, 1, 1),
+        Some(42),
+        "visible clickable visual row should remain hittable"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(viewport.width),
+        viewport_height: Some(viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options)
+        .expect("rasterize readable overlay click target viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let target_x = options.padding_x.saturating_add(options.cell_width);
+    let target_y = options.padding_y.saturating_add(options.cell_height);
+    assert_eq!(
+        pixel(target_x, target_y),
+        [220, 80, 80, 255],
+        "clickable visual target row should keep its raster color"
+    );
+    let overlay_has_ink = overlay_rows.iter().copied().any(|row| {
+        let row_start = options
+            .padding_y
+            .saturating_add(row.saturating_mul(options.cell_height));
+        let row_end = row_start
+            .saturating_add(options.cell_height)
+            .min(rgba.height);
+        (row_start..row_end).any(|y| {
+            (options.padding_x..options.padding_x.saturating_add(options.cell_width * 7))
+                .any(|x| pixel(x, y) == [0, 0, 0, 255])
+        })
+    });
+    assert!(
+        overlay_has_ink,
+        "readable context should still draw overlay text on non-clickable media rows"
+    );
+}
+
+#[test]
 fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
     let image_url = "mem://inline-svg-context-image".to_owned();
     let decoded = DecodedImage {
