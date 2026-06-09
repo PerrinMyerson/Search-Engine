@@ -1314,6 +1314,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in storage_budget_pressure_lines(&stats, &web_summary, retention_config) {
         println!("{line}");
     }
+    for line in storage_cache_growth_guardrail_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
     for line in search_index_retention_audit_lines(&stats, &web_summary) {
         println!("{line}");
     }
@@ -1865,6 +1868,55 @@ fn storage_budget_pressure_lines(
         format!("storage_budget_crawl_bytes: {crawl_bytes}"),
         "storage_budget_report_mode: report-only".to_owned(),
         "storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
+    ]
+}
+
+fn storage_cache_growth_guardrail_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let web_bytes = web_summary.bytes;
+    let browser_session_bytes = stats.browser_document_bytes;
+    let resource_cache_bytes = 0u64;
+    let components = [
+        ("web-cache", web_bytes),
+        ("browser-session-cache", browser_session_bytes),
+        ("resource-cache", resource_cache_bytes),
+    ];
+    let (largest_component, largest_component_bytes) = components
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let high_growth_components = components
+        .iter()
+        .filter(|(_, bytes)| *bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES)
+        .count();
+    let next_action = if web_summary.duplicate_row_bytes > 0
+        && stats.browser_document_duplicate_row_bytes > 0
+    {
+        "inspect-multiple-cache-growth"
+    } else if web_summary.duplicate_row_bytes > 0 || web_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-web-cache-growth"
+    } else if stats.browser_document_duplicate_row_bytes > 0
+        || browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+    {
+        "inspect-browser-session-cache-growth"
+    } else {
+        "cache-growth-low"
+    };
+
+    vec![
+        format!(
+            "storage_cache_growth_guardrail: report_only=true web_rows={} web_bytes={web_bytes} browser_session_rows={} browser_session_bytes={browser_session_bytes} resource_cache_bytes={resource_cache_bytes} resource_cache_status=not-scanned duplicate_bytes={duplicate_bytes} largest_component={largest_component} largest_component_bytes={largest_component_bytes} high_growth_component_count={high_growth_components} high_growth_threshold_bytes={INDEX_ARTIFACT_HIGH_GROWTH_BYTES} next_action={next_action}",
+            web_summary.result_rows,
+            stats.browser_document_rows
+        ),
+        "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index"
+            .to_owned(),
     ]
 }
 
@@ -3883,6 +3935,56 @@ mod tests {
             "index_artifact_storage_pressure: report_only=true total_bytes=4 largest_component=docs.bin largest_component_bytes=4 high_growth_component_count=0 high_growth_threshold_bytes={} next_action=index-pressure-low",
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES
         )));
+    }
+
+    #[test]
+    fn storage_cache_growth_guardrail_reports_high_growth_components() {
+        let stats = IndexStorageStats {
+            total_bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 500,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 600,
+            browser_document_rows: 3,
+            browser_document_session_count: 2,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 400,
+            browser_document_duplicate_row_bytes: 200,
+            browser_document_max_row_bytes: 300,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            entries: 4,
+            result_rows: 5,
+            durable_result_rows: 5,
+            incomplete_result_rows: 0,
+            unique_entries: 3,
+            duplicate_entries: 1,
+            unique_row_bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES - 50,
+            duplicate_row_bytes: 50,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cache_growth_guardrail_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&format!(
+            "storage_cache_growth_guardrail: report_only=true web_rows=5 web_bytes={} browser_session_rows=3 browser_session_bytes=600 resource_cache_bytes=0 resource_cache_status=not-scanned duplicate_bytes=250 largest_component=web-cache largest_component_bytes={} high_growth_component_count=1 high_growth_threshold_bytes={} next_action=inspect-multiple-cache-growth",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
+        assert!(lines.contains(&"storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index".to_owned()));
     }
 
     #[test]
