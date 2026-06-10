@@ -788,11 +788,13 @@ impl BrowserApp {
 
     fn scroll_active(&mut self, delta_x: isize, delta_y: isize) -> Result<()> {
         let tab = self.active_tab_mut()?;
-        let default_prevented = tab.session.dispatch_wheel_event(delta_x, delta_y)?;
-        if default_prevented {
+        let wheel = tab.session.dispatch_wheel_event_report(delta_x, delta_y)?;
+        if wheel.default_prevented || wheel.render_changed {
             tab.last_presented_frame = None;
             tab.last_presented_window_frame = None;
             tab.content_dirty = true;
+        }
+        if wheel.default_prevented {
             return Ok(());
         }
         tab.viewport.x = apply_signed_viewport_delta(tab.viewport.x, delta_x);
@@ -1802,6 +1804,53 @@ mod tests {
         .await
         .unwrap();
         assert!(app.tabs[0].last_presented_frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn browser_app_wheel_render_change_invalidates_stable_viewport_cache() {
+        let dir = tempdir().unwrap();
+        let page = dir.path().join("wheel-render-change.html");
+        fs::write(
+            &page,
+            r#"<html><head><title>Wheel Render Change</title></head><body>
+<p id="status">before wheel</p>
+<script>
+document.addEventListener("wheel", () => {
+  document.getElementById("status").textContent = "after wheel";
+});
+</script>
+</body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&page.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        let initial = app.present_frame().unwrap();
+        assert!(initial.report.viewport.full_repaint);
+        let cached = app.present_frame().unwrap();
+        assert_eq!(cached.report.viewport.viewport.y, 0);
+        assert!(app.tabs[0].last_presented_frame.is_some());
+
+        app.apply_action(BrowserAppAction::Scroll {
+            delta_x: 0,
+            delta_y: 0,
+        })
+        .await
+        .unwrap();
+        assert_eq!(app.active_viewport().unwrap().y, 0);
+        assert!(
+            app.tabs[0].last_presented_frame.is_none(),
+            "wheel-driven DOM changes should invalidate the stable frame cache even when viewport rows do not move"
+        );
+
+        let changed = app.present_frame().unwrap();
+        assert!(changed.report.viewport.full_repaint);
+        assert_ne!(changed.report.pixel_hash, cached.report.pixel_hash);
+        assert!(
+            app.report().unwrap().text.contains("after wheel"),
+            "the refreshed browser app report should reflect the wheel-updated visible text"
+        );
     }
 
     #[tokio::test]

@@ -241,6 +241,12 @@ impl BrowserClickDefaultAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BrowserWheelDispatchReport {
+    pub default_prevented: bool,
+    pub render_changed: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct DisplayHitTarget {
     target_node: Option<usize>,
@@ -2610,9 +2616,23 @@ impl BrowserSession {
     }
 
     pub fn dispatch_wheel_event(&mut self, delta_x: isize, delta_y: isize) -> Result<bool> {
+        Ok(self
+            .dispatch_wheel_event_report(delta_x, delta_y)?
+            .default_prevented)
+    }
+
+    pub fn dispatch_wheel_event_report(
+        &mut self,
+        delta_x: isize,
+        delta_y: isize,
+    ) -> Result<BrowserWheelDispatchReport> {
         let Some(current_index) = self.current_index else {
             bail!("cannot dispatch wheel event: session has no current page");
         };
+        let before_render = self
+            .entries
+            .get(current_index)
+            .map(|entry| entry.render.clone());
         let mut dispatch = BrowserEventDispatch {
             node_id: 0,
             default_prevented: false,
@@ -2629,7 +2649,14 @@ impl BrowserSession {
         self.persist_entry_runtime_storage(current_index);
         let render = self.render_entry_page_state(current_index);
         self.set_entry_render(current_index, render);
-        Ok(dispatch.default_prevented)
+        let render_changed = before_render
+            .as_ref()
+            .zip(self.entries.get(current_index).map(|entry| &entry.render))
+            .is_some_and(|(before, after)| browser_render_viewport_output_changed(before, after));
+        Ok(BrowserWheelDispatchReport {
+            default_prevented: dispatch.default_prevented,
+            render_changed,
+        })
     }
 
     fn edit_focused_text_control(
@@ -3711,6 +3738,43 @@ impl BrowserSession {
             entry.render = render;
         }
     }
+}
+
+fn browser_render_viewport_output_changed(before: &BrowserRender, after: &BrowserRender) -> bool {
+    before.source != after.source
+        || before.title != after.title
+        || before.viewport_width != after.viewport_width
+        || before.dom_node_count != after.dom_node_count
+        || before.css_rule_count != after.css_rule_count
+        || before.layout_box_count != after.layout_box_count
+        || before.layout_boxes != after.layout_boxes
+        || before.paint_command_count != after.paint_command_count
+        || before.links != after.links
+        || before.forms != after.forms
+        || before.resources != after.resources
+        || before.fragment_targets != after.fragment_targets
+        || before.display_list != after.display_list
+        || before.text != after.text
+        || before.hit_targets != after.hit_targets
+        || browser_render_decoded_image_fingerprint(before)
+            != browser_render_decoded_image_fingerprint(after)
+}
+
+fn browser_render_decoded_image_fingerprint(
+    render: &BrowserRender,
+) -> Vec<(&str, usize, usize, &str)> {
+    render
+        .decoded_images
+        .iter()
+        .map(|image| {
+            (
+                image.url.as_str(),
+                image.width,
+                image.height,
+                image.pixel_hash.as_str(),
+            )
+        })
+        .collect()
 }
 
 fn annotate_image_fetch_render_attachments(
