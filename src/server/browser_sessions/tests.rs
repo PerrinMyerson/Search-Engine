@@ -184,6 +184,7 @@ fn assert_primary_nav_action_state(
     href: &str,
     available: bool,
 ) {
+    let route_state = if available { "available" } else { "disabled" };
     assert!(topbar_html.contains(&format!(
         r#"data-browser-primary-nav-{action}-available="{available}""#
     )));
@@ -225,6 +226,12 @@ fn assert_primary_nav_action_state(
     )));
     assert!(topbar_html.contains(&format!(
         r#"data-browser-primary-nav-{action}-pending-state="idle""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-route-state="{route_state}""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-route-contract="history session source viewport dimensions max-bytes""#
     )));
     assert!(topbar_html.contains(&format!(
         r#"data-browser-primary-nav-{action}-role="history""#
@@ -2884,6 +2891,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-edge-state="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-edge="none""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-feedback-mode="compact""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-route-state="idle""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-scroll-route-preserves="session from source viewport dimensions max-bytes""#
+    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-route-feedback="compact""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-y="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-clamped-x="0""#));
@@ -3263,6 +3275,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(html.contains(">Top</a>"));
     assert_address_submit_state(topbar_html, &payload, &back_href);
+    assert!(topbar_html.contains(r#"data-browser-address-route-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-address-route-contract="go new-tab background session source viewport dimensions max-bytes""#));
+    assert!(topbar_html.contains(r#"data-browser-address-viewport-x="8""#));
+    assert!(topbar_html.contains(r#"data-browser-address-viewport-y="4""#));
+    assert!(topbar_html.contains(r#"data-browser-address-submit-route-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-address-submit-viewport-x="8""#));
+    assert!(topbar_html.contains(r#"data-browser-address-submit-viewport-y="4""#));
     assert!(topbar_html.contains(r#"data-browser-location-strip"#));
     assert!(topbar_html.contains(r#"data-browser-location-placement="under-address""#));
     assert!(topbar_html.contains(r#"data-browser-location-density="compact""#));
@@ -3668,7 +3687,26 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionState = "pending""#));
     assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionPending = action"#));
+    assert!(html.contains(r#"element.dataset.browserAddressRouteState = "viewport-synced""#));
+    assert!(html.contains(r#"element.dataset.browserAddressRouteViewportX = currentX"#));
+    assert!(
+        html.contains(
+            r#"element.dataset.browserAddressRouteMaxBytes = shell.dataset.maxBytes || """#
+        )
+    );
+    assert!(html.contains(r#"element.dataset.browserAddressSubmitRouteState = "viewport-synced""#));
+    assert!(html.contains(r#"element.dataset.browserAddressSubmitViewportY = currentY"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromePendingState = "pending""#));
+    assert!(html.contains("const stampChromeScrollRouteState = (element, state"));
+    assert!(html.contains(r#"element.dataset.browserChromeScrollRouteState = state"#));
+    assert!(html.contains(
+        r#"element.dataset.browserChromeScrollRouteMaxBytes = shell.dataset.maxBytes || """#
+    ));
+    assert!(html.contains(r#"stampChromeScrollRouteState(topStatus, "queued")"#));
+    assert!(html.contains(
+        r#"stampChromeScrollRouteState(submittingTopStatus, "submitting", scroll.x, scroll.y)"#
+    ));
+    assert!(html.contains(r#"stampChromeScrollRouteState(topStatus, "edge", x, y)"#));
     assert!(html.contains(
         r#"topStatus.dataset.browserChromePendingViewportX = String(numberData("viewportX"))"#
     ));
@@ -10392,6 +10430,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(topbar_html.contains(r#"data-browser-chrome-click-action="click-at""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-outcome="success""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-click-target="navigation""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-route-state="preserved""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-click-route-feedback="compact""#));
     assert!(html.contains(r#"data-browser-viewport-action-state="compact""#));
     assert!(html.contains(r#"data-browser-viewport-has-navigation="false""#));
     assert!(html.contains(r#"data-browser-viewport-has-click="true""#));
@@ -11270,6 +11311,9 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
     assert!(html.contains(r#"data-browser-chrome-click-action="click-at""#));
     assert!(html.contains(r#"data-browser-chrome-click-outcome="miss""#));
     assert!(html.contains(r#"data-browser-chrome-click-target="none""#));
+    assert!(html.contains(r#"data-browser-chrome-click-route-state="preserved""#));
+    assert!(html.contains(r#"data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes""#));
+    assert!(html.contains(r#"data-browser-chrome-click-route-feedback="compact""#));
     assert!(html.contains(r#"data-browser-action-feedback-placement="chrome""#));
     assert!(html.contains(r#"data-browser-action-feedback-lane="click""#));
     assert!(html.contains(r#"data-browser-action-feedback-compact="true""#));
@@ -14896,6 +14940,13 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(
         r#"data-browser-form-state-preserves="session from source viewport dimensions max-bytes""#
     ));
+    assert!(topbar_html.contains(r#"data-browser-address-route-state="idle""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-address-route-contract="go new-tab background session source viewport dimensions max-bytes""#
+    ));
+    assert!(topbar_html.contains(
+        r#"data-browser-address-route-preserves="session from source viewport dimensions max-bytes""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-address-focus-scope="address""#));
     assert!(topbar_html.contains(r#"data-browser-address-shortcut-owner="text-entry""#));
     assert!(topbar_html.contains(&format!(r#"data-browser-address-session="{}""#, payload.id)));
@@ -14922,6 +14973,8 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-address type="text""#));
     assert!(topbar_html.contains(r#"data-browser-address-focus-owner="address""#));
     assert!(topbar_html.contains(r#"data-browser-address-keyboard-owner="text-entry""#));
+    assert!(topbar_html.contains(r#"data-browser-address-route-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-address-submit-route-state="idle""#));
     assert!(topbar_html.contains(&format!(
         r#"<input type="hidden" name="source" value="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)
@@ -14955,6 +15008,14 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-chrome-outcome-display="compact""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-form-pending-state="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-form-pending-action="none""#));
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-page-action-summary="current reload images""#)
+    );
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-action-route-contract="session from source viewport dimensions max-bytes""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-action-route-state="ready""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-current-available="true""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-reload-available="true""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-images-available="false""#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
