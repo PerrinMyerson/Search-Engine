@@ -557,6 +557,104 @@ fn compact_web_search_storage(
     })
 }
 
+pub fn web_search_storage_prune_boundary_lines(
+    report: &WebSearchStorageCompactionReport,
+) -> Vec<String> {
+    let cache_target = web_storage_prune_target_state(
+        report.dry_run,
+        &report.cache_after,
+        &report.cache_projected_after,
+    );
+    let result_log_target = web_storage_prune_target_state(
+        report.dry_run,
+        &report.result_log_after,
+        &report.result_log_projected_after,
+    );
+    let cache_reclaimable_rows = report
+        .cache_before
+        .entries
+        .saturating_sub(cache_target.entries);
+    let result_log_reclaimable_rows = report
+        .result_log_before
+        .entries
+        .saturating_sub(result_log_target.entries);
+    let cache_reclaimable_bytes = report.cache_before.bytes.saturating_sub(cache_target.bytes);
+    let result_log_reclaimable_bytes = report
+        .result_log_before
+        .bytes
+        .saturating_sub(result_log_target.bytes);
+    let total_reclaimable_rows = cache_reclaimable_rows.saturating_add(result_log_reclaimable_rows);
+    let total_reclaimable_bytes =
+        cache_reclaimable_bytes.saturating_add(result_log_reclaimable_bytes);
+    let preserved_rows = cache_target
+        .entries
+        .saturating_add(result_log_target.entries);
+    let deferred_rows = if report.dry_run {
+        total_reclaimable_rows
+    } else {
+        0
+    };
+    let pruned_rows = if report.dry_run {
+        0
+    } else {
+        total_reclaimable_rows
+    };
+    let skipped_rows = if report.skipped {
+        report
+            .cache_before
+            .entries
+            .saturating_add(report.result_log_before.entries)
+    } else {
+        0
+    };
+    let next_action = if report.skipped {
+        "prune-skipped-below-threshold"
+    } else if total_reclaimable_rows == 0 && total_reclaimable_bytes == 0 {
+        "prune-low"
+    } else if report.dry_run {
+        "review-dry-run-before-apply"
+    } else {
+        "prune-applied-review-report"
+    };
+
+    vec![
+        format!(
+            "web_search_storage_prune_boundary: report_only=true dry_run={} mutates_files={} skipped={} cache_entries_before={} cache_entries_after={} result_log_entries_before={} result_log_entries_after={} cache_reclaimable_rows={} result_log_reclaimable_rows={} total_reclaimable_rows={} cache_reclaimable_bytes={} result_log_reclaimable_bytes={} total_reclaimable_bytes={} cache_duplicate_rows={} result_log_duplicate_rows={} saved_rows={} pruned_rows={} deferred_rows={} skipped_rows={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data restart_safe=true next_action={next_action}",
+            report.dry_run,
+            !report.dry_run,
+            report.skipped,
+            report.cache_before.entries,
+            cache_target.entries,
+            report.result_log_before.entries,
+            result_log_target.entries,
+            cache_reclaimable_rows,
+            result_log_reclaimable_rows,
+            total_reclaimable_rows,
+            cache_reclaimable_bytes,
+            result_log_reclaimable_bytes,
+            total_reclaimable_bytes,
+            report.cache_before.duplicate_entries,
+            report.result_log_before.duplicate_entries,
+            preserved_rows,
+            pruned_rows,
+            deferred_rows,
+            skipped_rows,
+        ),
+        format!(
+            "web_search_storage_prune_preservation: report_only=true dry_run={} preserve_replayable_cache_rows={} preserve_result_log_rows={} preserve_total_rows={} preserve_artifacts=web-cache.jsonl,brave-results.jsonl preserve_secrets=false apply_requires_explicit_non_dry_run=true",
+            report.dry_run, cache_target.entries, result_log_target.entries, preserved_rows,
+        ),
+    ]
+}
+
+fn web_storage_prune_target_state<'a>(
+    dry_run: bool,
+    after: &'a WebSearchStorageArtifactState,
+    projected_after: &'a WebSearchStorageArtifactState,
+) -> &'a WebSearchStorageArtifactState {
+    if dry_run { projected_after } else { after }
+}
+
 fn projected_web_search_storage_state(
     cache_path: &Path,
     result_log_path: &Path,
@@ -2014,6 +2112,104 @@ mod tests {
         assert_eq!(report.cache_projected_after.unique_entries, 1);
         assert_eq!(report.cache_projected_after.duplicate_entries, 0);
         assert_eq!(fs::read_to_string(cache_path).unwrap(), before);
+    }
+
+    #[test]
+    fn web_search_storage_prune_boundary_reports_dry_run_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let now = now_unix();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now,
+                results: vec![web_result("https://example.com/new", now)],
+            },
+        )
+        .unwrap();
+        append_cache_entry(
+            &cache_path,
+            &CachedWebSearch {
+                query: "query".to_owned(),
+                normalized_query: "query".to_owned(),
+                provider: "brave".to_owned(),
+                fetched_at_unix: now.saturating_sub(1),
+                results: vec![web_result("https://example.com/old", now.saturating_sub(1))],
+            },
+        )
+        .unwrap();
+        let duplicate_log_entry = WebSearchResultLogEntry {
+            query: "Query".to_owned(),
+            normalized_query: "query".to_owned(),
+            provider: "brave".to_owned(),
+            fetched_at_unix: now,
+            rank: 1,
+            title: "Title".to_owned(),
+            url: "https://example.com/new".to_owned(),
+            snippet: "Snippet".to_owned(),
+            score: 1.0,
+        };
+        {
+            let mut file = fs::File::create(&result_log_path).unwrap();
+            serde_json::to_writer(&mut file, &duplicate_log_entry).unwrap();
+            file.write_all(b"\n").unwrap();
+            serde_json::to_writer(&mut file, &duplicate_log_entry).unwrap();
+            file.write_all(b"\n").unwrap();
+            file.flush().unwrap();
+        }
+        let cache_before = fs::read_to_string(&cache_path).unwrap();
+        let result_log_before = fs::read_to_string(&result_log_path).unwrap();
+
+        let report = compact_web_search_storage(
+            cache_path.clone(),
+            result_log_path.clone(),
+            1_000,
+            DEFAULT_CACHE_MAX_ENTRIES,
+            DEFAULT_CACHE_MAX_BYTES,
+            DEFAULT_RESULT_LOG_MAX_ENTRIES,
+            DEFAULT_RESULT_LOG_MAX_BYTES,
+            0,
+            WebSearchStorageCompactionOptions {
+                dry_run: true,
+                min_entries: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&cache_path).unwrap(), cache_before);
+        assert_eq!(
+            fs::read_to_string(&result_log_path).unwrap(),
+            result_log_before
+        );
+        let lines = web_search_storage_prune_boundary_lines(&report);
+        let boundary = lines
+            .iter()
+            .find(|line| line.starts_with("web_search_storage_prune_boundary:"))
+            .unwrap();
+        assert!(boundary.contains("report_only=true"));
+        assert!(boundary.contains("dry_run=true"));
+        assert!(boundary.contains("mutates_files=false"));
+        assert!(boundary.contains("cache_reclaimable_rows=1"));
+        assert!(boundary.contains("result_log_reclaimable_rows=1"));
+        assert!(boundary.contains("total_reclaimable_rows=2"));
+        assert!(boundary.contains("cache_duplicate_rows=1"));
+        assert!(boundary.contains("result_log_duplicate_rows=1"));
+        assert!(boundary.contains("saved_rows=2"));
+        assert!(boundary.contains("pruned_rows=0"));
+        assert!(boundary.contains("deferred_rows=2"));
+        assert!(boundary.contains("skipped_rows=0"));
+        assert!(boundary.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(boundary.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(boundary.contains("restart_safe=true"));
+        assert!(boundary.contains("next_action=review-dry-run-before-apply"));
+        assert!(lines.iter().any(|line| {
+            line.contains("web_search_storage_prune_preservation: report_only=true dry_run=true")
+                && line.contains("apply_requires_explicit_non_dry_run=true")
+        }));
     }
 
     #[test]

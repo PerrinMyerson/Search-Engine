@@ -32,6 +32,7 @@ use brutal_search::web_search::{
     DEFAULT_RESULT_LOG_MAX_ENTRIES, WebSearchStorageArtifactState,
     WebSearchStorageCompactionOptions, WebSearchStorageCompactionReport,
     compact_web_search_storage_from_env, durable_web_result_commit_report_lines,
+    web_search_storage_prune_boundary_lines,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -3584,6 +3585,9 @@ fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport
         println!("{line}");
     }
     for line in web_storage_result_log_query_cap_lines(web_storage_result_log_query_cap()) {
+        println!("{line}");
+    }
+    for line in web_search_storage_prune_boundary_lines(report) {
         println!("{line}");
     }
     print_web_storage_compaction_artifact(
@@ -7662,6 +7666,73 @@ mod tests {
         assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 60".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 3".to_owned()));
         assert!(lines.contains(&"web_storage_snapshot_zero_removal: false".to_owned()));
+    }
+
+    #[test]
+    fn web_search_storage_prune_boundary_reports_cli_visibility() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_search_storage_prune_boundary_lines(&report);
+        let boundary = lines
+            .iter()
+            .find(|line| line.starts_with("web_search_storage_prune_boundary:"))
+            .unwrap();
+
+        assert!(boundary.contains("report_only=true"));
+        assert!(boundary.contains("dry_run=true"));
+        assert!(boundary.contains("mutates_files=false"));
+        assert!(boundary.contains("cache_reclaimable_rows=2"));
+        assert!(boundary.contains("result_log_reclaimable_rows=1"));
+        assert!(boundary.contains("total_reclaimable_rows=3"));
+        assert!(boundary.contains("total_reclaimable_bytes=60"));
+        assert!(boundary.contains("saved_rows=4"));
+        assert!(boundary.contains("pruned_rows=0"));
+        assert!(boundary.contains("deferred_rows=3"));
+        assert!(boundary.contains("skipped_rows=0"));
+        assert!(boundary.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(boundary.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(boundary.contains("next_action=review-dry-run-before-apply"));
     }
 
     #[test]
