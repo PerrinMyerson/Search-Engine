@@ -748,14 +748,21 @@ async fn browser_session_page_can_omit_heavy_diagnostics_for_default_route() {
     assert!(slim_html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(slim_html.contains(r#"<strong>Tools</strong>"#));
     assert!(slim_html.contains("Open diagnostics"));
+    assert!(slim_html.contains(r#"data-browser-tools-tray-role="diagnostics-teaser""#));
+    assert!(slim_html.contains(r#"data-browser-tools-tray-primary-flow="false""#));
+    assert!(slim_html.contains(r#"data-browser-tools-teaser="compact""#));
+    assert!(slim_html.contains(r#"data-browser-tools-teaser-link"#));
+    assert!(slim_html.contains(r#"aria-label="Open browser diagnostics""#));
     assert!(slim_html.contains("debug=1"));
-    assert!(!slim_html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(!slim_html.contains(r##"<summary data-browser-tools-summary data-browser-tools-summary-label="Diagnostics" data-browser-tools-summary-placement="secondary">Diagnostics</summary>"##));
     assert!(!slim_html.contains("Links CSV"));
     assert!(!slim_html.contains("Forms JSON"));
     assert!(!slim_html.contains(r#"Text viewport"#));
 
     let diagnostic_html = render_browser_session_page_with_diagnostics(&payload, &back_href, true);
-    assert!(diagnostic_html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(diagnostic_html.contains(r#"data-browser-tools-tray-role="diagnostics""#));
+    assert!(diagnostic_html.contains(r#"data-browser-tools-tray-default="collapsed""#));
+    assert!(diagnostic_html.contains(r##"<summary data-browser-tools-summary data-browser-tools-summary-label="Diagnostics" data-browser-tools-summary-placement="secondary">Diagnostics</summary>"##));
     assert!(diagnostic_html.contains("Links CSV"));
     assert!(diagnostic_html.contains("Forms JSON"));
     assert!(diagnostic_html.contains("Text viewport"));
@@ -2830,7 +2837,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(
         html.contains(
-            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+            r#"data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools""#
         )
     );
     assert!(html.contains(r#"id="browser-controls-tray" class="browser-controls-tray""#));
@@ -3283,6 +3290,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains(r#"data-browser-address-submit-viewport-x="8""#));
     assert!(topbar_html.contains(r#"data-browser-address-submit-viewport-y="4""#));
     assert!(topbar_html.contains(r#"data-browser-location-strip"#));
+    assert!(topbar_html.contains(r#"data-browser-location-role="current-url""#));
+    assert!(topbar_html.contains(r#"data-browser-location-route-state="stable""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-location-preserves="session from source viewport dimensions max-bytes""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-location-placement="under-address""#));
     assert!(topbar_html.contains(r#"data-browser-location-density="compact""#));
     assert!(topbar_html.contains(&format!(
@@ -3583,10 +3595,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
     assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(html.contains(r#"<strong>Tools</strong>"#));
-    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(html.contains(r##"<summary data-browser-tools-summary data-browser-tools-summary-label="Diagnostics" data-browser-tools-summary-placement="secondary">Diagnostics</summary>"##));
     assert!(
         html.contains(
-            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+            r#"data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools""#
         )
     );
     assert!(html.contains(r#"scroll-margin-top: 76px"#));
@@ -13208,8 +13220,9 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     );
     assert!(topbar_html.contains(r#"data-browser-chrome-page-action-state="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-page-action-sync="preserve-viewport""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions-summary-label="Page""#));
     assert!(
-        topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
+        topbar_html.contains(r#"data-browser-chrome-actions-summary-role="primary-page-actions""#)
     );
     assert!(topbar_html.contains(&format!(
         r#">x {}/{} · y {}/{}<"#,
@@ -13291,7 +13304,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert!(!topbar_html.contains(r#">Load 1 image</a>"#));
     assert!(
         topbar_html.contains(
-            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+            r#"data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools""#
         )
     );
     let tools_start = html.find(r#"data-browser-controls-tray"#).unwrap();
@@ -14931,8 +14944,9 @@ async fn browser_session_page_renders_form_controls() {
         r#"data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs""#
     ));
     assert!(topbar_html.contains(r#"data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-actions-summary-label="Page""#));
     assert!(
-        topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
+        topbar_html.contains(r#"data-browser-chrome-actions-summary-role="primary-page-actions""#)
     );
     assert!(topbar_html.contains(r#"data-browser-address-form"#));
     assert!(topbar_html.contains(r#"data-browser-form-action="address""#));
@@ -15000,6 +15014,9 @@ async fn browser_session_page_renders_form_controls() {
     assert!(topbar_html.contains(r#"data-browser-chrome-feedback-count="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-error-state="none""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-feedback-collapse="single-chip""#));
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-status-chip-limit="single-visible-outcome""#)
+    );
     assert!(topbar_html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-status-density="compact""#));
     assert!(topbar_html.contains(
@@ -15057,7 +15074,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(!topbar_html.contains(">Load "));
     assert!(
         topbar_html.contains(
-            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+            r#"data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools""#
         )
     );
     assert!(!topbar_html.contains(">Top</a>"));
@@ -15075,7 +15092,21 @@ async fn browser_session_page_renders_form_controls() {
     assert!(primary_html.contains(r#"data-browser-viewport-status"#));
     assert!(primary_html.contains(r#"data-browser-first-view-status="compact""#));
     assert!(
+        primary_html.contains(r#"data-browser-viewport-status-role="compact-scroll-feedback""#)
+    );
+    assert!(primary_html.contains(r#"data-browser-viewport-status-primary-flow="true""#));
+    assert!(primary_html.contains(r#"data-browser-viewport-status-debug-flow="none""#));
+    assert!(primary_html.contains(r#"data-browser-viewport-status-preserves="session from source viewport dimensions max-bytes""#));
+    assert!(
         primary_html.contains(r#"data-browser-viewport-status-layout="summary feedback meter""#)
+    );
+    assert!(
+        primary_html
+            .contains(r#"data-browser-viewport-status-visible-budget="summary feedback meter""#)
+    );
+    assert!(
+        primary_html
+            .contains(r#"data-browser-viewport-status-current-target="current target max""#)
     );
     assert!(primary_html.contains(r#"data-browser-primary-raster hidden"#));
     assert!(!primary_html.contains(r#"<span data-browser-primary-raster>Browser view ready"#));
@@ -15095,7 +15126,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
     assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(html.contains(r#"<strong>Tools</strong>"#));
-    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(html.contains(r##"<summary data-browser-tools-summary data-browser-tools-summary-label="Diagnostics" data-browser-tools-summary-placement="secondary">Diagnostics</summary>"##));
     assert!(html.contains(r#"class="debug-stack browser-tools-menu""#));
     assert!(html.contains(r#"class="debug-stack-content""#));
     assert!(
@@ -15160,7 +15191,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains("read-only"));
     assert!(
         topbar_html.contains(
-            r##"<a class="browser-chrome-tool" href="#browser-controls-tray">Tools</a>"##
+            r#"data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools""#
         )
     );
     assert_eq!(html.matches(r#"name="action" value="select""#).count(), 1);
@@ -15727,7 +15758,7 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-controls-summary-label="Tools""#));
     assert!(html.contains(r#"data-browser-controls-summary-diagnostics="secondary""#));
     assert!(html.contains(r#"<strong>Tools</strong>"#));
-    assert!(html.contains(r#"<summary>Diagnostics</summary>"#));
+    assert!(html.contains(r##"<summary data-browser-tools-summary data-browser-tools-summary-label="Diagnostics" data-browser-tools-summary-placement="secondary">Diagnostics</summary>"##));
     assert!(html.contains(r#"data-browser-pending-viewport="true""#));
     assert!(html.contains(r#"data-viewport-state="loading""#));
     assert!(html.contains("No rendered viewport yet"));
