@@ -86,7 +86,8 @@ use forms::{
 use fragments::{collect_fragment_targets, source_fragment};
 use images::{
     DecodedImage, DecodedImageEntry, DecodedImageInfo, background_image_render_source,
-    decode_image_reference, decoded_cached_images, decoded_image_entry, image_render_source,
+    decode_image_reference, decoded_cached_images, decoded_image_entry, image_mime_type_supported,
+    image_render_source,
 };
 #[cfg(test)]
 use images::{decode_simple_png, tiny_test_jpeg_bytes, tiny_test_jpeg_data_url};
@@ -3673,6 +3674,7 @@ impl BrowserSession {
             .render
             .viewport_width
             .saturating_mul(8);
+        let background_viewport_width = self.entries[current_index].render.viewport_width;
         let mut image_resources = collect_selected_image_resources(
             &self.entries[current_index].page_state.dom,
             &page_source,
@@ -3683,6 +3685,7 @@ impl BrowserSession {
             &self.entries[current_index].page_state.dom,
             &page_source,
             &css_cascade,
+            background_viewport_width,
         ));
         let mut seen_image_resources = HashSet::new();
         image_resources.retain(|resource| seen_image_resources.insert(resource.resolved.clone()));
@@ -4172,11 +4175,13 @@ fn render_page_state_with_timings(
     let title = dom_title(&page_state.dom);
     let links = collect_links(&page_state.dom, source);
     let forms = collect_forms(&page_state.dom, source);
-    let mut resources = collect_resources(&page_state.dom, source);
+    let background_viewport_width = options.width;
+    let mut resources = collect_resources(&page_state.dom, source, background_viewport_width);
     resources.extend(collect_css_background_image_resources(
         &page_state.dom,
         source,
         &css_cascade,
+        background_viewport_width,
     ));
     let collect_us = collect_start.elapsed().as_micros();
 
@@ -16041,12 +16046,51 @@ fn parse_css_image_set_url(value: &str) -> Option<String> {
     let args = css_first_function_arguments(value, &["image-set", "-webkit-image-set"])?;
     split_css_top_level_commas(args)
         .into_iter()
-        .find_map(|candidate| parse_css_image_set_candidate_url(&candidate))
+        .enumerate()
+        .filter_map(|(order, candidate)| parse_css_image_set_candidate_url(&candidate, order))
+        .max_by_key(|candidate| (candidate.density_milli, candidate.order))
+        .map(|candidate| candidate.url)
 }
 
-fn parse_css_image_set_candidate_url(candidate: &str) -> Option<String> {
+#[derive(Debug, Clone)]
+struct CssImageSetCandidate {
+    url: String,
+    density_milli: usize,
+    order: usize,
+}
+
+fn parse_css_image_set_candidate_url(
+    candidate: &str,
+    order: usize,
+) -> Option<CssImageSetCandidate> {
     let url = parse_css_url_function(candidate).or_else(|| parse_css_quoted_url(candidate))?;
-    css_image_url_supported(&url, candidate).then_some(url)
+    css_image_url_supported(&url, candidate).then_some(CssImageSetCandidate {
+        url,
+        density_milli: parse_css_image_set_density_milli(candidate).unwrap_or(1_000),
+        order,
+    })
+}
+
+fn parse_css_image_set_density_milli(candidate: &str) -> Option<usize> {
+    candidate
+        .split_ascii_whitespace()
+        .find_map(parse_css_image_set_density_descriptor)
+}
+
+fn parse_css_image_set_density_descriptor(descriptor: &str) -> Option<usize> {
+    let descriptor = descriptor.trim().to_ascii_lowercase();
+    let density = if let Some(density) = descriptor.strip_suffix('x') {
+        density.parse::<f64>().ok()?
+    } else if let Some(density) = descriptor.strip_suffix("dppx") {
+        density.parse::<f64>().ok()?
+    } else if let Some(dpi) = descriptor.strip_suffix("dpi") {
+        dpi.parse::<f64>().ok()? / 96.0
+    } else if let Some(dpcm) = descriptor.strip_suffix("dpcm") {
+        dpcm.parse::<f64>().ok()? * 2.54 / 96.0
+    } else {
+        return None;
+    };
+    (density.is_finite() && density > 0.0).then(|| (density * 1000.0).round() as usize)
 }
 
 fn parse_css_quoted_url(value: &str) -> Option<String> {
@@ -16188,21 +16232,43 @@ fn css_url_should_rebase(url: &str) -> bool {
 
 fn css_image_url_supported(url: &str, candidate: &str) -> bool {
     let candidate = candidate.to_ascii_lowercase();
-    if candidate.contains("image/avif") || url_has_extension(url, "avif") {
+    if candidate.contains("image/avif")
+        || candidate.contains("image/heic")
+        || candidate.contains("image/heif")
+        || candidate.contains("image/tiff")
+        || !css_background_image_resource_supported(url)
+    {
         return false;
     }
     true
 }
 
-fn url_has_extension(url: &str, extension: &str) -> bool {
-    let base = url
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(url)
-        .trim_end_matches('/');
-    base.rsplit('.')
-        .next()
-        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(extension))
+fn css_background_image_resource_supported(url: &str) -> bool {
+    let url = url.trim();
+    if let Some(metadata) = url
+        .strip_prefix("data:")
+        .or_else(|| url.strip_prefix("DATA:"))
+        .and_then(|payload| payload.split_once(',').map(|(metadata, _)| metadata))
+    {
+        let mime = metadata.split(';').next().unwrap_or_default().trim();
+        return !mime
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("image/"))
+            || image_mime_type_supported(mime);
+    }
+    let path = Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| url.split(['?', '#']).next().unwrap_or(url).to_owned());
+    !Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "avif" | "avifs" | "heic" | "heif" | "ico" | "tif" | "tiff"
+            )
+        })
 }
 
 fn parse_css_background_image_size(value: &str) -> Option<BackgroundImageSize> {
@@ -17410,6 +17476,7 @@ fn collect_css_background_image_resources(
     dom: &Dom,
     source: &str,
     css_cascade: &CssCascade,
+    viewport_width_css_px: usize,
 ) -> Vec<BrowserResource> {
     let mut resources = Vec::new();
     let mut seen = HashSet::new();
@@ -17418,6 +17485,7 @@ fn collect_css_background_image_resources(
         0,
         source,
         css_cascade,
+        viewport_width_css_px,
         false,
         &mut resources,
         &mut seen,
@@ -17430,6 +17498,7 @@ fn collect_css_background_image_resources_at(
     node_id: usize,
     source: &str,
     css_cascade: &CssCascade,
+    viewport_width_css_px: usize,
     is_row_item: bool,
     resources: &mut Vec<BrowserResource>,
     seen: &mut HashSet<String>,
@@ -17446,6 +17515,7 @@ fn collect_css_background_image_resources_at(
                     child,
                     source,
                     css_cascade,
+                    viewport_width_css_px,
                     false,
                     resources,
                     seen,
@@ -17471,6 +17541,7 @@ fn collect_css_background_image_resources_at(
                         child,
                         source,
                         css_cascade,
+                        viewport_width_css_px,
                         child_layout.row_items,
                         resources,
                         seen,
@@ -17480,9 +17551,10 @@ fn collect_css_background_image_resources_at(
             }
             if style.display.is_block_flow()
                 && !is_row_item
-                && let Some(url) = style.background_image_url.as_deref()
+                && let Some(url) = background_image_render_source(element, viewport_width_css_px)
+                    .or_else(|| style.background_image_url.clone())
             {
-                push_css_background_image_resource(resources, seen, source, url);
+                push_css_background_image_resource(resources, seen, source, &url);
             }
             for &child in &node.children {
                 if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade)
@@ -17494,6 +17566,7 @@ fn collect_css_background_image_resources_at(
                     child,
                     source,
                     css_cascade,
+                    viewport_width_css_px,
                     child_layout.row_items,
                     resources,
                     seen,
@@ -17511,6 +17584,9 @@ fn push_css_background_image_resource(
 ) {
     let url = url.trim();
     if url.is_empty() {
+        return;
+    }
+    if !css_background_image_resource_supported(url) {
         return;
     }
     let resolved = resolve_browser_href(source, url);
@@ -20125,7 +20201,8 @@ fn computed_style(
         }
     }
     if background_image_url.is_none()
-        && let Some(lazy_background_image_url) = background_image_render_source(element)
+        && let Some(lazy_background_image_url) =
+            background_image_render_source(element, BrowserRenderOptions::default().width)
     {
         background_image_url = Some(lazy_background_image_url);
     }

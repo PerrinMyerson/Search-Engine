@@ -454,6 +454,7 @@ fn image_resource_visibility_state(
     match status {
         "skipped" => Some("skipped"),
         "failed" if error_kind == Some("byte_cap") => Some("byte_limited"),
+        "failed" if image_fetch_error_retryable(error_kind) => Some("retryable_not_fetched"),
         "failed" => Some("not_fetched"),
         "fetched" | "cached" => match image_decode_status {
             Some("decoded") if decoded_color_bytes.is_some_and(|bytes| bytes > 0) => {
@@ -467,6 +468,10 @@ fn image_resource_visibility_state(
         },
         _ => None,
     }
+}
+
+fn image_fetch_error_retryable(error_kind: Option<&str>) -> bool {
+    matches!(error_kind, Some("timeout" | "dns" | "connect"))
 }
 
 fn image_resource_fetch_decode_report(
@@ -1411,7 +1416,11 @@ fn classify_load_error(error: &anyhow::Error) -> String {
         "redirect".to_owned()
     } else if error_text.contains("dns") || error_text.contains("resolve") {
         "dns".to_owned()
-    } else if error_text.contains("connect") {
+    } else if error_text.contains("connect")
+        || error_text.contains("connection refused")
+        || error_text.contains("connection reset")
+        || error_text.contains("connection aborted")
+    {
         "connect".to_owned()
     } else {
         "error".to_owned()
@@ -1449,9 +1458,13 @@ fn content_type_for_path(path: &Path) -> Option<&'static str> {
     }
 }
 
-pub(super) fn collect_resources(dom: &Dom, source: &str) -> Vec<BrowserResource> {
+pub(super) fn collect_resources(
+    dom: &Dom,
+    source: &str,
+    viewport_width_css_px: usize,
+) -> Vec<BrowserResource> {
     let mut resources = Vec::new();
-    collect_resources_at(dom, 0, source, &mut resources);
+    collect_resources_at(dom, 0, source, viewport_width_css_px, &mut resources);
     resources
 }
 
@@ -1517,6 +1530,7 @@ fn collect_resources_at(
     dom: &Dom,
     node_id: usize,
     source: &str,
+    viewport_width_css_px: usize,
     resources: &mut Vec<BrowserResource>,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
@@ -1576,11 +1590,11 @@ fn collect_resources_at(
             push_resource(resources, source, element, "poster", &element.tag, poster);
         }
 
-        push_background_alias_resources(resources, source, element);
+        push_background_alias_resources(resources, source, element, viewport_width_css_px);
     }
 
     for &child in &node.children {
-        collect_resources_at(dom, child, source, resources);
+        collect_resources_at(dom, child, source, viewport_width_css_px, resources);
     }
 }
 
@@ -2163,10 +2177,14 @@ fn push_selected_background_alias_resource(
     element: &ElementData,
     viewport_width_css_px: usize,
 ) {
+    let background_viewport_width = viewport_width_css_px.saturating_div(8).max(1);
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
         if let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) =
-                selected_background_alias_srcset_candidate(element, srcset, viewport_width_css_px)
+            && let Some(url) = selected_background_alias_srcset_candidate(
+                element,
+                srcset,
+                background_viewport_width,
+            )
         {
             push_resource(
                 resources,
@@ -2309,13 +2327,14 @@ fn push_background_alias_resources(
     resources: &mut Vec<BrowserResource>,
     source: &str,
     element: &ElementData,
+    viewport_width_css_px: usize,
 ) {
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
         if let Some(url) =
-            selected_supported_srcset_candidate(srcset, background_image_sizes_attr(element), 0)
+            selected_background_alias_srcset_candidate(element, srcset, viewport_width_css_px)
         {
             push_resource(
                 resources,
@@ -3368,12 +3387,35 @@ mod tests {
         assert!(fetch.timed_out);
         assert!(fetch.retryable);
         assert_eq!(fetch.diagnostic.as_deref(), Some("network_timeout"));
+        assert_eq!(
+            fetch.image_resource_state.as_deref(),
+            Some("retryable_not_fetched")
+        );
 
         let byte_cap = resource_target_diagnostics("data:text/plain,hello", Some("byte_cap"));
         assert_eq!(byte_cap.scheme.as_deref(), Some("data"));
         assert_eq!(byte_cap.host, None);
         assert!(!byte_cap.timed_out);
         assert!(!byte_cap.retryable);
+
+        let missing = BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource: test_resource("file:///tmp/missing.png"),
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some("No such file or directory".to_owned()),
+                error_kind: Some("error".to_owned()),
+                elapsed_ms: 0,
+                request_timeout_ms: 0,
+                cache_pressure: BrowserResourceCachePressure::default(),
+                cache_outcome: Some("miss_failed".to_owned()),
+            },
+            None,
+        );
+        assert!(!missing.retryable);
+        assert_eq!(missing.image_resource_state.as_deref(), Some("not_fetched"));
     }
 
     #[tokio::test]

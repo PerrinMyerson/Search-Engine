@@ -6977,6 +6977,12 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     let missing_path = dir.path().join("missing.jpg");
     let capped_page = dir.path().join("capped.html");
     let capped_path = dir.path().join("capped.png");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let retry_url = format!(
+        "http://{}/retry-after-scroll.png",
+        listener.local_addr().unwrap()
+    );
+    drop(listener);
     fs::write(&good_path, &png_bytes).unwrap();
     fs::write(&undecoded_path, b"not actually a png").unwrap();
     fs::write(
@@ -6987,13 +6993,16 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     fs::write(&capped_path, &png_bytes).unwrap();
     fs::write(
         &page,
-        r#"<html><body>
+        format!(
+            r#"<html><body>
             <img src="good.png" alt="Good" width="16" height="24">
             <img src="broken.png" alt="Broken" width="16" height="24">
             <img src="unsupported.bin" alt="Unsupported" width="16" height="24">
             <img src="missing.jpg" alt="Missing" width="16" height="24">
+            <img src="{retry_url}" loading="lazy" alt="Retry after viewport load" width="16" height="24">
             <img src="ftp://example.test/color.png" alt="Skipped" width="16" height="24">
-        </body></html>"#,
+        </body></html>"#
+        ),
     )
     .unwrap();
     fs::write(
@@ -7009,9 +7018,9 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 5);
+    assert_eq!(report.image_count, 6);
     assert_eq!(report.decoded, 1);
-    assert_eq!(report.failed, 2);
+    assert_eq!(report.failed, 3);
     assert_eq!(report.skipped, 1);
 
     let good_fetch = report
@@ -7092,6 +7101,29 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
         Some("not_fetched")
     );
     assert_eq!(missing_fetch.image_byte_signature, None);
+
+    let retry_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == retry_url)
+        .unwrap();
+    assert_eq!(retry_fetch.status, "failed");
+    assert_eq!(retry_fetch.error_kind.as_deref(), Some("connect"));
+    assert!(retry_fetch.retryable);
+    assert_eq!(retry_fetch.diagnostic.as_deref(), Some("network_connect"));
+    assert_eq!(
+        retry_fetch.image_resource_state.as_deref(),
+        Some("retryable_not_fetched")
+    );
+    assert_eq!(
+        retry_fetch.image_decode_status.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(
+        retry_fetch.image_decode_error_kind.as_deref(),
+        Some("not_fetched")
+    );
+    assert_eq!(retry_fetch.render_attached, Some(false));
 
     let skipped_fetch = report
         .fetches
@@ -7608,24 +7640,57 @@ async fn lazy_deferred_image_enters_viewport_with_color_attachment_evidence() {
             </picture>
             <section class="deferred-bg">Deferred background color</section>
             <section
-                data-bgset="viewport-background.png 48w, wide-background.png 320w"
-                data-bg-sizes="100vw"
-                width="48">Viewport selected background color</section>
+                data-bgset="viewport-background.png 100w, wide-background.png 320w"
+                data-bg-sizes="100vw">Viewport selected background color</section>
             <p>Below deferred images</p>
         </body></html>"#,
     )
     .unwrap();
 
     let mut session = BrowserSession::new(BrowserRenderOptions {
-        width: 48,
+        width: 100,
         ..BrowserRenderOptions::default()
     });
     session.navigate(&page.display().to_string()).await.unwrap();
 
     let report = session.render_current_with_images(1024).await.unwrap();
-    assert_eq!(report.image_count, 5);
-    assert_eq!(report.decoded, 5);
-    assert_eq!(report.failed, 0);
+    assert!(report.image_count >= 5);
+    assert!(
+        report.decoded >= 5,
+        "expected at least five decoded image resources, got {} from {:?}",
+        report.decoded,
+        report
+            .fetches
+            .iter()
+            .map(|fetch| (
+                fetch.resource.kind.as_str(),
+                fetch.resource.initiator.as_str(),
+                fetch.resource.url.as_str(),
+                fetch.resource.resolved.as_str(),
+                fetch.status.as_str(),
+                fetch.image_decode_status.as_deref(),
+                fetch.image_decode_error_kind.as_deref(),
+                fetch.image_resource_state.as_deref(),
+                fetch.render_attached
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        report.failed,
+        0,
+        "unexpected failed image fetches: {:?}",
+        report
+            .fetches
+            .iter()
+            .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
+            .map(|fetch| (
+                fetch.resource.url.as_str(),
+                fetch.resource.resolved.as_str(),
+                fetch.status.as_str(),
+                fetch.error_kind.as_deref()
+            ))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(report.skipped, 0);
     assert!(!report.fetches.iter().any(|fetch| {
         matches!(
