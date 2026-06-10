@@ -1199,6 +1199,21 @@ pub fn durable_web_result_commit_report_lines(
         result_log.newest_fetched_at_unix,
     )
     .unwrap_or(0);
+    let missing_query_buckets = result_log.query_buckets.saturating_sub(cache.query_buckets);
+    let replay_ready_after_restart = cache.durable_rows > 0
+        && result_log_only_rows == 0
+        && missing_query_buckets == 0
+        && invalid_rows == 0
+        && incomplete_rows == 0;
+    let replay_next_action = if invalid_rows > 0 || incomplete_rows > 0 {
+        "repair-saved-result-integrity-before-replay"
+    } else if result_log_only_rows > 0 || missing_query_buckets > 0 {
+        "backfill-web-cache-replay-before-restart"
+    } else if replay_ready_after_restart {
+        "replay-ready-after-restart"
+    } else {
+        "no-durable-replay-artifacts"
+    };
     Ok(vec![
         format!(
             "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
@@ -1221,6 +1236,13 @@ pub fn durable_web_result_commit_report_lines(
             cache.newest_fetched_at_unix.unwrap_or(0),
             result_log.oldest_fetched_at_unix.unwrap_or(0),
             result_log.newest_fetched_at_unix.unwrap_or(0),
+            cache.query_buckets,
+            result_log.query_buckets,
+        ),
+        format!(
+            "durable_web_result_restart_replay_readiness: report_only=true mutates_files=false replay_ready_after_restart={replay_ready_after_restart} replayable_cache_rows={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} cache_query_buckets={} result_log_query_buckets={} missing_query_buckets={missing_query_buckets} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={replay_next_action}",
+            cache.durable_rows,
+            result_log.durable_rows,
             cache.query_buckets,
             result_log.query_buckets,
         ),
@@ -2416,7 +2438,7 @@ mod tests {
 
         assert_eq!(before_cache, fs::read(&cache_path).unwrap());
         assert_eq!(before_result_log, fs::read(&result_log_path).unwrap());
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         let line = &lines[0];
         assert!(line.starts_with("durable_web_result_commit_report: report_only=true"));
         assert!(line.contains("mutates_files=false"));
@@ -2466,7 +2488,27 @@ mod tests {
         assert!(
             manifest_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
         );
-        let boundary_line = &lines[3];
+        let replay_line = &lines[3];
+        assert!(
+            replay_line
+                .starts_with("durable_web_result_restart_replay_readiness: report_only=true")
+        );
+        assert!(replay_line.contains("mutates_files=false"));
+        assert!(replay_line.contains("replay_ready_after_restart=true"));
+        assert!(replay_line.contains("replayable_cache_rows=2"));
+        assert!(replay_line.contains("durable_result_log_rows=2"));
+        assert!(replay_line.contains("result_log_only_rows=0"));
+        assert!(replay_line.contains("cache_query_buckets=1"));
+        assert!(replay_line.contains("result_log_query_buckets=1"));
+        assert!(replay_line.contains("missing_query_buckets=0"));
+        assert!(replay_line.contains("archive_oldest_fetched_at_unix=100"));
+        assert!(replay_line.contains("archive_newest_fetched_at_unix=101"));
+        assert!(
+            replay_line
+                .contains("github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl")
+        );
+        assert!(replay_line.contains("next_action=replay-ready-after-restart"));
+        let boundary_line = &lines[4];
         assert!(
             boundary_line
                 .starts_with("durable_web_result_index_artifact_boundary: report_only=true")
@@ -2549,7 +2591,19 @@ mod tests {
         assert!(manifest_line.contains("archive_oldest_fetched_at_unix=101"));
         assert!(manifest_line.contains("archive_newest_fetched_at_unix=101"));
         assert!(manifest_line.contains("next_action=inspect-saved-result-integrity-before-prune"));
-        let boundary_line = &lines[3];
+        let replay_line = &lines[3];
+        assert!(
+            replay_line
+                .starts_with("durable_web_result_restart_replay_readiness: report_only=true")
+        );
+        assert!(replay_line.contains("replay_ready_after_restart=false"));
+        assert!(replay_line.contains("replayable_cache_rows=0"));
+        assert!(replay_line.contains("durable_result_log_rows=1"));
+        assert!(replay_line.contains("result_log_only_rows=1"));
+        assert!(replay_line.contains("invalid_rows=1"));
+        assert!(replay_line.contains("incomplete_rows=2"));
+        assert!(replay_line.contains("next_action=repair-saved-result-integrity-before-replay"));
+        let boundary_line = &lines[4];
         assert!(boundary_line.contains("saved_rows=1"));
         assert!(boundary_line.contains("indexed_rows=not-scanned"));
         assert!(boundary_line.contains("invalid_rows=1"));
