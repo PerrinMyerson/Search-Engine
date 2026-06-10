@@ -19881,6 +19881,8 @@ fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
 #[test]
 fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text() {
     let image_url = "mem://source-bound-color-image".to_owned();
+    let link_text = "Next link";
+    let tail_text = "Tail text";
     let decoded = DecodedImage {
         width: 2,
         height: 1,
@@ -19890,7 +19892,7 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
     let render = BrowserRender {
         source: "mem://source-bound-scroll-clip".to_owned(),
         title: String::new(),
-        viewport_width: 6,
+        viewport_width: 12,
         dom_node_count: 0,
         css_rule_count: 0,
         layout_box_count: 0,
@@ -19916,7 +19918,7 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
             })),
             DisplayHitTarget::text(vec![TextHitTargetRun {
                 start: 0,
-                width: "Next".len(),
+                width: link_text.len(),
                 target_node: Some(77),
             }]),
             DisplayHitTarget::default(),
@@ -19937,16 +19939,16 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
             DisplayCommand::StyledText {
                 x: 0,
                 y: 3,
-                text: "Next".to_owned(),
+                text: link_text.to_owned(),
                 shade: 0,
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 4,
-                text: "Tail".to_owned(),
+                text: tail_text.to_owned(),
             },
         ],
-        text: "Next\nTail".to_owned(),
+        text: format!("{link_text}\n{tail_text}"),
     };
 
     let viewport = browser_document_viewport(
@@ -19954,7 +19956,7 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
         BrowserViewportState {
             x: 0,
             y: 2,
-            width: 6,
+            width: 12,
             height: 2,
         },
         None,
@@ -19969,6 +19971,20 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
     assert_eq!(
         image_command.visible_width, 2,
         "reported image bounds should stop at source bounds, not the stale command overrun"
+    );
+    let text_viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: viewport.viewport.y,
+            width: viewport.viewport.width,
+            height: viewport.viewport.height.saturating_add(1),
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert_eq!(
+        text_viewport.lines.first().map(String::as_str),
+        Some("@@"),
+        "text viewport should not show decoded image cells outside source-bounded paint"
     );
     assert_eq!(
         hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 0),
@@ -20033,7 +20049,7 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
         .any(|y| {
             (link_pixel_x
                 ..link_pixel_x
-                    .saturating_add(options.cell_width.saturating_mul("Next".len()))
+                    .saturating_add(options.cell_width.saturating_mul(link_text.len()))
                     .min(rgba.width))
                 .any(|x| {
                     let pixel = pixel(x, y);
