@@ -10600,9 +10600,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <body>
 <main>
 <header class="browser-topbar" data-browser-first-viewport-chrome="compact" data-browser-debug-default="secondary">
-<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address location actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address location status">
+<div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address location actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address location status" data-browser-chrome-single-toolbar="true" data-browser-chrome-debug-placement="secondary-tools">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control data-browser-primary-nav-session="{id}" data-browser-primary-nav-from="{back_href}" data-browser-primary-nav-source="{source_attr}" data-browser-primary-nav-viewport-x="{viewport_x}" data-browser-primary-nav-viewport-y="{viewport_y}" data-browser-primary-nav-width="{width}" data-browser-primary-nav-height="{height}" data-browser-primary-nav-max-bytes="{max_bytes}" data-browser-primary-nav-history-position="{primary_nav_history_position}" data-browser-primary-nav-history-length="{history_len}" data-browser-primary-nav-can-back="{can_back}" data-browser-primary-nav-can-forward="{can_forward}" data-browser-primary-nav-order="search back forward actions"><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
-<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-address-focus-scope="address" data-browser-address-shortcut-owner="text-entry" data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
+<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-form-action="address" data-browser-form-pending-state="idle" data-browser-form-state-preserves="session from source viewport dimensions max-bytes" data-browser-address-focus-scope="address" data-browser-address-shortcut-owner="text-entry" data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -10612,7 +10612,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="max_bytes" value="{max_bytes}">
 {address_source_input}
 <input data-browser-address type="text" inputmode="url" data-browser-address-focus-owner="address" data-browser-address-keyboard-owner="text-entry" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
-<button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
+<button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-form-submit="open" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-form-submit="open-new-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-form-submit="open-background-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
@@ -11275,6 +11275,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromePendingState = "idle";
       topStatus.dataset.browserChromePendingAction = "none";
       topStatus.dataset.browserChromeClickPendingState = "idle";
+      topStatus.dataset.browserChromeFormPendingState = "idle";
+      topStatus.dataset.browserChromeFormPendingAction = "none";
+      topStatus.removeAttribute("data-browser-chrome-form-pending-viewport-x");
+      topStatus.removeAttribute("data-browser-chrome-form-pending-viewport-y");
+      topStatus.removeAttribute("data-browser-chrome-form-pending-source");
+      topStatus.removeAttribute("data-browser-chrome-form-pending-max-bytes");
       topStatus.removeAttribute("data-browser-chrome-pending-viewport-x");
       topStatus.removeAttribute("data-browser-chrome-pending-viewport-y");
       topStatus.removeAttribute("data-browser-chrome-pending-source");
@@ -11444,6 +11450,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     updateHref("[data-browser-chrome-images-action]", "data-browser-chrome-images-href", "data-browser-chrome-images");
     updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back");
     updateHref("[data-browser-primary-nav-action=\"forward\"]", "data-browser-primary-nav-forward-href", "data-browser-primary-nav-forward");
+    for (const link of document.querySelectorAll("a[data-browser-form-submit-link]")) {
+      if (!link.href) {
+        continue;
+      }
+      const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
+      link.href = url.toString();
+      link.dataset.browserFormSubmitHref = url.toString();
+      link.dataset.browserFormSubmitPreservedViewportX = currentX;
+      link.dataset.browserFormSubmitPreservedViewportY = currentY;
+      link.dataset.browserFormSubmitPreservedSource = shell.dataset.pageSource || "";
+      link.dataset.browserFormSubmitPreservedMaxBytes = shell.dataset.maxBytes || "";
+    }
     for (const element of document.querySelectorAll("[data-browser-address-form], [data-browser-address], [data-browser-address-submit], [data-browser-primary-nav], [data-browser-chrome-status]")) {
       element.dataset.browserAddressViewportX = currentX;
       element.dataset.browserAddressViewportY = currentY;
@@ -11472,6 +11490,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (link.hasAttribute("data-browser-chrome-images-action")) {
       return "images";
     }
+    if (link.dataset.browserFormSubmitLink) {
+      return "form-" + link.dataset.browserFormSubmitLink;
+    }
     return "browser-action";
   };
   const markBrowserActionPending = (link) => {
@@ -11493,12 +11514,77 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromePendingViewportY = String(numberData("viewportY"));
       topStatus.dataset.browserChromePendingSource = shell.dataset.pageSource || "";
       topStatus.dataset.browserChromePendingMaxBytes = shell.dataset.maxBytes || "";
+      if (link.dataset.browserFormSubmitLink) {
+        topStatus.dataset.browserChromeFormPendingState = "pending";
+        topStatus.dataset.browserChromeFormPendingAction = action;
+        topStatus.dataset.browserChromeFormPendingViewportX = String(numberData("viewportX"));
+        topStatus.dataset.browserChromeFormPendingViewportY = String(numberData("viewportY"));
+        topStatus.dataset.browserChromeFormPendingSource = shell.dataset.pageSource || "";
+        topStatus.dataset.browserChromeFormPendingMaxBytes = shell.dataset.maxBytes || "";
+        link.dataset.browserFormSubmitPendingState = "pending";
+        link.dataset.browserFormSubmitPendingViewportX = String(numberData("viewportX"));
+        link.dataset.browserFormSubmitPendingViewportY = String(numberData("viewportY"));
+        link.dataset.browserFormSubmitPendingSource = shell.dataset.pageSource || "";
+        link.dataset.browserFormSubmitPendingMaxBytes = shell.dataset.maxBytes || "";
+      }
     }
   };
+  const formActionFromSubmitter = (form, submitter) => {
+    if (submitter && submitter.dataset.browserAddressSubmit) {
+      return submitter.dataset.browserAddressSubmit;
+    }
+    if (submitter && submitter.dataset.browserFormSubmit) {
+      return submitter.dataset.browserFormSubmit;
+    }
+    if (form && form.dataset.browserFormAction) {
+      return form.dataset.browserFormAction;
+    }
+    return "form";
+  };
+  const markBrowserFormPending = (form, submitter) => {
+    if (!form) {
+      return;
+    }
+    syncChromeViewportState();
+    const action = formActionFromSubmitter(form, submitter);
+    form.dataset.browserFormPendingState = "pending";
+    form.dataset.browserFormPendingAction = action;
+    form.dataset.browserFormPendingViewportX = String(numberData("viewportX"));
+    form.dataset.browserFormPendingViewportY = String(numberData("viewportY"));
+    form.dataset.browserFormPendingSource = shell.dataset.pageSource || "";
+    form.dataset.browserFormPendingMaxBytes = shell.dataset.maxBytes || "";
+    if (submitter) {
+      submitter.dataset.browserFormSubmitPending = "true";
+      submitter.dataset.browserFormSubmitPendingAction = action;
+      submitter.dataset.browserFormSubmitPendingState = "pending";
+      submitter.dataset.browserFormSubmitPendingViewportX = String(numberData("viewportX"));
+      submitter.dataset.browserFormSubmitPendingViewportY = String(numberData("viewportY"));
+      submitter.dataset.browserFormSubmitPendingSource = shell.dataset.pageSource || "";
+      submitter.dataset.browserFormSubmitPendingMaxBytes = shell.dataset.maxBytes || "";
+    }
+    const topStatus = chromeStatus();
+    if (topStatus) {
+      topStatus.dataset.browserChromePendingState = "pending";
+      topStatus.dataset.browserChromePendingAction = action;
+      topStatus.dataset.browserChromeFormPendingState = "pending";
+      topStatus.dataset.browserChromeFormPendingAction = action;
+      topStatus.dataset.browserChromeFormPendingViewportX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromeFormPendingViewportY = String(numberData("viewportY"));
+      topStatus.dataset.browserChromeFormPendingSource = shell.dataset.pageSource || "";
+      topStatus.dataset.browserChromeFormPendingMaxBytes = shell.dataset.maxBytes || "";
+    }
+  };
+  document.addEventListener("submit", (event) => {
+    const form = event.target && event.target.tagName === "FORM" ? event.target : null;
+    if (!form || !form.matches("form[action=\"/browser\"]")) {
+      return;
+    }
+    markBrowserFormPending(form, event.submitter instanceof HTMLElement ? event.submitter : null);
+  });
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
     const link = eventTarget && typeof eventTarget.closest === "function"
-      ? eventTarget.closest("a[data-browser-primary-nav-action], a[data-browser-chrome-current-action], a[data-browser-chrome-reload-action], a[data-browser-chrome-images-action]")
+      ? eventTarget.closest("a[data-browser-primary-nav-action], a[data-browser-chrome-current-action], a[data-browser-chrome-reload-action], a[data-browser-chrome-images-action], a[data-browser-form-submit-link]")
       : null;
     if (!link) {
       return;
@@ -14252,7 +14338,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-form-pending-state="idle" data-browser-chrome-form-pending-action="none" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -16649,10 +16735,18 @@ fn render_browser_session_forms(payload: &BrowserSessionPayload) -> String {
     for form in &payload.forms {
         let _ = write!(
             rows,
-            r#"<section class="browser-form"><h3>Form {index}</h3><div class="details">{method} · {action}</div>"#,
+            r#"<section class="browser-form" data-browser-form-tools="secondary" data-browser-form-index="{index}" data-browser-form-action="submit" data-browser-form-session="{id}" data-browser-form-from="{back_href}" data-browser-form-source="{source_attr}" data-browser-form-viewport-x="{viewport_x}" data-browser-form-viewport-y="{viewport_y}" data-browser-form-width="{width}" data-browser-form-height="{height}" data-browser-form-max-bytes="{max_bytes}"><h3>Form {index}</h3><div class="details">{method} · {action}</div>"#,
             index = form.index,
             method = html_escape::encode_text(&form.method.to_ascii_uppercase()),
             action = html_escape::encode_text(&form.resolved_action),
+            id = html_escape::encode_double_quoted_attribute(&payload.id),
+            back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
+            source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
+            viewport_x = payload.viewport_x,
+            viewport_y = payload.viewport_y,
+            width = payload.width,
+            height = payload.height,
+            max_bytes = payload.max_bytes,
         );
 
         for control in &form.controls {
@@ -16661,13 +16755,21 @@ fn render_browser_session_forms(payload: &BrowserSessionPayload) -> String {
 
         let _ = write!(
             rows,
-            r#"<div class="control"><label>Submit</label><div class="details">{method} {target}</div><div class="resource-actions"><a class="small-action" href="{href}">Submit form</a><a class="small-action" href="{new_href}">New session</a><a class="small-action" href="{background_href}">Background</a></div></div></section>"#,
+            r#"<div class="control"><label>Submit</label><div class="details">{method} {target}</div><div class="resource-actions"><a class="small-action" href="{href}" data-browser-form-submit-link="submit" data-browser-form-submit-href="{href}" data-browser-form-submit-session="{id}" data-browser-form-submit-from="{back_href}" data-browser-form-submit-source="{source_attr}" data-browser-form-submit-viewport-x="{viewport_x}" data-browser-form-submit-viewport-y="{viewport_y}" data-browser-form-submit-width="{width}" data-browser-form-submit-height="{height}" data-browser-form-submit-max-bytes="{max_bytes}" data-browser-form-submit-pending-state="idle">Submit form</a><a class="small-action" href="{new_href}" data-browser-form-submit-link="submit-new-session" data-browser-form-submit-href="{new_href}" data-browser-form-submit-session="{id}" data-browser-form-submit-from="{back_href}" data-browser-form-submit-source="{source_attr}" data-browser-form-submit-viewport-x="{viewport_x}" data-browser-form-submit-viewport-y="{viewport_y}" data-browser-form-submit-width="{width}" data-browser-form-submit-height="{height}" data-browser-form-submit-max-bytes="{max_bytes}" data-browser-form-submit-pending-state="idle">New session</a><a class="small-action" href="{background_href}" data-browser-form-submit-link="submit-background-session" data-browser-form-submit-href="{background_href}" data-browser-form-submit-session="{id}" data-browser-form-submit-from="{back_href}" data-browser-form-submit-source="{source_attr}" data-browser-form-submit-viewport-x="{viewport_x}" data-browser-form-submit-viewport-y="{viewport_y}" data-browser-form-submit-width="{width}" data-browser-form-submit-height="{height}" data-browser-form-submit-max-bytes="{max_bytes}" data-browser-form-submit-pending-state="idle">Background</a></div></div></section>"#,
             method = html_escape::encode_text(&form.method.to_ascii_uppercase()),
             target = html_escape::encode_text(&form.resolved_action),
             href = html_escape::encode_double_quoted_attribute(&form.submit_url),
             new_href = html_escape::encode_double_quoted_attribute(&form.submit_new_session_url),
             background_href =
                 html_escape::encode_double_quoted_attribute(&form.submit_background_session_url),
+            id = html_escape::encode_double_quoted_attribute(&payload.id),
+            back_href = html_escape::encode_double_quoted_attribute(&payload.back_href),
+            source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
+            viewport_x = payload.viewport_x,
+            viewport_y = payload.viewport_y,
+            width = payload.width,
+            height = payload.height,
+            max_bytes = payload.max_bytes,
         );
     }
     rows
@@ -16737,7 +16839,7 @@ fn render_browser_session_control(
         let focus = browser_session_control_focus_link(control);
         let option_links = browser_session_select_option_links(control);
         return format!(
-            r#"<form class="control" action="/browser" method="get">{common}<input type="hidden" name="action" value="select"><input type="hidden" name="form" value="{form_index}"><input type="hidden" name="control" value="{control_index}"><label>{label}</label><select name="value">{options}</select><div class="resource-actions">{focus}<button type="submit">Set</button>{option_links}</div></form>"#,
+            r#"<form class="control" action="/browser" method="get" data-browser-form-action="select" data-browser-form-pending-state="idle">{common}<input type="hidden" name="action" value="select"><input type="hidden" name="form" value="{form_index}"><input type="hidden" name="control" value="{control_index}"><label>{label}</label><select name="value">{options}</select><div class="resource-actions">{focus}<button type="submit">Set</button>{option_links}</div></form>"#,
             common = browser_session_common_hidden_inputs(payload),
             form_index = form.index,
             control_index = control.index,
@@ -16762,7 +16864,7 @@ fn render_browser_session_control(
             "Set"
         };
         return format!(
-            r#"<form class="control" action="/browser" method="get">{common}<input type="hidden" name="action" value="{action}"><input type="hidden" name="form" value="{form_index}"><input type="hidden" name="control" value="{control_index}"><label>{label}</label><input type="text" name="value" value="{value}"><div class="resource-actions">{focus}{clear}<button type="submit">{button}</button></div></form>"#,
+            r#"<form class="control" action="/browser" method="get" data-browser-form-action="{action}" data-browser-form-pending-state="idle">{common}<input type="hidden" name="action" value="{action}"><input type="hidden" name="form" value="{form_index}"><input type="hidden" name="control" value="{control_index}"><label>{label}</label><input type="text" name="value" value="{value}"><div class="resource-actions">{focus}{clear}<button type="submit">{button}</button></div></form>"#,
             common = browser_session_common_hidden_inputs(payload),
             action = action,
             form_index = form.index,
