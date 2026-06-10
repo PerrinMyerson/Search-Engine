@@ -19115,6 +19115,430 @@ async fn image_css_background_coverage_fetches_lazy_alias_resources() {
 }
 
 #[tokio::test]
+async fn image_current_src_aliases_attach_visible_color_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.gif");
+    let wide = dir.path().join("wide.gif");
+    fs::write(&hero, tiny_test_gif_palette()).unwrap();
+    fs::write(&wide, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before current aliases</p>
+            <img data-currentSrc="hero.gif" alt="Current image" width="32" height="32">
+            <picture>
+                <source media="print" type="image/gif" data-currentSrcset="print-only.gif 32w">
+                <source media="screen" type="image/gif" data-currentSrcset="wide.gif 32w">
+                <img alt="Picture current image" width="32" height="32">
+            </picture>
+            <p>After current aliases</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 2);
+    assert_eq!(report.decoded, 2);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.url == "print-only.gif")
+    );
+
+    let mut decoded = Vec::new();
+    for (file, url, kind, initiator) in [
+        (&hero, "hero.gif", "image", "img"),
+        (&wide, "wide.gif", "image", "img"),
+    ] {
+        let resolved = file.display().to_string();
+        let fetch = report
+            .fetches
+            .iter()
+            .find(|fetch| fetch.resource.resolved == resolved)
+            .unwrap();
+        assert_eq!(fetch.resource.kind, kind);
+        assert_eq!(fetch.resource.initiator, initiator);
+        assert_eq!(fetch.resource.url, url);
+        assert_eq!(fetch.status, "fetched");
+        assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+        assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+        assert_eq!(fetch.diagnostic.as_deref(), Some("image_decoded"));
+        assert_eq!(fetch.image_decode_error_kind, None);
+        assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/gif"));
+        assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+        assert_eq!(fetch.render_attached, Some(true));
+        assert_eq!(fetch.render_attachment_kind.as_deref(), Some("image"));
+        assert_eq!(
+            fetch.image_visibility_state.as_deref(),
+            Some("render_attached")
+        );
+        decoded.push((
+            resolved,
+            fetch.decoded_hash.clone().unwrap(),
+            fetch.decoded_color_hash.clone().unwrap(),
+        ));
+    }
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before current aliases"));
+    assert!(render.text.contains("After current aliases"));
+    for (resolved, decoded_hash, color_hash) in decoded {
+        let rendered_image = render
+            .decoded_images
+            .iter()
+            .find(|image| image.pixel_hash == decoded_hash)
+            .unwrap();
+        assert_eq!(
+            rendered_image.image.color_pixel_hash().as_deref(),
+            Some(color_hash.as_str())
+        );
+        assert!(render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Image {
+                    url: Some(url),
+                    decoded_hash: Some(hash),
+                    ..
+                } if url == &resolved && hash == &decoded_hash
+            )
+        }));
+    }
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
+async fn image_current_srcset_sizes_uses_viewport_for_resource_and_render_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let narrow = dir.path().join("narrow.gif");
+    let selected = dir.path().join("selected.gif");
+    fs::write(&narrow, tiny_test_gif_palette()).unwrap();
+    fs::write(&selected, tiny_test_gif_palette()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><body>
+            <p>Before current sizes</p>
+            <img
+                data-currentSrcset="narrow.gif 80w, selected.gif 320w"
+                sizes="50vw"
+                alt="Current sizes image"
+                width="80"
+                height="32">
+            <p>After current sizes</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let narrow_url = narrow.display().to_string();
+    let selected_url = selected.display().to_string();
+
+    let mut resource_session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    resource_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let resource_report = resource_session
+        .fetch_current_resources(1024)
+        .await
+        .unwrap();
+    assert_eq!(resource_report.failed, 0);
+    assert!(
+        !resource_report.resources.iter().any(
+            |fetch| fetch.resource.resolved == narrow_url || fetch.resource.url == "narrow.gif"
+        )
+    );
+    let resource_fetch = resource_report
+        .resources
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(resource_fetch.resource.kind, "image_candidate");
+    assert_eq!(resource_fetch.resource.initiator, "img");
+    assert_eq!(resource_fetch.resource.url, "selected.gif");
+    assert_eq!(resource_fetch.status, "fetched");
+    assert_eq!(resource_fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(
+        resource_fetch.image_decode_status.as_deref(),
+        Some("decoded")
+    );
+    assert_eq!(resource_fetch.image_decode_error_kind, None);
+    assert_eq!(
+        resource_fetch.image_byte_signature.as_deref(),
+        Some("image/gif")
+    );
+    assert!(resource_fetch.decoded_color_hash.is_some());
+    assert!(
+        resource_fetch
+            .decoded_color_bytes
+            .is_some_and(|bytes| bytes > 0)
+    );
+
+    let mut render_session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    render_session
+        .navigate(&page.display().to_string())
+        .await
+        .unwrap();
+    let report = render_session
+        .render_current_with_images(1024)
+        .await
+        .unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report.fetches.iter().any(
+            |fetch| fetch.resource.resolved == narrow_url || fetch.resource.url == "narrow.gif"
+        )
+    );
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == selected_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "selected.gif");
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("image/gif"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/gif"));
+    assert!(fetch.decoded_color_bytes.is_some_and(|bytes| bytes > 0));
+    assert_eq!(fetch.render_attached, Some(true));
+    assert_eq!(fetch.render_attachment_kind.as_deref(), Some("image"));
+    assert_eq!(
+        fetch.image_visibility_state.as_deref(),
+        Some("render_attached")
+    );
+    let decoded_hash = fetch.decoded_hash.clone().unwrap();
+    let color_hash = fetch.decoded_color_hash.clone().unwrap();
+
+    let render = render_session.current().unwrap();
+    assert!(render.text.contains("Before current sizes"));
+    assert!(render.text.contains("After current sizes"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.pixel_hash == decoded_hash)
+        .unwrap();
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(color_hash.as_str())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &selected_url && hash == &decoded_hash
+        )
+    }));
+
+    let raster = rasterize_render_rgba(render, BrowserRasterOptions::default()).unwrap();
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] > 200 && pixel[1] < 40 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] > 150 && pixel[2] < 40 && pixel[3] == 255 })
+    );
+    assert!(
+        raster
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| { pixel[0] < 40 && pixel[1] < 40 && pixel[2] > 180 && pixel[3] == 255 })
+    );
+}
+
+#[tokio::test]
+async fn image_current_src_redirect_keeps_original_url_and_color_attachment() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let decoded = decode_simple_png(&png_bytes).unwrap();
+    let expected_hash = decoded.pixel_hash();
+    let expected_color_hash = decoded.color_pixel_hash().unwrap();
+    let expected_rgb = decoded.rgb_pixels.as_deref().unwrap().to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /current-redirect ") {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: /current-final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                continue;
+            }
+
+            if first_line.contains(" /current-final ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = br#"<html><body>
+                <p>Before redirected current source</p>
+                <img src="/placeholder.gif" data-current-src="/current-redirect" alt="Redirected current source" width="32" height="32">
+                <p>After redirected current source</p>
+            </body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let original_url = format!("http://{addr}/current-redirect");
+    let final_url = format!("http://{addr}/current-final");
+    let placeholder_url = format!("http://{addr}/placeholder.gif");
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 40,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+
+    let report = session.render_current_with_images(1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.resolved == placeholder_url
+                || fetch.resource.url == "/placeholder.gif")
+    );
+
+    let fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == original_url)
+        .unwrap();
+    assert_eq!(fetch.resource.kind, "image");
+    assert_eq!(fetch.resource.initiator, "img");
+    assert_eq!(fetch.resource.url, "/current-redirect");
+    assert_eq!(fetch.resource.resolved, original_url);
+    assert_eq!(fetch.source.as_deref(), Some(final_url.as_str()));
+    assert_eq!(fetch.status, "fetched");
+    assert_eq!(fetch.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.image_decode_error_kind, None);
+    assert_eq!(fetch.image_byte_signature.as_deref(), Some("image/png"));
+    assert_eq!(fetch.decoded_width, Some(decoded.width));
+    assert_eq!(fetch.decoded_height, Some(decoded.height));
+    assert_eq!(fetch.decoded_has_alpha, Some(false));
+    assert_eq!(fetch.decoded_hash.as_deref(), Some(expected_hash.as_str()));
+    assert_eq!(
+        fetch.decoded_color_hash.as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(fetch.decoded_color_bytes, Some(expected_rgb.len()));
+    assert_eq!(fetch.render_attached, Some(true));
+    assert_eq!(fetch.render_attachment_kind.as_deref(), Some("image"));
+    assert_eq!(
+        fetch.image_visibility_state.as_deref(),
+        Some("render_attached")
+    );
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Before redirected current source"));
+    assert!(render.text.contains("After redirected current source"));
+    let rendered_image = render
+        .decoded_images
+        .iter()
+        .find(|image| image.url == original_url)
+        .unwrap();
+    assert_eq!(rendered_image.pixel_hash, expected_hash);
+    assert_eq!(
+        rendered_image.image.color_pixel_hash().as_deref(),
+        Some(expected_color_hash.as_str())
+    );
+    assert_eq!(
+        rendered_image.image.rgb_pixels.as_deref(),
+        Some(expected_rgb.as_slice())
+    );
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &original_url && hash == &expected_hash
+        )
+    }));
+    assert!(!render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url), ..
+            } if url == &final_url
+        )
+    }));
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn image_style_background_fetches_lazy_background_alias_resources() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
