@@ -15184,30 +15184,16 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
     assert!(!frame.report.viewport.full_repaint);
     assert_eq!(
         frame.report.viewport.invalidated_regions,
-        vec![
-            BrowserViewportRect {
-                x: 3,
-                y: 0,
-                width: 1,
-                height: 3,
-            },
-            BrowserViewportRect {
-                x: 0,
-                y: 1,
-                width: 3,
-                height: 2,
-            },
-            BrowserViewportRect {
-                x: 0,
-                y: 0,
-                width: 3,
-                height: 1,
-            },
-        ]
+        vec![BrowserViewportRect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 3,
+        }]
     );
     assert_eq!(frame.report.frame.raster_viewport_x, Some(1));
     assert_eq!(frame.report.frame.raster_viewport_y, Some(3));
-    assert_eq!(frame.report.dirty_pixel_regions.len(), 3);
+    assert_eq!(frame.report.dirty_pixel_regions.len(), 1);
 
     let pixel = |x: usize, y: usize| {
         let index = y
@@ -15350,24 +15336,18 @@ fn fixed_overlay_scroll_frame_invalidates_shifted_previous_pixels_and_hit_geomet
         vec![
             BrowserViewportRect {
                 x: 0,
+                y: 0,
+                width: 4,
+                height: 2,
+            },
+            BrowserViewportRect {
+                x: 0,
                 y: 3,
                 width: 6,
                 height: 1,
             },
-            BrowserViewportRect {
-                x: 0,
-                y: 1,
-                width: 4,
-                height: 1,
-            },
-            BrowserViewportRect {
-                x: 0,
-                y: 0,
-                width: 4,
-                height: 1,
-            },
         ],
-        "document viewport invalidations should include normal scroll and fixed current/previous cells"
+        "document viewport invalidations should merge fixed current/previous cells while retaining the normal scroll band"
     );
     assert_eq!(
         frame
@@ -15381,7 +15361,7 @@ fn fixed_overlay_scroll_frame_invalidates_shifted_previous_pixels_and_hit_geomet
                 region.viewport_height
             ))
             .collect::<Vec<_>>(),
-        vec![(0, 3, 6, 1), (0, 1, 4, 1), (0, 0, 4, 1)]
+        vec![(0, 0, 4, 2), (0, 3, 6, 1)]
     );
     assert_eq!(
         hit_test_target_node_in_viewport(&render, requested, 1, 1),
@@ -15624,6 +15604,239 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
 }
 
 #[test]
+fn repeated_fixed_sticky_scroll_merges_dirty_bands_and_preserves_visual_hits() {
+    let image_url = "mem://fixed-sticky-small-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![112],
+        rgb_pixels: Some(vec![36, 132, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://fixed-sticky-small-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 8,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 8,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default().with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 3,
+                target_node: Some(11),
+            }])
+            .with_viewport_fixed(true),
+            DisplayHitTarget::default().with_viewport_sticky_top(Some(1)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 5,
+                target_node: Some(22),
+            }])
+            .with_viewport_sticky_top(Some(1)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 4,
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 1,
+                shade: 242,
+                red: 242,
+                green: 242,
+                blue: 242,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 0,
+                text: "Nav".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 240,
+                blue: 244,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 2,
+                text: "Stick".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 3,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 4,
+                width: 2,
+                height: 1,
+                shade: 112,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 4,
+                y: 4,
+                text: "Link".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Lead\nLink\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 8,
+        height: 4,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames =
+        browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1), (0, 1)], options)
+            .expect("render repeated fixed/sticky small scroll frames");
+
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 2],
+        "small scrolls should advance one row and then clamp at the bottom edge"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.transition)
+            .collect::<Vec<_>>(),
+        vec![
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::ClampedNoop,
+        ]
+    );
+
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .invalidated_regions
+            .iter()
+            .map(|region| (region.x, region.y, region.width, region.height))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, 6, 2), (1, 2, 2, 1), (0, 3, 8, 1)],
+        "second scroll should merge fixed/sticky current and shifted rows while retaining visible media invalidation"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .dirty_pixel_regions
+            .iter()
+            .map(|region| (
+                region.viewport_x,
+                region.viewport_y,
+                region.viewport_width,
+                region.viewport_height
+            ))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, 6, 2), (1, 2, 2, 1), (0, 3, 8, 1)]
+    );
+    assert!(frames[2].report.dirty_pixel_regions.is_empty());
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 0),
+        Some(11),
+        "fixed link row should remain hittable at the viewport top after repeated scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 1),
+        Some(22),
+        "sticky link row should remain hittable below the fixed row after repeated scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 2),
+        Some(41),
+        "decoded image hit target should stay aligned below fixed/sticky rows"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 4, 2),
+        Some(77),
+        "link text beside the decoded image should remain hittable"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[2].report.viewport.viewport, 4, 2),
+        Some(77),
+        "bottom clamped no-op should preserve visible link hit geometry"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let image_x = options
+        .padding_x
+        .saturating_add(options.cell_width.saturating_mul(1));
+    let image_y = options
+        .padding_y
+        .saturating_add(options.cell_height.saturating_mul(2));
+    assert_eq!(
+        pixel(&frames[1], image_x, image_y),
+        [36, 132, 224, 255],
+        "decoded image color should remain visible below the pinned rows after repeated scroll"
+    );
+    assert_eq!(
+        pixel(&frames[2], image_x, image_y),
+        [36, 132, 224, 255],
+        "bottom clamped no-op should preserve decoded image color placement"
+    );
+}
+
+#[test]
 fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
     let render = BrowserRender {
         source: "mem://context-overlay-scroll".to_owned(),
@@ -15694,11 +15907,11 @@ fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
     assert!(!report.full_repaint);
     for row in [0, 1, 2] {
         assert!(
-            report.invalidated_regions.contains(&BrowserViewportRect {
-                x: 0,
-                y: row,
-                width: 8,
-                height: 1,
+            report.invalidated_regions.iter().any(|region| {
+                region.x == 0
+                    && region.width == 8
+                    && row >= region.y
+                    && row < region.y.saturating_add(region.height)
             }),
             "readable context overlay row {row} should be invalidated after adjacent scroll"
         );
