@@ -2868,6 +2868,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-feedback-mode="compact""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-y="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-clamped-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-clamped-y="0""#));
+    assert!(
+        topbar_html.contains(
+            r#"data-browser-chrome-scroll-repeat-policy="preserve-session-clamp-viewport""#
+        )
+    );
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-scroll-render-state="preserve-image-or-text""#)
+    );
     assert!(topbar_html.contains(&format!(
         "data-browser-chrome-scroll-max-bytes=\"{}\"",
         payload.max_bytes
@@ -3019,6 +3029,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         payload.max_bytes
     )));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-pending-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-clamp="viewport""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-scroll-link-repeat-policy="preserve-session-clamp-viewport""#
+    ));
+    assert!(
+        topbar_html
+            .contains(r#"data-browser-chrome-scroll-link-render-state="preserve-image-or-text""#)
+    );
     assert!(topbar_html.contains(
         r#"data-browser-chrome-scroll-link-preserves="session from source viewport dimensions max-bytes""#
     ));
@@ -3159,6 +3177,16 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(topbar_html.contains("data-browser-chrome-scroll-x=\"8\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-y=\"4\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-clamped-x=\"8\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-clamped-y=\"4\""));
+    assert!(
+        topbar_html.contains(
+            r#"data-browser-chrome-scroll-repeat-policy="preserve-session-clamp-viewport""#
+        )
+    );
+    assert!(
+        topbar_html.contains(r#"data-browser-chrome-scroll-render-state="preserve-image-or-text""#)
+    );
     assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"40\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
     assert!(topbar_html.contains(&format!(
@@ -11066,6 +11094,7 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
         params: vec![
             ("id".to_owned(), payload.id),
             ("action".to_owned(), "click-at".to_owned()),
+            ("from".to_owned(), "/search?q=plain".to_owned()),
             ("x".to_owned(), "999".to_owned()),
             ("y".to_owned(), "999".to_owned()),
             ("viewport_x".to_owned(), "3".to_owned()),
@@ -11091,9 +11120,41 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-chrome-last-action="click""#));
     assert!(html.contains(r#"data-browser-chrome-last-outcome="miss""#));
+    assert!(html.contains(r#"data-browser-chrome-feedback-primary-lane="click""#));
+    assert!(html.contains(r#"data-browser-chrome-feedback-count="1""#));
+    assert!(html.contains(r#"data-browser-chrome-error-state="miss""#));
     assert!(html.contains(r#"data-browser-chrome-click-action="click-at""#));
     assert!(html.contains(r#"data-browser-chrome-click-outcome="miss""#));
     assert!(html.contains(r#"data-browser-chrome-click-target="none""#));
+    assert!(html.contains(r#"data-browser-action-feedback-placement="chrome""#));
+    assert!(html.contains(r#"data-browser-action-feedback-lane="click""#));
+    assert!(html.contains(r#"data-browser-action-feedback-compact="true""#));
+    assert!(html.contains(r#"data-browser-action-feedback-kind="click""#));
+    assert!(html.contains(r#"data-browser-action-feedback-outcome="miss""#));
+    assert!(html.contains(r#"data-browser-action-feedback-error-state="miss""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-action-feedback-session="{}""#,
+        payload.id
+    )));
+    assert!(html.contains(r#"data-browser-action-feedback-from="/search?q=plain""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-action-feedback-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(r#"data-browser-action-feedback-viewport-x="3""#));
+    assert!(html.contains(r#"data-browser-action-feedback-viewport-y="2""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-action-feedback-width="{}""#,
+        payload.width
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-action-feedback-height="{}""#,
+        payload.height
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-action-feedback-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(html.contains(r#"data-browser-viewport-action-state="compact""#));
     assert!(html.contains(r#"data-browser-viewport-has-click="true""#));
     assert!(html.contains(r#"data-browser-viewport-last-action="click""#));
@@ -11296,6 +11357,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         resources: Vec::new(),
         resource_report: None,
         action_feedback: None,
+        action_feedback_context: None,
         pending_source: None,
         fast_scroll: false,
     };
@@ -11462,6 +11524,7 @@ fn browser_session_action_state_strips_unsafe_source() {
         resources: Vec::new(),
         resource_report: None,
         action_feedback: None,
+        action_feedback_context: None,
         pending_source: None,
         fast_scroll: false,
     };
@@ -11577,6 +11640,7 @@ fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
         action_feedback: Some(
             "Still opening https://iana.org/; renderer reported: operation timed out".to_owned(),
         ),
+        action_feedback_context: None,
         pending_source: Some("https://iana.org/".to_owned()),
         fast_scroll: false,
     };
@@ -14703,6 +14767,10 @@ async fn browser_session_page_renders_form_controls() {
     ));
     assert!(topbar_html.contains(r#"data-browser-chrome-last-action="none""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-last-outcome="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-primary-lane="none""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-count="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-error-state="none""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-feedback-collapse="single-chip""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-status-density="compact""#));
     assert!(topbar_html.contains(
@@ -14720,6 +14788,8 @@ async fn browser_session_page_renders_form_controls() {
     ));
     assert!(html.contains(r#".browser-chrome-status { display: flex; flex-wrap: nowrap;"#));
     assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-action-feedback]"#));
+    assert!(html.contains(r#".browser-chrome-status[data-browser-chrome-feedback-collapse="single-chip"] [data-browser-action-feedback-compact="true"]"#));
+    assert!(html.contains(r#".viewport-page-state [data-browser-action-feedback][data-browser-action-feedback-compact="true"]"#));
     assert!(html.contains(r#".toolbar { display: flex; align-items: center; flex-wrap: nowrap;"#));
     assert!(html.contains(r#".address-bar input[name="url"] { flex: 1 1 auto; }"#));
     assert!(html.contains(r#".browser-location-strip { display: flex; min-width: 0; align-items: baseline; gap: 8px; margin-top: -1px;"#));

@@ -150,10 +150,23 @@ struct BrowserWebSession {
     tab_search_query: String,
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
+    action_feedback_context: Option<BrowserActionFeedbackContext>,
     pending_source: Option<String>,
     display_source: Option<String>,
     pinned: bool,
     tab_label: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserActionFeedbackContext {
+    session: String,
+    from: String,
+    source: String,
+    viewport_x: usize,
+    viewport_y: usize,
+    width: usize,
+    height: usize,
+    max_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +237,8 @@ struct BrowserSessionPayload {
     resources: Vec<BrowserSessionResourcePayload>,
     resource_report: Option<BrowserSessionResourceReportPayload>,
     action_feedback: Option<String>,
+    #[serde(skip)]
+    action_feedback_context: Option<BrowserActionFeedbackContext>,
     pending_source: Option<String>,
     fast_scroll: bool,
 }
@@ -1581,6 +1596,7 @@ impl BrowserSessionRegistry {
             tab_search_query: String::new(),
             resource_report: None,
             action_feedback,
+            action_feedback_context: None,
             pending_source,
             display_source,
             pinned: false,
@@ -1748,6 +1764,12 @@ impl BrowserSessionRegistry {
         if let Some(return_href) = target.param("from") {
             web_session.back_href = sanitized_search_return_href(Some(&return_href));
         }
+        web_session.action_feedback_context = Some(browser_action_feedback_context(
+            &id,
+            target,
+            &action,
+            &web_session,
+        ));
         apply_browser_action(action.clone(), &mut web_session).await?;
         let back_href = web_session.back_href.clone();
         let mut payload = browser_session_payload(id, &mut web_session)?;
@@ -1824,6 +1846,7 @@ impl BrowserSessionRegistry {
                 tab_search_query: String::new(),
                 resource_report: None,
                 action_feedback: None,
+                action_feedback_context: None,
                 pending_source: None,
                 display_source: None,
                 pinned: tab.pinned,
@@ -1943,6 +1966,12 @@ impl BrowserSessionRegistry {
         if let Some(return_href) = target.param("from") {
             web_session.back_href = sanitized_search_return_href(Some(&return_href));
         }
+        web_session.action_feedback_context = Some(browser_action_feedback_context(
+            &id,
+            target,
+            &action,
+            &web_session,
+        ));
         let payload_options = browser_session_payload_options_for_action(&action);
 
         if let BrowserSessionAction::CloseSession(close_id) = action {
@@ -6205,6 +6234,32 @@ fn browser_session_target_viewport_y(
     })
 }
 
+fn browser_action_feedback_context(
+    id: &str,
+    target: &RequestTarget,
+    action: &BrowserSessionAction,
+    web_session: &BrowserWebSession,
+) -> BrowserActionFeedbackContext {
+    let source = target
+        .param("source")
+        .filter(|source| !source.trim().is_empty())
+        .or_else(|| current_session_source(web_session))
+        .or_else(|| web_session.display_source.clone())
+        .unwrap_or_default();
+    BrowserActionFeedbackContext {
+        session: id.to_owned(),
+        from: web_session.back_href.clone(),
+        source,
+        viewport_x: browser_session_target_viewport_x(target, action)
+            .unwrap_or(web_session.viewport_x),
+        viewport_y: browser_session_target_viewport_y(target, action)
+            .unwrap_or(web_session.viewport_y),
+        width: web_session.width,
+        height: web_session.height,
+        max_bytes: web_session.max_bytes,
+    }
+}
+
 fn browser_session_target_has_viewport_position(target: &RequestTarget) -> bool {
     target.param("x").is_some()
         || target.param("y").is_some()
@@ -6291,6 +6346,7 @@ async fn apply_browser_action(
             | BrowserSessionAction::ClickAt { .. }
     ) {
         web_session.action_feedback = None;
+        web_session.action_feedback_context = None;
     }
 
     match action {
@@ -9758,6 +9814,7 @@ fn browser_session_payload_with_options(
             resources,
             resource_report: web_session.resource_report.clone(),
             action_feedback: web_session.action_feedback.clone(),
+            action_feedback_context: web_session.action_feedback_context.clone(),
             pending_source: web_session.pending_source.clone(),
             fast_scroll: options.fast_scroll,
         };
@@ -10057,7 +10114,7 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-action-state="idle" data-browser-chrome-scroll-input-source="idle" data-browser-chrome-scroll-current-x="{x}" data-browser-chrome-scroll-current-y="{y}" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-scroll-edge-state="idle" data-browser-chrome-scroll-edge="none" data-browser-chrome-scroll-feedback-mode="compact" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-action-state="idle" data-browser-chrome-scroll-input-source="idle" data-browser-chrome-scroll-current-x="{x}" data-browser-chrome-scroll-current-y="{y}" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-scroll-clamped-x="{x}" data-browser-chrome-scroll-clamped-y="{y}" data-browser-chrome-scroll-repeat-policy="preserve-session-clamp-viewport" data-browser-chrome-scroll-render-state="preserve-image-or-text" data-browser-chrome-scroll-edge-state="idle" data-browser-chrome-scroll-edge="none" data-browser-chrome-scroll-feedback-mode="compact" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -10383,6 +10440,8 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-scroll-feedback],
 .browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-click-feedback],
 .browser-chrome-status[data-browser-chrome-outcome-display="compact"] [data-browser-chrome-form-feedback] {{ max-width: min(22vw, 220px); }}
+.browser-chrome-status[data-browser-chrome-feedback-collapse="single-chip"] [data-browser-action-feedback-compact="true"] {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.viewport-page-state [data-browser-action-feedback][data-browser-action-feedback-compact="true"] {{ max-width: min(52vw, 360px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-action-feedback],
 .browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-navigation-feedback],
 .browser-chrome-status[data-browser-chrome-last-outcome="success"] [data-browser-chrome-scroll-feedback],
@@ -14382,6 +14441,70 @@ fn browser_session_chrome_action_outcome(
     }
 }
 
+fn browser_session_chrome_primary_feedback_lane(payload: &BrowserSessionPayload) -> &'static str {
+    if browser_session_navigation_feedback_text(payload).is_some() {
+        "navigation"
+    } else if browser_session_scroll_feedback_text(payload).is_some() {
+        "scroll"
+    } else if browser_session_click_feedback_text(payload).is_some() {
+        "click"
+    } else if browser_session_form_feedback_text(payload).is_some() {
+        "form"
+    } else if browser_session_chrome_feedback_text(payload).is_some() {
+        "action"
+    } else {
+        "none"
+    }
+}
+
+fn browser_session_chrome_feedback_count(payload: &BrowserSessionPayload) -> usize {
+    browser_session_navigation_feedback_text(payload).is_some() as usize
+        + browser_session_scroll_feedback_text(payload).is_some() as usize
+        + browser_session_click_feedback_text(payload).is_some() as usize
+        + browser_session_form_feedback_text(payload).is_some() as usize
+        + browser_session_chrome_feedback_text(payload).is_some() as usize
+}
+
+fn browser_session_chrome_error_state(outcome: &'static str) -> &'static str {
+    match outcome {
+        "error" | "miss" | "boundary" => outcome,
+        _ => "none",
+    }
+}
+
+fn browser_session_action_feedback_state_attrs(
+    payload: &BrowserSessionPayload,
+    placement: &str,
+    lane: &str,
+) -> String {
+    let (kind, outcome) = browser_session_chrome_action_outcome(payload);
+    let error_state = browser_session_chrome_error_state(outcome);
+    let context = payload.action_feedback_context.as_ref();
+    let session = context.map_or(payload.id.as_str(), |context| context.session.as_str());
+    let from = context.map_or(payload.back_href.as_str(), |context| context.from.as_str());
+    let source = context.map_or(payload.source.as_str(), |context| context.source.as_str());
+    let viewport_x = context.map_or(payload.viewport_x, |context| context.viewport_x);
+    let viewport_y = context.map_or(payload.viewport_y, |context| context.viewport_y);
+    let width = context.map_or(payload.width, |context| context.width);
+    let height = context.map_or(payload.height, |context| context.height);
+    let max_bytes = context.map_or(payload.max_bytes, |context| context.max_bytes);
+    format!(
+        r#" data-browser-action-feedback-placement="{placement}" data-browser-action-feedback-lane="{lane}" data-browser-action-feedback-compact="true" data-browser-action-feedback-kind="{kind}" data-browser-action-feedback-outcome="{outcome}" data-browser-action-feedback-error-state="{error_state}" data-browser-action-feedback-session="{session}" data-browser-action-feedback-from="{from}" data-browser-action-feedback-source="{source}" data-browser-action-feedback-viewport-x="{viewport_x}" data-browser-action-feedback-viewport-y="{viewport_y}" data-browser-action-feedback-width="{width}" data-browser-action-feedback-height="{height}" data-browser-action-feedback-max-bytes="{max_bytes}""#,
+        placement = html_escape::encode_double_quoted_attribute(placement),
+        lane = html_escape::encode_double_quoted_attribute(lane),
+        kind = html_escape::encode_double_quoted_attribute(kind),
+        outcome = html_escape::encode_double_quoted_attribute(outcome),
+        error_state = html_escape::encode_double_quoted_attribute(error_state),
+        session = html_escape::encode_double_quoted_attribute(session),
+        from = html_escape::encode_double_quoted_attribute(from),
+        source = html_escape::encode_double_quoted_attribute(source),
+        viewport_x = viewport_x,
+        viewport_y = viewport_y,
+        width = width,
+        height = height,
+        max_bytes = max_bytes,
+    )
+}
 fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_href: &str) -> String {
     let navigation = browser_session_navigation_feedback_text(payload).is_some();
     let scroll = browser_session_scroll_feedback_text(payload).is_some();
@@ -14390,7 +14513,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-form-pending-state="idle" data-browser-chrome-form-pending-action="none" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-form-pending-state="idle" data-browser-chrome-form-pending-action="none" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}" data-browser-chrome-feedback-primary-lane="{primary_lane}" data-browser-chrome-feedback-count="{feedback_count}" data-browser-chrome-error-state="{error_state}" data-browser-chrome-feedback-collapse="single-chip""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -14406,6 +14529,9 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
         generic_action = generic_action,
         last_action = last_action,
         last_outcome = last_outcome,
+        primary_lane = browser_session_chrome_primary_feedback_lane(payload),
+        feedback_count = browser_session_chrome_feedback_count(payload),
+        error_state = browser_session_chrome_error_state(last_outcome),
     )
 }
 
@@ -14495,8 +14621,10 @@ fn render_browser_session_chrome_status(
     if let Some(feedback) = browser_session_navigation_feedback_text(payload) {
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-navigation-feedback{feedback_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-navigation-feedback{feedback_state_attrs}{action_feedback_attrs} title="{feedback_attr}">{feedback}</span>"#,
             feedback_state_attrs = feedback_state_attrs,
+            action_feedback_attrs =
+                browser_session_action_feedback_state_attrs(payload, "chrome", "navigation"),
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14504,7 +14632,9 @@ fn render_browser_session_chrome_status(
     if let Some(feedback) = browser_session_chrome_feedback_text(payload) {
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback{action_feedback_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            action_feedback_attrs =
+                browser_session_action_feedback_state_attrs(payload, "chrome", "action"),
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14513,8 +14643,10 @@ fn render_browser_session_chrome_status(
         let scroll_state_attrs = browser_session_scroll_feedback_state_attrs(feedback);
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback{scroll_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback{scroll_state_attrs}{action_feedback_attrs} title="{feedback_attr}">{feedback}</span>"#,
             scroll_state_attrs = scroll_state_attrs,
+            action_feedback_attrs =
+                browser_session_action_feedback_state_attrs(payload, "chrome", "scroll"),
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14523,9 +14655,11 @@ fn render_browser_session_chrome_status(
         let click_state_attrs = browser_session_click_feedback_state_attrs(feedback);
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback{feedback_state_attrs}{click_state_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-click-feedback{feedback_state_attrs}{click_state_attrs}{action_feedback_attrs} title="{feedback_attr}">{feedback}</span>"#,
             feedback_state_attrs = feedback_state_attrs,
             click_state_attrs = click_state_attrs,
+            action_feedback_attrs =
+                browser_session_action_feedback_state_attrs(payload, "chrome", "click"),
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -14533,7 +14667,9 @@ fn render_browser_session_chrome_status(
     if let Some(feedback) = browser_session_form_feedback_text(payload) {
         let _ = write!(
             status,
-            r#"<span class="viewport-state-chip report" data-browser-chrome-form-feedback title="{feedback_attr}">{feedback}</span>"#,
+            r#"<span class="viewport-state-chip report" data-browser-chrome-form-feedback{action_feedback_attrs} title="{feedback_attr}">{feedback}</span>"#,
+            action_feedback_attrs =
+                browser_session_action_feedback_state_attrs(payload, "chrome", "form"),
             feedback = html_escape::encode_text(&browser_session_feedback_excerpt(feedback)),
             feedback_attr = html_escape::encode_double_quoted_attribute(feedback),
         );
@@ -15153,8 +15289,9 @@ fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> St
     browser_session_action_feedback_text(payload)
         .map(|feedback| {
             format!(
-                r#"<span class="viewport-state-chip report" data-browser-action-feedback>{}</span>"#,
+                r#"<span class="viewport-state-chip report" data-browser-action-feedback{action_feedback_attrs}>{}</span>"#,
                 html_escape::encode_text(feedback),
+                action_feedback_attrs = browser_session_action_feedback_state_attrs(payload, "viewport", "action"),
             )
         })
         .unwrap_or_default()
@@ -17339,7 +17476,7 @@ fn browser_chrome_scroll_action_state_attrs(
     action: &str,
 ) -> String {
     format!(
-        r#" data-browser-chrome-scroll-link-action="{action}" data-browser-chrome-scroll-link-href="{href}" data-browser-chrome-scroll-link-session="{id}" data-browser-chrome-scroll-link-from="{back_href}" data-browser-chrome-scroll-link-source="{source}" data-browser-chrome-scroll-link-viewport-x="{viewport_x}" data-browser-chrome-scroll-link-viewport-y="{viewport_y}" data-browser-chrome-scroll-link-width="{width}" data-browser-chrome-scroll-link-height="{height}" data-browser-chrome-scroll-link-max-bytes="{max_bytes}" data-browser-chrome-scroll-link-pending-state="idle" data-browser-chrome-scroll-link-preserves="session from source viewport dimensions max-bytes""#,
+        r#" data-browser-chrome-scroll-link-action="{action}" data-browser-chrome-scroll-link-href="{href}" data-browser-chrome-scroll-link-session="{id}" data-browser-chrome-scroll-link-from="{back_href}" data-browser-chrome-scroll-link-source="{source}" data-browser-chrome-scroll-link-viewport-x="{viewport_x}" data-browser-chrome-scroll-link-viewport-y="{viewport_y}" data-browser-chrome-scroll-link-width="{width}" data-browser-chrome-scroll-link-height="{height}" data-browser-chrome-scroll-link-max-bytes="{max_bytes}" data-browser-chrome-scroll-link-pending-state="idle" data-browser-chrome-scroll-link-clamp="viewport" data-browser-chrome-scroll-link-repeat-policy="preserve-session-clamp-viewport" data-browser-chrome-scroll-link-render-state="preserve-image-or-text" data-browser-chrome-scroll-link-preserves="session from source viewport dimensions max-bytes""#,
         action = html_escape::encode_double_quoted_attribute(action),
         href = html_escape::encode_double_quoted_attribute(href),
         id = html_escape::encode_double_quoted_attribute(&payload.id),
