@@ -1598,7 +1598,7 @@ fn collect_resources_at(
                     "image_candidate",
                     viewport_width_css_px,
                 );
-                push_image_alias_resources(resources, source, element);
+                push_image_alias_resources(resources, source, element, viewport_width_css_px);
             }
             "source"
                 if parent_element_tag_is(dom, node_id, "picture")
@@ -1606,7 +1606,14 @@ fn collect_resources_at(
             {
                 if picture_source_resource_media_matches_screen(element, viewport_width_css_px) {
                     push_src_resource(resources, source, element, "image");
-                    push_picture_source_image_resources(resources, source, dom, node_id, element);
+                    push_picture_source_image_resources(
+                        resources,
+                        source,
+                        dom,
+                        node_id,
+                        element,
+                        viewport_width_css_px,
+                    );
                 }
             }
             "source" if parent_element_tag_is(dom, node_id, "picture") => {}
@@ -1770,9 +1777,16 @@ fn push_picture_source_image_resources(
     dom: &Dom,
     node_id: usize,
     element: &ElementData,
+    viewport_width_css_px: usize,
 ) {
     if let Some(srcset) = element.srcset.as_deref() {
-        if let Some(url) = selected_picture_source_srcset_candidate(dom, node_id, element, srcset) {
+        if let Some(url) = selected_picture_source_srcset_candidate(
+            dom,
+            node_id,
+            element,
+            srcset,
+            viewport_width_css_px,
+        ) {
             push_resource(
                 resources,
                 source,
@@ -1827,7 +1841,13 @@ fn push_picture_source_image_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        if let Some(url) = selected_picture_source_srcset_candidate(dom, node_id, element, srcset) {
+        if let Some(url) = selected_picture_source_srcset_candidate(
+            dom,
+            node_id,
+            element,
+            srcset,
+            viewport_width_css_px,
+        ) {
             push_resource(
                 resources,
                 source,
@@ -1880,6 +1900,7 @@ fn selected_picture_source_srcset_candidate(
     node_id: usize,
     element: &ElementData,
     srcset: &str,
+    viewport_width_css_px: usize,
 ) -> Option<String> {
     if let Some(sizes) = image_resource_sizes_attr(element)
         && let Some(url) = selected_supported_srcset_candidate_for_type(
@@ -1891,12 +1912,32 @@ fn selected_picture_source_srcset_candidate(
     {
         return Some(url);
     }
+    if let Some(sizes) = image_sizes_attr(element)
+        && let Some(url) = selected_supported_srcset_candidate_for_type(
+            srcset,
+            Some(sizes),
+            viewport_width_css_px,
+            element.type_hint.as_deref(),
+        )
+    {
+        return Some(url);
+    }
     let fallback = picture_source_fallback_img(dom, node_id)?;
     if let Some(sizes) = image_resource_sizes_attr(fallback)
         && let Some(url) = selected_supported_srcset_candidate_for_type(
             srcset,
             Some(sizes.as_str()),
             0,
+            element.type_hint.as_deref(),
+        )
+    {
+        return Some(url);
+    }
+    if let Some(sizes) = image_sizes_attr(fallback)
+        && let Some(url) = selected_supported_srcset_candidate_for_type(
+            srcset,
+            Some(sizes),
+            viewport_width_css_px,
             element.type_hint.as_deref(),
         )
     {
@@ -1981,6 +2022,7 @@ fn push_image_alias_resources(
     resources: &mut Vec<BrowserResource>,
     source: &str,
     element: &ElementData,
+    viewport_width_css_px: usize,
 ) {
     if let Some(url) = lazy_width_template_render_source(
         element,
@@ -2002,11 +2044,17 @@ fn push_image_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        let sizes = image_resource_sizes_attr(element);
+        let sizes = image_sizes_attr(element).map(str::to_owned).or_else(|| {
+            element
+                .attrs
+                .get("width")
+                .and_then(|width| parse_image_resource_dimension_attr(width))
+                .map(|width| format!("{width}px"))
+        });
         let selected = selected_supported_srcset_candidate(
             srcset,
             sizes.as_deref().or_else(|| image_sizes_attr(element)),
-            0,
+            viewport_width_css_px,
         )
         .into_iter();
         for url in selected {
