@@ -7833,15 +7833,8 @@ pub fn browser_text_viewport(
 
     for command_index in display_command_paint_indices_for_viewport(render) {
         let command = &render.display_list[command_index];
-        let viewport_fixed = display_command_viewport_fixed(render, command_index);
-        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(
-            command,
-            viewport,
-            viewport_fixed,
-            viewport_sticky_top,
-        );
-        let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
+        let Some((_, visible_bounds)) =
+            display_command_report_bounds_for_viewport(render, command_index, command, viewport)
         else {
             continue;
         };
