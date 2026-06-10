@@ -1583,7 +1583,14 @@ fn collect_resources_at(
         match element.tag.as_str() {
             "script" => push_src_resource(resources, source, element, "script"),
             "img" => {
-                push_img_primary_resource(resources, source, dom, node_id, element);
+                push_img_primary_resource(
+                    resources,
+                    source,
+                    dom,
+                    node_id,
+                    element,
+                    viewport_width_css_px,
+                );
                 push_image_srcset_resources(
                     resources,
                     source,
@@ -1700,6 +1707,7 @@ fn push_img_primary_resource(
     dom: &Dom,
     node_id: usize,
     element: &ElementData,
+    viewport_width_css_px: usize,
 ) {
     let Some(src) = element
         .src
@@ -1709,7 +1717,7 @@ fn push_img_primary_resource(
     else {
         return;
     };
-    let selected = image_render_source(dom, node_id, element, usize::MAX);
+    let selected = image_render_source(dom, node_id, element, viewport_width_css_px);
     if selected.as_deref().is_some_and(|selected| selected != src) {
         return;
     }
