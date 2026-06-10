@@ -6483,7 +6483,10 @@ fn matching_closing_paren(input: &str, open_index: usize) -> Option<usize> {
     None
 }
 
-fn media_query_matches_current_screen(query: &str, viewport_width_css_px: usize) -> bool {
+pub(super) fn media_query_matches_current_screen(
+    query: &str,
+    viewport_width_css_px: usize,
+) -> bool {
     let query = query.trim().to_ascii_lowercase();
     if query.is_empty() {
         return true;
@@ -6738,6 +6741,12 @@ pub(super) fn selected_supported_srcset_candidate(
 ) -> Option<String> {
     let candidate = selected_srcset_candidate(srcset, sizes, viewport_width_css_px)?;
     (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
+}
+
+pub(super) fn srcset_has_width_descriptor(srcset: &str) -> bool {
+    parse_srcset_candidates(srcset)
+        .iter()
+        .any(|candidate| candidate.width.is_some())
 }
 
 pub(super) fn selected_supported_srcset_candidate_for_type(

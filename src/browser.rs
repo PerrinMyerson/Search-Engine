@@ -4175,8 +4175,14 @@ fn render_page_state_with_timings(
     let title = dom_title(&page_state.dom);
     let links = collect_links(&page_state.dom, source);
     let forms = collect_forms(&page_state.dom, source);
+    let viewport_width_css_px = options.width.saturating_mul(8);
     let background_viewport_width = options.width;
-    let mut resources = collect_resources(&page_state.dom, source, background_viewport_width);
+    let mut resources = collect_resources(
+        &page_state.dom,
+        source,
+        viewport_width_css_px,
+        background_viewport_width,
+    );
     resources.extend(collect_css_background_image_resources(
         &page_state.dom,
         source,

@@ -15,8 +15,9 @@ use super::images::{
     ImageDecodeDiagnostic, background_image_sizes_attr, background_width_template_render_source,
     image_decode_diagnostic, image_mime_type_supported, image_render_source, image_sizes_attr,
     is_lazy_image_placeholder_src, lazy_width_template_render_source,
-    selected_supported_srcset_candidate, selected_supported_srcset_candidate_for_type,
-    srcset_candidate_clearly_unsupported, srcset_candidate_urls, supported_srcset_candidate_urls,
+    media_query_matches_current_screen, selected_supported_srcset_candidate,
+    selected_supported_srcset_candidate_for_type, srcset_candidate_clearly_unsupported,
+    srcset_candidate_urls, srcset_has_width_descriptor, supported_srcset_candidate_urls,
     supported_srcset_candidate_urls_for_type,
 };
 use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
@@ -1462,9 +1463,17 @@ pub(super) fn collect_resources(
     dom: &Dom,
     source: &str,
     viewport_width_css_px: usize,
+    background_viewport_width: usize,
 ) -> Vec<BrowserResource> {
     let mut resources = Vec::new();
-    collect_resources_at(dom, 0, source, viewport_width_css_px, &mut resources);
+    collect_resources_at(
+        dom,
+        0,
+        source,
+        viewport_width_css_px,
+        background_viewport_width,
+        &mut resources,
+    );
     resources
 }
 
@@ -1531,6 +1540,7 @@ fn collect_resources_at(
     node_id: usize,
     source: &str,
     viewport_width_css_px: usize,
+    background_viewport_width: usize,
     resources: &mut Vec<BrowserResource>,
 ) {
     let Some(node) = dom.nodes.get(node_id) else {
@@ -1542,14 +1552,20 @@ fn collect_resources_at(
             "script" => push_src_resource(resources, source, element, "script"),
             "img" => {
                 push_img_primary_resource(resources, source, dom, node_id, element);
-                push_image_srcset_resources(resources, source, element, "image_candidate");
+                push_image_srcset_resources(
+                    resources,
+                    source,
+                    element,
+                    "image_candidate",
+                    viewport_width_css_px,
+                );
                 push_image_alias_resources(resources, source, element);
             }
             "source"
                 if parent_element_tag_is(dom, node_id, "picture")
                     && picture_source_resource_type_supported(element) =>
             {
-                if picture_source_resource_media_may_match_screen(element) {
+                if picture_source_resource_media_matches_screen(element, viewport_width_css_px) {
                     push_src_resource(resources, source, element, "image");
                     push_picture_source_image_resources(resources, source, dom, node_id, element);
                 }
@@ -1590,11 +1606,18 @@ fn collect_resources_at(
             push_resource(resources, source, element, "poster", &element.tag, poster);
         }
 
-        push_background_alias_resources(resources, source, element, viewport_width_css_px);
+        push_background_alias_resources(resources, source, element, background_viewport_width);
     }
 
     for &child in &node.children {
-        collect_resources_at(dom, child, source, viewport_width_css_px, resources);
+        collect_resources_at(
+            dom,
+            child,
+            source,
+            viewport_width_css_px,
+            background_viewport_width,
+            resources,
+        );
     }
 }
 
@@ -1605,30 +1628,15 @@ fn picture_source_resource_type_supported(element: &ElementData) -> bool {
         .is_none_or(|source_type| image_mime_type_supported(source_type))
 }
 
-fn picture_source_resource_media_may_match_screen(element: &ElementData) -> bool {
+fn picture_source_resource_media_matches_screen(
+    element: &ElementData,
+    viewport_width_css_px: usize,
+) -> bool {
     element.media.as_deref().is_none_or(|media| {
         media
             .split(',')
-            .any(picture_source_media_query_may_match_screen)
+            .any(|query| media_query_matches_current_screen(query, viewport_width_css_px))
     })
-}
-
-fn picture_source_media_query_may_match_screen(query: &str) -> bool {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let query = query.strip_prefix("only ").unwrap_or(&query).trim();
-    if let Some(query) = query.strip_prefix("not ") {
-        let query = query.trim();
-        return query.starts_with("print") || query.starts_with("speech");
-    }
-    !(query == "print"
-        || query.starts_with("print ")
-        || query.starts_with("print and")
-        || query == "speech"
-        || query.starts_with("speech ")
-        || query.starts_with("speech and"))
 }
 
 fn parent_element_tag_is(dom: &Dom, node_id: usize, tag: &str) -> bool {
@@ -1698,12 +1706,15 @@ fn push_image_srcset_resources(
     source: &str,
     element: &ElementData,
     kind: &str,
+    viewport_width_css_px: usize,
 ) {
     let Some(srcset) = element.srcset.as_deref() else {
         return;
     };
-    if let Some(sizes) = image_resource_sizes_attr(element)
-        && let Some(url) = selected_supported_srcset_candidate(srcset, Some(sizes.as_str()), 0)
+    let sizes = image_sizes_attr(element).map(str::to_owned);
+    if (sizes.is_some() || !srcset_has_width_descriptor(srcset))
+        && let Some(url) =
+            selected_supported_srcset_candidate(srcset, sizes.as_deref(), viewport_width_css_px)
     {
         push_resource(resources, source, element, kind, &element.tag, &url);
         return;
