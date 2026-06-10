@@ -1161,14 +1161,18 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     lines.push(format!(
         "storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count={active_worktree_count} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} old_target_count={old_target_count} total_bytes={total_bytes} next_action={generated_next_action}"
     ));
+    let generated_retention_next_action = temp_cleanup_generated_retention_next_action(
+        generated_review_count,
+        generated_review_bytes,
+        generated_oldest_age_secs,
+    );
     lines.push(format!(
-        "storage_generated_report_retention_dry_run: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} next_action={}",
+        "storage_generated_report_retention_dry_run: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} next_action={generated_retention_next_action}",
         generated_newest_age_secs.unwrap_or(0),
-        temp_cleanup_generated_retention_next_action(
-            generated_review_count,
-            generated_review_bytes,
-            generated_oldest_age_secs,
-        )
+    ));
+    lines.push(format!(
+        "storage_generated_artifact_inventory_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={generated_retention_next_action}",
+        generated_newest_age_secs.unwrap_or(0),
     ));
     lines.push(
         "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
@@ -2006,6 +2010,14 @@ fn storage_pressure_rollup_lines(
             brave_results_bytes,
             crawl_bytes
         ),
+        storage_hygiene_bounds_inventory_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+            frontier_records,
+        ),
         search_browser_storage_hygiene_pack_line(
             stats,
             web_summary,
@@ -2024,6 +2036,44 @@ fn storage_pressure_rollup_lines(
         ),
         format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
     ]
+}
+
+fn storage_hygiene_bounds_inventory_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+    frontier_records: usize,
+) -> String {
+    let retention_config = web_storage_retention_config();
+    let web_cap_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+    let frontier_failed_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.failed)
+        .unwrap_or(0);
+    let next_action = if stats.total_bytes > index_storage_budget_bytes() {
+        "review-storage-budget-before-cleanup"
+    } else if web_summary.bytes > web_cap_bytes {
+        "review-web-result-cache-caps"
+    } else if web_summary.duplicate_entries > 0 || stats.crawl_snapshot_duplicate_entries > 0 {
+        "dry-run-prune-duplicate-storage-rows"
+    } else if frontier_failed_records > DEFAULT_MAX_FAILED_FRONTIER_RECORDS {
+        "inspect-frontier-failed-record-growth"
+    } else {
+        "storage-bounds-low"
+    };
+
+    format!(
+        "storage_hygiene_bounds_inventory: report_only=true deletes=false compacts=false web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} web_cap_bytes={web_cap_bytes} snapshot_bytes={} snapshot_entries={} snapshot_duplicates={} frontier_bytes={} frontier_records={frontier_records} frontier_failed_records={frontier_failed_records} generated_artifact_inventory=temp-cleanup-audit preserve=.brutal-index,indexed-docs,crawl-snapshots github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        crawl_bytes,
+        stats.crawl_snapshot_entries,
+        stats.crawl_snapshot_duplicate_entries,
+        stats.crawl_frontier_bytes,
+    )
 }
 
 fn search_browser_storage_hygiene_pack_line(
@@ -2932,6 +2982,7 @@ fn web_storage_pressure_summary_lines(
         format!(
             "brave_result_archive_guard: report_only=true status={brave_archive_status} persisted_rows={brave_persisted_rows} duplicate_rows={brave_duplicate_rows} duplicate_row_bytes={brave_duplicate_row_bytes} malformed_rows={brave_invalid_rows} mutates_files=false next_action={brave_archive_next_action}"
         ),
+        saved_result_file_growth_boundary_line(artifacts, &summary),
         brave_result_archive_retention_line(artifacts),
     ];
     if summary.suggested_dry_runs > 0 {
@@ -2944,6 +2995,46 @@ fn web_storage_pressure_summary_lines(
         artifacts, &summary, now, stale_secs,
     ));
     lines
+}
+
+fn saved_result_file_growth_boundary_line(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+) -> String {
+    let config = web_storage_retention_config();
+    let cache_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let result_log_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let cap_bytes = config
+        .cache_max_bytes
+        .saturating_add(config.result_log_max_bytes);
+    let saved_result_bytes = cache_bytes.saturating_add(result_log_bytes);
+    let next_action = if summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-saved-results"
+    } else if summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0 {
+        "dry-run-prune-saved-result-duplicates"
+    } else if saved_result_bytes >= cap_bytes {
+        "review-saved-result-byte-caps"
+    } else if summary.durable_result_rows > 0 {
+        "saved-result-growth-bounded"
+    } else {
+        "no-saved-results"
+    };
+
+    format!(
+        "saved_result_file_growth_boundary: report_only=true mutates_files=false saved_result_rows={} saved_result_bytes={saved_result_bytes} cache_bytes={cache_bytes} result_log_bytes={result_log_bytes} duplicate_rows={} duplicate_row_bytes={} malformed_rows={} cap_bytes={cap_bytes} generated_artifact_inventory=temp-cleanup-audit github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        summary.durable_result_rows,
+        summary.duplicate_entries,
+        summary.duplicate_row_bytes,
+        summary.incomplete_result_rows,
+    )
 }
 
 fn brave_result_archive_retention_line(artifacts: &[WebStorageArtifactStats]) -> String {
@@ -5193,6 +5284,22 @@ mod tests {
             "local_artifact_size_budget: report_only=true status=dry-run-recommended total_bytes=1000 budget_bytes={} web_cache_bytes=0 brave_results_bytes=0 snapshot_bytes=300 generated_artifact_bytes=not-scanned largest_artifact=core-index largest_artifact_bytes=350 next_action=run-storage-dry-run-before-cleanup",
             index_storage_budget_bytes()
         )));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("web_cache_bytes=0")
+                && line.contains("brave_results_bytes=0")
+                && line.contains("snapshot_bytes=300")
+                && line.contains("snapshot_entries=5")
+                && line.contains("frontier_bytes=100")
+                && line.contains("frontier_records=10")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
+        }));
     }
 
     #[test]
@@ -5242,6 +5349,20 @@ mod tests {
                 && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
                 && line.contains("generated_artifact_bytes=not-scanned")
                 && line.contains("next_action=run-storage-dry-run-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("snapshot_entries=2")
+                && line.contains("snapshot_duplicates=1")
+                && line.contains("frontier_bytes=0")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
         }));
         assert!(lines.iter().any(|line| {
             line.starts_with("search_browser_storage_hygiene_pack: report_only=true")
@@ -6660,6 +6781,90 @@ mod tests {
                 && line.contains("reclaimable_rows=1")
                 && line.contains("suggested_dry_runs=1")
                 && line.contains("next_action=inspect-or-dry-run-compact")
+        }));
+    }
+
+    #[test]
+    fn saved_result_and_generated_artifact_boundaries_report_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let crawl_snapshot_path = dir.path().join("crawl-docs.jsonl");
+        let generated_dir = dir.path().join("search-engine-generated-report-output");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        let generated_path = generated_dir.join("storage-report.txt");
+        let cache_contents = br#"{"normalized_query":"same","provider":"brave","fetched_at_unix":100,"results":[{"url":"https://example.com/a","title":"A","snippet":"Alpha"}]}
+"#;
+        let result_log_contents = br#"{"normalized_query":"same","provider":"brave","rank":1,"url":"https://example.com/a","title":"A","snippet":"Alpha","fetched_at_unix":100}
+{"normalized_query":"same","provider":"brave","rank":2,"url":"https://example.com/a","title":"A duplicate","snippet":"Alpha duplicate","fetched_at_unix":110}
+"#;
+        let crawl_snapshot_contents =
+            b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
+        let generated_contents = b"report artifact
+";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        std::fs::write(&result_log_path, result_log_contents).unwrap();
+        std::fs::write(&crawl_snapshot_path, crawl_snapshot_contents).unwrap();
+        std::fs::write(&generated_path, generated_contents).unwrap();
+        let cache_before = std::fs::read(&cache_path).unwrap();
+        let result_log_before = std::fs::read(&result_log_path).unwrap();
+        let crawl_snapshot_before = std::fs::read(&crawl_snapshot_path).unwrap();
+        let generated_before = std::fs::read(&generated_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let result_log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let web_lines =
+            web_storage_pressure_summary_lines(&[cache_stats, result_log_stats], 120, 60);
+        let temp_lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let index_stats = collect_index_storage_stats(dir.path()).unwrap();
+        let index_web_summary = web_storage_pressure_summary(&index_stats.web_artifacts, 120, 60);
+        let rollup_lines = storage_pressure_rollup_lines(&index_stats, &index_web_summary);
+
+        assert_eq!(cache_before, std::fs::read(&cache_path).unwrap());
+        assert_eq!(result_log_before, std::fs::read(&result_log_path).unwrap());
+        assert_eq!(
+            crawl_snapshot_before,
+            std::fs::read(&crawl_snapshot_path).unwrap()
+        );
+        assert_eq!(generated_before, std::fs::read(&generated_path).unwrap());
+        assert!(web_lines.iter().any(|line| {
+            line.starts_with("saved_result_file_growth_boundary: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("saved_result_rows=3")
+                && line.contains("duplicate_rows=1")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-saved-result-duplicates")
+        }));
+        assert!(temp_lines.iter().any(|line| {
+            line.starts_with("storage_generated_artifact_inventory_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("candidates=1")
+                && line.contains(&format!("bytes={}", generated_contents.len()))
+                && line.contains("github_safe_artifacts=reports-metadata-only")
+                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=review-generated-reports-before-cleanup")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(&format!("web_cache_bytes={}", cache_contents.len()))
+                && line.contains(&format!("brave_results_bytes={}", result_log_contents.len()))
+                && line.contains(&format!(
+                    "snapshot_bytes={}",
+                    crawl_snapshot_contents.len()
+                ))
+                && line.contains("snapshot_entries=2")
+                && line.contains("snapshot_duplicates=1")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
         }));
     }
 
