@@ -725,6 +725,128 @@ fn repeated_after_scroll_preserves_overlay_and_lower_content_viewport_hits() {
 }
 
 #[test]
+fn pinned_layers_paint_above_later_normal_content_in_text_and_grayscale_viewports() {
+    let render = BrowserRender {
+        source: "mem://pinned-layer-text-grayscale-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(10)).with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Nav".len(),
+                target_node: Some(11),
+            }])
+            .with_viewport_fixed(true),
+            DisplayHitTarget::node(Some(99)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 12,
+                height: 1,
+                shade: 42,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Nav".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 12,
+                height: 1,
+                shade: 180,
+                alt: Some("normal".to_owned()),
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Body".to_owned(),
+            },
+        ],
+        text: "Nav\nnormal\nBody".to_owned(),
+    };
+    let viewport = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 12,
+        height: 2,
+    };
+
+    let text = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            y: viewport.y,
+            width: viewport.width,
+            height: viewport.height,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    assert!(
+        text.lines
+            .first()
+            .is_some_and(|line| line.starts_with("Nav")),
+        "fixed text should stay readable above later normal media in the scrolled text viewport"
+    );
+    assert!(
+        text.lines
+            .first()
+            .and_then(|line| line.chars().nth(8))
+            .is_some_and(|ch| ch == '#'),
+        "fixed underlay should cover later normal media outside text glyphs"
+    );
+    assert!(
+        text.lines
+            .first()
+            .is_some_and(|line| line.chars().skip("Nav".len()).all(|ch| ch == '#')),
+        "fixed underlay should represent the full pinned overlay row outside text glyphs"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.y),
+        viewport_width: Some(viewport.width),
+        viewport_height: Some(viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let raster =
+        rasterize_render(&render, raster_options).expect("rasterize pinned grayscale viewport");
+    let sample_x = raster_options
+        .padding_x
+        .saturating_add(8usize.saturating_mul(raster_options.cell_width));
+    let sample = raster_options
+        .padding_y
+        .saturating_mul(raster.width)
+        .saturating_add(sample_x);
+    assert_eq!(
+        raster.pixels[sample], 42,
+        "fixed underlay should paint over later normal media in grayscale scroll output"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport, 8, 0),
+        Some(10),
+        "fixed hit target should stay aligned with the pinned visual layer"
+    );
+}
+
+#[test]
 fn successive_scroll_dirty_regions_merge_without_stale_mixed_raster_hits() {
     let mut dirty = vec![
         BrowserViewportFrameDirtyRect {

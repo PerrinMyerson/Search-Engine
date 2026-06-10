@@ -5618,6 +5618,17 @@ fn display_command_viewport_sticky_top(
         .and_then(|target| target.viewport_sticky_top)
 }
 
+fn display_command_viewport_pinned(render: &BrowserRender, command_index: usize) -> bool {
+    display_command_viewport_fixed(render, command_index)
+        || display_command_viewport_sticky_top(render, command_index).is_some()
+}
+
+fn display_command_paint_indices_for_viewport(render: &BrowserRender) -> Vec<usize> {
+    let mut indices = (0..render.display_list.len()).collect::<Vec<_>>();
+    indices.sort_by_key(|command_index| display_command_viewport_pinned(render, *command_index));
+    indices
+}
+
 fn display_command_origin_for_viewport(
     x: usize,
     y: usize,
@@ -6828,7 +6839,8 @@ pub fn rasterize_render(
 
     let background = 255u8;
     let mut pixels = vec![background; pixel_count];
-    for (command_index, command) in render.display_list.iter().enumerate() {
+    for command_index in display_command_paint_indices_for_viewport(render) {
+        let command = &render.display_list[command_index];
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
@@ -7704,7 +7716,8 @@ pub fn browser_text_viewport(
     let height = document_viewport.viewport.height;
     let mut cells = vec![vec![' '; width]; height];
 
-    for (command_index, command) in render.display_list.iter().enumerate() {
+    for command_index in display_command_paint_indices_for_viewport(render) {
+        let command = &render.display_list[command_index];
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
         let command_bounds = display_command_bounds_for_viewport(
@@ -7722,10 +7735,22 @@ pub fn browser_text_viewport(
                 draw_text_viewport_command(&mut cells, command, render, command_index, viewport);
             }
             DisplayCommand::Rect { .. } | DisplayCommand::ColorRect { .. } => {
-                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '#')
+                fill_text_viewport_visual_cells(
+                    &mut cells,
+                    viewport,
+                    visible_bounds,
+                    '#',
+                    display_command_viewport_pinned(render, command_index),
+                )
             }
             DisplayCommand::Image { alt, .. } => {
-                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_visual_cells(
+                    &mut cells,
+                    viewport,
+                    visible_bounds,
+                    '@',
+                    display_command_viewport_pinned(render, command_index),
+                );
                 overlay_text_viewport_image_alt(
                     &mut cells,
                     viewport,
@@ -7734,7 +7759,13 @@ pub fn browser_text_viewport(
                 );
             }
             DisplayCommand::BackgroundImage { .. } => {
-                fill_text_viewport_visual_cells(&mut cells, viewport, visible_bounds, '@');
+                fill_text_viewport_visual_cells(
+                    &mut cells,
+                    viewport,
+                    visible_bounds,
+                    '@',
+                    display_command_viewport_pinned(render, command_index),
+                );
             }
         }
     }
@@ -8625,6 +8656,7 @@ fn fill_text_viewport_empty_cells(
     viewport: RasterViewport,
     bounds: DisplayCommandBounds,
     ch: char,
+    overwrite: bool,
 ) {
     let start_y = bounds.y.saturating_sub(viewport.y);
     let end_y = start_y.saturating_add(bounds.height).min(cells.len());
@@ -8634,7 +8666,7 @@ fn fill_text_viewport_empty_cells(
         if let Some(line) = cells.get_mut(row) {
             for column in start_x..end_x {
                 if let Some(cell) = line.get_mut(column) {
-                    if *cell == ' ' {
+                    if overwrite || *cell == ' ' {
                         *cell = ch;
                     }
                 }
@@ -8648,11 +8680,12 @@ fn fill_text_viewport_visual_cells(
     viewport: RasterViewport,
     bounds: DisplayCommandBounds,
     ch: char,
+    overwrite: bool,
 ) {
-    if large_text_viewport_visual_fill(viewport, bounds) {
-        fill_text_viewport_sparse_cells(cells, viewport, bounds, ch);
+    if !overwrite && large_text_viewport_visual_fill(viewport, bounds) {
+        fill_text_viewport_sparse_cells(cells, viewport, bounds, ch, overwrite);
     } else {
-        fill_text_viewport_empty_cells(cells, viewport, bounds, ch);
+        fill_text_viewport_empty_cells(cells, viewport, bounds, ch, overwrite);
     }
 }
 
@@ -8666,6 +8699,7 @@ fn fill_text_viewport_sparse_cells(
     viewport: RasterViewport,
     bounds: DisplayCommandBounds,
     ch: char,
+    overwrite: bool,
 ) {
     let start_y = bounds.y.saturating_sub(viewport.y);
     let end_y = start_y.saturating_add(bounds.height).min(cells.len());
@@ -8678,7 +8712,7 @@ fn fill_text_viewport_sparse_cells(
                     continue;
                 }
                 if let Some(cell) = line.get_mut(column)
-                    && *cell == ' '
+                    && (overwrite || *cell == ' ')
                 {
                     *cell = ch;
                 }
