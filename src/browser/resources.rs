@@ -142,6 +142,8 @@ pub struct BrowserResourceFetch {
     pub image_visibility_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_resource_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_fallback_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +378,9 @@ impl BrowserResourceFetch {
             decoded_color_bytes,
         )
         .map(str::to_owned);
+        let image_fallback_state =
+            image_resource_fallback_state(&args.resource, image_decode_status.as_deref())
+                .map(str::to_owned);
 
         Self {
             resource: args.resource,
@@ -418,6 +423,7 @@ impl BrowserResourceFetch {
             render_attachment_kind: None,
             image_visibility_state: None,
             image_resource_state,
+            image_fallback_state,
         }
     }
 
@@ -473,6 +479,30 @@ fn image_resource_visibility_state(
 
 fn image_fetch_error_retryable(error_kind: Option<&str>) -> bool {
     matches!(error_kind, Some("timeout" | "dns" | "connect"))
+}
+
+fn image_resource_fallback_state(
+    resource: &BrowserResource,
+    image_decode_status: Option<&str>,
+) -> Option<&'static str> {
+    if image_decode_status == Some("decoded") {
+        return None;
+    }
+    if !matches!(
+        resource.kind.as_str(),
+        "image" | "image_candidate" | "background_image" | "poster" | "icon"
+    ) {
+        return None;
+    }
+    let has_alt = resource
+        .alt
+        .as_deref()
+        .is_some_and(|alt| !alt.trim().is_empty());
+    if has_alt {
+        Some("alt_text_placeholder")
+    } else {
+        Some("empty_placeholder")
+    }
 }
 
 fn image_resource_fetch_decode_report(
@@ -1111,9 +1141,6 @@ fn resource_fetch_diagnostic(
     if image_decode_status == Some("decoded") {
         return Some("image_decoded".to_owned());
     }
-    if image_decode_status == Some("not_fetched") {
-        return Some("image_not_fetched".to_owned());
-    }
 
     match (status, error_kind, cache_outcome) {
         ("cached", _, Some("hit")) => Some("cache_hit".to_owned()),
@@ -1131,6 +1158,7 @@ fn resource_fetch_diagnostic(
         ("failed", Some(kind), _) => Some(format!("network_{kind}")),
         ("skipped", Some("unsupported_scheme"), _) => Some("unsupported_scheme".to_owned()),
         ("skipped", _, _) => Some("skipped_resource".to_owned()),
+        _ if image_decode_status == Some("not_fetched") => Some("image_not_fetched".to_owned()),
         _ => None,
     }
 }
@@ -1407,6 +1435,16 @@ fn classify_load_error(error: &anyhow::Error) -> String {
         || error_text.contains("request timed out")
     {
         "timeout".to_owned()
+    } else if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_connect)
+    }) || error_text.contains("connect")
+        || error_text.contains("connection refused")
+        || error_text.contains("connection reset")
+        || error_text.contains("connection aborted")
+    {
+        "connect".to_owned()
     } else if error_text.contains("unsupported resource scheme") {
         "unsupported_scheme".to_owned()
     } else if error_text.contains("unsupported content type") {
@@ -1417,12 +1455,6 @@ fn classify_load_error(error: &anyhow::Error) -> String {
         "redirect".to_owned()
     } else if error_text.contains("dns") || error_text.contains("resolve") {
         "dns".to_owned()
-    } else if error_text.contains("connect")
-        || error_text.contains("connection refused")
-        || error_text.contains("connection reset")
-        || error_text.contains("connection aborted")
-    {
-        "connect".to_owned()
     } else {
         "error".to_owned()
     }
@@ -3238,6 +3270,7 @@ mod tests {
             render_attachment_kind: None,
             image_visibility_state: None,
             image_resource_state: None,
+            image_fallback_state: None,
         };
 
         let serialized = serde_json::to_value(&fetch).unwrap();
@@ -3402,6 +3435,8 @@ mod tests {
             fetch.image_resource_state.as_deref(),
             Some("retryable_not_fetched")
         );
+        assert_eq!(fetch.diagnostic.as_deref(), Some("network_timeout"));
+        assert_eq!(fetch.image_fallback_state, None);
 
         let byte_cap = resource_target_diagnostics("data:text/plain,hello", Some("byte_cap"));
         assert_eq!(byte_cap.scheme.as_deref(), Some("data"));
@@ -3427,6 +3462,79 @@ mod tests {
         );
         assert!(!missing.retryable);
         assert_eq!(missing.image_resource_state.as_deref(), Some("not_fetched"));
+        assert_eq!(missing.image_fallback_state, None);
+
+        let missing_image = BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource: BrowserResource {
+                    kind: "image".to_owned(),
+                    initiator: "img".to_owned(),
+                    url: "file:///tmp/missing-image.png".to_owned(),
+                    resolved: "file:///tmp/missing-image.png".to_owned(),
+                    rel: None,
+                    media: None,
+                    alt: Some("Missing image fallback".to_owned()),
+                    type_hint: None,
+                },
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some("No such file or directory".to_owned()),
+                error_kind: Some("error".to_owned()),
+                elapsed_ms: 0,
+                request_timeout_ms: 0,
+                cache_pressure: BrowserResourceCachePressure::default(),
+                cache_outcome: Some("miss_failed".to_owned()),
+            },
+            None,
+        );
+        assert_eq!(
+            missing_image.image_resource_state.as_deref(),
+            Some("not_fetched")
+        );
+        assert_eq!(
+            missing_image.image_fallback_state.as_deref(),
+            Some("alt_text_placeholder")
+        );
+
+        let retryable_image = BrowserResourceFetch::from_args(
+            BrowserResourceFetchArgs {
+                resource: BrowserResource {
+                    kind: "image".to_owned(),
+                    initiator: "img".to_owned(),
+                    url: "http://127.0.0.1:9/retry.png".to_owned(),
+                    resolved: "http://127.0.0.1:9/retry.png".to_owned(),
+                    rel: None,
+                    media: None,
+                    alt: Some("Retry image fallback".to_owned()),
+                    type_hint: None,
+                },
+                status: "failed".to_owned(),
+                source: None,
+                bytes: 0,
+                content_type: None,
+                error: Some("error sending request".to_owned()),
+                error_kind: Some("connect".to_owned()),
+                elapsed_ms: 0,
+                request_timeout_ms: 15_000,
+                cache_pressure: BrowserResourceCachePressure::default(),
+                cache_outcome: Some("miss_failed".to_owned()),
+            },
+            None,
+        );
+        assert_eq!(
+            retryable_image.image_resource_state.as_deref(),
+            Some("retryable_not_fetched")
+        );
+        assert_eq!(
+            retryable_image.diagnostic.as_deref(),
+            Some("network_connect")
+        );
+        assert_eq!(
+            retryable_image.image_fallback_state.as_deref(),
+            Some("alt_text_placeholder")
+        );
     }
 
     #[tokio::test]
