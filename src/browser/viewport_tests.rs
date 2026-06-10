@@ -438,6 +438,293 @@ fn repeated_scroll_projection_keeps_visual_hits_and_raster_rows_aligned() {
 }
 
 #[test]
+fn repeated_after_scroll_preserves_overlay_and_lower_content_viewport_hits() {
+    let image_url = "mem://viewport-overlay-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![96],
+        rgb_pixels: Some(vec![32, 156, 208]),
+    };
+    let render = BrowserRender {
+        source: "mem://viewport-overlay-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 12,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 9,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default().with_viewport_fixed(true),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Fixed".len(),
+                target_node: Some(10),
+            }])
+            .with_viewport_fixed(true),
+            DisplayHitTarget::default().with_viewport_sticky_top(Some(1)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Sticky".len(),
+                target_node: Some(20),
+            }])
+            .with_viewport_sticky_top(Some(1)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Lower".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::node(Some(91)),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 12,
+                height: 1,
+                shade: 245,
+                red: 245,
+                green: 248,
+                blue: 250,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 0,
+                text: "Fixed".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 2,
+                width: 12,
+                height: 1,
+                shade: 230,
+                red: 230,
+                green: 238,
+                blue: 244,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 2,
+                text: "Sticky".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 6,
+                width: 12,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 6,
+                text: "Lower".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Image {
+                x: 2,
+                y: 7,
+                width: 3,
+                height: 1,
+                shade: 128,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 8,
+                width: 12,
+                height: 1,
+                shade: 224,
+                red: 224,
+                green: 232,
+                blue: 240,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Fixed\nSticky\nLower\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 3,
+        width: 12,
+        height: 4,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(&render, start, &[(0, 1), (0, 1)], options)
+        .expect("render repeated overlay/lower content scroll frames");
+
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![4, 5],
+        "repeated scroll should advance the viewport slice without resetting"
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| !frame.report.viewport.full_repaint),
+        "small scroll frames should preserve incremental viewport projection"
+    );
+
+    let has_visible =
+        |frame: &BrowserViewportFrame, command_index: usize, kind: &str, visible_y: usize| {
+            frame
+                .report
+                .viewport
+                .visible_commands
+                .iter()
+                .any(|command| {
+                    command.command_index == command_index
+                        && command.kind == kind
+                        && command.visible_y == visible_y
+                })
+        };
+    assert!(has_visible(&frames[0], 1, "StyledText", 0));
+    assert!(has_visible(&frames[0], 3, "StyledText", 1));
+    assert!(has_visible(&frames[0], 5, "StyledText", 2));
+    assert!(has_visible(&frames[0], 6, "Image", 3));
+    assert!(has_visible(&frames[1], 1, "StyledText", 0));
+    assert!(has_visible(&frames[1], 3, "StyledText", 1));
+    assert!(has_visible(&frames[1], 6, "Image", 2));
+    assert!(has_visible(&frames[1], 8, "Text", 3));
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(10),
+        "fixed overlay link should remain pinned at the viewport top"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 1),
+        Some(20),
+        "sticky overlay link should remain pinned below fixed content"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 2),
+        Some(77),
+        "lower link should remain clickable below the pinned overlays"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 2, 3),
+        Some(91),
+        "lower image should remain clickable in its painted row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 1),
+        Some(20),
+        "sticky overlay should beat the scrolled lower link only on the sticky row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 2, 2),
+        Some(91),
+        "image hit should move up one viewport row after the next scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 3),
+        None,
+        "stale lower link should not leak into the tail row"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let row_pixel = |column: usize, row: usize| {
+        (
+            options
+                .padding_x
+                .saturating_add(column.saturating_mul(options.cell_width)),
+            options
+                .padding_y
+                .saturating_add(row.saturating_mul(options.cell_height)),
+        )
+    };
+    let fixed_bg = row_pixel(11, 0);
+    assert_eq!(
+        pixel(&frames[0], fixed_bg.0, fixed_bg.1),
+        [245, 248, 250, 255],
+        "fixed overlay background should stay pinned at row zero"
+    );
+    let sticky_bg = row_pixel(11, 1);
+    assert_eq!(
+        pixel(&frames[1], sticky_bg.0, sticky_bg.1),
+        [230, 238, 244, 255],
+        "sticky overlay background should stay pinned at row one"
+    );
+    let sticky_text_x_start = options.padding_x;
+    let sticky_text_x_end = sticky_text_x_start
+        .saturating_add("Sticky".len().saturating_mul(options.cell_width))
+        .min(frames[1].raster.width);
+    let sticky_text_y_start = options.padding_y.saturating_add(options.cell_height);
+    let sticky_text_y_end = sticky_text_y_start
+        .saturating_add(options.cell_height)
+        .min(frames[1].raster.height);
+    let sticky_text_has_ink = (sticky_text_y_start..sticky_text_y_end).any(|y| {
+        (sticky_text_x_start..sticky_text_x_end).any(|x| pixel(&frames[1], x, y) == [0, 0, 0, 255])
+    });
+    assert!(
+        sticky_text_has_ink,
+        "sticky overlay text should stay pinned at row one"
+    );
+    let lower_bg = row_pixel(0, 2);
+    assert_eq!(
+        pixel(&frames[0], lower_bg.0, lower_bg.1),
+        [236, 244, 248, 255],
+        "lower linked content should paint below fixed/sticky overlays"
+    );
+    let image_pixel = row_pixel(2, 3);
+    assert_eq!(
+        pixel(&frames[0], image_pixel.0, image_pixel.1),
+        [32, 156, 208, 255],
+        "decoded image color should paint in the first scrolled slice"
+    );
+    let moved_image_pixel = row_pixel(2, 2);
+    assert_eq!(
+        pixel(&frames[1], moved_image_pixel.0, moved_image_pixel.1),
+        [32, 156, 208, 255],
+        "decoded image color should move with the viewport crop after repeated scroll"
+    );
+}
+
+#[test]
 fn successive_scroll_dirty_regions_merge_without_stale_mixed_raster_hits() {
     let mut dirty = vec![
         BrowserViewportFrameDirtyRect {

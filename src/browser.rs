@@ -7313,273 +7313,283 @@ pub fn rasterize_render_rgba(
         background,
         pixels: vec![255u8; pixel_count.saturating_mul(4)],
     };
-    for (command_index, command) in render.display_list.iter().enumerate() {
-        let viewport_fixed = display_command_viewport_fixed(render, command_index);
-        let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
-            render,
-            command_index,
-            command,
-            viewport,
-        ) else {
-            continue;
-        };
-        match command {
-            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {
-                draw_rgba_text_command(
-                    &mut rgba.pixels,
-                    rgba.width,
-                    command,
-                    render,
-                    command_index,
-                    viewport,
-                    options,
-                );
+    for paint_pinned in [false, true] {
+        for (command_index, command) in render.display_list.iter().enumerate() {
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            let pinned = viewport_fixed || viewport_sticky_top.is_some();
+            if pinned != paint_pinned {
+                continue;
             }
-            DisplayCommand::Image {
-                x,
-                y,
-                width: image_width,
-                height,
-                shade,
-                url,
-                ..
-            } => {
-                let source_bounds = display_command_source_bounds_for_viewport(
-                    render,
-                    command_index,
-                    DisplayCommandBounds {
-                        x: *x,
-                        y: *y,
-                        width: *image_width,
-                        height: *height,
-                    },
-                    viewport,
-                    viewport_fixed,
-                    viewport_sticky_top,
-                );
-                let image_x = options.padding_x.saturating_add(
-                    visible_bounds
-                        .x
-                        .saturating_sub(viewport.x)
-                        .saturating_mul(options.cell_width),
-                );
-                let image_y = options.padding_y.saturating_add(
-                    visible_bounds
-                        .y
-                        .saturating_sub(viewport.y)
-                        .saturating_mul(options.cell_height),
-                );
-                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
-                let clipped_image_height =
-                    visible_bounds.height.saturating_mul(options.cell_height);
-                let full_width = source_bounds.width.saturating_mul(options.cell_width);
-                let full_height = source_bounds.height.saturating_mul(options.cell_height);
-                let source_offset_x = visible_bounds
-                    .x
-                    .saturating_sub(source_bounds.x)
-                    .saturating_mul(options.cell_width);
-                let source_offset_y = visible_bounds
-                    .y
-                    .saturating_sub(source_bounds.y)
-                    .saturating_mul(options.cell_height);
-                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
-                    draw_decoded_image_region_rgba(
+            let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
+                render,
+                command_index,
+                command,
+                viewport,
+            ) else {
+                continue;
+            };
+            match command {
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => {
+                    draw_rgba_text_command(
                         &mut rgba.pixels,
                         rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        source_offset_x,
-                        source_offset_y,
-                        full_width,
-                        full_height,
-                        decoded,
-                    );
-                } else if let Some(decoded) = url
-                    .as_deref()
-                    .and_then(|url| decode_image_reference(&render.source, url))
-                {
-                    draw_decoded_image_region_rgba(
-                        &mut rgba.pixels,
-                        rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        source_offset_x,
-                        source_offset_y,
-                        full_width,
-                        full_height,
-                        &decoded,
-                    );
-                } else {
-                    draw_rgba_image_placeholder(
-                        &mut rgba.pixels,
-                        rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        *shade,
-                        source_bounds,
-                        visible_bounds,
+                        command,
+                        render,
+                        command_index,
+                        viewport,
+                        options,
                     );
                 }
-            }
-            DisplayCommand::BackgroundImage {
-                x,
-                y,
-                width: image_width,
-                height,
-                shade,
-                url,
-                size,
-                position,
-                repeat,
-                ..
-            } => {
-                let source_bounds = display_command_source_bounds_for_viewport(
-                    render,
-                    command_index,
-                    DisplayCommandBounds {
-                        x: *x,
-                        y: *y,
-                        width: *image_width,
-                        height: *height,
-                    },
-                    viewport,
-                    viewport_fixed,
-                    viewport_sticky_top,
-                );
-                let image_x = options.padding_x.saturating_add(
-                    visible_bounds
+                DisplayCommand::Image {
+                    x,
+                    y,
+                    width: image_width,
+                    height,
+                    shade,
+                    url,
+                    ..
+                } => {
+                    let source_bounds = display_command_source_bounds_for_viewport(
+                        render,
+                        command_index,
+                        DisplayCommandBounds {
+                            x: *x,
+                            y: *y,
+                            width: *image_width,
+                            height: *height,
+                        },
+                        viewport,
+                        viewport_fixed,
+                        viewport_sticky_top,
+                    );
+                    let image_x = options.padding_x.saturating_add(
+                        visible_bounds
+                            .x
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
+                    );
+                    let image_y = options.padding_y.saturating_add(
+                        visible_bounds
+                            .y
+                            .saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    let clipped_image_width =
+                        visible_bounds.width.saturating_mul(options.cell_width);
+                    let clipped_image_height =
+                        visible_bounds.height.saturating_mul(options.cell_height);
+                    let full_width = source_bounds.width.saturating_mul(options.cell_width);
+                    let full_height = source_bounds.height.saturating_mul(options.cell_height);
+                    let source_offset_x = visible_bounds
                         .x
-                        .saturating_sub(viewport.x)
-                        .saturating_mul(options.cell_width),
-                );
-                let image_y = options.padding_y.saturating_add(
-                    visible_bounds
+                        .saturating_sub(source_bounds.x)
+                        .saturating_mul(options.cell_width);
+                    let source_offset_y = visible_bounds
                         .y
-                        .saturating_sub(viewport.y)
-                        .saturating_mul(options.cell_height),
-                );
-                let clipped_image_width = visible_bounds.width.saturating_mul(options.cell_width);
-                let clipped_image_height =
-                    visible_bounds.height.saturating_mul(options.cell_height);
-                let full_width = source_bounds.width.saturating_mul(options.cell_width);
-                let full_height = source_bounds.height.saturating_mul(options.cell_height);
-                let source_offset_x = visible_bounds
-                    .x
-                    .saturating_sub(source_bounds.x)
-                    .saturating_mul(options.cell_width);
-                let source_offset_y = visible_bounds
-                    .y
-                    .saturating_sub(source_bounds.y)
-                    .saturating_mul(options.cell_height);
-                if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
-                    draw_background_image_region_rgba(
-                        &mut rgba.pixels,
-                        rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        source_offset_x,
-                        source_offset_y,
-                        full_width,
-                        full_height,
-                        *size,
-                        *position,
-                        *repeat,
-                        decoded,
+                        .saturating_sub(source_bounds.y)
+                        .saturating_mul(options.cell_height);
+                    if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url))
+                    {
+                        draw_decoded_image_region_rgba(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            source_offset_x,
+                            source_offset_y,
+                            full_width,
+                            full_height,
+                            decoded,
+                        );
+                    } else if let Some(decoded) = url
+                        .as_deref()
+                        .and_then(|url| decode_image_reference(&render.source, url))
+                    {
+                        draw_decoded_image_region_rgba(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            source_offset_x,
+                            source_offset_y,
+                            full_width,
+                            full_height,
+                            &decoded,
+                        );
+                    } else {
+                        draw_rgba_image_placeholder(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            *shade,
+                            source_bounds,
+                            visible_bounds,
+                        );
+                    }
+                }
+                DisplayCommand::BackgroundImage {
+                    x,
+                    y,
+                    width: image_width,
+                    height,
+                    shade,
+                    url,
+                    size,
+                    position,
+                    repeat,
+                    ..
+                } => {
+                    let source_bounds = display_command_source_bounds_for_viewport(
+                        render,
+                        command_index,
+                        DisplayCommandBounds {
+                            x: *x,
+                            y: *y,
+                            width: *image_width,
+                            height: *height,
+                        },
+                        viewport,
+                        viewport_fixed,
+                        viewport_sticky_top,
                     );
-                } else if let Some(decoded) = url
-                    .as_deref()
-                    .and_then(|url| decode_image_reference(&render.source, url))
-                {
-                    draw_background_image_region_rgba(
-                        &mut rgba.pixels,
-                        rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        source_offset_x,
-                        source_offset_y,
-                        full_width,
-                        full_height,
-                        *size,
-                        *position,
-                        *repeat,
-                        &decoded,
+                    let image_x = options.padding_x.saturating_add(
+                        visible_bounds
+                            .x
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
                     );
-                } else {
-                    draw_rgba_image_placeholder(
+                    let image_y = options.padding_y.saturating_add(
+                        visible_bounds
+                            .y
+                            .saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    let clipped_image_width =
+                        visible_bounds.width.saturating_mul(options.cell_width);
+                    let clipped_image_height =
+                        visible_bounds.height.saturating_mul(options.cell_height);
+                    let full_width = source_bounds.width.saturating_mul(options.cell_width);
+                    let full_height = source_bounds.height.saturating_mul(options.cell_height);
+                    let source_offset_x = visible_bounds
+                        .x
+                        .saturating_sub(source_bounds.x)
+                        .saturating_mul(options.cell_width);
+                    let source_offset_y = visible_bounds
+                        .y
+                        .saturating_sub(source_bounds.y)
+                        .saturating_mul(options.cell_height);
+                    if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url))
+                    {
+                        draw_background_image_region_rgba(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            source_offset_x,
+                            source_offset_y,
+                            full_width,
+                            full_height,
+                            *size,
+                            *position,
+                            *repeat,
+                            decoded,
+                        );
+                    } else if let Some(decoded) = url
+                        .as_deref()
+                        .and_then(|url| decode_image_reference(&render.source, url))
+                    {
+                        draw_background_image_region_rgba(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            source_offset_x,
+                            source_offset_y,
+                            full_width,
+                            full_height,
+                            *size,
+                            *position,
+                            *repeat,
+                            &decoded,
+                        );
+                    } else {
+                        draw_rgba_image_placeholder(
+                            &mut rgba.pixels,
+                            rgba.width,
+                            image_x,
+                            image_y,
+                            clipped_image_width,
+                            clipped_image_height,
+                            *shade,
+                            source_bounds,
+                            visible_bounds,
+                        );
+                    }
+                }
+                DisplayCommand::Rect { shade, .. } => {
+                    let rect_x = options.padding_x.saturating_add(
+                        visible_bounds
+                            .x
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
+                    );
+                    let rect_y = options.padding_y.saturating_add(
+                        visible_bounds
+                            .y
+                            .saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
+                    let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
+                    fill_rgba_rect(
                         &mut rgba.pixels,
                         rgba.width,
-                        image_x,
-                        image_y,
-                        clipped_image_width,
-                        clipped_image_height,
-                        *shade,
-                        source_bounds,
-                        visible_bounds,
+                        rect_x,
+                        rect_y,
+                        rect_width,
+                        rect_height,
+                        [*shade, *shade, *shade, 255],
                     );
                 }
-            }
-            DisplayCommand::Rect { shade, .. } => {
-                let rect_x = options.padding_x.saturating_add(
-                    visible_bounds
-                        .x
-                        .saturating_sub(viewport.x)
-                        .saturating_mul(options.cell_width),
-                );
-                let rect_y = options.padding_y.saturating_add(
-                    visible_bounds
-                        .y
-                        .saturating_sub(viewport.y)
-                        .saturating_mul(options.cell_height),
-                );
-                let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
-                let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
-                fill_rgba_rect(
-                    &mut rgba.pixels,
-                    rgba.width,
-                    rect_x,
-                    rect_y,
-                    rect_width,
-                    rect_height,
-                    [*shade, *shade, *shade, 255],
-                );
-            }
-            DisplayCommand::ColorRect {
-                red, green, blue, ..
-            } => {
-                let rect_x = options.padding_x.saturating_add(
-                    visible_bounds
-                        .x
-                        .saturating_sub(viewport.x)
-                        .saturating_mul(options.cell_width),
-                );
-                let rect_y = options.padding_y.saturating_add(
-                    visible_bounds
-                        .y
-                        .saturating_sub(viewport.y)
-                        .saturating_mul(options.cell_height),
-                );
-                let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
-                let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
-                fill_rgba_rect(
-                    &mut rgba.pixels,
-                    rgba.width,
-                    rect_x,
-                    rect_y,
-                    rect_width,
-                    rect_height,
-                    [*red, *green, *blue, 255],
-                );
+                DisplayCommand::ColorRect {
+                    red, green, blue, ..
+                } => {
+                    let rect_x = options.padding_x.saturating_add(
+                        visible_bounds
+                            .x
+                            .saturating_sub(viewport.x)
+                            .saturating_mul(options.cell_width),
+                    );
+                    let rect_y = options.padding_y.saturating_add(
+                        visible_bounds
+                            .y
+                            .saturating_sub(viewport.y)
+                            .saturating_mul(options.cell_height),
+                    );
+                    let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
+                    let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
+                    fill_rgba_rect(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        rect_x,
+                        rect_y,
+                        rect_width,
+                        rect_height,
+                        [*red, *green, *blue, 255],
+                    );
+                }
             }
         }
     }
