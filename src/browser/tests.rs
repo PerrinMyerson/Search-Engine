@@ -7077,6 +7077,10 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     assert_eq!(undecoded_fetch.image_byte_signature, None);
     assert_eq!(undecoded_fetch.decoded_width, None);
     assert_eq!(undecoded_fetch.decoded_height, None);
+    assert_eq!(
+        undecoded_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let unsupported_fetch = report
         .fetches
@@ -7097,6 +7101,10 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
         Some("image/avif")
     );
     assert_eq!(unsupported_fetch.decoded_hash, None);
+    assert_eq!(
+        unsupported_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let missing_fetch = report
         .fetches
@@ -7114,6 +7122,10 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
         Some("not_fetched")
     );
     assert_eq!(missing_fetch.image_byte_signature, None);
+    assert_eq!(
+        missing_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let retry_fetch = report
         .fetches
@@ -7137,6 +7149,10 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
         Some("not_fetched")
     );
     assert_eq!(retry_fetch.render_attached, Some(false));
+    assert_eq!(
+        retry_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let skipped_fetch = report
         .fetches
@@ -7155,6 +7171,10 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     assert_eq!(
         skipped_fetch.image_decode_error_kind.as_deref(),
         Some("not_fetched")
+    );
+    assert_eq!(
+        skipped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
     );
 
     let mut capped_session = BrowserSession::new(BrowserRenderOptions {
@@ -7193,6 +7213,37 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     );
     assert_eq!(capped_fetch.image_byte_signature, None);
     assert_eq!(capped_fetch.decoded_hash, None);
+    assert_eq!(
+        capped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
+
+    let render = session.current().unwrap();
+    let fallback_placeholder_alts = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Image {
+                url: None,
+                alt: Some(alt),
+                decoded_hash: None,
+                ..
+            } => Some(alt.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for alt in [
+        "Broken",
+        "Unsupported",
+        "Missing",
+        "Retry after viewport load",
+        "Skipped",
+    ] {
+        assert!(
+            fallback_placeholder_alts.contains(&alt),
+            "missing failed-image fallback placeholder alt {alt:?} in {fallback_placeholder_alts:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -7306,6 +7357,10 @@ async fn real_image_paint_attachment_pack_marks_attached_and_unpainted_images() 
         assert_eq!(fetch.status, "fetched");
         assert_eq!(fetch.render_attached, Some(false));
         assert_eq!(fetch.render_attachment_kind, None);
+        assert_eq!(
+            fetch.image_fallback_state.as_deref(),
+            Some("alt_text_placeholder")
+        );
     }
     let broken_fetch = report
         .fetches
@@ -7350,6 +7405,10 @@ async fn real_image_paint_attachment_pack_marks_attached_and_unpainted_images() 
     );
     assert_eq!(skipped_fetch.render_attached, Some(false));
     assert_eq!(skipped_fetch.render_attachment_kind, None);
+    assert_eq!(
+        skipped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let render = session.current().unwrap();
     assert!(render.text.contains("Before paint attachment pack"));
@@ -7402,6 +7461,10 @@ async fn real_image_paint_attachment_pack_marks_attached_and_unpainted_images() 
     );
     assert_eq!(capped_fetch.render_attached, Some(false));
     assert_eq!(capped_fetch.render_attachment_kind, None);
+    assert_eq!(
+        capped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 }
 
 #[tokio::test]
@@ -8072,6 +8135,7 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
             fetch.image_visibility_state.as_deref(),
             Some("render_attached")
         );
+        assert_eq!(fetch.image_fallback_state, None);
     }
 
     let preload_fetch = image_report
@@ -8093,6 +8157,7 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         preload_fetch.image_visibility_state.as_deref(),
         Some("decoded_unattached")
     );
+    assert_eq!(preload_fetch.image_fallback_state, None);
 
     let broken_fetch = image_report
         .fetches
@@ -8110,6 +8175,10 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(
         broken_fetch.image_resource_state.as_deref(),
         Some("decode_failed")
+    );
+    assert_eq!(
+        broken_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
     );
     assert_eq!(broken_fetch.render_attached, Some(false));
 
@@ -8134,6 +8203,10 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         unsupported_fetch.image_byte_signature.as_deref(),
         Some("image/avif")
     );
+    assert_eq!(
+        unsupported_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let missing_fetch = image_report
         .fetches
@@ -8153,6 +8226,10 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
         missing_fetch.image_decode_status.as_deref(),
         Some("not_fetched")
     );
+    assert_eq!(
+        missing_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
+    );
 
     let skipped_fetch = image_report
         .fetches
@@ -8171,6 +8248,10 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(
         skipped_fetch.image_decode_status.as_deref(),
         Some("not_fetched")
+    );
+    assert_eq!(
+        skipped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
     );
 
     let render = session.current().unwrap();
@@ -8262,6 +8343,10 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(
         capped_fetch.image_decode_status.as_deref(),
         Some("not_fetched")
+    );
+    assert_eq!(
+        capped_fetch.image_fallback_state.as_deref(),
+        Some("alt_text_placeholder")
     );
     assert_eq!(capped_fetch.render_attached, Some(false));
 }
