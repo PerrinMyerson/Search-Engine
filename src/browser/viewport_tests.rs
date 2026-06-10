@@ -1560,3 +1560,123 @@ fn continuous_wheel_and_page_scroll_clamps_without_resetting_visible_crop() {
         "bottom clamped no-op should preserve the already visible crop"
     );
 }
+
+#[test]
+fn scrolled_visible_commands_report_pinned_layers_in_paint_order() {
+    let render = BrowserRender {
+        source: "mem://visible-command-paint-order".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 4,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: Vec::new(),
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(10)).with_viewport_fixed(true),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Open".len(),
+                target_node: Some(77),
+            }]),
+        ],
+        display_list: vec![
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 1,
+                shade: 42,
+                red: 42,
+                green: 42,
+                blue: 42,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 3,
+                width: 10,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: None,
+                decoded_width: None,
+                decoded_height: None,
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 3,
+                text: "Open".to_owned(),
+                shade: 0,
+            },
+        ],
+        text: "Lead\nOpen".to_owned(),
+    };
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 3,
+            width: 10,
+            height: 1,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 3);
+    assert_eq!(
+        viewport
+            .visible_commands
+            .iter()
+            .map(|command| command.command_index)
+            .collect::<Vec<_>>(),
+        vec![2, 3, 0],
+        "visible command report should match viewport paint order with pinned layers last"
+    );
+    assert_eq!(
+        viewport
+            .visible_commands
+            .last()
+            .map(|command| (command.kind.as_str(), command.visible_y)),
+        Some(("ColorRect", 0)),
+        "fixed visual layer should report as the topmost painted viewport row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 8, 0),
+        Some(10),
+        "fixed painted layer should keep the topmost hit target aligned with the report order"
+    );
+
+    let raster_options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options)
+        .expect("rasterize visible command paint order viewport");
+    let sample_x = raster_options
+        .padding_x
+        .saturating_add(8usize.saturating_mul(raster_options.cell_width));
+    let index = raster_options
+        .padding_y
+        .saturating_mul(rgba.width)
+        .saturating_add(sample_x)
+        .saturating_mul(4);
+    assert_eq!(
+        &rgba.pixels[index..index.saturating_add(4)],
+        &[42, 42, 42, 255],
+        "raster should show the same pinned layer reported last"
+    );
+}
