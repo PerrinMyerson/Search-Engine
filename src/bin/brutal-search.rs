@@ -2204,6 +2204,7 @@ fn storage_pressure_rollup_lines(
             brave_results_bytes,
             crawl_bytes,
         ),
+        brave_archive_commit_boundary_line(stats, web_summary, brave_results_bytes),
         format!(
             "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.brutal-index/raw-index-data",
             stats.total_bytes,
@@ -3489,6 +3490,66 @@ fn saved_result_file_growth_boundary_line(
         summary.duplicate_entries,
         summary.duplicate_row_bytes,
         summary.incomplete_result_rows,
+    )
+}
+
+fn brave_archive_commit_boundary_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    brave_results_bytes: u64,
+) -> String {
+    let config = web_storage_retention_config();
+    let brave_results = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let archive_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archive_entries = brave_results.map(|artifact| artifact.entries).unwrap_or(0);
+    let duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let malformed_rows = brave_results
+        .map(|artifact| artifact.invalid_json_rows)
+        .unwrap_or(0);
+    let incomplete_rows = brave_results
+        .map(|artifact| artifact.incomplete_result_rows)
+        .unwrap_or(0);
+    let query_buckets = brave_results
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let max_entries_per_query = brave_results
+        .map(|artifact| artifact.max_entries_per_query)
+        .unwrap_or(0);
+    let over_byte_cap =
+        config.result_log_max_bytes > 0 && brave_results_bytes > config.result_log_max_bytes;
+    let over_query_cap = config.result_log_max_entries_per_query > 0
+        && max_entries_per_query > config.result_log_max_entries_per_query;
+    let runtime_only_bytes = storage_core_index_bytes(stats, web_summary);
+    let commit_safe = archive_rows > 0
+        && malformed_rows == 0
+        && incomplete_rows == 0
+        && !over_byte_cap
+        && !over_query_cap;
+    let next_action = if malformed_rows > 0 || incomplete_rows > 0 {
+        "repair-brave-archive-before-commit"
+    } else if over_byte_cap || over_query_cap {
+        "dry-run-prune-brave-archive-before-commit"
+    } else if duplicate_rows > 0 || duplicate_row_bytes > 0 {
+        "review-brave-archive-duplicates-before-commit"
+    } else if commit_safe {
+        "commit-safe-brave-archive-ready"
+    } else {
+        "no-brave-archive-to-commit"
+    };
+
+    format!(
+        "brave_archive_commit_boundary: report_only=true deletes=false compacts=false commit_safe={commit_safe} archive_entries={archive_entries} archive_rows={archive_rows} archive_bytes={brave_results_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} malformed_rows={malformed_rows} incomplete_rows={incomplete_rows} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} result_log_max_bytes={} result_log_max_entries_per_query={} over_byte_cap={over_byte_cap} over_query_cap={over_query_cap} runtime_only_bytes={runtime_only_bytes} github_safe_artifacts=brave-results.jsonl,web-cache.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        config.result_log_max_bytes, config.result_log_max_entries_per_query,
     )
 }
 
@@ -5966,6 +6027,26 @@ mod tests {
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
                 && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("next_action=growth-boundary-monitor")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("brave_archive_commit_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("commit_safe=true")
+                && line.contains("archive_entries=3")
+                && line.contains("archive_rows=3")
+                && line.contains("archive_bytes=120")
+                && line.contains("duplicate_rows=0")
+                && line.contains("malformed_rows=0")
+                && line.contains("incomplete_rows=0")
+                && line.contains("query_buckets=2")
+                && line.contains("max_entries_per_query=2")
+                && line.contains("over_byte_cap=false")
+                && line.contains("over_query_cap=false")
+                && line.contains("runtime_only_bytes=50")
+                && line.contains("github_safe_artifacts=brave-results.jsonl,web-cache.jsonl")
+                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=commit-safe-brave-archive-ready")
         }));
         assert!(cleanup_lines.iter().any(|line| {
             line.starts_with("storage_operational_cleanup_ux: report_only=true")
