@@ -347,9 +347,7 @@ impl BrowserApp {
 
     pub fn active_link_target_at_viewport(&self, x: usize, y: usize) -> Result<Option<String>> {
         let tab = self.active_tab_ref()?;
-        let document_x = tab.viewport.x.saturating_add(x);
-        let document_y = tab.viewport.y.saturating_add(y);
-        Ok(tab.session.link_target_at(document_x, document_y))
+        Ok(tab.session.link_target_at_viewport(tab.viewport, x, y))
     }
 
     pub async fn apply_action(&mut self, action: BrowserAppAction) -> Result<()> {
@@ -909,13 +907,10 @@ impl BrowserApp {
 
     async fn click_active(&mut self, x: usize, y: usize) -> Result<()> {
         let before = self.current_source();
-        let (document_x, document_y) = {
-            let viewport = self.active_tab_ref()?.viewport;
-            (viewport.x.saturating_add(x), viewport.y.saturating_add(y))
-        };
+        let viewport = self.active_tab_ref()?.viewport;
         self.active_tab_mut()?
             .session
-            .click_at_with_default_action(document_x, document_y)
+            .click_viewport_at_with_default_action(viewport, x, y)
             .await?;
         self.after_potential_navigation(before)
     }
@@ -933,11 +928,10 @@ impl BrowserApp {
         let active = self.active_tab_ref()?;
         let mut tab = active.clone();
         let before_source = tab.session.current().map(|render| render.source.clone());
-        let document_x = tab.viewport.x.saturating_add(x);
-        let document_y = tab.viewport.y.saturating_add(y);
+        let viewport = tab.viewport;
         if tab
             .session
-            .click_at_with_default_action(document_x, document_y)
+            .click_viewport_at_with_default_action(viewport, x, y)
             .await
             .is_err()
         {
@@ -2187,6 +2181,58 @@ document.addEventListener("wheel", () => {
     }
 
     #[tokio::test]
+    async fn browser_app_viewport_clicks_respect_fixed_hits_after_scroll() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.html");
+        let fixed = dir.path().join("fixed.html");
+        fs::write(
+            &first,
+            r#"<html><head><title>First</title></head><body>
+<a href="fixed.html" style="display:block; position:fixed; top:0; left:0; height:16px; width:160px; background:rgb(240,240,240); color:rgb(0,0,0)">Fixed target</a>
+<main>
+<p>plain row one</p>
+<p>plain row two</p>
+<p>plain row three</p>
+<p>plain row four</p>
+<p>plain row five</p>
+<p>plain row six</p>
+</main>
+</body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            &fixed,
+            r#"<html><head><title>Fixed</title></head><body>Arrived fixed</body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&first.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 3 })
+            .await
+            .unwrap();
+        assert!(
+            app.active_viewport().unwrap().y > 0,
+            "fixture should exercise a nonzero scrolled viewport"
+        );
+        let fixed_target = app
+            .active_link_target_at_viewport(1, 0)
+            .unwrap()
+            .expect("fixed link should be the visible viewport link after scroll");
+        assert!(fixed_target.ends_with("fixed.html"));
+
+        app.apply_action(BrowserAppAction::Click { x: 1, y: 0 })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Fixed"
+        );
+    }
+
+    #[tokio::test]
     async fn browser_app_opens_clicked_links_in_background_tab() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("first.html");
@@ -2222,6 +2268,57 @@ document.addEventListener("wheel", () => {
         assert_eq!(
             app.active_session().unwrap().current().unwrap().title,
             "Second"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_app_open_click_tab_uses_viewport_hits_after_scroll() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.html");
+        let fixed = dir.path().join("fixed.html");
+        fs::write(
+            &first,
+            r#"<html><head><title>First</title></head><body>
+<a href="fixed.html" style="display:block; position:fixed; top:0; left:0; height:16px; width:160px; background:rgb(240,240,240); color:rgb(0,0,0)">Fixed target</a>
+<main>
+<p>plain row one</p>
+<p>plain row two</p>
+<p>plain row three</p>
+<p>plain row four</p>
+<p>plain row five</p>
+<p>plain row six</p>
+</main>
+</body></html>"#,
+        )
+        .unwrap();
+        fs::write(
+            &fixed,
+            r#"<html><head><title>Fixed</title></head><body>Arrived fixed</body></html>"#,
+        )
+        .unwrap();
+
+        let mut app = BrowserApp::open(&first.to_string_lossy(), app_options())
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::SetViewportOrigin { x: 0, y: 3 })
+            .await
+            .unwrap();
+        app.apply_action(BrowserAppAction::OpenClickInBackgroundTab { x: 1, y: 0 })
+            .await
+            .unwrap();
+
+        assert_eq!(app.tab_count(), 2);
+        assert_eq!(app.active_tab(), 0);
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "First"
+        );
+        app.apply_action(BrowserAppAction::SwitchTab(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.active_session().unwrap().current().unwrap().title,
+            "Fixed"
         );
     }
 
