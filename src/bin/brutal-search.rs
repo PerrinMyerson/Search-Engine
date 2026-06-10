@@ -2225,6 +2225,7 @@ fn storage_cache_growth_guardrail_lines(
             stats.browser_document_rows
         ),
         storage_runtime_cache_pressure_line(stats, web_summary),
+        storage_cache_session_output_hygiene_line(stats, web_summary),
         "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index"
             .to_owned(),
     ]
@@ -2281,6 +2282,51 @@ fn storage_runtime_cache_pressure_line(
         stats.browser_document_rows,
         web_storage_retention_config().cache_max_bytes,
         web_storage_retention_config().result_log_max_bytes,
+    )
+}
+
+fn storage_cache_session_output_hygiene_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> String {
+    let web_cache_bytes = index_storage_artifact_bytes(stats, "web-cache.jsonl");
+    let brave_results_bytes = index_storage_artifact_bytes(stats, "brave-results.jsonl");
+    let browser_session_bytes = stats.browser_document_bytes;
+    let cache_session_bytes = web_cache_bytes
+        .saturating_add(brave_results_bytes)
+        .saturating_add(browser_session_bytes);
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let cap_bytes = web_storage_retention_config()
+        .cache_max_bytes
+        .saturating_add(web_storage_retention_config().result_log_max_bytes)
+        .saturating_add(index_storage_budget_bytes());
+    let artifacts = [
+        ("web-cache.jsonl", web_cache_bytes),
+        ("brave-results.jsonl", brave_results_bytes),
+        ("browser-documents.jsonl", browser_session_bytes),
+    ];
+    let candidate_count = artifacts.iter().filter(|(_, bytes)| *bytes > 0).count();
+    let (largest_artifact, largest_artifact_bytes) = artifacts
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let next_action = if cache_session_bytes > cap_bytes {
+        "review-cache-session-cap-before-cleanup"
+    } else if duplicate_bytes > 0 {
+        "dry-run-cache-session-dedup"
+    } else if browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-browser-session-output-growth"
+    } else if web_summary.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-web-cache-output-growth"
+    } else {
+        "cache-session-output-low"
+    };
+
+    format!(
+        "storage_cache_session_output_hygiene: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={cache_session_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_session_bytes={browser_session_bytes} generated_output_inventory=temp-cleanup-audit generated_output_status=report-only-scan duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cap_bytes={cap_bytes} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}"
     )
 }
 
@@ -4954,6 +5000,26 @@ mod tests {
                     " largest_artifact_bytes={largest_artifact_bytes} "
                 ))
                 && line.contains(" next_action=inspect-web-and-browser-runtime-cache")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_cache_session_output_hygiene: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(" candidates=3 ")
+                && line.contains(&format!(" bytes={expected_bytes} "))
+                && line.contains(&format!(" web_cache_bytes={} ", web_cache.len()))
+                && line.contains(&format!(" brave_results_bytes={} ", brave_results.len()))
+                && line.contains(&format!(
+                    " browser_session_bytes={} ",
+                    browser_documents.len()
+                ))
+                && line.contains(" generated_output_inventory=temp-cleanup-audit ")
+                && line.contains(" generated_output_status=report-only-scan ")
+                && line.contains(&format!(" duplicate_bytes={duplicate_bytes} "))
+                && line.contains(&format!(" largest_artifact={largest_artifact} "))
+                && line.contains(" github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only ")
+                && line.contains(" excluded=.brutal-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" next_action=dry-run-cache-session-dedup")
         }));
         assert_eq!(std::fs::read(&web_cache_path).unwrap(), web_cache);
         assert_eq!(std::fs::read(&brave_results_path).unwrap(), brave_results);
