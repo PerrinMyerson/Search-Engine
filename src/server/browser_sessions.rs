@@ -10322,7 +10322,7 @@ fn render_browser_session_page_with_diagnostics(
         chrome_image_href.as_deref(),
     );
     let chrome_actions = format!(
-        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-chrome-primary-actions data-browser-chrome-actions-density="compact" data-browser-chrome-actions-debug-placement="tools" data-browser-chrome-primary-actions-order="current reload images scroll" data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-pending-state="idle" data-browser-chrome-page-state-contract="current reload images session source viewport dimensions max-bytes" data-browser-chrome-page-preserves="session from source viewport dimensions max-bytes" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}" data-browser-chrome-page-current-href="{current_href}" data-browser-chrome-page-reload-href="{reload_href}" data-browser-chrome-page-images-href="{chrome_image_href}"><a href="{current_href}" data-browser-chrome-current-action{current_action_attrs} aria-label="Refresh current viewport" title="Refresh current viewport">Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action{reload_action_attrs} aria-label="Reload current page" title="Reload current page">Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
+        r#"<details class="browser-chrome-actions" data-browser-chrome-actions data-browser-chrome-primary-actions data-browser-chrome-actions-density="compact" data-browser-chrome-actions-debug-placement="tools" data-browser-chrome-primary-actions-order="current reload images scroll" data-browser-action-session="{id}" data-browser-action-from="{back_href}" data-browser-action-source="{source_attr}" data-browser-action-viewport-x="{viewport_x}" data-browser-action-viewport-y="{viewport_y}" data-browser-action-width="{width}" data-browser-action-height="{height}" data-browser-action-max-bytes="{max_bytes}"><summary aria-label="Browser page actions">Actions</summary><div class="browser-chrome-action-list" data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs"><div class="browser-chrome-page-actions" data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images" data-browser-chrome-page-pending-state="idle" data-browser-chrome-page-state-contract="current reload images session source viewport dimensions max-bytes" data-browser-chrome-page-preserves="session from source viewport dimensions max-bytes" data-browser-chrome-page-action-coherence="current reload images" data-browser-chrome-page-action-state="idle" data-browser-chrome-page-action-sync="preserve-viewport" data-browser-chrome-page-session="{id}" data-browser-chrome-page-from="{back_href}" data-browser-chrome-page-source="{source_attr}" data-browser-chrome-page-viewport-x="{viewport_x}" data-browser-chrome-page-viewport-y="{viewport_y}" data-browser-chrome-page-width="{width}" data-browser-chrome-page-height="{height}" data-browser-chrome-page-max-bytes="{max_bytes}" data-browser-chrome-page-current-href="{current_href}" data-browser-chrome-page-reload-href="{reload_href}" data-browser-chrome-page-images-href="{chrome_image_href}"><a href="{current_href}" data-browser-chrome-current-action{current_action_attrs} aria-label="Refresh current viewport" title="Refresh current viewport">Refresh</a><a href="{reload_href}" data-browser-chrome-reload-action{reload_action_attrs} aria-label="Reload current page" title="Reload current page">Reload</a>{chrome_image_action}</div>{chrome_scroll_actions}{chrome_tab_actions}</div></details>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11516,6 +11516,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const syncChromeViewportState = () => {
     const currentX = String(numberData("viewportX"));
     const currentY = String(numberData("viewportY"));
+    const pageActionGroup = document.querySelector("[data-browser-chrome-page-actions]");
+    if (pageActionGroup) {
+      pageActionGroup.dataset.browserChromePageActionState = "synced";
+      pageActionGroup.dataset.browserChromePageActionViewportX = currentX;
+      pageActionGroup.dataset.browserChromePageActionViewportY = currentY;
+      pageActionGroup.dataset.browserChromePageActionSource = shell.dataset.pageSource || "";
+      pageActionGroup.dataset.browserChromePageActionMaxBytes = shell.dataset.maxBytes || "";
+    }
     const updateHref = (selector, hrefAttr, statePrefix = null) => {
       const link = document.querySelector(selector);
       if (!link || !link.href) {
@@ -11602,6 +11610,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     link.href = url.toString();
     link.dataset.browserChromeActionPending = "true";
     link.dataset.browserChromeActionPendingName = action;
+    const pageActionGroup = link.closest("[data-browser-chrome-page-actions]");
+    if (pageActionGroup) {
+      pageActionGroup.dataset.browserChromePageActionState = "pending";
+      pageActionGroup.dataset.browserChromePageActionPending = action;
+      pageActionGroup.dataset.browserChromePageActionPendingViewportX = String(numberData("viewportX"));
+      pageActionGroup.dataset.browserChromePageActionPendingViewportY = String(numberData("viewportY"));
+    }
     link.dataset.browserChromeActionPendingViewportX = String(numberData("viewportX"));
     link.dataset.browserChromeActionPendingViewportY = String(numberData("viewportY"));
     const topStatus = chromeStatus();

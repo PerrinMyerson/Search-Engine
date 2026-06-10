@@ -3656,6 +3656,18 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const browserActionFromLink = (link) =>"));
     assert!(html.contains("const markBrowserActionPending = (link) =>"));
     assert!(html.contains(r#"link.dataset.browserChromeActionPending = "true""#));
+    assert!(html.contains(
+        r#"const pageActionGroup = document.querySelector("[data-browser-chrome-page-actions]")"#
+    ));
+    assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionState = "synced""#));
+    assert!(
+        html.contains(r#"pageActionGroup.dataset.browserChromePageActionViewportX = currentX"#)
+    );
+    assert!(html.contains(
+        r#"pageActionGroup.dataset.browserChromePageActionMaxBytes = shell.dataset.maxBytes || """#
+    ));
+    assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionState = "pending""#));
+    assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionPending = action"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromePendingState = "pending""#));
     assert!(html.contains(
         r#"topStatus.dataset.browserChromePendingViewportX = String(numberData("viewportX"))"#
@@ -4521,7 +4533,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some(expected_settled_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(!html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
+    assert!(
+        !html.contains(r#"<span class="viewport-state-chip report" data-browser-action-feedback"#)
+    );
+    assert!(html.contains(r#"data-browser-chrome-scroll-feedback"#));
+    assert!(html.contains(r#"data-browser-chrome-scroll-outcome="success""#));
     assert!(html.contains(&format!(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{expected_settled_feedback}</span>"#
     )));
@@ -4541,7 +4560,15 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         Some("Already at bottom.")
     );
     let html = render_browser_session_page(&payload, &back_href);
-    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(!html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
+    ));
+    assert!(
+        !html.contains(r#"<span class="viewport-state-chip report" data-browser-action-feedback"#)
+    );
+    assert!(html.contains(r#"data-browser-chrome-scroll-feedback"#));
+    assert!(html.contains(r#"data-browser-chrome-scroll-outcome="boundary""#));
+    assert!(html.contains(r#"data-browser-chrome-scroll-edge="bottom""#));
     assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Already at bottom.</span>"#
     ));
@@ -10143,7 +10170,9 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
         Some(expected_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(
+        !html.contains(r#"<span class="viewport-state-chip report" data-browser-action-feedback"#)
+    );
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
@@ -11026,7 +11055,9 @@ async fn browser_session_registry_click_at_uses_viewport_coordinates() {
         Some("Clicked DOM point x 0, y 0 (page 0, 0); page updated; viewport preserved")
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(
+        !html.contains(r#"<span class="viewport-state-chip report" data-browser-action-feedback"#)
+    );
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
@@ -11378,7 +11409,9 @@ async fn browser_session_registry_click_at_keeps_point_coords_separate_from_view
         Some(expected_feedback.as_str())
     );
     let html = render_browser_session_page(&payload, "/search?q=button");
-    assert!(!html.contains("data-browser-action-feedback"));
+    assert!(
+        !html.contains(r#"<span class="viewport-state-chip report" data-browser-action-feedback"#)
+    );
     assert!(html.contains(&expected_feedback));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
     assert!(html.contains(r#"data-browser-dom-click"#));
@@ -13125,6 +13158,12 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
         r#"data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs""#
     ));
     assert!(topbar_html.contains(r#"data-browser-chrome-primary-action-group="page" aria-label="Current, reload, and image actions" data-browser-chrome-page-actions data-browser-chrome-page-action-order="current reload images""#));
+    assert!(
+        topbar_html
+            .contains(r#"data-browser-chrome-page-action-coherence="current reload images""#)
+    );
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-action-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-page-action-sync="preserve-viewport""#));
     assert!(
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
