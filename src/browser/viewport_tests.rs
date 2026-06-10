@@ -1562,6 +1562,248 @@ fn continuous_wheel_and_page_scroll_clamps_without_resetting_visible_crop() {
 }
 
 #[test]
+fn key_page_home_end_scroll_preserves_mixed_viewport_hits_and_raster() {
+    let image_url = "mem://key-page-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![121],
+        rgb_pixels: Some(vec![76, 152, 228]),
+    };
+    let render = BrowserRender {
+        source: "mem://key-page-scroll-hit-parity".to_owned(),
+        title: String::new(),
+        viewport_width: 16,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 1,
+        layout_boxes: vec![BrowserLayoutBox {
+            id: 0,
+            parent: None,
+            node_id: 12,
+            tag: "input".to_owned(),
+            kind: "form-control".to_owned(),
+            x: 4,
+            y: 3,
+            width: 4,
+            height: 1,
+            children: Vec::new(),
+            command_indices: vec![3],
+        }],
+        paint_command_count: 9,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Top".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 3,
+                width: 4,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 6,
+                y: 4,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 5,
+                width: 16,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 6,
+                text: "Bottom".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 8,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Top\nLead\nNext\nBottom\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 3,
+    };
+    let page_down = browser_document_viewport_after_key_scroll(
+        &render,
+        start,
+        BrowserViewportKeyScroll::PageDown,
+    );
+    assert_eq!(page_down.viewport.y, 2);
+    assert_eq!(page_down.scroll_delta_y, 2);
+    assert_eq!(page_down.transition, BrowserViewportTransition::Moved);
+    assert_eq!(
+        page_down
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(2, "Image", 0), (3, "Rect", 1), (4, "StyledText", 2)],
+        "PageDown should land on the same image/control/link rows that the viewport paints"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, page_down.viewport, 1, 0),
+        Some(41),
+        "PageDown decoded image hit should align with the painted image row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, page_down.viewport, 4, 1),
+        Some(12),
+        "PageDown form hit should align with the painted control row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, page_down.viewport, 6, 2),
+        Some(77),
+        "PageDown link hit should align with the painted link row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let page_frame =
+        browser_viewport_frame(&render, page_down.viewport, page_down.previous, options)
+            .expect("render PageDown key-scroll frame");
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&page_frame, image_x, options.padding_y),
+        [76, 152, 228, 255],
+        "PageDown raster should preserve decoded image color in the hit-tested row"
+    );
+
+    let home = browser_document_viewport_after_key_scroll(
+        &render,
+        page_down.viewport,
+        BrowserViewportKeyScroll::Home,
+    );
+    assert_eq!(home.viewport.y, 0);
+    assert_eq!(home.scroll_delta_y, -2);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, home.viewport, 1, 0),
+        None,
+        "Home should drop stale image hits from the previously scrolled viewport row"
+    );
+
+    let end = browser_document_viewport_after_key_scroll(
+        &render,
+        page_down.viewport,
+        BrowserViewportKeyScroll::End,
+    );
+    assert_eq!(end.viewport.y, 6);
+    assert_eq!(end.scroll_delta_y, 4);
+    assert_eq!(end.max_scroll_y, 6);
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, end.viewport, 1, 0),
+        None,
+        "End should not keep stale image hits after the mixed row scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, end.viewport, 4, 0),
+        None,
+        "End should not keep stale form hits after the mixed row scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, end.viewport, 6, 0),
+        None,
+        "End should not keep stale link hits after the mixed row scrolls out"
+    );
+
+    let bottom_page = browser_document_viewport_after_key_scroll(
+        &render,
+        end.viewport,
+        BrowserViewportKeyScroll::PageDown,
+    );
+    assert_eq!(bottom_page.viewport, end.viewport);
+    assert_eq!(bottom_page.scroll_delta_y, 0);
+    assert_eq!(
+        bottom_page.transition,
+        BrowserViewportTransition::ClampedNoop
+    );
+    assert!(
+        bottom_page.invalidated_regions.is_empty(),
+        "PageDown at the bottom should not invent dirty rows"
+    );
+}
+
+#[test]
 fn scrolled_visible_commands_report_pinned_layers_in_paint_order() {
     let render = BrowserRender {
         source: "mem://visible-command-paint-order".to_owned(),
