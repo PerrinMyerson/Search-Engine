@@ -4836,7 +4836,16 @@ fn display_command_exact_hit_bounds_for_viewport(
             DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
         );
     if clipped_normal_flow_visual {
-        intersect_display_bounds_with_viewport(bounds, viewport)
+        let source_bounds = display_command_source_bounds_for_viewport(
+            render,
+            command_index,
+            display_command_bounds(command),
+            viewport,
+            viewport_fixed,
+            viewport_sticky_top,
+        );
+        intersect_display_bounds(bounds, source_bounds)
+            .and_then(|bounds| intersect_display_bounds_with_viewport(bounds, viewport))
     } else {
         Some(bounds)
     }
@@ -5227,6 +5236,21 @@ fn display_command_source_bounds_for_viewport(
         width: source.width,
         height: source.height,
     }
+}
+
+fn display_command_source_offsets_for_viewport(
+    source_bounds: DisplayCommandBounds,
+    command_bounds: DisplayCommandBounds,
+    visible_bounds: DisplayCommandBounds,
+) -> (usize, usize) {
+    let clipped_offset_x = command_bounds.x.saturating_sub(source_bounds.x);
+    let clipped_offset_y = command_bounds.y.saturating_sub(source_bounds.y);
+    let viewport_offset_x = visible_bounds.x.saturating_sub(command_bounds.x);
+    let viewport_offset_y = visible_bounds.y.saturating_sub(command_bounds.y);
+    (
+        clipped_offset_x.saturating_add(viewport_offset_x),
+        clipped_offset_y.saturating_add(viewport_offset_y),
+    )
 }
 
 fn intersect_display_bounds(
@@ -6843,12 +6867,14 @@ pub fn rasterize_render(
         let command = &render.display_list[command_index];
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
-            render,
-            command_index,
-            command,
-            viewport,
-        ) else {
+        let Some((command_bounds, visible_bounds)) =
+            display_command_projected_visible_bounds_for_viewport(
+                render,
+                command_index,
+                command,
+                viewport,
+            )
+        else {
             continue;
         };
         match command {
@@ -6924,6 +6950,11 @@ pub fn rasterize_render(
                     viewport_fixed,
                     viewport_sticky_top,
                 );
+                let Some(visible_bounds) = intersect_display_bounds(command_bounds, source_bounds)
+                    .and_then(|bounds| intersect_display_bounds_with_viewport(bounds, viewport))
+                else {
+                    continue;
+                };
                 let image_width_cells = source_bounds.width;
                 let image_height_cells = source_bounds.height;
                 let image_x = options.padding_x.saturating_add(
@@ -6943,14 +6974,14 @@ pub fn rasterize_render(
                     visible_bounds.height.saturating_mul(options.cell_height);
                 let image_width = image_width_cells.saturating_mul(options.cell_width);
                 let image_height = image_height_cells.saturating_mul(options.cell_height);
-                let source_offset_x = visible_bounds
-                    .x
-                    .saturating_sub(source_bounds.x)
-                    .saturating_mul(options.cell_width);
-                let source_offset_y = visible_bounds
-                    .y
-                    .saturating_sub(source_bounds.y)
-                    .saturating_mul(options.cell_height);
+                let (source_offset_x, source_offset_y) =
+                    display_command_source_offsets_for_viewport(
+                        source_bounds,
+                        command_bounds,
+                        visible_bounds,
+                    );
+                let source_offset_x = source_offset_x.saturating_mul(options.cell_width);
+                let source_offset_y = source_offset_y.saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_decoded_image_region(
                         &mut pixels,
@@ -7065,6 +7096,11 @@ pub fn rasterize_render(
                     viewport_fixed,
                     viewport_sticky_top,
                 );
+                let Some(visible_bounds) = intersect_display_bounds(command_bounds, source_bounds)
+                    .and_then(|bounds| intersect_display_bounds_with_viewport(bounds, viewport))
+                else {
+                    continue;
+                };
                 let image_width_cells = source_bounds.width;
                 let image_height_cells = source_bounds.height;
                 let image_x = options.padding_x.saturating_add(
@@ -7084,14 +7120,14 @@ pub fn rasterize_render(
                     visible_bounds.height.saturating_mul(options.cell_height);
                 let image_width = image_width_cells.saturating_mul(options.cell_width);
                 let image_height = image_height_cells.saturating_mul(options.cell_height);
-                let source_offset_x = visible_bounds
-                    .x
-                    .saturating_sub(source_bounds.x)
-                    .saturating_mul(options.cell_width);
-                let source_offset_y = visible_bounds
-                    .y
-                    .saturating_sub(source_bounds.y)
-                    .saturating_mul(options.cell_height);
+                let (source_offset_x, source_offset_y) =
+                    display_command_source_offsets_for_viewport(
+                        source_bounds,
+                        command_bounds,
+                        visible_bounds,
+                    );
+                let source_offset_x = source_offset_x.saturating_mul(options.cell_width);
+                let source_offset_y = source_offset_y.saturating_mul(options.cell_height);
                 if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url)) {
                     draw_background_image_region(
                         &mut pixels,
@@ -7339,12 +7375,14 @@ pub fn rasterize_render_rgba(
             if pinned != paint_pinned {
                 continue;
             }
-            let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
-                render,
-                command_index,
-                command,
-                viewport,
-            ) else {
+            let Some((command_bounds, visible_bounds)) =
+                display_command_projected_visible_bounds_for_viewport(
+                    render,
+                    command_index,
+                    command,
+                    viewport,
+                )
+            else {
                 continue;
             };
             match command {
@@ -7381,6 +7419,13 @@ pub fn rasterize_render_rgba(
                         viewport_fixed,
                         viewport_sticky_top,
                     );
+                    let Some(visible_bounds) =
+                        intersect_display_bounds(command_bounds, source_bounds).and_then(
+                            |bounds| intersect_display_bounds_with_viewport(bounds, viewport),
+                        )
+                    else {
+                        continue;
+                    };
                     let image_x = options.padding_x.saturating_add(
                         visible_bounds
                             .x
@@ -7399,14 +7444,14 @@ pub fn rasterize_render_rgba(
                         visible_bounds.height.saturating_mul(options.cell_height);
                     let full_width = source_bounds.width.saturating_mul(options.cell_width);
                     let full_height = source_bounds.height.saturating_mul(options.cell_height);
-                    let source_offset_x = visible_bounds
-                        .x
-                        .saturating_sub(source_bounds.x)
-                        .saturating_mul(options.cell_width);
-                    let source_offset_y = visible_bounds
-                        .y
-                        .saturating_sub(source_bounds.y)
-                        .saturating_mul(options.cell_height);
+                    let (source_offset_x, source_offset_y) =
+                        display_command_source_offsets_for_viewport(
+                            source_bounds,
+                            command_bounds,
+                            visible_bounds,
+                        );
+                    let source_offset_x = source_offset_x.saturating_mul(options.cell_width);
+                    let source_offset_y = source_offset_y.saturating_mul(options.cell_height);
                     if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url))
                     {
                         draw_decoded_image_region_rgba(
@@ -7478,6 +7523,13 @@ pub fn rasterize_render_rgba(
                         viewport_fixed,
                         viewport_sticky_top,
                     );
+                    let Some(visible_bounds) =
+                        intersect_display_bounds(command_bounds, source_bounds).and_then(
+                            |bounds| intersect_display_bounds_with_viewport(bounds, viewport),
+                        )
+                    else {
+                        continue;
+                    };
                     let image_x = options.padding_x.saturating_add(
                         visible_bounds
                             .x
@@ -7496,14 +7548,14 @@ pub fn rasterize_render_rgba(
                         visible_bounds.height.saturating_mul(options.cell_height);
                     let full_width = source_bounds.width.saturating_mul(options.cell_width);
                     let full_height = source_bounds.height.saturating_mul(options.cell_height);
-                    let source_offset_x = visible_bounds
-                        .x
-                        .saturating_sub(source_bounds.x)
-                        .saturating_mul(options.cell_width);
-                    let source_offset_y = visible_bounds
-                        .y
-                        .saturating_sub(source_bounds.y)
-                        .saturating_mul(options.cell_height);
+                    let (source_offset_x, source_offset_y) =
+                        display_command_source_offsets_for_viewport(
+                            source_bounds,
+                            command_bounds,
+                            visible_bounds,
+                        );
+                    let source_offset_x = source_offset_x.saturating_mul(options.cell_width);
+                    let source_offset_y = source_offset_y.saturating_mul(options.cell_height);
                     if let Some(decoded) = url.as_deref().and_then(|url| render.decoded_image(url))
                     {
                         draw_background_image_region_rgba(
@@ -9197,6 +9249,9 @@ fn draw_decoded_image_region_rgba(
         return;
     }
     for row in 0..height {
+        if source_offset_y.saturating_add(row) >= full_height {
+            continue;
+        }
         let (source_y_start, source_y_end) = scaled_sample_range(
             source_offset_y.saturating_add(row),
             source_offset_y.saturating_add(row).saturating_add(1),
@@ -9204,6 +9259,9 @@ fn draw_decoded_image_region_rgba(
             full_height,
         );
         for column in 0..width {
+            if source_offset_x.saturating_add(column) >= full_width {
+                continue;
+            }
             let (source_x_start, source_x_end) = scaled_sample_range(
                 source_offset_x.saturating_add(column),
                 source_offset_x.saturating_add(column).saturating_add(1),
@@ -9252,6 +9310,9 @@ fn draw_decoded_image_region(
         return;
     }
     for row in 0..height {
+        if source_offset_y.saturating_add(row) >= full_height {
+            continue;
+        }
         let (source_y_start, source_y_end) = scaled_sample_range(
             source_offset_y.saturating_add(row),
             source_offset_y.saturating_add(row).saturating_add(1),
@@ -9259,6 +9320,9 @@ fn draw_decoded_image_region(
             full_height,
         );
         for column in 0..width {
+            if source_offset_x.saturating_add(column) >= full_width {
+                continue;
+            }
             let (source_x_start, source_x_end) = scaled_sample_range(
                 source_offset_x.saturating_add(column),
                 source_offset_x.saturating_add(column).saturating_add(1),
