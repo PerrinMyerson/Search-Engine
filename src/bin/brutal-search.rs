@@ -1082,6 +1082,11 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut generated_review_bytes = 0u64;
     let mut generated_oldest_age_secs = 0u64;
     let mut generated_newest_age_secs: Option<u64> = None;
+    let mut generated_largest_path = String::from("none");
+    let mut generated_largest_bytes = 0u64;
+    let mut generated_session_like_count = 0usize;
+    let mut generated_cache_like_count = 0usize;
+    let mut generated_artifact_like_count = 0usize;
     let mut total_bytes = 0u64;
     for (path, bytes, classification, modified_age_secs, mtime_unix_secs) in entries {
         total_bytes = total_bytes.saturating_add(bytes);
@@ -1116,6 +1121,24 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
                     .map(|age_secs| age_secs.min(modified_age_secs))
                     .unwrap_or(modified_age_secs),
             );
+            if bytes > generated_largest_bytes {
+                generated_largest_bytes = bytes;
+                generated_largest_path = path.display().to_string();
+            }
+            let generated_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if generated_name.contains("session") {
+                generated_session_like_count += 1;
+            }
+            if generated_name.contains("cache") {
+                generated_cache_like_count += 1;
+            }
+            if generated_name.contains("artifact") || generated_name.contains("generated") {
+                generated_artifact_like_count += 1;
+            }
         }
         if classification.kind == "unknown-dir" || classification.status == "git-status-unavailable"
         {
@@ -1173,6 +1196,16 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     lines.push(format!(
         "storage_generated_artifact_inventory_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={generated_retention_next_action}",
         generated_newest_age_secs.unwrap_or(0),
+    ));
+    lines.push(format!(
+        "storage_generated_output_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} largest_path={generated_largest_path} largest_bytes={generated_largest_bytes} session_like_candidates={generated_session_like_count} cache_like_candidates={generated_cache_like_count} artifact_like_candidates={generated_artifact_like_count} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={}",
+        temp_cleanup_generated_output_boundary_next_action(
+            active_worktree_count,
+            generated_review_count,
+            generated_session_like_count,
+            generated_cache_like_count,
+            generated_artifact_like_count,
+        )
     ));
     lines.push(
         "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
@@ -1242,6 +1275,24 @@ fn temp_cleanup_generated_retention_next_action(
         "review-large-generated-reports"
     } else {
         "review-generated-reports-before-cleanup"
+    }
+}
+
+fn temp_cleanup_generated_output_boundary_next_action(
+    active_worktree_count: usize,
+    generated_review_count: usize,
+    session_like_count: usize,
+    cache_like_count: usize,
+    artifact_like_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if generated_review_count == 0 {
+        "generated-output-low"
+    } else if session_like_count > 0 || cache_like_count > 0 || artifact_like_count > 0 {
+        "review-browser-generated-output-boundary"
+    } else {
+        "review-generated-output-boundary"
     }
 }
 
@@ -1766,6 +1817,7 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
         ),
         browser_session_artifact_footprint_line(stats),
         browser_runtime_footprint_bounds_line(stats),
+        browser_session_snapshot_history_boundary_line(stats),
         format!(
             "browser_document_storage_unique_rows: {}",
             stats.browser_document_unique_rows
@@ -1849,6 +1901,37 @@ fn browser_session_artifact_footprint_line(stats: &IndexStorageStats) -> String 
         stats.browser_document_max_row_bytes,
         stats.browser_document_large_row_count,
         BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+    )
+}
+
+fn browser_session_snapshot_history_boundary_line(stats: &IndexStorageStats) -> String {
+    let history_candidate_count = usize::from(stats.browser_document_rows > 0);
+    let snapshot_like_rows = stats.browser_document_large_row_count;
+    let history_like_rows = stats
+        .browser_document_rows
+        .saturating_sub(stats.browser_document_large_row_count);
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "review-snapshot-history-dedup-dry-run"
+    } else if stats.browser_document_large_row_count > 0 {
+        "review-snapshot-payload-boundary"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "review-history-duplicate-boundary"
+    } else if stats.browser_document_rows > 0 {
+        "snapshot-history-boundary-ok"
+    } else {
+        "snapshot-history-boundary-empty"
+    };
+
+    format!(
+        "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count={history_candidate_count} sessions={} rows={} bytes={} snapshot_like_rows={snapshot_like_rows} history_like_rows={history_like_rows} largest_snapshot_bytes={} duplicate_rows={} duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action={next_action}",
+        stats.browser_document_session_count,
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
         stats.browser_document_duplicate_rows,
         stats.browser_document_duplicate_row_bytes,
     )
@@ -4825,8 +4908,44 @@ mod tests {
         std::fs::create_dir_all(&cache_dir).unwrap();
         let cache_path = cache_dir.join("cache.bin");
         std::fs::write(&cache_path, b"cache-bytes").unwrap();
+        let browser_document_path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        let browser_documents = format!(
+            "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+            large_payload, large_payload
+        );
+        std::fs::write(&browser_document_path, browser_documents.as_bytes()).unwrap();
+        let browser_documents_before = std::fs::read(&browser_document_path).unwrap();
 
         let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let browser_lines = browser_document_storage_pressure_summary_lines(&stats);
+        assert!(browser_lines.iter().any(|line| {
+            line.starts_with("browser_session_snapshot_history_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("metadata_artifacts=browser-documents.jsonl")
+                && line.contains("local_runtime_payloads=excluded")
+                && line.contains("history_candidate_count=1")
+                && line.contains("sessions=2")
+                && line.contains("rows=3")
+                && line.contains("snapshot_like_rows=2")
+                && line.contains("history_like_rows=1")
+                && line.contains(&format!(
+                    "largest_snapshot_bytes={}",
+                    stats.browser_document_max_row_bytes
+                ))
+                && line.contains("duplicate_rows=1")
+                && line.contains("github_safe_artifacts=browser-documents-metadata-only")
+                && line.contains("excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys")
+                && line.contains("next_action=review-snapshot-history-dedup-dry-run")
+        }));
+        assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
+        assert_eq!(std::fs::read(&cache_path).unwrap(), b"cache-bytes");
+        assert_eq!(
+            std::fs::read(&browser_document_path).unwrap(),
+            browser_documents_before
+        );
 
         assert!(lines.iter().any(|line| {
             line.starts_with(
@@ -4836,6 +4955,20 @@ mod tests {
                 && line.contains(" oldest_age_secs=")
                 && line.contains(" newest_age_secs=")
                 && line.contains(" next_action=review-generated-reports-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_generated_output_boundary: report_only=true")
+                && line.contains(" deletes=false ")
+                && line.contains(" candidates=2 ")
+                && line.contains(" bytes=17 ")
+                && line.contains("search-engine-render-cache-artifacts")
+                && line.contains(" largest_bytes=11 ")
+                && line.contains(" session_like_candidates=0 ")
+                && line.contains(" cache_like_candidates=1 ")
+                && line.contains(" artifact_like_candidates=2 ")
+                && line.contains(" github_safe_artifacts=reports-metadata-only ")
+                && line.contains(" excluded=.brutal-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" next_action=review-browser-generated-output-boundary")
         }));
         assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
         assert_eq!(std::fs::read(&cache_path).unwrap(), b"cache-bytes");
@@ -4850,6 +4983,14 @@ mod tests {
         assert_eq!(
             temp_cleanup_generated_retention_next_action(1, INDEX_ARTIFACT_HIGH_GROWTH_BYTES, 0),
             "review-large-generated-reports"
+        );
+        assert_eq!(
+            temp_cleanup_generated_output_boundary_next_action(0, 0, 0, 0, 0),
+            "generated-output-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_output_boundary_next_action(0, 1, 0, 1, 0),
+            "review-browser-generated-output-boundary"
         );
     }
 
@@ -6360,6 +6501,12 @@ mod tests {
             stats.browser_document_duplicate_row_bytes,
             BROWSER_DOCUMENT_LARGE_ROW_BYTES,
             index_storage_budget_bytes()
+        )));
+        assert!(lines.contains(&format!(
+            "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count=1 sessions=2 rows=3 bytes={} snapshot_like_rows=2 history_like_rows=1 largest_snapshot_bytes={} duplicate_rows=1 duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action=review-snapshot-history-dedup-dry-run",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_duplicate_row_bytes
         )));
     }
 
