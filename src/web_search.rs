@@ -1126,6 +1126,8 @@ struct WebResultArtifactDurabilityStats {
     invalid_rows: usize,
     incomplete_rows: usize,
     query_buckets: usize,
+    oldest_fetched_at_unix: Option<u64>,
+    newest_fetched_at_unix: Option<u64>,
 }
 
 pub fn durable_web_result_provider_commit_line(
@@ -1183,6 +1185,20 @@ pub fn durable_web_result_commit_report_lines(
     let duplicate_rows = cache
         .duplicate_rows
         .saturating_add(result_log.duplicate_rows);
+    let archive_artifact_count =
+        usize::from(cache.entries > 0).saturating_add(usize::from(result_log.entries > 0));
+    let archive_durable_rows = cache.durable_rows.saturating_add(result_log.durable_rows);
+    let archive_bytes = cache.bytes.saturating_add(result_log.bytes);
+    let archive_oldest_fetched_at_unix = min_optional_u64(
+        cache.oldest_fetched_at_unix,
+        result_log.oldest_fetched_at_unix,
+    )
+    .unwrap_or(0);
+    let archive_newest_fetched_at_unix = max_optional_u64(
+        cache.newest_fetched_at_unix,
+        result_log.newest_fetched_at_unix,
+    )
+    .unwrap_or(0);
     Ok(vec![
         format!(
             "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
@@ -1200,8 +1216,17 @@ pub fn durable_web_result_commit_report_lines(
             cache.duplicate_rows, result_log.duplicate_rows,
         ),
         format!(
+            "durable_web_result_archive_manifest: report_only=true mutates_files=false artifact_count={archive_artifact_count} durable_rows={archive_durable_rows} archive_bytes={archive_bytes} cache_oldest_fetched_at_unix={} cache_newest_fetched_at_unix={} result_log_oldest_fetched_at_unix={} result_log_newest_fetched_at_unix={} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+            cache.oldest_fetched_at_unix.unwrap_or(0),
+            cache.newest_fetched_at_unix.unwrap_or(0),
+            result_log.oldest_fetched_at_unix.unwrap_or(0),
+            result_log.newest_fetched_at_unix.unwrap_or(0),
+            cache.query_buckets,
+            result_log.query_buckets,
+        ),
+        format!(
             "durable_web_result_index_artifact_boundary: report_only=true mutates_files=false saved_rows={} indexed_rows=not-scanned invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} duplicate_rows={duplicate_rows} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys cleanup_inventory=temp-cleanup-audit next_action={next_action}",
-            cache.durable_rows.saturating_add(result_log.durable_rows),
+            archive_durable_rows,
         ),
     ])
 }
@@ -1255,12 +1280,12 @@ fn collect_web_result_artifact_durability(
         }
         match artifact_name {
             "web-cache.jsonl" => {
+                let fetched_at_unix = value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64());
                 let has_entry_metadata = web_json_string_present(&value, "normalized_query")
                     && web_json_string_present(&value, "provider")
-                    && value
-                        .get("fetched_at_unix")
-                        .and_then(|value| value.as_u64())
-                        .is_some();
+                    && fetched_at_unix.is_some();
                 let Some(results) = value.get("results").and_then(|value| value.as_array()) else {
                     stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
                     continue;
@@ -1278,6 +1303,9 @@ fn collect_web_result_artifact_durability(
                         continue;
                     }
                     stats.durable_rows = stats.durable_rows.saturating_add(1);
+                    if let Some(fetched_at_unix) = fetched_at_unix {
+                        record_web_result_artifact_fetched_at(&mut stats, fetched_at_unix);
+                    }
                     let key = durable_web_result_key(
                         value
                             .get("normalized_query")
@@ -1291,21 +1319,24 @@ fn collect_web_result_artifact_durability(
                 }
             }
             "brave-results.jsonl" => {
+                let fetched_at_unix = value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64());
                 let durable = web_json_string_present(&value, "normalized_query")
                     && web_json_string_present(&value, "provider")
                     && web_json_string_present(&value, "url")
                     && web_json_string_present(&value, "title")
                     && web_json_string_present(&value, "snippet")
-                    && value
-                        .get("fetched_at_unix")
-                        .and_then(|value| value.as_u64())
-                        .is_some()
+                    && fetched_at_unix.is_some()
                     && value.get("rank").and_then(|value| value.as_u64()).is_some();
                 if !durable {
                     stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
                     continue;
                 }
                 stats.durable_rows = stats.durable_rows.saturating_add(1);
+                if let Some(fetched_at_unix) = fetched_at_unix {
+                    record_web_result_artifact_fetched_at(&mut stats, fetched_at_unix);
+                }
                 let key = durable_web_result_key(
                     value
                         .get("normalized_query")
@@ -1322,6 +1353,40 @@ fn collect_web_result_artifact_durability(
     }
     stats.query_buckets = query_buckets.len();
     Ok(stats)
+}
+
+fn record_web_result_artifact_fetched_at(
+    stats: &mut WebResultArtifactDurabilityStats,
+    fetched_at_unix: u64,
+) {
+    stats.oldest_fetched_at_unix = Some(
+        stats
+            .oldest_fetched_at_unix
+            .map(|oldest| oldest.min(fetched_at_unix))
+            .unwrap_or(fetched_at_unix),
+    );
+    stats.newest_fetched_at_unix = Some(
+        stats
+            .newest_fetched_at_unix
+            .map(|newest| newest.max(fetched_at_unix))
+            .unwrap_or(fetched_at_unix),
+    );
+}
+
+fn min_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn max_optional_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 fn web_json_string_present(value: &serde_json::Value, field: &str) -> bool {
@@ -2351,7 +2416,7 @@ mod tests {
 
         assert_eq!(before_cache, fs::read(&cache_path).unwrap());
         assert_eq!(before_result_log, fs::read(&result_log_path).unwrap());
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         let line = &lines[0];
         assert!(line.starts_with("durable_web_result_commit_report: report_only=true"));
         assert!(line.contains("mutates_files=false"));
@@ -2382,7 +2447,26 @@ mod tests {
         assert!(prune_line.contains("safe_to_prune_after_dry_run=true"));
         assert!(prune_line.contains("preserve_artifacts=web-cache.jsonl,brave-results.jsonl"));
         assert!(prune_line.contains("preserve_secrets=false"));
-        let boundary_line = &lines[2];
+        let manifest_line = &lines[2];
+        assert!(manifest_line.starts_with("durable_web_result_archive_manifest: report_only=true"));
+        assert!(manifest_line.contains("mutates_files=false"));
+        assert!(manifest_line.contains("artifact_count=2"));
+        assert!(manifest_line.contains("durable_rows=4"));
+        assert!(manifest_line.contains("cache_oldest_fetched_at_unix=100"));
+        assert!(manifest_line.contains("cache_newest_fetched_at_unix=100"));
+        assert!(manifest_line.contains("result_log_oldest_fetched_at_unix=100"));
+        assert!(manifest_line.contains("result_log_newest_fetched_at_unix=101"));
+        assert!(manifest_line.contains("archive_oldest_fetched_at_unix=100"));
+        assert!(manifest_line.contains("archive_newest_fetched_at_unix=101"));
+        assert!(manifest_line.contains("cache_query_buckets=1"));
+        assert!(manifest_line.contains("result_log_query_buckets=1"));
+        assert!(
+            manifest_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+        );
+        assert!(
+            manifest_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+        );
+        let boundary_line = &lines[3];
         assert!(
             boundary_line
                 .starts_with("durable_web_result_index_artifact_boundary: report_only=true")
@@ -2456,7 +2540,16 @@ mod tests {
         assert!(line.contains("invalid_rows=1"));
         assert!(line.contains("incomplete_rows=2"));
         assert!(line.contains("next_action=inspect-saved-result-integrity-before-prune"));
-        let boundary_line = &lines[2];
+        let manifest_line = &lines[2];
+        assert!(manifest_line.starts_with("durable_web_result_archive_manifest: report_only=true"));
+        assert!(manifest_line.contains("artifact_count=2"));
+        assert!(manifest_line.contains("durable_rows=1"));
+        assert!(manifest_line.contains("cache_oldest_fetched_at_unix=0"));
+        assert!(manifest_line.contains("result_log_oldest_fetched_at_unix=101"));
+        assert!(manifest_line.contains("archive_oldest_fetched_at_unix=101"));
+        assert!(manifest_line.contains("archive_newest_fetched_at_unix=101"));
+        assert!(manifest_line.contains("next_action=inspect-saved-result-integrity-before-prune"));
+        let boundary_line = &lines[3];
         assert!(boundary_line.contains("saved_rows=1"));
         assert!(boundary_line.contains("indexed_rows=not-scanned"));
         assert!(boundary_line.contains("invalid_rows=1"));
