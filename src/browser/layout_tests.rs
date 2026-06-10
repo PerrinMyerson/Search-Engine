@@ -19887,3 +19887,171 @@ fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
         "inline text link should not remain hittable after it scrolls out"
     );
 }
+
+#[test]
+fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text() {
+    let image_url = "mem://source-bound-color-image".to_owned();
+    let decoded = DecodedImage {
+        width: 2,
+        height: 1,
+        pixels: vec![70, 120],
+        rgb_pixels: Some(vec![224, 64, 64, 64, 128, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://source-bound-scroll-clip".to_owned(),
+        title: String::new(),
+        viewport_width: 6,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 3,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::node(Some(41)).with_source_bounds(Some(DisplaySourceBounds {
+                x: 0,
+                y: 2,
+                width: 2,
+                height: 1,
+            })),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Image {
+                x: 0,
+                y: 2,
+                width: 3,
+                height: 1,
+                shade: 220,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(2),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 0,
+                y: 3,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 4,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Next\nTail".to_owned(),
+    };
+
+    let viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: 2,
+            width: 6,
+            height: 2,
+        },
+        None,
+    );
+    assert_eq!(viewport.viewport.y, 2);
+    let image_command = viewport
+        .visible_commands
+        .iter()
+        .find(|command| command.kind == "Image")
+        .expect("scrolled source-bounded image should report visible command");
+    assert_eq!(image_command.visible_y, 0);
+    assert_eq!(
+        image_command.visible_width, 2,
+        "reported image bounds should stop at source bounds, not the stale command overrun"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 0),
+        Some(41),
+        "visible source-bounded image cell should remain hittable"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 2, 0),
+        None,
+        "unpainted image overrun cell should not retain the image hit target"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, viewport.viewport, 0, 1),
+        Some(77),
+        "following visible link text should remain clickable after the scrolled image row"
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_y: Some(viewport.viewport.y),
+        viewport_width: Some(viewport.viewport.width),
+        viewport_height: Some(viewport.viewport.height),
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, options)
+        .expect("rasterize source-bounded decoded image scroll viewport");
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&rgba.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    assert_eq!(
+        pixel(options.padding_x, options.padding_y),
+        [224, 64, 64, 255]
+    );
+    assert_eq!(
+        pixel(
+            options.padding_x.saturating_add(options.cell_width),
+            options.padding_y
+        ),
+        [64, 128, 224, 255]
+    );
+    assert_eq!(
+        pixel(
+            options
+                .padding_x
+                .saturating_add(options.cell_width.saturating_mul(2)),
+            options.padding_y
+        ),
+        rgba.background,
+        "viewport raster should not smear the decoded edge color into the clipped overrun cell"
+    );
+    let link_pixel_x = options.padding_x;
+    let link_pixel_y = options.padding_y.saturating_add(options.cell_height);
+    let link_has_ink = (link_pixel_y
+        ..link_pixel_y
+            .saturating_add(options.cell_height)
+            .min(rgba.height))
+        .any(|y| {
+            (link_pixel_x
+                ..link_pixel_x
+                    .saturating_add(options.cell_width.saturating_mul("Next".len()))
+                    .min(rgba.width))
+                .any(|x| {
+                    let pixel = pixel(x, y);
+                    pixel[3] == 255 && pixel != rgba.background
+                })
+        });
+    assert!(
+        link_has_ink,
+        "following link text should remain readable below the clipped color image"
+    );
+}
