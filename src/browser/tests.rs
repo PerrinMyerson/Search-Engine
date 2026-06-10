@@ -845,7 +845,12 @@ fn renders_image_as_replaced_element_placeholder() {
             },
         );
 
-    assert_eq!(render.text, "Before image\nAfter image");
+    let visible_text = render
+        .text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(visible_text, vec!["Before image", "After image"]);
     assert!(render.resources.iter().any(|resource| {
         resource.kind == "image"
             && resource.alt.as_deref() == Some("Hero art")
@@ -856,24 +861,24 @@ fn renders_image_as_replaced_element_placeholder() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 0,
+                y: 1,
                 text: "Before image".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 1,
+                y: 3,
                 width: 10,
                 height: 2,
                 shade: 220,
                 alt: Some("Hero art".to_owned()),
-                url: None,
+                url: Some("https://example.com/hero.png".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 3,
+                y: 6,
                 text: "After image".to_owned()
             },
         ]
@@ -7059,6 +7064,7 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
             .decoded_color_bytes
             .is_some_and(|bytes| bytes > 0)
     );
+    assert_eq!(good_fetch.image_fallback_state, None);
 
     let undecoded_fetch = report
         .fetches
@@ -7219,29 +7225,43 @@ async fn visible_color_image_rendering_pack_reports_failure_diagnostics() {
     );
 
     let render = session.current().unwrap();
-    let fallback_placeholder_alts = render
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image {
+                url: Some(url),
+                alt: Some(alt),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &good_path.display().to_string()
+                && alt == "Good"
+                && hash == &expected_hash
+        )
+    }));
+    let fallback_placeholders = render
         .display_list
         .iter()
         .filter_map(|command| match command {
             DisplayCommand::Image {
-                url: None,
+                url: Some(url),
                 alt: Some(alt),
                 decoded_hash: None,
                 ..
-            } => Some(alt.as_str()),
+            } => Some((url.as_str(), alt.as_str())),
             _ => None,
         })
         .collect::<Vec<_>>();
-    for alt in [
-        "Broken",
-        "Unsupported",
-        "Missing",
-        "Retry after viewport load",
-        "Skipped",
+    for (resolved, alt) in [
+        (undecoded_path.display().to_string(), "Broken"),
+        (unsupported_path.display().to_string(), "Unsupported"),
+        (missing_path.display().to_string(), "Missing"),
+        (retry_url, "Retry after viewport load"),
+        ("ftp://example.test/color.png".to_owned(), "Skipped"),
     ] {
+        let expected = (resolved.as_str(), alt);
         assert!(
-            fallback_placeholder_alts.contains(&alt),
-            "missing failed-image fallback placeholder alt {alt:?} in {fallback_placeholder_alts:?}"
+            fallback_placeholders.contains(&expected),
+            "missing failed-image fallback placeholder {expected:?} in {fallback_placeholders:?}"
         );
     }
 }
@@ -10465,14 +10485,16 @@ async fn image_srcset_resource_sizes_media_uses_viewport_for_visible_rgb_candida
     let page = dir.path().join("page.html");
     let selected = dir.path().join("selected.gif");
     let narrow = dir.path().join("narrow.gif");
+    let fallback = dir.path().join("fallback.gif");
     fs::write(&selected, tiny_test_gif_palette()).unwrap();
     fs::write(&narrow, tiny_test_gif_palette()).unwrap();
+    fs::write(&fallback, tiny_test_gif_palette()).unwrap();
     fs::write(
         &page,
         r#"<html><body>
             <p>Before media sizes image</p>
             <img
-                src="/assets/fallback.gif"
+                src="fallback.gif"
                 srcset="narrow.gif 80w, selected.gif 640w"
                 sizes="(min-width: 800px) 640px, 80px"
                 width="80"
@@ -10485,6 +10507,7 @@ async fn image_srcset_resource_sizes_media_uses_viewport_for_visible_rgb_candida
 
     let selected_url = selected.display().to_string();
     let narrow_url = narrow.display().to_string();
+    let fallback_url = fallback.display().to_string();
     let mut resource_session = BrowserSession::new(BrowserRenderOptions {
         width: 120,
         ..BrowserRenderOptions::default()
@@ -10503,6 +10526,12 @@ async fn image_srcset_resource_sizes_media_uses_viewport_for_visible_rgb_candida
             .resources
             .iter()
             .any(|fetch| fetch.resource.resolved == narrow_url)
+    );
+    assert!(
+        !resource_report
+            .resources
+            .iter()
+            .any(|fetch| fetch.resource.resolved == fallback_url)
     );
 
     let resource_fetch = resource_report
@@ -10545,6 +10574,12 @@ async fn image_srcset_resource_sizes_media_uses_viewport_for_visible_rgb_candida
             .fetches
             .iter()
             .any(|fetch| fetch.resource.resolved == narrow_url)
+    );
+    assert!(
+        !report
+            .fetches
+            .iter()
+            .any(|fetch| fetch.resource.resolved == fallback_url)
     );
 
     let fetch = report
@@ -12000,6 +12035,7 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
     let expected_hash = decoded.pixel_hash();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let image_url = format!("http://{addr}/tile.png");
     let server = tokio::spawn(async move {
         for _ in 0..2 {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -12039,24 +12075,24 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 0,
+                y: 1,
                 text: "Before network".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 1,
+                y: 3,
                 width: 10,
                 height: 4,
                 shade: 220,
                 alt: Some("Network PNG".to_owned()),
-                url: None,
+                url: Some(image_url.clone()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 5,
+                y: 8,
                 text: "After network".to_owned()
             },
         ]
@@ -12074,12 +12110,12 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 0,
+                y: 1,
                 text: "Before network".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 1,
+                y: 3,
                 width: 1,
                 height: 1,
                 shade: 220,
@@ -12091,7 +12127,7 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 2,
+                y: 5,
                 text: "After network".to_owned()
             },
         ]

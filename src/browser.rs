@@ -21336,6 +21336,13 @@ impl FlowRenderer {
 
     fn seed_decoded_images(&mut self, images: &[DecodedImageEntry]) {
         for image in images {
+            if self
+                .decoded_image_cache
+                .get(&image.url)
+                .is_some_and(Option::is_some)
+            {
+                continue;
+            }
             let index = self.decoded_images.len();
             self.decoded_images.push(image.clone());
             self.decoded_image_cache
@@ -23007,7 +23014,10 @@ impl FlowRenderer {
                 height: placeholder_height,
                 shade: 220,
                 alt,
-                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                url: decoded_info
+                    .as_ref()
+                    .map(|image| image.url.clone())
+                    .or_else(|| url.map(|url| resolve_browser_href(source, url))),
                 decoded_width: decoded_info.as_ref().map(|image| image.width),
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
@@ -23047,7 +23057,10 @@ impl FlowRenderer {
                 height: placeholder_height,
                 shade: 220,
                 alt,
-                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                url: decoded_info
+                    .as_ref()
+                    .map(|image| image.url.clone())
+                    .or_else(|| url.map(|url| resolve_browser_href(source, url))),
                 decoded_width: decoded_info.as_ref().map(|image| image.width),
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
@@ -23100,7 +23113,10 @@ impl FlowRenderer {
                 height: image_height,
                 shade: 220,
                 alt,
-                url: decoded_info.as_ref().map(|image| image.url.clone()),
+                url: decoded_info
+                    .as_ref()
+                    .map(|image| image.url.clone())
+                    .or_else(|| url.map(|url| resolve_browser_href(source, url))),
                 decoded_width: decoded_info.as_ref().map(|image| image.width),
                 decoded_height: decoded_info.as_ref().map(|image| image.height),
                 decoded_hash: decoded_info.map(|image| image.pixel_hash),
