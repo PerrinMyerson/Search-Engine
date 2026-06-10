@@ -3088,14 +3088,21 @@ impl BrowserSession {
         };
         let (target_node, page_x, page_y) = {
             let current = &self.entries[current_index].render;
-            let viewport = browser_document_viewport(current, viewport, None).viewport;
-            let page_x = viewport.x.saturating_add(x);
-            let page_y = viewport.y.saturating_add(y);
+            let (normalized_viewport, page_x, page_y) = normalized_viewport_local_point_to_page(
+                current, viewport, x, y,
+            )
+            .with_context(|| {
+                let viewport = browser_document_viewport(current, viewport, None).viewport;
+                format!(
+                    "click viewport coordinates {x},{y} are outside viewport {},{} {}x{}",
+                    viewport.x, viewport.y, viewport.width, viewport.height
+                )
+            })?;
             let target_node =
-                hit_test_target_node_in_viewport(current, viewport, x, y).with_context(|| {
+                hit_test_target_node_in_viewport(current, normalized_viewport, x, y).with_context(|| {
                     format!(
                         "click viewport coordinates {x},{y} at viewport {},{} did not hit a DOM target",
-                        viewport.x, viewport.y
+                        normalized_viewport.x, normalized_viewport.y
                     )
                 })?;
             (target_node, page_x, page_y)
@@ -4330,13 +4337,24 @@ fn viewport_local_point_to_page(
     x: usize,
     y: usize,
 ) -> Option<(RasterViewport, usize, usize)> {
+    let (viewport, page_x, page_y) =
+        normalized_viewport_local_point_to_page(render, viewport, x, y)?;
+    Some((raster_viewport_from_state(viewport), page_x, page_y))
+}
+
+fn normalized_viewport_local_point_to_page(
+    render: &BrowserRender,
+    viewport: BrowserViewportState,
+    x: usize,
+    y: usize,
+) -> Option<(BrowserViewportState, usize, usize)> {
     let viewport = browser_document_viewport(render, viewport, None).viewport;
     if x >= viewport.width || y >= viewport.height {
         return None;
     }
     let page_x = viewport.x.saturating_add(x);
     let page_y = viewport.y.saturating_add(y);
-    Some((raster_viewport_from_state(viewport), page_x, page_y))
+    Some((viewport, page_x, page_y))
 }
 
 fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
