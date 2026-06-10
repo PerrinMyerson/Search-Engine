@@ -3968,6 +3968,23 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(
         html.contains(r#"data-browser-click-preserves="session from source viewport max-bytes""#)
     );
+    assert!(html.contains(
+        r#"data-browser-click-route-contract="session from source viewport dimensions max-bytes""#
+    ));
+    assert!(html.contains(r#"data-browser-click-miss-feedback="compact""#));
+    assert!(html.contains(r#"data-browser-click-route-state="ready""#));
+    assert!(html.contains(r#"data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes""#));
+    assert!(html.contains(r#"data-browser-chrome-click-route-state="ready""#));
+    assert!(html.contains(r#"data-browser-chrome-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session""#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeClickRouteState = "missed""#));
+    assert!(html.contains(
+        r#"deferredTopStatus.dataset.browserChromeClickRouteState = "waiting-for-viewport""#
+    ));
+    assert!(html.contains(r#"data-browser-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session""#));
+    assert!(html.contains(r#"shell.dataset.clickMissViewportX = String(numberData("viewportX"))"#));
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromeClickMissViewportX = String(numberData("viewportX"))"#
+    ));
     assert!(html.contains(r#"data-browser-scroll-input-source="idle""#));
     assert!(html.contains(r#"data-browser-scroll-line-step="2""#));
     assert!(html.contains(r#"data-browser-scroll-page-step-x="20""#));
@@ -11257,6 +11274,15 @@ async fn browser_session_registry_click_at_miss_keeps_browser_shell() {
     assert!(html.contains(r#"data-browser-viewport-last-outcome="miss""#));
     assert!(html.contains(r#"data-browser-viewport-click-outcome="miss""#));
     assert!(html.contains(r#"data-browser-viewport-click-target="none""#));
+    assert!(html.contains(
+        r#"data-browser-click-route-contract="session from source viewport dimensions max-bytes""#
+    ));
+    assert!(html.contains(r#"data-browser-click-miss-feedback="compact""#));
+    assert!(html.contains(r#"data-browser-click-route-state="ready""#));
+    assert!(html.contains(r#"shell.dataset.clickMissSource = shell.dataset.pageSource || """#));
+    assert!(html.contains(
+        r#"topStatus.dataset.browserChromeClickMissMaxBytes = shell.dataset.maxBytes || """#
+    ));
     assert!(html.contains(r#"data-browser-chrome-status-layout="viewport outcome tools""#));
     assert!(html.contains(r#"data-browser-chrome-outcome-display="compact""#));
     assert!(
