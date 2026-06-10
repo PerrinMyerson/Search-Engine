@@ -1804,6 +1804,308 @@ fn key_page_home_end_scroll_preserves_mixed_viewport_hits_and_raster() {
 }
 
 #[test]
+fn diagonal_scroll_dirty_regions_keep_mixed_hits_and_raster_aligned() {
+    let image_url = "mem://diagonal-scroll-dirty-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![132],
+        rgb_pixels: Some(vec![80, 156, 228]),
+    };
+    let render = BrowserRender {
+        source: "mem://diagonal-scroll-dirty-stability".to_owned(),
+        title: String::new(),
+        viewport_width: 18,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 1,
+        layout_boxes: vec![BrowserLayoutBox {
+            id: 0,
+            parent: None,
+            node_id: 12,
+            tag: "input".to_owned(),
+            kind: "form-control".to_owned(),
+            x: 5,
+            y: 3,
+            width: 3,
+            height: 1,
+            children: Vec::new(),
+            command_indices: vec![4],
+        }],
+        paint_command_count: 8,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Go".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(88),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Top".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 1,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 4,
+                y: 2,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 7,
+                y: 2,
+                text: "Go".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Rect {
+                x: 5,
+                y: 3,
+                width: 3,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 8,
+                y: 3,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 9,
+                y: 4,
+                width: 8,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 14,
+                y: 6,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Top\nLead\nGo\nNext\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 1,
+        width: 8,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(
+        &render,
+        start,
+        &[(2, 1), (1, 1), (99, 99), (1, 1)],
+        options,
+    )
+    .expect("render diagonal scroll dirty-region sequence");
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport)
+            .collect::<Vec<_>>(),
+        vec![
+            BrowserViewportState {
+                x: 2,
+                y: 2,
+                width: 8,
+                height: 3,
+            },
+            BrowserViewportState {
+                x: 3,
+                y: 3,
+                width: 8,
+                height: 3,
+            },
+            BrowserViewportState {
+                x: 10,
+                y: 4,
+                width: 8,
+                height: 3,
+            },
+            BrowserViewportState {
+                x: 10,
+                y: 4,
+                width: 8,
+                height: 3,
+            },
+        ],
+        "diagonal scroll deltas should advance and clamp one normalized viewport state"
+    );
+    assert_eq!(
+        frames[0]
+            .report
+            .viewport
+            .invalidated_regions
+            .iter()
+            .map(|region| (region.x, region.y, region.width, region.height))
+            .collect::<Vec<_>>(),
+        vec![(6, 0, 2, 3), (3, 1, 3, 1), (0, 2, 6, 1)],
+        "first diagonal scroll should dirty the exposed right band and bottom band without full repaint"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .invalidated_regions
+            .iter()
+            .map(|region| (region.x, region.y, region.width, region.height))
+            .collect::<Vec<_>>(),
+        vec![(2, 0, 3, 1), (7, 0, 1, 3), (0, 2, 7, 1)],
+        "second diagonal scroll should keep dirty bands proportional to the actual delta"
+    );
+    assert!(
+        frames[3].report.viewport.invalidated_regions.is_empty(),
+        "clamped diagonal no-op should not invent document dirty rows"
+    );
+    assert!(
+        frames[3].report.dirty_pixel_regions.is_empty(),
+        "clamped diagonal no-op should not repaint stale raster rows"
+    );
+
+    assert_eq!(
+        frames[0]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_x,
+                command.visible_y,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, "Image", 2, 0),
+            (3, "StyledText", 5, 0),
+            (4, "Rect", 3, 1),
+            (5, "StyledText", 6, 1),
+            (6, "ColorRect", 7, 2),
+        ],
+        "first diagonal frame should report mixed content at viewport-relative positions"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_x,
+                command.visible_y,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (4, "Rect", 2, 0),
+            (5, "StyledText", 5, 0),
+            (6, "ColorRect", 6, 1),
+        ],
+        "second diagonal frame should drop stale image/link rows and shift lower controls"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 2, 0),
+        Some(41),
+        "first diagonal frame should keep decoded image hit aligned"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 5, 0),
+        Some(77),
+        "first diagonal frame should keep link hit aligned"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 2, 0),
+        Some(12),
+        "second diagonal frame should keep form hit aligned after x/y movement"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 5, 0),
+        Some(88),
+        "second diagonal frame should keep shifted link hit aligned"
+    );
+    for (index, frame) in frames.iter().enumerate().skip(2) {
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 2, 0),
+            None,
+            "frame {index} should not keep stale mixed-row hits after the row scrolls away"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 5, 0),
+            None,
+            "frame {index} should not keep stale link hits after the row scrolls away"
+        );
+    }
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let image_x = options
+        .padding_x
+        .saturating_add(2usize.saturating_mul(options.cell_width));
+    assert_eq!(
+        pixel(&frames[0], image_x, options.padding_y),
+        [80, 156, 228, 255],
+        "first diagonal frame should paint decoded image color at the visible hit row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_x, options.padding_y),
+        [80, 156, 228, 255],
+        "second diagonal frame should not leave stale decoded image color after the row scrolls out"
+    );
+}
+
+#[test]
 fn scrolled_visible_commands_report_pinned_layers_in_paint_order() {
     let render = BrowserRender {
         source: "mem://visible-command-paint-order".to_owned(),
