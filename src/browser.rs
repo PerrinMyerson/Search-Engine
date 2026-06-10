@@ -4225,12 +4225,12 @@ fn hit_test_target_node_in_viewport(
 ) -> Option<usize> {
     let (viewport, page_x, page_y) = viewport_local_point_to_page(render, viewport, x, y)?;
     if let Some(target_node) =
-        hit_test_topmost_pinned_visual_layer_for_viewport(render, viewport, page_x, page_y)
+        hit_test_topmost_pinned_text_layer_for_viewport(render, viewport, page_x, page_y)
     {
         return target_node;
     }
     if let Some(target_node) =
-        hit_test_topmost_pinned_text_layer_for_viewport(render, viewport, page_x, page_y)
+        hit_test_topmost_pinned_visual_layer_for_viewport(render, viewport, page_x, page_y)
     {
         return target_node;
     }
@@ -5865,6 +5865,7 @@ pub fn browser_document_viewport(
             );
         }
     }
+    canonicalize_browser_viewport_rects(&mut invalidated_regions);
     let viewport_area = viewport_state.width.saturating_mul(viewport_state.height);
     let invalidated_area = invalidated_regions
         .iter()
@@ -6475,6 +6476,48 @@ fn browser_viewport_frame_dirty_regions(
         .collect::<Vec<_>>();
     canonicalize_browser_viewport_frame_dirty_regions(&mut regions);
     regions
+}
+
+fn canonicalize_browser_viewport_rects(regions: &mut Vec<BrowserViewportRect>) {
+    if regions.len() < 2 {
+        return;
+    }
+
+    merge_horizontal_browser_viewport_rects(regions);
+
+    regions.sort_by_key(|region| (region.x, region.y, region.width, region.height));
+    let mut vertical: Vec<BrowserViewportRect> = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        if let Some(last) = vertical.last_mut()
+            && last.x == region.x
+            && last.width == region.width
+            && last.y.saturating_add(last.height) == region.y
+        {
+            last.height = last.height.saturating_add(region.height);
+            continue;
+        }
+        vertical.push(region);
+    }
+    *regions = vertical;
+    merge_horizontal_browser_viewport_rects(regions);
+    regions.sort_by_key(|region| (region.y, region.x));
+}
+
+fn merge_horizontal_browser_viewport_rects(regions: &mut Vec<BrowserViewportRect>) {
+    regions.sort_by_key(|region| (region.y, region.x, region.height, region.width));
+    let mut horizontal: Vec<BrowserViewportRect> = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        if let Some(last) = horizontal.last_mut()
+            && last.y == region.y
+            && last.height == region.height
+            && last.x.saturating_add(last.width) == region.x
+        {
+            last.width = last.width.saturating_add(region.width);
+            continue;
+        }
+        horizontal.push(region);
+    }
+    *regions = horizontal;
 }
 
 fn canonicalize_browser_viewport_frame_dirty_regions(
