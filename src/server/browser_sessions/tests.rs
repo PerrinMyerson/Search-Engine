@@ -102,6 +102,11 @@ fn assert_chrome_page_action_state(
         r#"data-browser-chrome-page-images-href="{}""#,
         html_escape::encode_double_quoted_attribute(image_href.unwrap_or_default())
     )));
+    assert!(page_actions_html.contains(r#"data-browser-chrome-page-pending-state="idle""#));
+    assert!(page_actions_html.contains(r#"data-browser-chrome-page-state-contract="current reload images session source viewport dimensions max-bytes""#));
+    assert!(page_actions_html.contains(
+        r#"data-browser-chrome-page-preserves="session from source viewport dimensions max-bytes""#
+    ));
     for (action, href) in [("current", current_href), ("reload", reload_href)] {
         assert_chrome_page_action_link_state(page_actions_html, payload, back_href, action, href);
     }
@@ -165,6 +170,10 @@ fn assert_chrome_page_action_link_state(
     assert!(page_actions_html.contains(&format!(
         r#"data-browser-chrome-{action}-pending-state="idle""#
     )));
+    assert!(page_actions_html.contains(&format!(r#"data-browser-chrome-{action}-role="page""#)));
+    assert!(page_actions_html.contains(&format!(
+        r#"data-browser-chrome-{action}-preserves="session from source viewport dimensions max-bytes""#
+    )));
 }
 
 fn assert_primary_nav_action_state(
@@ -213,6 +222,15 @@ fn assert_primary_nav_action_state(
     assert!(topbar_html.contains(&format!(
         r#"data-browser-primary-nav-{action}-max-bytes="{}""#,
         payload.max_bytes
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-pending-state="idle""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-role="history""#
+    )));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-primary-nav-{action}-preserves="session from source viewport dimensions max-bytes""#
     )));
 }
 
@@ -3882,6 +3900,30 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
     assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls drag""#));
     assert!(html.contains(r#"data-browser-shell-interaction-mode="browser""#));
+    assert!(html.contains(
+        r#"data-browser-shell-state-contract="session from source viewport dimensions max-bytes""#
+    ));
+    assert!(html.contains(&format!(r#"data-browser-shell-session="{}""#, payload.id)));
+    assert!(html.contains(&format!(
+        r#"data-browser-shell-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.back_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-shell-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-shell-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-shell-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-shell-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(
         html.contains(r#"data-browser-shell-preserves="session from source viewport max-bytes""#)
     );
@@ -3894,6 +3936,27 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
     assert!(html.contains(r#"data-browser-edge-scroll-state="idle""#));
     assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
+    assert!(html.contains(&format!(r#"data-browser-scroll-session="{}""#, payload.id)));
+    assert!(html.contains(&format!(
+        r#"data-browser-scroll-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.back_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-scroll-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-scroll-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-scroll-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-scroll-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(
         html.contains(r#"data-browser-scroll-preserves="session from source viewport max-bytes""#)
     );
@@ -9959,6 +10022,27 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-click-navigation-state="ready""#));
     assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
     assert!(html.contains(r#"data-browser-click-feedback-mode="compact""#));
+    assert!(html.contains(&format!(r#"data-browser-click-session="{}""#, payload.id)));
+    assert!(html.contains(&format!(
+        r#"data-browser-click-from="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.back_href)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-click-source="{}""#,
+        html_escape::encode_double_quoted_attribute(&payload.source)
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-click-viewport-x="{}""#,
+        payload.viewport_x
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-click-viewport-y="{}""#,
+        payload.viewport_y
+    )));
+    assert!(html.contains(&format!(
+        r#"data-browser-click-max-bytes="{}""#,
+        payload.max_bytes
+    )));
     assert!(html.contains(r#"data-browser-drag-click-suppression="after-drag""#));
     assert!(html.contains(
         r#"data-browser-shell-navigation-preserves="session source viewport max-bytes""#
@@ -14706,6 +14790,11 @@ async fn browser_session_page_renders_form_controls() {
     assert!(
         topbar_html.contains(r#"data-browser-primary-nav-order="search back forward actions""#)
     );
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-pending-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-primary-nav-state-contract="history session source viewport dimensions max-bytes""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-primary-nav-preserves="session from source viewport dimensions max-bytes""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-chrome-actions"#));
     assert!(topbar_html.contains(
         r#"data-browser-chrome-action-list data-browser-chrome-action-density="compact" data-browser-chrome-action-order="page scroll tabs""#
