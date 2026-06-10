@@ -5933,8 +5933,9 @@ pub fn browser_document_viewport(
                 viewport_state,
                 &mut invalidated_regions,
             );
-            append_viewport_media_invalidated_regions(
+            append_viewport_media_invalidated_regions_after_scroll(
                 render,
+                previous_state,
                 viewport_state,
                 &mut invalidated_regions,
             );
@@ -6271,6 +6272,51 @@ fn append_viewport_media_invalidated_regions(
     }
 }
 
+fn append_viewport_media_invalidated_regions_after_scroll(
+    render: &BrowserRender,
+    previous: BrowserViewportState,
+    current: BrowserViewportState,
+    regions: &mut Vec<BrowserViewportRect>,
+) {
+    let previous_viewport = raster_viewport_from_state(previous);
+    let current_viewport = raster_viewport_from_state(current);
+    let shift_x = browser_viewport_signed_delta(previous.x, current.x);
+    let shift_y = browser_viewport_signed_delta(previous.y, current.y);
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !matches!(
+            command,
+            DisplayCommand::Image { .. } | DisplayCommand::BackgroundImage { .. }
+        ) || display_command_viewport_pinned(render, command_index)
+        {
+            continue;
+        }
+        let Some(current_rect) = display_command_viewport_dirty_rect(
+            render,
+            command_index,
+            command,
+            current_viewport,
+            0,
+            0,
+        ) else {
+            continue;
+        };
+        let Some(previous_rect) = display_command_viewport_dirty_rect(
+            render,
+            command_index,
+            command,
+            previous_viewport,
+            shift_x,
+            shift_y,
+        ) else {
+            append_non_overlapping_viewport_rect(regions, current_rect);
+            continue;
+        };
+        for rect in subtract_viewport_rect(current_rect, previous_rect) {
+            append_non_overlapping_viewport_rect(regions, rect);
+        }
+    }
+}
+
 fn append_viewport_form_control_invalidated_regions(
     render: &BrowserRender,
     viewport_state: BrowserViewportState,
@@ -6427,16 +6473,37 @@ fn append_display_command_viewport_dirty_region(
     output_shift_y: isize,
     regions: &mut Vec<BrowserViewportRect>,
 ) {
+    let Some(rect) = display_command_viewport_dirty_rect(
+        render,
+        command_index,
+        command,
+        viewport,
+        output_shift_x,
+        output_shift_y,
+    ) else {
+        return;
+    };
+    append_non_overlapping_viewport_rect(regions, rect);
+}
+
+fn display_command_viewport_dirty_rect(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+    output_shift_x: isize,
+    output_shift_y: isize,
+) -> Option<BrowserViewportRect> {
     let Some(command_bounds) =
         display_command_exact_hit_bounds_for_viewport(render, command_index, command, viewport)
     else {
-        return;
+        return None;
     };
     let Some(visible_bounds) = intersect_display_bounds_with_viewport(command_bounds, viewport)
     else {
-        return;
+        return None;
     };
-    let Some(rect) = shift_and_clip_viewport_rect(
+    shift_and_clip_viewport_rect(
         BrowserViewportRect {
             x: visible_bounds.x.saturating_sub(viewport.x),
             y: visible_bounds.y.saturating_sub(viewport.y),
@@ -6447,10 +6514,7 @@ fn append_display_command_viewport_dirty_region(
         output_shift_y,
         viewport.width,
         viewport.height,
-    ) else {
-        return;
-    };
-    append_non_overlapping_viewport_rect(regions, rect);
+    )
 }
 
 fn shift_and_clip_viewport_rect(
