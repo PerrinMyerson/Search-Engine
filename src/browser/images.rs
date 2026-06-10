@@ -4649,7 +4649,10 @@ pub(super) fn image_render_source(
     selected_source
 }
 
-pub(super) fn background_image_render_source(element: &ElementData) -> Option<String> {
+pub(super) fn background_image_render_source(
+    element: &ElementData,
+    viewport_width_css_px: usize,
+) -> Option<String> {
     first_non_empty_attr(
         element,
         &[
@@ -4672,7 +4675,12 @@ pub(super) fn background_image_render_source(element: &ElementData) -> Option<St
             "data-lazybackgroundsrcset",
         ],
     )
-    .and_then(|srcset| choose_srcset_candidate(srcset, background_srcset_target_width(element)))
+    .and_then(|srcset| {
+        choose_srcset_candidate(
+            srcset,
+            background_srcset_target_width(element, viewport_width_css_px),
+        )
+    })
     .or_else(|| background_width_template_render_source(element))
     .or_else(|| preferred_background_image_attr_source(element))
     .or_else(|| {
@@ -4730,10 +4738,14 @@ fn preferred_background_image_attr_source(element: &ElementData) -> Option<Strin
         .or_else(|| candidates.into_iter().next())
 }
 
-fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
+fn background_srcset_target_width(
+    element: &ElementData,
+    viewport_width_css_px: usize,
+) -> Option<usize> {
     background_image_sizes_attr(element)
-        .and_then(|sizes| parse_sizes_attribute(sizes, 0))
+        .and_then(|sizes| parse_sizes_attribute(sizes, viewport_width_css_px))
         .or_else(|| image_width_attr_target(element))
+        .or_else(|| (viewport_width_css_px > 0).then_some(viewport_width_css_px))
 }
 
 pub(super) fn background_image_sizes_attr(element: &ElementData) -> Option<&str> {
@@ -4803,8 +4815,7 @@ fn selected_background_template_width(element: &ElementData) -> Option<usize> {
     )
     .map(parse_lazy_template_widths)
     .filter(|widths| !widths.is_empty())?;
-    let target =
-        background_srcset_target_width(element).or_else(|| image_width_attr_target(element));
+    let target = background_srcset_target_width(element, 0);
     if let Some(target) = target
         && let Some(width) = widths.iter().copied().find(|width| *width >= target)
     {
