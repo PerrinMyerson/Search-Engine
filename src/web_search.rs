@@ -67,6 +67,12 @@ pub struct WebSearchLookup {
     pub results: Vec<WebSearchResult>,
 }
 
+impl WebSearchLookup {
+    pub fn persistence_path_line(&self, cache_path: &Path, result_log_path: &Path) -> String {
+        web_search_lookup_persistence_path_line(self, cache_path, result_log_path)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchStorageCompactionReport {
     pub cache_path: PathBuf,
@@ -238,6 +244,10 @@ impl WebSearchService {
 
     pub fn cache_path(&self) -> &Path {
         &self.config.cache_path
+    }
+
+    pub fn result_log_path(&self) -> &Path {
+        &self.config.result_log_path
     }
 
     pub fn should_search_web(&self, local_count: usize, requested_limit: usize) -> bool {
@@ -1153,6 +1163,121 @@ pub fn durable_web_result_provider_commit_line(
 
     format!(
         "durable_web_result_provider_commit: report_only=true provider_result_rows={provider_result_rows} displayed_result_rows={displayed_result_rows} display_limited_rows={display_limited_rows} durable_result_rows={durable_result_rows} replayable_cache_rows={replayable_cache_rows} durable_result_log_rows={durable_result_log_rows} persistence_gap_rows={persistence_gap_rows} survives_restart={survives_restart} commit_order=before-display github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action={next_action}"
+    )
+}
+
+fn web_search_lookup_persisted_paths(lookup: &WebSearchLookup) -> &'static str {
+    if lookup.persistence_status == "cache-hit" {
+        "web-cache.jsonl"
+    } else if lookup.persistence_status == "result-log-replay" {
+        "brave-results.jsonl"
+    } else if lookup.durable_result_rows == 0 {
+        "none"
+    } else if lookup.cache_status == "disabled-fetched" {
+        "brave-results.jsonl"
+    } else {
+        "web-cache.jsonl,brave-results.jsonl"
+    }
+}
+
+fn web_search_lookup_skipped_paths(lookup: &WebSearchLookup) -> &'static str {
+    if lookup.persistence_status == "skipped-no-results"
+        || lookup.persistence_status == "cache-miss-no-fetch"
+    {
+        "web-cache.jsonl,brave-results.jsonl"
+    } else if lookup.cache_status == "disabled-fetched" {
+        "web-cache.jsonl"
+    } else {
+        "none"
+    }
+}
+
+fn web_search_lookup_replay_paths(lookup: &WebSearchLookup) -> &'static str {
+    match (
+        lookup.cache_replay_result_rows > 0,
+        lookup.result_log_replay_result_rows > 0,
+    ) {
+        (true, true) => "web-cache.jsonl,brave-results.jsonl",
+        (true, false) => "web-cache.jsonl",
+        (false, true) => "brave-results.jsonl",
+        (false, false) => "none",
+    }
+}
+
+fn web_search_lookup_failed_paths(lookup: &WebSearchLookup) -> &'static str {
+    if lookup.persistence_gap_rows > 0 {
+        "web-cache.jsonl,brave-results.jsonl"
+    } else {
+        "none"
+    }
+}
+
+fn web_search_lookup_missing_hook(lookup: &WebSearchLookup) -> &'static str {
+    if lookup.persistence_gap_rows > 0 {
+        "provider-result-storage-metadata"
+    } else {
+        "none"
+    }
+}
+
+fn web_search_lookup_persistence_next_action(lookup: &WebSearchLookup) -> &'static str {
+    if lookup.persistence_gap_rows > 0 {
+        "inspect-provider-result-persistence-gap"
+    } else if lookup.persistence_status == "result-log-replay" {
+        "backfill-web-cache-replay-when-safe"
+    } else if lookup.cache_status == "disabled-fetched" && lookup.durable_result_rows > 0 {
+        "result-log-persisted-cache-disabled"
+    } else if lookup.provider_result_rows > lookup.returned_results
+        && lookup.durable_result_rows >= lookup.provider_result_rows
+    {
+        "provider-results-persisted-before-display-limit"
+    } else if lookup.persistence_status == "persisted" {
+        "provider-results-persisted"
+    } else if lookup.persistence_status == "cache-hit" {
+        "cache-replay-path-ready"
+    } else if lookup.persistence_status == "skipped-no-results"
+        || lookup.persistence_status == "cache-miss-no-fetch"
+    {
+        "no-persistable-provider-results"
+    } else {
+        "review-web-search-persistence-paths"
+    }
+}
+
+pub fn web_search_lookup_persistence_path_line(
+    lookup: &WebSearchLookup,
+    cache_path: &Path,
+    result_log_path: &Path,
+) -> String {
+    let persisted_paths = web_search_lookup_persisted_paths(lookup);
+    let skipped_paths = web_search_lookup_skipped_paths(lookup);
+    let replay_paths = web_search_lookup_replay_paths(lookup);
+    let failed_paths = web_search_lookup_failed_paths(lookup);
+    let missing_hook = web_search_lookup_missing_hook(lookup);
+    let next_action = web_search_lookup_persistence_next_action(lookup);
+
+    format!(
+        "web_search_lookup_persistence_paths: report_only=true mutates_files=false provider={} cache_status={} persistence_status={} fetched={} cache_hit={} provider_result_rows={} returned_results={} retained_cache_results={} cache_replay_result_rows={} result_log_replay_result_rows={} durable_result_rows={} persistence_gap_rows={} cache_path={} result_log_path={} persisted_paths={} skipped_paths={} replay_paths={} failed_paths={} missing_hook={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={}",
+        lookup.provider,
+        lookup.cache_status,
+        lookup.persistence_status,
+        lookup.fetched,
+        lookup.cache_hit,
+        lookup.provider_result_rows,
+        lookup.returned_results,
+        lookup.retained_cache_results,
+        lookup.cache_replay_result_rows,
+        lookup.result_log_replay_result_rows,
+        lookup.durable_result_rows,
+        lookup.persistence_gap_rows,
+        cache_path.display(),
+        result_log_path.display(),
+        persisted_paths,
+        skipped_paths,
+        replay_paths,
+        failed_paths,
+        missing_hook,
+        next_action
     )
 }
 
@@ -2666,6 +2791,129 @@ mod tests {
         assert!(commit_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
         assert!(commit_line.contains("excludes=api-keys,.brutal-index/raw-index-data"));
         assert!(commit_line.contains("next_action=provider-results-durable-before-display-limit"));
+    }
+
+    #[test]
+    fn web_search_lookup_persistence_path_line_reports_persisted_and_replay_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+
+        let persisted_lookup = WebSearchLookup {
+            provider: "brave",
+            cache_hit: false,
+            cache_status: "miss-fetched",
+            retained_cache_results: 0,
+            returned_results: 1,
+            provider_result_rows: 3,
+            cache_replay_result_rows: 0,
+            result_log_replay_result_rows: 0,
+            durable_result_rows: 3,
+            persistence_gap_rows: 0,
+            persistence_status: "persisted",
+            fetched: true,
+            results: vec![web_result("https://example.com/displayed", 100)],
+        };
+        let persisted_line = persisted_lookup.persistence_path_line(&cache_path, &result_log_path);
+        assert!(persisted_line.starts_with(
+            "web_search_lookup_persistence_paths: report_only=true mutates_files=false"
+        ));
+        assert!(persisted_line.contains("provider_result_rows=3"));
+        assert!(persisted_line.contains("returned_results=1"));
+        assert!(persisted_line.contains("durable_result_rows=3"));
+        assert!(persisted_line.contains("persistence_gap_rows=0"));
+        assert!(persisted_line.contains("persisted_paths=web-cache.jsonl,brave-results.jsonl"));
+        assert!(persisted_line.contains("skipped_paths=none"));
+        assert!(persisted_line.contains("replay_paths=none"));
+        assert!(persisted_line.contains(&format!("cache_path={}", cache_path.display())));
+        assert!(persisted_line.contains(&format!("result_log_path={}", result_log_path.display())));
+        assert!(
+            persisted_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+        );
+        assert!(
+            persisted_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+        );
+        assert!(
+            persisted_line.contains("next_action=provider-results-persisted-before-display-limit")
+        );
+
+        let disabled_cache_lookup = WebSearchLookup {
+            provider: "brave",
+            cache_hit: false,
+            cache_status: "disabled-fetched",
+            retained_cache_results: 0,
+            returned_results: 2,
+            provider_result_rows: 2,
+            cache_replay_result_rows: 0,
+            result_log_replay_result_rows: 0,
+            durable_result_rows: 2,
+            persistence_gap_rows: 0,
+            persistence_status: "persisted",
+            fetched: true,
+            results: vec![
+                web_result("https://example.com/one", 100),
+                web_result("https://example.com/two", 101),
+            ],
+        };
+        let disabled_line = web_search_lookup_persistence_path_line(
+            &disabled_cache_lookup,
+            &cache_path,
+            &result_log_path,
+        );
+        assert!(disabled_line.contains("persisted_paths=brave-results.jsonl"));
+        assert!(disabled_line.contains("skipped_paths=web-cache.jsonl"));
+        assert!(disabled_line.contains("next_action=result-log-persisted-cache-disabled"));
+
+        let replay_lookup = WebSearchLookup {
+            provider: "brave-cache",
+            cache_hit: false,
+            cache_status: "result-log-hit",
+            retained_cache_results: 0,
+            returned_results: 2,
+            provider_result_rows: 0,
+            cache_replay_result_rows: 0,
+            result_log_replay_result_rows: 2,
+            durable_result_rows: 2,
+            persistence_gap_rows: 0,
+            persistence_status: "result-log-replay",
+            fetched: false,
+            results: vec![
+                web_result("https://example.com/replay-one", 100),
+                web_result("https://example.com/replay-two", 101),
+            ],
+        };
+        let replay_line =
+            web_search_lookup_persistence_path_line(&replay_lookup, &cache_path, &result_log_path);
+        assert!(replay_line.contains("persisted_paths=brave-results.jsonl"));
+        assert!(replay_line.contains("replay_paths=brave-results.jsonl"));
+        assert!(replay_line.contains("failed_paths=none"));
+        assert!(replay_line.contains("missing_hook=none"));
+        assert!(replay_line.contains("next_action=backfill-web-cache-replay-when-safe"));
+
+        let partial_lookup = WebSearchLookup {
+            provider: "brave",
+            cache_hit: false,
+            cache_status: "miss-fetched",
+            retained_cache_results: 0,
+            returned_results: 1,
+            provider_result_rows: 3,
+            cache_replay_result_rows: 0,
+            result_log_replay_result_rows: 0,
+            durable_result_rows: 2,
+            persistence_gap_rows: 1,
+            persistence_status: "partial-persisted",
+            fetched: true,
+            results: vec![web_result("https://example.com/partial", 102)],
+        };
+        let partial_line =
+            web_search_lookup_persistence_path_line(&partial_lookup, &cache_path, &result_log_path);
+        assert!(partial_line.contains("persistence_status=partial-persisted"));
+        assert!(partial_line.contains("persistence_gap_rows=1"));
+        assert!(partial_line.contains("failed_paths=web-cache.jsonl,brave-results.jsonl"));
+        assert!(partial_line.contains("missing_hook=provider-result-storage-metadata"));
+        assert!(partial_line.contains("next_action=inspect-provider-result-persistence-gap"));
+        assert!(!cache_path.exists());
+        assert!(!result_log_path.exists());
     }
 
     #[test]
