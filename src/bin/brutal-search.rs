@@ -31,7 +31,7 @@ use brutal_search::web_search::{
     DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_RESULT_LOG_MAX_BYTES,
     DEFAULT_RESULT_LOG_MAX_ENTRIES, WebSearchStorageArtifactState,
     WebSearchStorageCompactionOptions, WebSearchStorageCompactionReport,
-    compact_web_search_storage_from_env,
+    compact_web_search_storage_from_env, durable_web_result_commit_report_lines,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -1404,6 +1404,9 @@ fn print_index_storage_stats(index: &Path) -> Result<()> {
     for line in storage_snapshot_readiness_lines(&stats, &web_summary) {
         println!("{line}");
     }
+    for line in web_result_durable_commit_report_lines(index)? {
+        println!("{line}");
+    }
     for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
         println!("{line}");
     }
@@ -2743,6 +2746,13 @@ fn crawl_snapshot_artifact_stats(path: &Path) -> Result<CrawlSnapshotArtifactSta
         unique_entries,
         duplicate_entries: entries.saturating_sub(unique_entries),
     })
+}
+
+fn web_result_durable_commit_report_lines(index: &Path) -> Result<Vec<String>> {
+    durable_web_result_commit_report_lines(
+        &index.join("web-cache.jsonl"),
+        &index.join("brave-results.jsonl"),
+    )
 }
 
 fn web_storage_pressure_summary_lines(
@@ -6321,6 +6331,48 @@ mod tests {
         let clean_stats = browser_document_artifact_stats(&clean_path).unwrap();
         assert_eq!(clean_stats.large_row_count, 0);
         assert!(clean_stats.max_row_bytes < BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+    }
+
+    #[test]
+    fn web_result_durable_commit_report_lines_exposes_cli_boundary_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"rank\":1,\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}\n{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":101,\"rank\":2,\"title\":\"Two\",\"url\":\"https://example.com/two\",\"snippet\":\"Snippet two\",\"score\":0.8}\n",
+        )
+        .unwrap();
+
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
+        let lines = web_result_durable_commit_report_lines(dir.path()).unwrap();
+
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_web_result_commit_report: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("survives_restart=true")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("durable_result_log_rows=2")
+                && line.contains("result_log_only_rows=1")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+                && line.contains("next_action=backfill-web-cache-replay-before-prune")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_web_result_prune_boundary: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("result_log_only_rows=1")
+                && line.contains("preserve_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("preserve_secrets=false")
+        }));
     }
 
     #[test]
