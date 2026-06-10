@@ -480,6 +480,15 @@ impl Default for BrowserViewportTransition {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserViewportKeyScroll {
+    PageDown,
+    PageUp,
+    Home,
+    End,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserViewportRect {
     pub x: usize,
@@ -6076,6 +6085,34 @@ pub fn browser_document_viewport_after_page_scroll(
     let delta_x = signed_scroll_unit_delta(pages_x, viewport_page_scroll_increment(current.width));
     let delta_y = signed_scroll_unit_delta(pages_y, viewport_page_scroll_increment(current.height));
     browser_document_viewport_after_delta(render, current, delta_x, delta_y)
+}
+
+pub fn browser_document_viewport_after_key_scroll(
+    render: &BrowserRender,
+    current: BrowserViewportState,
+    action: BrowserViewportKeyScroll,
+) -> BrowserDocumentViewportReport {
+    let current = browser_document_viewport(render, current, None).viewport;
+    match action {
+        BrowserViewportKeyScroll::PageDown => {
+            browser_document_viewport_after_page_scroll(render, current, 0, 1)
+        }
+        BrowserViewportKeyScroll::PageUp => {
+            browser_document_viewport_after_page_scroll(render, current, 0, -1)
+        }
+        BrowserViewportKeyScroll::Home => {
+            let delta_y = -(current.y.min(isize::MAX as usize) as isize);
+            browser_document_viewport_after_delta(render, current, 0, delta_y)
+        }
+        BrowserViewportKeyScroll::End => {
+            let current_report = browser_document_viewport(render, current, None);
+            let delta_y = current_report
+                .max_scroll_y
+                .saturating_sub(current_report.viewport.y)
+                .min(isize::MAX as usize) as isize;
+            browser_document_viewport_after_delta(render, current_report.viewport, 0, delta_y)
+        }
+    }
 }
 
 pub fn browser_viewport_frame(
