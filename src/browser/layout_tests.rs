@@ -11452,27 +11452,13 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
     assert_eq!(second.scroll_delta_y, 1);
     assert_eq!(
         second.invalidated_regions,
-        vec![
-            BrowserViewportRect {
-                x: 0,
-                y: 1,
-                width: 6,
-                height: 1,
-            },
-            BrowserViewportRect {
-                x: 0,
-                y: 0,
-                width: 2,
-                height: 1,
-            },
-            BrowserViewportRect {
-                x: 3,
-                y: 0,
-                width: 2,
-                height: 1,
-            },
-        ],
-        "adjacent scroll should dirty the new scroll band and still-visible media slices"
+        vec![BrowserViewportRect {
+            x: 0,
+            y: 1,
+            width: 6,
+            height: 1,
+        }],
+        "adjacent scroll should dirty the new scroll band while reusing shifted media slices"
     );
 
     assert_eq!(
@@ -11508,8 +11494,8 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
                 region.viewport_height,
             ))
             .collect::<Vec<_>>(),
-        vec![(0, 1, 6, 1), (0, 0, 2, 1), (3, 0, 2, 1)],
-        "frame dirty regions should preserve media cells that remain visible across the scroll"
+        vec![(0, 1, 6, 1)],
+        "frame dirty regions should reuse media cells that remain visible across the scroll"
     );
 
     let pixel = |x: usize, y: usize| -> [u8; 4] {
@@ -12513,12 +12499,16 @@ fn decoded_media_scroll_dirty_regions_match_painted_clip_and_hits() {
         })
         .collect::<Vec<_>>();
     assert!(
-        dirty_cells.contains(&(0, 0)),
-        "decoded foreground image cell should be dirty in the scrolled slice"
+        !dirty_cells.contains(&(0, 0)),
+        "decoded foreground image cell that shifted from the previous frame should remain reusable"
     );
     assert!(
-        dirty_cells.contains(&(2, 0)),
-        "decoded no-repeat background painted tile should be dirty in the scrolled slice"
+        !dirty_cells.contains(&(2, 0)),
+        "decoded background tile that shifted from the previous frame should remain reusable"
+    );
+    assert!(
+        dirty_cells.contains(&(0, 1)) && dirty_cells.contains(&(2, 1)),
+        "newly exposed lower media/link row should still be dirtied by the scroll band"
     );
     assert!(
         !dirty_cells.contains(&(1, 0)),
