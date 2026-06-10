@@ -1794,12 +1794,51 @@ fn css_multi_keyword_display_flex_keeps_mixed_cards_readable_after_scroll() {
         image_bounds[1]
     );
 
+    let scrolled_viewport_width = image_bounds[1].0.saturating_add(image_bounds[1].2).max(24);
     let raster_options = BrowserRasterOptions {
         viewport_y: Some(text_y),
-        viewport_width: Some(24),
+        viewport_width: Some(scrolled_viewport_width),
         viewport_height: Some(6),
         ..BrowserRasterOptions::default()
     };
+    let scrolled = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: text_y,
+            width: scrolled_viewport_width,
+            height: 6,
+        },
+        None,
+    );
+    assert!(
+        scrolled
+            .visible_commands
+            .iter()
+            .any(|command| command.kind == "Image"
+                && command.visible_width > 0
+                && command.visible_height > 0),
+        "expected paired image command inside the widened scrolled flex viewport"
+    );
+    let visible_image = scrolled
+        .visible_commands
+        .iter()
+        .filter(|command| {
+            command.kind == "Image" && command.visible_width > 0 && command.visible_height > 0
+        })
+        .max_by_key(|command| command.x)
+        .expect("visible paired image command in the widened scrolled flex viewport");
+    let visible_text = scrolled
+        .visible_commands
+        .iter()
+        .filter(|command| {
+            command.kind == "Text"
+                && command.x == text_x
+                && command.visible_width > 0
+                && command.visible_height > 0
+        })
+        .min_by_key(|command| command.visible_y)
+        .expect("visible second-card text command in the scrolled flex viewport");
     let rgba = rasterize_render_rgba(&render, raster_options)
         .expect("rasterize scrolled multi-keyword flex row");
     let pixel = |x: usize, y: usize| {
@@ -1809,26 +1848,71 @@ fn css_multi_keyword_display_flex_keeps_mixed_cards_readable_after_scroll() {
             .saturating_mul(4);
         &rgba.pixels[index..index.saturating_add(4)]
     };
-    let image_pixel_x = raster_options
-        .padding_x
-        .saturating_add(image_bounds[1].0.saturating_mul(raster_options.cell_width));
-    let image_pixel_y = raster_options.padding_y.saturating_add(
-        image_bounds[1]
-            .1
-            .saturating_sub(text_y)
+    let image_x_start = raster_options.padding_x.saturating_add(
+        visible_image
+            .visible_x
+            .saturating_mul(raster_options.cell_width),
+    );
+    let image_x_end = image_x_start
+        .saturating_add(
+            visible_image
+                .visible_width
+                .saturating_mul(raster_options.cell_width),
+        )
+        .min(rgba.width);
+    let image_y_start = raster_options.padding_y.saturating_add(
+        visible_image
+            .visible_y
             .saturating_mul(raster_options.cell_height),
     );
-    assert_eq!(pixel(image_pixel_x, image_pixel_y), &[48, 132, 220, 255]);
-    let text_col_start = raster_options
-        .padding_x
-        .saturating_add(text_x.saturating_mul(raster_options.cell_width));
-    let text_col_end = text_col_start.saturating_add("Second".len() * raster_options.cell_width);
-    let glyph_pixels = (raster_options.padding_y
-        ..raster_options.padding_y.saturating_add(7).min(rgba.height))
+    let image_y_end = image_y_start
+        .saturating_add(
+            visible_image
+                .visible_height
+                .saturating_mul(raster_options.cell_height),
+        )
+        .min(rgba.height);
+    let image_has_color = (image_y_start..image_y_end)
+        .any(|y| (image_x_start..image_x_end).any(|x| pixel(x, y) == &[48, 132, 220, 255]));
+    assert!(
+        image_has_color,
+        "expected decoded image color inside the widened scrolled flex viewport"
+    );
+    let text_col_start = raster_options.padding_x.saturating_add(
+        visible_text
+            .visible_x
+            .saturating_mul(raster_options.cell_width),
+    );
+    let text_col_end = text_col_start
+        .saturating_add(
+            visible_text
+                .visible_width
+                .saturating_mul(raster_options.cell_width),
+        )
+        .min(rgba.width);
+    let text_y_start = raster_options.padding_y.saturating_add(
+        visible_text
+            .visible_y
+            .saturating_mul(raster_options.cell_height),
+    );
+    let text_y_end = text_y_start
+        .saturating_add(
+            visible_text
+                .visible_height
+                .saturating_mul(raster_options.cell_height),
+        )
+        .min(rgba.height);
+    let glyph_pixels = (text_y_start..text_y_end)
         .flat_map(|y| (text_col_start..text_col_end.min(rgba.width)).map(move |x| (x, y)))
-        .filter(|(x, y)| pixel(*x, *y) == &[0, 0, 0, 255])
+        .filter(|(x, y)| {
+            let pixel = pixel(*x, *y);
+            pixel[3] == 255 && pixel[0] <= 96 && pixel[1] <= 96 && pixel[2] <= 96
+        })
         .count();
-    assert!(glyph_pixels >= 8);
+    assert!(
+        glyph_pixels >= 8,
+        "expected readable second-card text ink inside the scrolled flex viewport"
+    );
 }
 
 #[test]
@@ -9628,6 +9712,11 @@ fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
                 width: 5,
                 target_node: Some(77),
             }]),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 5,
+                target_node: Some(77),
+            }]),
             DisplayHitTarget::default().with_viewport_fixed(true),
             DisplayHitTarget::default(),
         ],
@@ -9636,7 +9725,7 @@ fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
                 x: 0,
                 y: 4,
                 width: 10,
-                height: 1,
+                height: 2,
                 shade: 238,
                 red: 238,
                 green: 244,
@@ -9646,6 +9735,12 @@ fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
                 x: 1,
                 y: 4,
                 text: "Under".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::StyledText {
+                x: 1,
+                y: 5,
+                text: "Lower".to_owned(),
                 shade: 0,
             },
             DisplayCommand::StyledText {
@@ -9660,7 +9755,7 @@ fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
                 text: "Footer keeps repeated scrolling possible".to_owned(),
             },
         ],
-        text: "Under\nFooter keeps repeated scrolling possible".to_owned(),
+        text: "Under\nLower\nFooter keeps repeated scrolling possible".to_owned(),
     };
 
     let viewport = browser_document_viewport(
@@ -17090,11 +17185,27 @@ fn css_aspect_ratio_media_slot_keeps_article_text_aligned_after_scroll() {
             .saturating_mul(4);
         &rgba.pixels[index..index.saturating_add(4)]
     };
-    let image_pixel_x = raster_options
+    let image_x_start = raster_options
         .padding_x
         .saturating_add(image_bounds.0.saturating_mul(raster_options.cell_width));
-    let image_pixel_y = raster_options.padding_y;
-    assert_eq!(pixel(image_pixel_x, image_pixel_y), &[240, 240, 240, 255]);
+    let image_x_end = image_x_start
+        .saturating_add(image_bounds.2.saturating_mul(raster_options.cell_width))
+        .min(rgba.width);
+    let image_y_start = raster_options.padding_y;
+    let image_y_end = image_y_start
+        .saturating_add(
+            image_bounds
+                .3
+                .saturating_sub(viewport_y.saturating_sub(image_bounds.1))
+                .saturating_mul(raster_options.cell_height),
+        )
+        .min(rgba.height);
+    let media_slot_has_placeholder = (image_y_start..image_y_end)
+        .any(|y| (image_x_start..image_x_end).any(|x| pixel(x, y) == &[96, 96, 96, 255]));
+    assert!(
+        media_slot_has_placeholder,
+        "aspect-ratio media slot should paint visible placeholder pixels in the scrolled viewport"
+    );
 }
 
 #[test]
