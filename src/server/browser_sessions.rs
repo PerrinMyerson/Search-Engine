@@ -10669,7 +10669,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <header class="browser-topbar" data-browser-first-viewport-chrome="compact" data-browser-debug-default="secondary" data-browser-chrome-viewport-priority="content-first" data-browser-chrome-debug-density="collapsed-secondary">
 <div class="browser-chrome-row" data-browser-chrome data-browser-chrome-density="compact" data-browser-chrome-primary-controls="navigation address location actions status" data-browser-chrome-secondary-controls="tools diagnostics manual-input" data-browser-chrome-toolbar-order="navigation address location status" data-browser-chrome-single-toolbar="true" data-browser-chrome-debug-placement="secondary-tools" data-browser-chrome-visible-control-budget="navigation address actions status" data-browser-chrome-secondary-flow="tools-tray">
 <nav class="toolbar browser-primary-nav" data-browser-auto-visual-control data-browser-primary-nav-session="{id}" data-browser-primary-nav-from="{back_href}" data-browser-primary-nav-source="{source_attr}" data-browser-primary-nav-viewport-x="{viewport_x}" data-browser-primary-nav-viewport-y="{viewport_y}" data-browser-primary-nav-width="{width}" data-browser-primary-nav-height="{height}" data-browser-primary-nav-max-bytes="{max_bytes}" data-browser-primary-nav-history-position="{primary_nav_history_position}" data-browser-primary-nav-history-length="{history_len}" data-browser-primary-nav-can-back="{can_back}" data-browser-primary-nav-can-forward="{can_forward}" data-browser-primary-nav-order="search back forward actions" data-browser-primary-nav-pending-state="idle" data-browser-primary-nav-state-contract="history session source viewport dimensions max-bytes" data-browser-primary-nav-preserves="session from source viewport dimensions max-bytes"><a href="{back_href}">Search</a>{back_control}{forward_control}{chrome_actions}</nav>
-<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-form-action="address" data-browser-form-pending-state="idle" data-browser-form-state-preserves="session from source viewport dimensions max-bytes" data-browser-address-focus-scope="address" data-browser-address-shortcut-owner="text-entry" data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
+<form class="toolbar address-bar" action="/browser" method="get" data-browser-auto-visual-control data-browser-address-form data-browser-form-action="address" data-browser-form-pending-state="idle" data-browser-form-state-preserves="session from source viewport dimensions max-bytes" data-browser-address-route-state="idle" data-browser-address-route-contract="go new-tab background session source viewport dimensions max-bytes" data-browser-address-route-preserves="session from source viewport dimensions max-bytes" data-browser-address-focus-scope="address" data-browser-address-shortcut-owner="text-entry" data-browser-address-session="{id}" data-browser-address-from="{back_href}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}">
 <input type="hidden" name="id" value="{id}">
 <input type="hidden" name="from" value="{back_href}">
 <input type="hidden" name="width" value="{width}">
@@ -10678,8 +10678,8 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input type="hidden" name="viewport_y" value="{viewport_y}">
 <input type="hidden" name="max_bytes" value="{max_bytes}">
 {address_source_input}
-<input data-browser-address type="text" inputmode="url" data-browser-address-focus-owner="address" data-browser-address-keyboard-owner="text-entry" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
-<button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-form-submit="open" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-form-submit="open-new-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-form-submit="open-background-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
+<input data-browser-address type="text" inputmode="url" data-browser-address-focus-owner="address" data-browser-address-keyboard-owner="text-entry" data-browser-address-route-state="idle" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
+<button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-form-submit="open" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-form-submit="open-new-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-form-submit="open-background-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
 </form>
 <div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}">Tools</a></div>
 </div>
@@ -11246,6 +11246,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const viewportStatus = () => document.querySelector("[data-browser-viewport-status]");
   const chromeStatus = () => document.querySelector("[data-browser-chrome-status]");
+  const stampChromeScrollRouteState = (element, state, targetX = numberData("viewportX"), targetY = numberData("viewportY")) => {
+    if (!element) {
+      return;
+    }
+    element.dataset.browserChromeScrollRouteState = state;
+    element.dataset.browserChromeScrollRouteSource = shell.dataset.pageSource || "";
+    element.dataset.browserChromeScrollRouteMaxBytes = shell.dataset.maxBytes || "";
+    element.dataset.browserChromeScrollRouteViewportX = String(numberData("viewportX"));
+    element.dataset.browserChromeScrollRouteViewportY = String(numberData("viewportY"));
+    element.dataset.browserChromeScrollRouteTargetX = String(targetX);
+    element.dataset.browserChromeScrollRouteTargetY = String(targetY);
+  };
   const setPendingViewportTarget = (target) => {
     if (!target) {
       return;
@@ -11263,6 +11275,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         control.dataset.browserChromeScrollInputSource = shell.dataset.scrollInputSource || "manual";
         control.dataset.browserChromeScrollEdgeState = "idle";
         control.dataset.browserChromeScrollEdge = "none";
+        stampChromeScrollRouteState(control, "pending", target.x, target.y);
       }
     }
     const status = viewportStatus();
@@ -11328,6 +11341,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         control.dataset.browserChromeScrollInputSource = "idle";
         control.dataset.browserChromeScrollEdgeState = "idle";
         control.dataset.browserChromeScrollEdge = "none";
+        stampChromeScrollRouteState(control, "idle");
       }
       control.removeAttribute("aria-busy");
     }
@@ -11361,6 +11375,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromeScrollTargetY = String(numberData("viewportY"));
       topStatus.dataset.browserChromeScrollEdgeState = "idle";
       topStatus.dataset.browserChromeScrollEdge = "none";
+      stampChromeScrollRouteState(topStatus, "idle");
       topStatus.dataset.browserChromeFormPendingState = "idle";
       topStatus.dataset.browserChromeFormPendingAction = "none";
       topStatus.removeAttribute("data-browser-chrome-form-pending-viewport-x");
@@ -11575,6 +11590,20 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       element.dataset.browserPrimaryNavViewportY = currentY;
       element.dataset.browserChromeStatusViewportX = currentX;
       element.dataset.browserChromeStatusViewportY = currentY;
+      if (element.hasAttribute("data-browser-address-form") || element.hasAttribute("data-browser-address")) {
+        element.dataset.browserAddressRouteState = "viewport-synced";
+        element.dataset.browserAddressRouteViewportX = currentX;
+        element.dataset.browserAddressRouteViewportY = currentY;
+        element.dataset.browserAddressRouteSource = shell.dataset.pageSource || "";
+        element.dataset.browserAddressRouteMaxBytes = shell.dataset.maxBytes || "";
+      }
+      if (element.hasAttribute("data-browser-address-submit")) {
+        element.dataset.browserAddressSubmitRouteState = "viewport-synced";
+        element.dataset.browserAddressSubmitViewportX = currentX;
+        element.dataset.browserAddressSubmitViewportY = currentY;
+        element.dataset.browserAddressSubmitSource = shell.dataset.pageSource || "";
+        element.dataset.browserAddressSubmitMaxBytes = shell.dataset.maxBytes || "";
+      }
     }
     for (const input of document.querySelectorAll("input[name=\"viewport_x\"]")) {
       input.value = currentX;
@@ -12033,6 +12062,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         topStatus.dataset.browserChromeScrollCurrentY = String(y);
         topStatus.dataset.browserChromeScrollTargetX = String(x);
         topStatus.dataset.browserChromeScrollTargetY = String(y);
+        stampChromeScrollRouteState(topStatus, "edge", x, y);
       }
       if (dy < 0 && y <= 0) {
         shell.dataset.edgeScrollReason = "top";
@@ -12145,6 +12175,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       submittingTopStatus.dataset.browserChromeScrollTargetY = String(scroll.y);
       submittingTopStatus.dataset.browserChromeScrollCurrentX = String(numberData("viewportX"));
       submittingTopStatus.dataset.browserChromeScrollCurrentY = String(numberData("viewportY"));
+      stampChromeScrollRouteState(submittingTopStatus, "submitting", scroll.x, scroll.y);
     }
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
@@ -12167,6 +12198,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromeScrollActionState = "queued";
       topStatus.dataset.browserChromeScrollPreservedX = String(numberData("viewportX"));
       topStatus.dataset.browserChromeScrollPreservedY = String(numberData("viewportY"));
+      stampChromeScrollRouteState(topStatus, "queued");
     }
     clearDeferredClickForScroll();
     pendingScrollDx += dx;
@@ -14550,9 +14582,11 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
     let click = browser_session_click_feedback_text(payload).is_some();
     let form = browser_session_form_feedback_text(payload).is_some();
     let generic_action = browser_session_chrome_feedback_text(payload).is_some();
+    let page_action_urls = browser_session_resource_action_urls(payload);
+    let images_available = page_action_urls.load_images.is_some();
     let (last_action, last_outcome) = browser_session_chrome_action_outcome(payload);
     format!(
-        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-form-pending-state="idle" data-browser-chrome-form-pending-action="none" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}" data-browser-chrome-feedback-primary-lane="{primary_lane}" data-browser-chrome-feedback-count="{feedback_count}" data-browser-chrome-error-state="{error_state}" data-browser-chrome-feedback-collapse="single-chip" data-browser-chrome-status-visible-budget="action-outcome tools-link" data-browser-chrome-status-debug-flow="secondary-tools" data-browser-chrome-status-state-contract="session from source viewport dimensions max-bytes" data-browser-chrome-status-preserves="session from source viewport dimensions max-bytes" data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes" data-browser-chrome-click-route-state="ready" data-browser-chrome-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session""#,
+        r#" data-browser-chrome-status-layout="viewport outcome tools" data-browser-chrome-status-density="compact" data-browser-chrome-status-feedback-lanes="navigation scroll click form action" data-browser-chrome-status-control-order="navigation address actions feedback tools" data-browser-chrome-status-primary-feedback="action-outcome" data-browser-chrome-pending-state="idle" data-browser-chrome-pending-action="none" data-browser-chrome-click-pending-state="idle" data-browser-chrome-form-pending-state="idle" data-browser-chrome-form-pending-action="none" data-browser-chrome-page-action-summary="current reload images" data-browser-chrome-page-action-route-contract="session from source viewport dimensions max-bytes" data-browser-chrome-page-action-route-state="ready" data-browser-chrome-current-available="true" data-browser-chrome-reload-available="true" data-browser-chrome-images-available="{images_available}" data-browser-chrome-outcome-display="compact" data-browser-chrome-status-session="{id}" data-browser-chrome-status-from="{from}" data-browser-chrome-status-source="{source}" data-browser-chrome-status-viewport-x="{viewport_x}" data-browser-chrome-status-viewport-y="{viewport_y}" data-browser-chrome-status-width="{width}" data-browser-chrome-status-height="{height}" data-browser-chrome-status-max-bytes="{max_bytes}" data-browser-chrome-status-has-navigation="{navigation}" data-browser-chrome-status-has-scroll="{scroll}" data-browser-chrome-status-has-click="{click}" data-browser-chrome-status-has-form="{form}" data-browser-chrome-status-has-generic-action="{generic_action}" data-browser-chrome-last-action="{last_action}" data-browser-chrome-last-outcome="{last_outcome}" data-browser-chrome-feedback-primary-lane="{primary_lane}" data-browser-chrome-feedback-count="{feedback_count}" data-browser-chrome-error-state="{error_state}" data-browser-chrome-feedback-collapse="single-chip" data-browser-chrome-status-visible-budget="action-outcome tools-link" data-browser-chrome-status-debug-flow="secondary-tools" data-browser-chrome-status-state-contract="session from source viewport dimensions max-bytes" data-browser-chrome-status-preserves="session from source viewport dimensions max-bytes" data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes" data-browser-chrome-click-route-state="ready" data-browser-chrome-scroll-route-state="idle" data-browser-chrome-scroll-route-preserves="session from source viewport dimensions max-bytes" data-browser-chrome-scroll-route-feedback="compact" data-browser-chrome-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session""#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         from = html_escape::encode_double_quoted_attribute(back_href),
         source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -14566,6 +14600,7 @@ fn browser_session_chrome_status_attrs(payload: &BrowserSessionPayload, back_hre
         click = click,
         form = form,
         generic_action = generic_action,
+        images_available = images_available,
         last_action = last_action,
         last_outcome = last_outcome,
         primary_lane = browser_session_chrome_primary_feedback_lane(payload),
@@ -15433,7 +15468,7 @@ fn browser_session_click_feedback_state_attrs(feedback: &str) -> String {
     };
     let (outcome, target) = browser_session_click_feedback_outcome_target(feedback);
     let mut attrs = format!(
-        r#" data-browser-chrome-click-action="{action}" data-browser-chrome-click-outcome="{outcome}" data-browser-chrome-click-target="{target}""#
+        r#" data-browser-chrome-click-action="{action}" data-browser-chrome-click-outcome="{outcome}" data-browser-chrome-click-target="{target}" data-browser-chrome-click-route-state="preserved" data-browser-chrome-click-route-contract="session from source viewport dimensions max-bytes" data-browser-chrome-click-route-feedback="compact""#
     );
     if let Some((x, y, page_x, page_y)) = browser_session_click_feedback_points(feedback) {
         let _ = write!(
@@ -17465,8 +17500,9 @@ fn browser_chrome_nav_action_state_attrs(
     action: &str,
     enabled: bool,
 ) -> String {
+    let route_state = if enabled { "available" } else { "disabled" };
     format!(
-        r#" data-browser-primary-nav-{action}-available="{enabled}" data-browser-primary-nav-{action}-href="{href}" data-browser-primary-nav-{action}-session="{id}" data-browser-primary-nav-{action}-from="{back_href}" data-browser-primary-nav-{action}-source="{source}" data-browser-primary-nav-{action}-viewport-x="{viewport_x}" data-browser-primary-nav-{action}-viewport-y="{viewport_y}" data-browser-primary-nav-{action}-width="{width}" data-browser-primary-nav-{action}-height="{height}" data-browser-primary-nav-{action}-max-bytes="{max_bytes}" data-browser-primary-nav-{action}-pending-state="idle" data-browser-primary-nav-{action}-role="history" data-browser-primary-nav-{action}-preserves="session from source viewport dimensions max-bytes""#,
+        r#" data-browser-primary-nav-{action}-available="{enabled}" data-browser-primary-nav-{action}-href="{href}" data-browser-primary-nav-{action}-session="{id}" data-browser-primary-nav-{action}-from="{back_href}" data-browser-primary-nav-{action}-source="{source}" data-browser-primary-nav-{action}-viewport-x="{viewport_x}" data-browser-primary-nav-{action}-viewport-y="{viewport_y}" data-browser-primary-nav-{action}-width="{width}" data-browser-primary-nav-{action}-height="{height}" data-browser-primary-nav-{action}-max-bytes="{max_bytes}" data-browser-primary-nav-{action}-pending-state="idle" data-browser-primary-nav-{action}-route-state="{route_state}" data-browser-primary-nav-{action}-route-contract="history session source viewport dimensions max-bytes" data-browser-primary-nav-{action}-role="history" data-browser-primary-nav-{action}-preserves="session from source viewport dimensions max-bytes""#,
         action = html_escape::encode_double_quoted_attribute(action),
         enabled = enabled,
         href = html_escape::encode_double_quoted_attribute(href),
@@ -17475,6 +17511,7 @@ fn browser_chrome_nav_action_state_attrs(
         source = html_escape::encode_double_quoted_attribute(&payload.source),
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
+        route_state = html_escape::encode_double_quoted_attribute(route_state),
         width = payload.width,
         height = payload.height,
         max_bytes = payload.max_bytes,
