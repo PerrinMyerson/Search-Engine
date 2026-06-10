@@ -10057,7 +10057,7 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-action-state="idle" data-browser-chrome-scroll-input-source="idle" data-browser-chrome-scroll-current-x="{x}" data-browser-chrome-scroll-current-y="{y}" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-scroll-edge-state="idle" data-browser-chrome-scroll-edge="none" data-browser-chrome-scroll-feedback-mode="compact" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -10071,6 +10071,8 @@ fn render_browser_session_page_with_diagnostics(
         can_scroll_up = can_scroll_up,
         can_scroll_down = can_scroll_down,
         top = browser_chrome_scroll_action(
+            payload,
+            back_href,
             can_scroll_up,
             "Top",
             &chrome_top_href,
@@ -10078,6 +10080,8 @@ fn render_browser_session_page_with_diagnostics(
             "Already at top"
         ),
         page_up = browser_chrome_scroll_action(
+            payload,
+            back_href,
             can_scroll_up,
             "Page up",
             &chrome_page_up_href,
@@ -10085,6 +10089,8 @@ fn render_browser_session_page_with_diagnostics(
             "Already at top"
         ),
         page_down = browser_chrome_scroll_action(
+            payload,
+            back_href,
             can_scroll_down,
             "Page down",
             &chrome_page_down_href,
@@ -10092,6 +10098,8 @@ fn render_browser_session_page_with_diagnostics(
             "Already at bottom"
         ),
         bottom = browser_chrome_scroll_action(
+            payload,
+            back_href,
             can_scroll_down,
             "Bottom",
             &chrome_bottom_href,
@@ -11190,6 +11198,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         control.dataset.browserChromeScrollPendingState = "pending";
         control.dataset.browserChromeScrollTargetX = String(target.x);
         control.dataset.browserChromeScrollTargetY = String(target.y);
+        control.dataset.browserChromeScrollActionState = "pending";
+        control.dataset.browserChromeScrollInputSource = shell.dataset.scrollInputSource || "manual";
+        control.dataset.browserChromeScrollEdgeState = "idle";
+        control.dataset.browserChromeScrollEdge = "none";
       }
     }
     const status = viewportStatus();
@@ -11251,6 +11263,10 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         control.dataset.browserChromeScrollPendingState = "idle";
         control.dataset.browserChromeScrollTargetX = String(numberData("viewportX"));
         control.dataset.browserChromeScrollTargetY = String(numberData("viewportY"));
+        control.dataset.browserChromeScrollActionState = "idle";
+        control.dataset.browserChromeScrollInputSource = "idle";
+        control.dataset.browserChromeScrollEdgeState = "idle";
+        control.dataset.browserChromeScrollEdge = "none";
       }
       control.removeAttribute("aria-busy");
     }
@@ -11275,6 +11291,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromePendingState = "idle";
       topStatus.dataset.browserChromePendingAction = "none";
       topStatus.dataset.browserChromeClickPendingState = "idle";
+      topStatus.dataset.browserChromeScrollActionState = "idle";
+      topStatus.dataset.browserChromeScrollPendingState = "idle";
+      topStatus.dataset.browserChromeScrollInputSource = "idle";
+      topStatus.dataset.browserChromeScrollCurrentX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromeScrollCurrentY = String(numberData("viewportY"));
+      topStatus.dataset.browserChromeScrollTargetX = String(numberData("viewportX"));
+      topStatus.dataset.browserChromeScrollTargetY = String(numberData("viewportY"));
+      topStatus.dataset.browserChromeScrollEdgeState = "idle";
+      topStatus.dataset.browserChromeScrollEdge = "none";
       topStatus.dataset.browserChromeFormPendingState = "idle";
       topStatus.dataset.browserChromeFormPendingAction = "none";
       topStatus.removeAttribute("data-browser-chrome-form-pending-viewport-x");
@@ -11461,6 +11486,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       link.dataset.browserFormSubmitPreservedViewportY = currentY;
       link.dataset.browserFormSubmitPreservedSource = shell.dataset.pageSource || "";
       link.dataset.browserFormSubmitPreservedMaxBytes = shell.dataset.maxBytes || "";
+    }
+    for (const link of document.querySelectorAll("a[data-browser-chrome-scroll-action]")) {
+      if (!link.href) {
+        continue;
+      }
+      const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
+      link.href = url.toString();
+      link.dataset.browserChromeScrollHref = url.toString();
+      link.dataset.browserChromeScrollPreservedViewportX = currentX;
+      link.dataset.browserChromeScrollPreservedViewportY = currentY;
+      link.dataset.browserChromeScrollPreservedSource = shell.dataset.pageSource || "";
+      link.dataset.browserChromeScrollPreservedMaxBytes = shell.dataset.maxBytes || "";
     }
     for (const element of document.querySelectorAll("[data-browser-address-form], [data-browser-address], [data-browser-address-submit], [data-browser-primary-nav], [data-browser-chrome-status]")) {
       element.dataset.browserAddressViewportX = currentX;
@@ -11914,6 +11951,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         topStatus.dataset.browserChromeScrollEdgeState = "blocked";
         topStatus.dataset.browserChromeScrollEdgeX = String(x);
         topStatus.dataset.browserChromeScrollEdgeY = String(y);
+        topStatus.dataset.browserChromeScrollActionState = "edge";
+        topStatus.dataset.browserChromeScrollPendingState = "idle";
+        topStatus.dataset.browserChromeScrollCurrentX = String(x);
+        topStatus.dataset.browserChromeScrollCurrentY = String(y);
+        topStatus.dataset.browserChromeScrollTargetX = String(x);
+        topStatus.dataset.browserChromeScrollTargetY = String(y);
       }
       if (dy < 0 && y <= 0) {
         shell.dataset.edgeScrollReason = "top";
@@ -12018,6 +12061,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.queuedScrollDx = String(scroll.dx);
     shell.dataset.queuedScrollDy = String(scroll.dy);
     setPendingViewportTarget(scroll);
+    const submittingTopStatus = chromeStatus();
+    if (submittingTopStatus) {
+      submittingTopStatus.dataset.browserChromeScrollActionState = "submitting";
+      submittingTopStatus.dataset.browserChromeScrollPendingState = "pending";
+      submittingTopStatus.dataset.browserChromeScrollTargetX = String(scroll.x);
+      submittingTopStatus.dataset.browserChromeScrollTargetY = String(scroll.y);
+      submittingTopStatus.dataset.browserChromeScrollCurrentX = String(numberData("viewportX"));
+      submittingTopStatus.dataset.browserChromeScrollCurrentY = String(numberData("viewportY"));
+    }
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
@@ -12242,7 +12294,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   });
   document.addEventListener("click", (event) => {
     const eventTarget = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
-    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-viewport-controls] a[href]") : null;
+    const target = eventTarget && typeof eventTarget.closest === "function" ? eventTarget.closest("[data-browser-viewport-controls] a[href], [data-browser-chrome-scroll-actions] a[href]") : null;
     if (!target) {
       return;
     }
@@ -17254,17 +17306,21 @@ fn browser_chrome_nav_action_state_attrs(
 }
 
 fn browser_chrome_scroll_action(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
     enabled: bool,
     label: &str,
     href: &str,
     action: &str,
     disabled_reason: &str,
 ) -> String {
+    let state_attrs = browser_chrome_scroll_action_state_attrs(payload, back_href, href, action);
     if enabled {
         return format!(
-            r#"<a href="{href}" data-browser-chrome-scroll-action="{action}">{label}</a>"#,
+            r#"<a href="{href}" data-browser-chrome-scroll-action="{action}"{state_attrs}>{label}</a>"#,
             href = html_escape::encode_double_quoted_attribute(href),
             action = html_escape::encode_double_quoted_attribute(action),
+            state_attrs = state_attrs,
             label = html_escape::encode_text(label),
         );
     }
@@ -17273,6 +17329,27 @@ fn browser_chrome_scroll_action(
         reason = html_escape::encode_double_quoted_attribute(disabled_reason),
         action = html_escape::encode_double_quoted_attribute(action),
         label = html_escape::encode_text(label),
+    )
+}
+
+fn browser_chrome_scroll_action_state_attrs(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+    href: &str,
+    action: &str,
+) -> String {
+    format!(
+        r#" data-browser-chrome-scroll-link-action="{action}" data-browser-chrome-scroll-link-href="{href}" data-browser-chrome-scroll-link-session="{id}" data-browser-chrome-scroll-link-from="{back_href}" data-browser-chrome-scroll-link-source="{source}" data-browser-chrome-scroll-link-viewport-x="{viewport_x}" data-browser-chrome-scroll-link-viewport-y="{viewport_y}" data-browser-chrome-scroll-link-width="{width}" data-browser-chrome-scroll-link-height="{height}" data-browser-chrome-scroll-link-max-bytes="{max_bytes}" data-browser-chrome-scroll-link-pending-state="idle" data-browser-chrome-scroll-link-preserves="session from source viewport dimensions max-bytes""#,
+        action = html_escape::encode_double_quoted_attribute(action),
+        href = html_escape::encode_double_quoted_attribute(href),
+        id = html_escape::encode_double_quoted_attribute(&payload.id),
+        back_href = html_escape::encode_double_quoted_attribute(back_href),
+        source = html_escape::encode_double_quoted_attribute(&payload.source),
+        viewport_x = payload.viewport_x,
+        viewport_y = payload.viewport_y,
+        width = payload.width,
+        height = payload.height,
+        max_bytes = payload.max_bytes,
     )
 }
 

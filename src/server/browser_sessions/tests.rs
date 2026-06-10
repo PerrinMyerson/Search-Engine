@@ -2859,6 +2859,13 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains("data-browser-chrome-scroll-coalescing=\"queued-target\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-flush-delay-ms=\"18\""));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-pending-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-action-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-input-source="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-current-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-current-y="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-edge-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-edge="none""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-feedback-mode="compact""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-x="0""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-target-y="0""#));
     assert!(topbar_html.contains(&format!(
@@ -2982,13 +2989,47 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(">Page down</a>"));
     let page_down_href = browser_session_action_href(&payload.id, "page-down", &[], &payload);
     let bottom_href = browser_session_action_href(&payload.id, "bottom", &[], &payload);
+    let encoded_page_down_href = html_escape::encode_double_quoted_attribute(&page_down_href);
+    let encoded_bottom_href = html_escape::encode_double_quoted_attribute(&bottom_href);
+    let encoded_scroll_source = html_escape::encode_double_quoted_attribute(&payload.source);
     assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-scroll-action="page-down">Page down</a>"#,
-        html_escape::encode_double_quoted_attribute(&page_down_href)
+        r#"href="{}" data-browser-chrome-scroll-action="page-down""#,
+        encoded_page_down_href
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-action="page-down""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-href="{}""#,
+        encoded_page_down_href
     )));
     assert!(topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-scroll-action="bottom">Bottom</a>"#,
-        html_escape::encode_double_quoted_attribute(&bottom_href)
+        r#"data-browser-chrome-scroll-link-session="{}""#,
+        payload.id
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-from="/search?q=wide""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-source="{}""#,
+        encoded_scroll_source
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-viewport-x="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-viewport-y="0""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-width="40""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-height="16""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-pending-state="idle""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-chrome-scroll-link-preserves="session from source viewport dimensions max-bytes""#
+    ));
+    assert!(topbar_html.contains(&format!(
+        r#"href="{}" data-browser-chrome-scroll-action="bottom""#,
+        encoded_bottom_href
+    )));
+    assert!(topbar_html.contains(r#"data-browser-chrome-scroll-link-action="bottom""#));
+    assert!(topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-href="{}""#,
+        encoded_bottom_href
     )));
     assert!(page_down_href.contains(&format!("id={}", payload.id)));
     assert!(page_down_href.contains("action=page-down"));
@@ -3081,8 +3122,10 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(!html.contains(
         r#"<span class="viewport-state-chip report" data-browser-chrome-action-feedback"#
     ));
+    assert!(html.contains(r#"data-browser-chrome-scroll-feedback"#));
+    assert!(html.contains(r#"data-browser-chrome-scroll-outcome="success""#));
     assert!(html.contains(
-        r#"<span class="viewport-state-chip report" data-browser-chrome-scroll-feedback title="Moved visual viewport to x 8, y 4.">Moved visual viewport to x 8, y 4.</span>"#
+        r#"title="Moved visual viewport to x 8, y 4.">Moved visual viewport to x 8, y 4.</span>"#
     ));
     assert!(html.contains(
         r#"<span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">Moved visual viewport to x 8, y 4.</span>"#
@@ -3760,6 +3803,30 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"status.dataset.browserViewportInputSource = inputSource"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromeScrollInputSource = inputSource"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromeScrollActionState = "queued""#));
+    assert!(
+        html.contains(r##"document.querySelectorAll("a[data-browser-chrome-scroll-action]")"##)
+    );
+    assert!(html.contains(r#"link.dataset.browserChromeScrollHref = url.toString()"#));
+    assert!(html.contains(r#"link.dataset.browserChromeScrollPreservedViewportX = currentX"#));
+    assert!(html.contains(
+        r##"link.dataset.browserChromeScrollPreservedMaxBytes = shell.dataset.maxBytes || """##
+    ));
+    assert!(html.contains(
+        r#"[data-browser-viewport-controls] a[href], [data-browser-chrome-scroll-actions] a[href]"#
+    ));
+    assert!(html.contains(r##"control.dataset.browserChromeScrollActionState = "pending""##));
+    assert!(html.contains(r##"control.dataset.browserChromeScrollInputSource = shell.dataset.scrollInputSource || "manual""##));
+    assert!(html.contains(r##"control.dataset.browserChromeScrollEdgeState = "idle""##));
+    assert!(html.contains(r##"topStatus.dataset.browserChromeScrollActionState = "edge""##));
+    assert!(html.contains(r##"topStatus.dataset.browserChromeScrollPendingState = "idle""##));
+    assert!(html.contains(
+        r##"submittingTopStatus.dataset.browserChromeScrollActionState = "submitting""##
+    ));
+    assert!(
+        html.contains(
+            r#"submittingTopStatus.dataset.browserChromeScrollTargetX = String(scroll.x)"#
+        )
+    );
     assert!(html.contains(
         r#"topStatus.dataset.browserChromeScrollPreservedX = String(numberData("viewportX"))"#
     ));
@@ -4179,13 +4246,35 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     )));
     assert!(bottom_topbar_html.contains(r#"data-browser-chrome-can-scroll-up="true""#));
     assert!(bottom_topbar_html.contains(r#"data-browser-chrome-can-scroll-down="false""#));
+    let encoded_bottom_top_href = html_escape::encode_double_quoted_attribute(&bottom_top_href);
+    let encoded_bottom_page_up_href =
+        html_escape::encode_double_quoted_attribute(&bottom_page_up_href);
     assert!(bottom_topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-scroll-action="top">Top</a>"#,
-        html_escape::encode_double_quoted_attribute(&bottom_top_href)
+        r#"href="{}" data-browser-chrome-scroll-action="top""#,
+        encoded_bottom_top_href
+    )));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-scroll-link-action="top""#));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-href="{}""#,
+        encoded_bottom_top_href
     )));
     assert!(bottom_topbar_html.contains(&format!(
-        r#"href="{}" data-browser-chrome-scroll-action="page-up">Page up</a>"#,
-        html_escape::encode_double_quoted_attribute(&bottom_page_up_href)
+        r#"href="{}" data-browser-chrome-scroll-action="page-up""#,
+        encoded_bottom_page_up_href
+    )));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-scroll-link-action="page-up""#));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-href="{}""#,
+        encoded_bottom_page_up_href
+    )));
+    assert!(bottom_topbar_html.contains(r#"data-browser-chrome-scroll-link-viewport-x="12""#));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-viewport-y="{}""#,
+        payload.max_scroll_y
+    )));
+    assert!(bottom_topbar_html.contains(&format!(
+        r#"data-browser-chrome-scroll-link-max-bytes="{}""#,
+        payload.max_bytes
     )));
     assert!(html.contains(r#"data-browser-scroll-disabled="Already at bottom""#));
     assert!(html.contains(r#"data-scroll-y-state="at bottom""#));
