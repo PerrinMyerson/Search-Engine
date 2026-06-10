@@ -4731,7 +4731,9 @@ fn preferred_background_image_attr_source(element: &ElementData) -> Option<Strin
 }
 
 fn background_srcset_target_width(element: &ElementData) -> Option<usize> {
-    background_image_sizes_attr(element).and_then(|sizes| parse_sizes_attribute(sizes, 0))
+    background_image_sizes_attr(element)
+        .and_then(|sizes| parse_sizes_attribute(sizes, 0))
+        .or_else(|| image_width_attr_target(element))
 }
 
 pub(super) fn background_image_sizes_attr(element: &ElementData) -> Option<&str> {

@@ -2165,11 +2165,8 @@ fn push_selected_background_alias_resource(
 ) {
     for attr_name in BACKGROUND_IMAGE_SRCSET_ALIAS_ATTRS {
         if let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str)
-            && let Some(url) = selected_supported_srcset_candidate(
-                srcset,
-                background_image_sizes_attr(element),
-                viewport_width_css_px,
-            )
+            && let Some(url) =
+                selected_background_alias_srcset_candidate(element, srcset, viewport_width_css_px)
         {
             push_resource(
                 resources,
@@ -2221,6 +2218,26 @@ fn push_selected_background_alias_resource(
             url,
         );
     }
+}
+
+fn selected_background_alias_srcset_candidate(
+    element: &ElementData,
+    srcset: &str,
+    viewport_width_css_px: usize,
+) -> Option<String> {
+    let width_size;
+    let sizes = match background_image_sizes_attr(element) {
+        Some(sizes) if source_sizes_requires_viewport(sizes) => {
+            let width = element
+                .attrs
+                .get("width")
+                .and_then(|width| parse_image_resource_dimension_attr(width));
+            width_size = width.map(|width| format!("{width}px"));
+            width_size.as_deref().or(Some(sizes))
+        }
+        sizes => sizes,
+    };
+    selected_supported_srcset_candidate(srcset, sizes, viewport_width_css_px)
 }
 
 fn selected_background_image_url_from_attr_value(value: &str) -> Option<&str> {
