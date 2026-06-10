@@ -1013,17 +1013,26 @@ fn temp_cleanup_generated_output_name(name: &str) -> bool {
 
 fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut entries = Vec::new();
+    let mut rust_slot_lock_present = false;
+    let mut rust_slot_lock_bytes = 0u64;
     for entry in
         std::fs::read_dir(root).with_context(|| format!("read temp root {}", root.display()))?
     {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
+        if name == "search-engine-rust-slot.lock" {
+            rust_slot_lock_present = true;
+            rust_slot_lock_bytes = std::fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            continue;
+        }
+        if !path.is_dir() {
+            continue;
+        }
         if !name.starts_with("search-engine-") {
             continue;
         }
@@ -1078,6 +1087,8 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     let mut dirty_worktree_count = 0usize;
     let mut unknown_review_count = 0usize;
     let mut active_worktree_count = 0usize;
+    let mut source_worktree_count = 0usize;
+    let mut clean_worktree_review_count = 0usize;
     let mut generated_review_count = 0usize;
     let mut generated_review_bytes = 0u64;
     let mut generated_oldest_age_secs = 0u64;
@@ -1111,6 +1122,12 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         }
         if classification.status == "active" {
             active_worktree_count += 1;
+        }
+        if classification.kind == "source-worktree" {
+            source_worktree_count += 1;
+        }
+        if classification.status == "clean-review-required" {
+            clean_worktree_review_count += 1;
         }
         if classification.kind == "generated-output" {
             generated_review_count += 1;
@@ -1218,6 +1235,21 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         )
     ));
     lines.push(format!(
+        "storage_worktree_cleanup_review_matrix: report_only=true deletes=false source_worktrees={source_worktree_count} active_worktrees={active_worktree_count} dirty_worktrees={dirty_worktree_count} clean_review_worktrees={clean_worktree_review_count} unknown_review_count={unknown_review_count} safe_target_candidates={target_candidate_count} generated_review_count={generated_review_count} preserve=.brutal-index,running-server,active-worktrees,dirty-worktrees next_action={}",
+        storage_worktree_cleanup_review_next_action(
+            active_worktree_count,
+            dirty_worktree_count,
+            clean_worktree_review_count,
+            unknown_review_count,
+            target_candidate_count,
+            generated_review_count,
+        )
+    ));
+    lines.push(format!(
+        "storage_cleanup_coordination_boundary: report_only=true deletes=false rust_slot_lock_present={rust_slot_lock_present} rust_slot_lock_bytes={rust_slot_lock_bytes} preserve=rust-slot-lock,running-server,.brutal-index next_action={}",
+        storage_cleanup_coordination_boundary_next_action(rust_slot_lock_present)
+    ));
+    lines.push(format!(
         "storage_cleanup_inventory_detail: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} generated_candidates={generated_review_count} generated_bytes={generated_review_bytes} largest_generated_path={generated_largest_path} largest_generated_bytes={generated_largest_bytes} stale_generated_oldest_age_secs={generated_oldest_age_secs} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} safe_cleanup_scope=validation-targets-only review_scope=generated-output,dirty-worktrees,unknown-dirs preserve=.brutal-index,running-server,active-worktrees,indexed-documents next_action={}",
         storage_cleanup_inventory_detail_next_action(
             target_candidate_count,
@@ -1232,6 +1264,37 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
             .to_owned(),
     );
     Ok(lines)
+}
+
+fn storage_cleanup_coordination_boundary_next_action(rust_slot_lock_present: bool) -> &'static str {
+    if rust_slot_lock_present {
+        "wait-for-validation-slot"
+    } else {
+        "cleanup-reporting-safe"
+    }
+}
+
+fn storage_worktree_cleanup_review_next_action(
+    active_worktree_count: usize,
+    dirty_worktree_count: usize,
+    clean_worktree_review_count: usize,
+    unknown_review_count: usize,
+    target_candidate_count: usize,
+    generated_review_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if dirty_worktree_count > 0 || unknown_review_count > 0 {
+        "review-worktree-state-before-cleanup"
+    } else if clean_worktree_review_count > 0 {
+        "review-clean-worktree-before-removal"
+    } else if generated_review_count > 0 {
+        "review-generated-output-before-worktree-cleanup"
+    } else if target_candidate_count > 0 {
+        "remove-validation-targets-only"
+    } else {
+        "cleanup-low"
+    }
 }
 
 fn storage_cleanup_inventory_detail_next_action(
@@ -5071,6 +5134,12 @@ mod tests {
         let unknown = dir.path().join("search-engine-leftover-resource-cache");
         std::fs::create_dir_all(&unknown).unwrap();
         std::fs::write(unknown.join("cache.bin"), b"unknown").unwrap();
+        let stale_worktree = dir.path().join("search-engine-stale-source-worktree");
+        std::fs::create_dir_all(stale_worktree.join(".git")).unwrap();
+        std::fs::write(stale_worktree.join("note.txt"), b"review").unwrap();
+        let rust_slot_lock = dir.path().join("search-engine-rust-slot.lock");
+        std::fs::write(&rust_slot_lock, b"lock").unwrap();
+        let rust_slot_lock_before = std::fs::read(&rust_slot_lock).unwrap();
 
         let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
 
@@ -5088,8 +5157,49 @@ mod tests {
                 && line.contains(" bytes=7 ")
                 && line.contains(" category=generated-output kind=generated-output status=review-required cleanup_safe=false next_action=review-generated-output")
         }));
-        assert!(lines.contains(&"storage_temp_cleanup_age_pressure: report_only=true old_target_count=0 dirty_worktree_count=0 unknown_review_count=0 total_bytes=13 next_action=cleanup-low old_target_threshold_secs=86400".to_owned()));
-        assert!(lines.contains(&"storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count=0 generated_review_count=1 generated_review_bytes=7 old_target_count=0 total_bytes=13 next_action=review-generated-output".to_owned()));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_age_pressure: report_only=true")
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" dirty_worktree_count=0 ")
+                && line.contains(" unknown_review_count=1 ")
+                && line.contains(" next_action=review-unknown-temp-dirs ")
+                && line.contains(" old_target_threshold_secs=86400")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_generated_pressure: report_only=true")
+                && line.contains(" active_worktree_count=0 ")
+                && line.contains(" generated_review_count=1 ")
+                && line.contains(" generated_review_bytes=7 ")
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" next_action=review-generated-output")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_worktree_cleanup_review_matrix: report_only=true deletes=false",
+            ) && line.contains(" source_worktrees=1 ")
+                && line.contains(" active_worktrees=0 ")
+                && line.contains(" dirty_worktrees=0 ")
+                && line.contains(" clean_review_worktrees=0 ")
+                && line.contains(" unknown_review_count=1 ")
+                && line.contains(" safe_target_candidates=1 ")
+                && line.contains(" generated_review_count=1 ")
+                && line.contains(
+                    " preserve=.brutal-index,running-server,active-worktrees,dirty-worktrees ",
+                )
+                && line.contains(" next_action=review-worktree-state-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_cleanup_coordination_boundary: report_only=true deletes=false",
+            ) && line.contains(" rust_slot_lock_present=true ")
+                && line.contains(" rust_slot_lock_bytes=4 ")
+                && line.contains(" preserve=rust-slot-lock,running-server,.brutal-index ")
+                && line.contains(" next_action=wait-for-validation-slot")
+        }));
+        assert_eq!(
+            std::fs::read(&rust_slot_lock).unwrap(),
+            rust_slot_lock_before
+        );
         assert_eq!(
             temp_cleanup_age_pressure_next_action(1, 0, 0),
             "remove-old-merged-targets"
@@ -5109,6 +5219,30 @@ mod tests {
         assert_eq!(
             temp_cleanup_generated_pressure_next_action(0, 1, 1),
             "review-generated-output"
+        );
+        assert_eq!(
+            storage_cleanup_coordination_boundary_next_action(true),
+            "wait-for-validation-slot"
+        );
+        assert_eq!(
+            storage_cleanup_coordination_boundary_next_action(false),
+            "cleanup-reporting-safe"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(1, 1, 1, 1, 1, 1),
+            "preserve-active-worktree"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 0, 1, 1, 1),
+            "review-worktree-state-before-cleanup"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 1, 0, 1, 1),
+            "review-clean-worktree-before-removal"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 0, 0, 1, 0),
+            "remove-validation-targets-only"
         );
     }
 
