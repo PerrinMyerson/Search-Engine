@@ -951,3 +951,203 @@ fn continuous_scroll_reports_moved_clamped_and_rerendered_viewports() {
         "explicit same-viewport rerender should refresh visible media/control rows without masquerading as scroll movement"
     );
 }
+
+#[test]
+fn continuous_wheel_and_page_scroll_clamps_without_resetting_visible_crop() {
+    let image_url = "mem://continuous-wheel-scroll-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![144],
+        rgb_pixels: Some(vec![64, 148, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://continuous-wheel-scroll".to_owned(),
+        title: String::new(),
+        viewport_width: 10,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 0,
+        layout_boxes: Vec::new(),
+        paint_command_count: 6,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: 4,
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(91)),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Intro".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1,
+                shade: 144,
+                alt: None,
+                url: Some(image_url.clone()),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::StyledText {
+                x: 4,
+                y: 1,
+                text: "Link".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 2,
+                text: "Body".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 2,
+                y: 4,
+                width: 2,
+                height: 1,
+                shade: 144,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
+                text: "Tail".to_owned(),
+            },
+        ],
+        text: "Intro\nLink\nBody\nTail".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 3,
+    };
+    let top_page = browser_document_viewport_after_page_scroll(&render, start, 0, -1);
+    assert_eq!(top_page.viewport.y, 0);
+    assert_eq!(top_page.scroll_delta_y, 0);
+    assert_eq!(top_page.transition, BrowserViewportTransition::ClampedNoop);
+    assert!(top_page.invalidated_regions.is_empty());
+    assert_eq!(
+        top_page.reused_area,
+        top_page.viewport.width * top_page.viewport.height
+    );
+
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(
+        &render,
+        start,
+        &[(0, 1), (0, 1), (0, -1), (0, 1), (0, 1), (0, 1)],
+        options,
+    )
+    .expect("render continuous wheel scroll crop frames");
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 1, 2, 3, 3],
+        "row-sized wheel deltas should move the viewport one crop at a time and clamp at bottom"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.transition)
+            .collect::<Vec<_>>(),
+        vec![
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::Moved,
+            BrowserViewportTransition::ClampedNoop,
+        ]
+    );
+    assert!(frames[5].report.dirty_pixel_regions.is_empty());
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "decoded image target should be hittable when its row is visible after a small scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 4, 0),
+        Some(77),
+        "link target beside the decoded image should remain aligned after a small scroll"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 4, 0),
+        None,
+        "stale link target should disappear after the mixed row scrolls out"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[4].report.viewport.viewport, 2, 1),
+        Some(91),
+        "lower decoded image target should remain aligned near the bottom clamp"
+    );
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut value = [0u8; 4];
+        value.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        value
+    };
+    let image_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], image_x, options.padding_y),
+        [64, 148, 224, 255],
+        "first wheel scroll should keep decoded image color in the visible top crop row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_x, options.padding_y),
+        [64, 148, 224, 255],
+        "next wheel scroll should not leave stale decoded image color in the top crop row"
+    );
+    let lower_image_x = options
+        .padding_x
+        .saturating_add(2usize.saturating_mul(options.cell_width));
+    let lower_image_y = options.padding_y.saturating_add(options.cell_height);
+    assert_eq!(
+        pixel(&frames[4], lower_image_x, lower_image_y),
+        [64, 148, 224, 255],
+        "bottom-adjacent scroll should keep lower decoded image color aligned"
+    );
+    assert_eq!(
+        pixel(&frames[5], lower_image_x, lower_image_y),
+        [64, 148, 224, 255],
+        "bottom clamped no-op should preserve the already visible crop"
+    );
+}

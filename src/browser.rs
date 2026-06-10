@@ -5908,6 +5908,15 @@ pub fn browser_document_viewport_after_scroll(
     delta_x: isize,
     delta_y: isize,
 ) -> BrowserDocumentViewportReport {
+    browser_document_viewport_after_delta(render, current, delta_x, delta_y)
+}
+
+fn browser_document_viewport_after_delta(
+    render: &BrowserRender,
+    current: BrowserViewportState,
+    delta_x: isize,
+    delta_y: isize,
+) -> BrowserDocumentViewportReport {
     let current = browser_document_viewport(render, current, None).viewport;
     let requested = BrowserViewportState {
         x: apply_signed_scroll_delta(current.x, delta_x),
@@ -5938,12 +5947,7 @@ pub fn browser_document_viewport_after_page_scroll(
     let current = browser_document_viewport(render, current, None).viewport;
     let delta_x = signed_scroll_unit_delta(pages_x, viewport_page_scroll_increment(current.width));
     let delta_y = signed_scroll_unit_delta(pages_y, viewport_page_scroll_increment(current.height));
-    let requested = BrowserViewportState {
-        x: apply_signed_scroll_delta(current.x, delta_x),
-        y: apply_signed_scroll_delta(current.y, delta_y),
-        ..current
-    };
-    browser_document_viewport(render, requested, Some(current))
+    browser_document_viewport_after_delta(render, current, delta_x, delta_y)
 }
 
 pub fn browser_viewport_frame(
