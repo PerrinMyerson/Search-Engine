@@ -5790,11 +5790,10 @@ fn visible_display_commands(
     render: &BrowserRender,
     viewport: RasterViewport,
 ) -> Vec<BrowserVisibleDisplayCommand> {
-    render
-        .display_list
-        .iter()
-        .enumerate()
-        .filter_map(|(command_index, command)| {
+    display_command_paint_indices_for_viewport(render)
+        .into_iter()
+        .filter_map(|command_index| {
+            let command = render.display_list.get(command_index)?;
             let (command_bounds, visible_bounds) = display_command_report_bounds_for_viewport(
                 render,
                 command_index,
