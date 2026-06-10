@@ -1123,6 +1123,8 @@ struct WebResultArtifactDurabilityStats {
     entries: usize,
     durable_rows: usize,
     duplicate_rows: usize,
+    invalid_rows: usize,
+    incomplete_rows: usize,
     query_buckets: usize,
 }
 
@@ -1161,8 +1163,14 @@ pub fn durable_web_result_commit_report_lines(
         collect_web_result_artifact_durability(result_log_path, "brave-results.jsonl")?;
     let result_log_only_rows = result_log.durable_rows.saturating_sub(cache.durable_rows);
     let survives_restart = result_log.durable_rows > 0 || cache.durable_rows > 0;
+    let invalid_rows = cache.invalid_rows.saturating_add(result_log.invalid_rows);
+    let incomplete_rows = cache
+        .incomplete_rows
+        .saturating_add(result_log.incomplete_rows);
     let prune_safe_after_dry_run = result_log.duplicate_rows > 0 || cache.duplicate_rows > 0;
-    let next_action = if result_log_only_rows > 0 {
+    let next_action = if invalid_rows > 0 || incomplete_rows > 0 {
+        "inspect-saved-result-integrity-before-prune"
+    } else if result_log_only_rows > 0 {
         "backfill-web-cache-replay-before-prune"
     } else if prune_safe_after_dry_run {
         "dry-run-compact-duplicate-durable-rows"
@@ -1177,7 +1185,7 @@ pub fn durable_web_result_commit_report_lines(
         .saturating_add(result_log.duplicate_rows);
     Ok(vec![
         format!(
-            "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
+            "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
             cache.entries,
             cache.bytes,
             cache.durable_rows,
@@ -1188,8 +1196,12 @@ pub fn durable_web_result_commit_report_lines(
             result_log.query_buckets,
         ),
         format!(
-            "durable_web_result_prune_boundary: report_only=true mutates_files=false duplicate_rows={duplicate_rows} cache_duplicate_rows={} result_log_duplicate_rows={} result_log_only_rows={result_log_only_rows} safe_to_prune_after_dry_run={prune_safe_after_dry_run} preserve_artifacts=web-cache.jsonl,brave-results.jsonl preserve_secrets=false next_action={next_action}",
+            "durable_web_result_prune_boundary: report_only=true mutates_files=false duplicate_rows={duplicate_rows} cache_duplicate_rows={} result_log_duplicate_rows={} result_log_only_rows={result_log_only_rows} safe_to_prune_after_dry_run={prune_safe_after_dry_run} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} preserve_artifacts=web-cache.jsonl,brave-results.jsonl preserve_secrets=false next_action={next_action}",
             cache.duplicate_rows, result_log.duplicate_rows,
+        ),
+        format!(
+            "durable_web_result_index_artifact_boundary: report_only=true mutates_files=false saved_rows={} indexed_rows=not-scanned invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} duplicate_rows={duplicate_rows} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys cleanup_inventory=temp-cleanup-audit next_action={next_action}",
+            cache.durable_rows.saturating_add(result_log.durable_rows),
         ),
     ])
 }
@@ -1228,7 +1240,10 @@ fn collect_web_result_artifact_durability(
         stats.entries = stats.entries.saturating_add(1);
         let value = match serde_json::from_str::<serde_json::Value>(&line) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(_) => {
+                stats.invalid_rows = stats.invalid_rows.saturating_add(1);
+                continue;
+            }
         };
         if let Some(query) = value
             .get("normalized_query")
@@ -1246,26 +1261,32 @@ fn collect_web_result_artifact_durability(
                         .get("fetched_at_unix")
                         .and_then(|value| value.as_u64())
                         .is_some();
-                if let Some(results) = value.get("results").and_then(|value| value.as_array()) {
-                    for result in results {
-                        if !has_entry_metadata
-                            || !web_json_string_present(result, "url")
-                            || !web_json_string_present(result, "title")
-                            || !web_json_string_present(result, "snippet")
-                        {
-                            continue;
-                        }
-                        stats.durable_rows = stats.durable_rows.saturating_add(1);
-                        let key = durable_web_result_key(
-                            value
-                                .get("normalized_query")
-                                .and_then(|value| value.as_str()),
-                            value.get("provider").and_then(|value| value.as_str()),
-                            result.get("url").and_then(|value| value.as_str()),
-                        );
-                        if !durable_keys.insert(key) {
-                            stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
-                        }
+                let Some(results) = value.get("results").and_then(|value| value.as_array()) else {
+                    stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
+                    continue;
+                };
+                if results.is_empty() {
+                    stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
+                }
+                for result in results {
+                    if !has_entry_metadata
+                        || !web_json_string_present(result, "url")
+                        || !web_json_string_present(result, "title")
+                        || !web_json_string_present(result, "snippet")
+                    {
+                        stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
+                        continue;
+                    }
+                    stats.durable_rows = stats.durable_rows.saturating_add(1);
+                    let key = durable_web_result_key(
+                        value
+                            .get("normalized_query")
+                            .and_then(|value| value.as_str()),
+                        value.get("provider").and_then(|value| value.as_str()),
+                        result.get("url").and_then(|value| value.as_str()),
+                    );
+                    if !durable_keys.insert(key) {
+                        stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
                     }
                 }
             }
@@ -1280,18 +1301,20 @@ fn collect_web_result_artifact_durability(
                         .and_then(|value| value.as_u64())
                         .is_some()
                     && value.get("rank").and_then(|value| value.as_u64()).is_some();
-                if durable {
-                    stats.durable_rows = stats.durable_rows.saturating_add(1);
-                    let key = durable_web_result_key(
-                        value
-                            .get("normalized_query")
-                            .and_then(|value| value.as_str()),
-                        value.get("provider").and_then(|value| value.as_str()),
-                        value.get("url").and_then(|value| value.as_str()),
-                    );
-                    if !durable_keys.insert(key) {
-                        stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
-                    }
+                if !durable {
+                    stats.incomplete_rows = stats.incomplete_rows.saturating_add(1);
+                    continue;
+                }
+                stats.durable_rows = stats.durable_rows.saturating_add(1);
+                let key = durable_web_result_key(
+                    value
+                        .get("normalized_query")
+                        .and_then(|value| value.as_str()),
+                    value.get("provider").and_then(|value| value.as_str()),
+                    value.get("url").and_then(|value| value.as_str()),
+                );
+                if !durable_keys.insert(key) {
+                    stats.duplicate_rows = stats.duplicate_rows.saturating_add(1);
                 }
             }
             _ => {}
@@ -2328,7 +2351,7 @@ mod tests {
 
         assert_eq!(before_cache, fs::read(&cache_path).unwrap());
         assert_eq!(before_result_log, fs::read(&result_log_path).unwrap());
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 3);
         let line = &lines[0];
         assert!(line.starts_with("durable_web_result_commit_report: report_only=true"));
         assert!(line.contains("mutates_files=false"));
@@ -2339,6 +2362,8 @@ mod tests {
         assert!(line.contains("durable_result_log_rows=2"));
         assert!(line.contains("result_log_only_rows=0"));
         assert!(line.contains("duplicate_rows=1"));
+        assert!(line.contains("invalid_rows=0"));
+        assert!(line.contains("incomplete_rows=0"));
         assert!(line.contains("cache_query_buckets=1"));
         assert!(line.contains("result_log_query_buckets=1"));
         assert!(line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
@@ -2357,6 +2382,24 @@ mod tests {
         assert!(prune_line.contains("safe_to_prune_after_dry_run=true"));
         assert!(prune_line.contains("preserve_artifacts=web-cache.jsonl,brave-results.jsonl"));
         assert!(prune_line.contains("preserve_secrets=false"));
+        let boundary_line = &lines[2];
+        assert!(
+            boundary_line
+                .starts_with("durable_web_result_index_artifact_boundary: report_only=true")
+        );
+        assert!(boundary_line.contains("mutates_files=false"));
+        assert!(boundary_line.contains("saved_rows=4"));
+        assert!(boundary_line.contains("indexed_rows=not-scanned"));
+        assert!(boundary_line.contains("invalid_rows=0"));
+        assert!(boundary_line.contains("incomplete_rows=0"));
+        assert!(boundary_line.contains("duplicate_rows=1"));
+        assert!(
+            boundary_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+        );
+        assert!(
+            boundary_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+        );
+        assert!(boundary_line.contains("cleanup_inventory=temp-cleanup-audit"));
     }
 
     #[test]
@@ -2385,6 +2428,46 @@ mod tests {
         assert!(lines.contains("https://example.com/one"));
         assert!(lines.contains(r#""rank":2"#));
         assert!(lines.contains("https://example.com/two"));
+    }
+
+    #[test]
+    fn durable_web_result_commit_report_flags_invalid_and_incomplete_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        fs::write(
+            &cache_path,
+            b"{malformed cache json\n{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/missing-title\",\"snippet\":\"Snippet\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        fs::write(
+            &result_log_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":101,\"rank\":1,\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}\n{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":102,\"rank\":2,\"url\":\"https://example.com/missing-title\",\"snippet\":\"Snippet two\",\"score\":0.8}\n",
+        )
+        .unwrap();
+        let before_cache = fs::read(&cache_path).unwrap();
+        let before_result_log = fs::read(&result_log_path).unwrap();
+
+        let lines = durable_web_result_commit_report_lines(&cache_path, &result_log_path).unwrap();
+
+        assert_eq!(before_cache, fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, fs::read(&result_log_path).unwrap());
+        let line = &lines[0];
+        assert!(line.contains("invalid_rows=1"));
+        assert!(line.contains("incomplete_rows=2"));
+        assert!(line.contains("next_action=inspect-saved-result-integrity-before-prune"));
+        let boundary_line = &lines[2];
+        assert!(boundary_line.contains("saved_rows=1"));
+        assert!(boundary_line.contains("indexed_rows=not-scanned"));
+        assert!(boundary_line.contains("invalid_rows=1"));
+        assert!(boundary_line.contains("incomplete_rows=2"));
+        assert!(
+            boundary_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+        );
+        assert!(
+            boundary_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+        );
+        assert!(boundary_line.contains("cleanup_inventory=temp-cleanup-audit"));
     }
 
     #[test]
