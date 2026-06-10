@@ -38,7 +38,9 @@ fn assert_address_submit_state(
 ) {
     for action in ["open", "open-new-session", "open-background-session"] {
         assert!(topbar_html.contains(&format!(r#"data-browser-address-submit="{}""#, action)));
+        assert!(topbar_html.contains(&format!(r#"data-browser-form-submit="{}""#, action)));
     }
+    assert!(topbar_html.contains(r#"data-browser-form-submit-pending-state="idle""#));
     assert!(topbar_html.contains(&format!(
         r#"data-browser-address-submit-session="{}""#,
         payload.id
@@ -14545,6 +14547,8 @@ async fn browser_session_page_renders_form_controls() {
         topbar_html
             .contains(r#"data-browser-chrome-toolbar-order="navigation address location status""#)
     );
+    assert!(topbar_html.contains(r#"data-browser-chrome-single-toolbar="true""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-debug-placement="secondary-tools""#));
     assert!(topbar_html.contains(r#"class="toolbar browser-primary-nav""#));
     assert!(
         topbar_html.contains(r#"data-browser-primary-nav-order="search back forward actions""#)
@@ -14558,6 +14562,11 @@ async fn browser_session_page_renders_form_controls() {
         topbar_html.contains(r#"<summary aria-label="Browser page actions">Actions</summary>"#)
     );
     assert!(topbar_html.contains(r#"data-browser-address-form"#));
+    assert!(topbar_html.contains(r#"data-browser-form-action="address""#));
+    assert!(topbar_html.contains(r#"data-browser-form-pending-state="idle""#));
+    assert!(topbar_html.contains(
+        r#"data-browser-form-state-preserves="session from source viewport dimensions max-bytes""#
+    ));
     assert!(topbar_html.contains(r#"data-browser-address-focus-scope="address""#));
     assert!(topbar_html.contains(r#"data-browser-address-shortcut-owner="text-entry""#));
     assert!(topbar_html.contains(&format!(r#"data-browser-address-session="{}""#, payload.id)));
@@ -14611,6 +14620,8 @@ async fn browser_session_page_renders_form_controls() {
         r#"data-browser-chrome-status-feedback-lanes="navigation scroll click form action""#
     ));
     assert!(topbar_html.contains(r#"data-browser-chrome-outcome-display="compact""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-pending-state="idle""#));
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-pending-action="none""#));
     assert!(topbar_html.contains(r#"data-browser-shell-session"#));
     assert!(topbar_html.contains(r#"data-browser-shell-viewport"#));
     assert!(topbar_html.contains(r#"data-browser-chrome-viewport"#));
@@ -14759,6 +14770,55 @@ async fn browser_session_page_renders_form_controls() {
     assert_eq!(html.matches(r#"name="action" value="select""#).count(), 1);
     assert!(html.contains(r#"name="value" value="old""#));
     assert!(html.contains("Submit form"));
+    assert!(html.contains(r#"data-browser-form-tools="secondary""#));
+    assert!(html.contains(r#"data-browser-form-action="submit""#));
+    assert!(html.contains(r#"data-browser-form-submit-link="submit""#));
+    assert!(html.contains(r#"data-browser-form-submit-link="submit-new-session""#));
+    assert!(html.contains(r#"data-browser-form-submit-link="submit-background-session""#));
+    assert!(html.contains(r#"data-browser-form-submit-pending-state="idle""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-form-submit-session="{}""#,
+        payload.id
+    )));
+    assert!(html.contains(r#"data-browser-form-submit-from="/search?q=forms""#));
+    assert!(html.contains(r#"data-browser-form-submit-viewport-x="0""#));
+    assert!(html.contains(r#"data-browser-form-submit-viewport-y="0""#));
+    assert!(html.contains(&format!(
+        r#"data-browser-form-submit-max-bytes="{}""#,
+        payload.max_bytes
+    )));
+    assert!(html.contains(r#"const markBrowserFormPending = (form, submitter) =>"#));
+    assert!(html.contains(r#"syncChromeViewportState();"#));
+    assert!(
+        html.contains(
+            r##"form.dataset.browserFormPendingSource = shell.dataset.pageSource || """##
+        )
+    );
+    assert!(
+        html.contains(
+            r##"form.dataset.browserFormPendingMaxBytes = shell.dataset.maxBytes || """##
+        )
+    );
+    assert!(html.contains(r#"if (link.dataset.browserFormSubmitLink)"#));
+    assert!(html.contains(r#"return "form-" + link.dataset.browserFormSubmitLink"#));
+    assert!(html.contains(r#"a[data-browser-form-submit-link]"#));
+    assert!(html.contains(r#"link.dataset.browserFormSubmitHref = url.toString()"#));
+    assert!(html.contains(r#"link.dataset.browserFormSubmitPreservedViewportX = currentX"#));
+    assert!(html.contains(
+        r##"link.dataset.browserFormSubmitPreservedMaxBytes = shell.dataset.maxBytes || """##
+    ));
+    assert!(html.contains(r#"document.addEventListener("submit", (event) =>"#));
+    assert!(html.contains(r#"topStatus.dataset.browserChromeFormPendingState = "pending""#));
+    assert!(html.contains(r#"form.dataset.browserFormPendingState = "pending""#));
+    assert!(html.contains(r#"submitter.dataset.browserFormSubmitPending = "true""#));
+    assert!(html.contains(r##"submitter.dataset.browserFormSubmitPendingState = "pending""##));
+    assert!(html.contains(
+        r##"submitter.dataset.browserFormSubmitPendingSource = shell.dataset.pageSource || """##
+    ));
+    assert!(html.contains(r##"link.dataset.browserFormSubmitPendingState = "pending""##));
+    assert!(html.contains(
+        r##"link.dataset.browserFormSubmitPendingMaxBytes = shell.dataset.maxBytes || """##
+    ));
     assert!(html.contains("rust browser session"));
 
     let state_export = RequestTarget {
