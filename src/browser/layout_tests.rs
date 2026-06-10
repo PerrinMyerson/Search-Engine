@@ -19243,6 +19243,273 @@ fn continuous_small_scroll_state_keeps_mixed_rows_and_clamped_hits_stable() {
 }
 
 #[test]
+fn large_and_repeated_scroll_deltas_keep_viewport_hits_with_painted_rows() {
+    let image_url = "mem://large-scroll-delta-image".to_owned();
+    let decoded = DecodedImage {
+        width: 1,
+        height: 1,
+        pixels: vec![118],
+        rgb_pixels: Some(vec![72, 148, 224]),
+    };
+    let render = BrowserRender {
+        source: "mem://large-scroll-delta-hit-parity".to_owned(),
+        title: String::new(),
+        viewport_width: 16,
+        dom_node_count: 0,
+        css_rule_count: 0,
+        layout_box_count: 1,
+        layout_boxes: vec![BrowserLayoutBox {
+            id: 0,
+            parent: None,
+            node_id: 12,
+            tag: "input".to_owned(),
+            kind: "form-control".to_owned(),
+            x: 4,
+            y: 11,
+            width: 4,
+            height: 1,
+            children: Vec::new(),
+            command_indices: vec![2],
+        }],
+        paint_command_count: 7,
+        links: Vec::new(),
+        forms: Vec::new(),
+        resources: Vec::new(),
+        fragment_targets: Vec::new(),
+        decoded_images: vec![DecodedImageEntry {
+            url: image_url.clone(),
+            width: decoded.width,
+            height: decoded.height,
+            pixel_hash: decoded.pixel_hash(),
+            image: decoded,
+        }],
+        hit_targets: vec![
+            DisplayHitTarget::default(),
+            DisplayHitTarget::node(Some(41)),
+            DisplayHitTarget::node(Some(12)),
+            DisplayHitTarget::text(vec![TextHitTargetRun {
+                start: 0,
+                width: "Next".len(),
+                target_node: Some(77),
+            }]),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+            DisplayHitTarget::default(),
+        ],
+        display_list: vec![
+            DisplayCommand::Text {
+                x: 0,
+                y: 0,
+                text: "Lead".to_owned(),
+            },
+            DisplayCommand::Image {
+                x: 1,
+                y: 10,
+                width: 2,
+                height: 1,
+                shade: 180,
+                alt: None,
+                url: Some(image_url),
+                decoded_width: Some(1),
+                decoded_height: Some(1),
+                decoded_hash: None,
+            },
+            DisplayCommand::Rect {
+                x: 4,
+                y: 11,
+                width: 4,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::StyledText {
+                x: 6,
+                y: 12,
+                text: "Next".to_owned(),
+                shade: 0,
+            },
+            DisplayCommand::ColorRect {
+                x: 0,
+                y: 13,
+                width: 16,
+                height: 1,
+                shade: 236,
+                red: 236,
+                green: 244,
+                blue: 248,
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 14,
+                text: "Tail".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 15,
+                text: "End".to_owned(),
+            },
+        ],
+        text: "Lead\nNext\nTail\nEnd".to_owned(),
+    };
+
+    let start = BrowserViewportState {
+        x: 0,
+        y: 0,
+        width: 16,
+        height: 3,
+    };
+    let options = BrowserRasterOptions {
+        viewport_width: Some(start.width),
+        viewport_height: Some(start.height),
+        ..BrowserRasterOptions::default()
+    };
+    let frames = browser_viewport_frame_sequence(
+        &render,
+        start,
+        &[(0, 10), (0, 1), (0, 100), (0, 1)],
+        options,
+    )
+    .expect("render large and repeated scroll delta frames");
+    assert_eq!(frames.len(), 4);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.viewport.y)
+            .collect::<Vec<_>>(),
+        vec![10, 11, 13, 13],
+        "large and repeated scroll deltas should advance real viewport_y and clamp at the bottom"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.report.viewport.scroll_delta_y)
+            .collect::<Vec<_>>(),
+        vec![10, 1, 2, 0],
+        "reported scroll deltas should reflect actual clamped viewport movement"
+    );
+    assert_eq!(
+        frames[3].report.viewport.transition,
+        BrowserViewportTransition::ClampedNoop
+    );
+    assert!(
+        frames[3].report.viewport.invalidated_regions.is_empty(),
+        "clamped repeated scroll should not invent dirty document rows"
+    );
+    assert!(
+        frames[3].report.dirty_pixel_regions.is_empty(),
+        "clamped repeated scroll should not repaint stale raster rows"
+    );
+
+    assert_eq!(
+        frames[0]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(1, "Image", 0), (2, "Rect", 1), (3, "StyledText", 2)],
+        "large scroll landing frame should report the same rows that it paints"
+    );
+    assert_eq!(
+        frames[1]
+            .report
+            .viewport
+            .visible_commands
+            .iter()
+            .map(|command| (
+                command.command_index,
+                command.kind.as_str(),
+                command.visible_y
+            ))
+            .collect::<Vec<_>>(),
+        vec![(2, "Rect", 0), (3, "StyledText", 1), (4, "ColorRect", 2)],
+        "follow-up small scroll should shift mixed rows without duplicating stale image content"
+    );
+
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 1, 0),
+        Some(41),
+        "visible decoded image should hit in the large-scroll landing frame"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 4, 1),
+        Some(12),
+        "visible form control should hit at its painted viewport row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[0].report.viewport.viewport, 6, 2),
+        Some(77),
+        "visible link should hit at its painted viewport row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 1, 0),
+        None,
+        "follow-up scroll should drop stale image hits after the image leaves the viewport"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 4, 0),
+        Some(12),
+        "follow-up scroll should keep the form control hit aligned with its shifted row"
+    );
+    assert_eq!(
+        hit_test_target_node_in_viewport(&render, frames[1].report.viewport.viewport, 6, 1),
+        Some(77),
+        "follow-up scroll should keep the link hit aligned with its shifted row"
+    );
+    for (index, frame) in frames.iter().enumerate().skip(2) {
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 1, 0),
+            None,
+            "frame {index} should not keep stale image hits after bottom clamp"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 4, 0),
+            None,
+            "frame {index} should not keep stale form hits after bottom clamp"
+        );
+        assert_eq!(
+            hit_test_target_node_in_viewport(&render, frame.report.viewport.viewport, 6, 0),
+            None,
+            "frame {index} should not keep stale link hits after bottom clamp"
+        );
+    }
+
+    let pixel = |frame: &BrowserViewportFrame, x: usize, y: usize| -> [u8; 4] {
+        let index = y
+            .saturating_mul(frame.raster.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        let mut rgba = [0u8; 4];
+        rgba.copy_from_slice(&frame.raster.pixels[index..index.saturating_add(4)]);
+        rgba
+    };
+    let image_pixel_x = options.padding_x.saturating_add(options.cell_width);
+    assert_eq!(
+        pixel(&frames[0], image_pixel_x, options.padding_y),
+        [72, 148, 224, 255],
+        "large-scroll landing frame should paint decoded image color at the visible row"
+    );
+    assert_ne!(
+        pixel(&frames[1], image_pixel_x, options.padding_y),
+        [72, 148, 224, 255],
+        "follow-up scroll should not leave stale decoded image color at the shifted top row"
+    );
+    assert_eq!(
+        pixel(
+            &frames[1],
+            options.padding_x,
+            options.padding_y.saturating_add(options.cell_height * 2)
+        ),
+        [236, 244, 248, 255],
+        "follow-up scroll should project the colored row to its visible viewport row"
+    );
+}
+
+#[test]
 fn successive_scroll_frames_reuse_rows_without_mixed_content_stutter() {
     let image_url = "mem://scroll-frame-reuse-image".to_owned();
     let decoded = DecodedImage {
