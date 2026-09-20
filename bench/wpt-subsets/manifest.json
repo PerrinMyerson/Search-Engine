@@ -486,6 +486,15 @@
      "text": "Var box"
     }
    ]
+  },
+  {
+   "id": "js-event-loop-order",
+   "name": "JS: microtask checkpoints between sync script, timers, and nested microtasks",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/js-event-loop-order.html",
+   "width": 40,
+   "expected_title": "JS Event Loop Order Fixture",
+   "expected_text": "start sync micro then timer\nstart t1 t1-micro nested t2"
   }
  ]
 }

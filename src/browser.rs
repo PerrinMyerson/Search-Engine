@@ -13861,6 +13861,7 @@ fn skip_quoted_tag_attribute(html: &[u8], quote_start: usize) -> Option<usize> {
 }
 
 const MAX_TIMER_TASKS_PER_RENDER: usize = 1024;
+const MAX_MICROTASKS_PER_CHECKPOINT: usize = 1024;
 
 #[derive(Debug, Clone)]
 struct TinyJsRuntime {
@@ -13880,6 +13881,9 @@ struct TinyJsRuntime {
     timer_tasks: VecDeque<TimerTask>,
     cancelled_timer_ids: HashSet<u64>,
     next_timer_id: u64,
+    /// Pending `queueMicrotask` / `Promise.resolve().then` callbacks. Drained
+    /// at every task boundary before the next timer task runs.
+    microtask_queue: VecDeque<String>,
     this_node: Option<usize>,
     this_target: Option<BrowserEventTarget>,
     active_element: Option<usize>,
@@ -13915,6 +13919,7 @@ impl Default for TinyJsRuntime {
             timer_tasks: VecDeque::new(),
             cancelled_timer_ids: HashSet::new(),
             next_timer_id: 1,
+            microtask_queue: VecDeque::new(),
             this_node: None,
             this_target: None,
             active_element: None,
@@ -15102,6 +15107,10 @@ fn execute_js_statement(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &
         return;
     }
 
+    if execute_js_microtask(runtime, statement) {
+        return;
+    }
+
     if execute_js_remove_event_listener(dom, runtime, statement) {
         return;
     }
@@ -15770,7 +15779,62 @@ fn evaluate_js_timer_id(dom: &Dom, runtime: &TinyJsRuntime, expression: &str) ->
     })
 }
 
+fn execute_js_microtask(runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let callback = if let Some(args) =
+        parse_js_named_call(statement, &["queueMicrotask", "window.queueMicrotask"])
+    {
+        split_js_arguments(args)
+            .first()
+            .map(|arg| arg.trim().to_owned())
+    } else if let Some((target, args)) = parse_js_method_call(statement, ".then") {
+        // `Promise.resolve(<anything>).then(cb)` is the only promise shape the
+        // tiny runtime models; the resolved value is not surfaced to `cb`.
+        let target = target.trim();
+        let is_resolved_promise = target
+            .strip_prefix("Promise.resolve")
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix('('))
+            .is_some_and(|rest| rest.trim_end().ends_with(')'));
+        if !is_resolved_promise {
+            return false;
+        }
+        split_js_arguments(args)
+            .first()
+            .map(|arg| arg.trim().to_owned())
+    } else {
+        return false;
+    };
+    if let Some(handler) = callback.and_then(|callback| parse_js_handler_body(runtime, &callback)) {
+        runtime.microtask_queue.push_back(handler);
+    }
+    true
+}
+
+/// Run every queued microtask, including ones queued while draining, until
+/// the queue is empty or the re-entrancy cap trips.
+fn drain_microtasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
+    let mut executed = 0usize;
+    while let Some(handler) = runtime.microtask_queue.pop_front() {
+        let previous_this = runtime.this_node.take();
+        let previous_this_target = runtime.this_target.take();
+        for statement in split_js_statements(&handler) {
+            execute_js_statement(dom, runtime, statement);
+        }
+        runtime.this_node = previous_this;
+        runtime.this_target = previous_this_target;
+        executed += 1;
+        if executed >= MAX_MICROTASKS_PER_CHECKPOINT {
+            runtime.microtask_queue.clear();
+            break;
+        }
+    }
+}
+
+/// Task-boundary drain: microtasks queued by the script or event that just
+/// ran fire first, then each timer task runs followed by its own microtask
+/// checkpoint, matching the HTML event loop ordering.
 fn drain_timer_tasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
+    drain_microtasks(dom, runtime);
     let mut executed = 0usize;
     while let Some(task) = runtime.timer_tasks.pop_front() {
         if runtime.cancelled_timer_ids.remove(&task.id) {
@@ -15783,6 +15847,7 @@ fn drain_timer_tasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
         }
         runtime.this_node = previous_this;
         runtime.this_target = previous_this_target;
+        drain_microtasks(dom, runtime);
         executed += 1;
         if executed >= MAX_TIMER_TASKS_PER_RENDER {
             runtime.timer_tasks.clear();

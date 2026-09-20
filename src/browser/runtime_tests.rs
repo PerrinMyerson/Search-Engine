@@ -525,6 +525,98 @@ fn set_timeout_runs_after_current_script_task() {
 }
 
 #[test]
+fn microtasks_run_after_sync_script_and_before_timers() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><body>
+          <p id="order">start</p>
+          <script>
+            const order = document.getElementById("order");
+            setTimeout(() => {
+              order.textContent += " timer";
+            }, 0);
+            queueMicrotask(() => {
+              order.textContent += " micro";
+            });
+            Promise.resolve().then(() => {
+              order.textContent += " then";
+            });
+            order.textContent += " sync";
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(render.text, "start sync micro then timer");
+}
+
+#[test]
+fn microtasks_queued_by_a_timer_run_before_the_next_timer() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><body>
+          <p id="order">start</p>
+          <script>
+            const order = document.getElementById("order");
+            setTimeout(function () {
+              order.textContent += " t1";
+              Promise.resolve(1).then(function () {
+                order.textContent += " t1-micro";
+                queueMicrotask(() => {
+                  order.textContent += " nested";
+                });
+              });
+            }, 0);
+            setTimeout(() => {
+              order.textContent += " t2";
+            }, 0);
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert_eq!(render.text, "start t1 t1-micro nested t2");
+}
+
+#[test]
+fn microtasks_queued_by_click_handlers_run_before_their_timers() {
+    let render = render_html_with_click(
+        "mem://page",
+        br#"
+        <html><body>
+          <button id="go">Go</button>
+          <p id="out">start</p>
+          <script>
+            const out = document.getElementById("out");
+            document.getElementById("go").addEventListener("click", () => {
+              setTimeout(() => {
+                out.textContent += " timer";
+              }, 0);
+              queueMicrotask(() => {
+                out.textContent += " micro";
+              });
+              out.textContent += " click";
+            });
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+        "#go",
+    )
+    .unwrap();
+
+    assert_eq!(
+        render.text,
+        "Go
+start click micro timer"
+    );
+}
+
+#[test]
 fn clear_timeout_cancels_pending_timer_and_assignment_ids() {
     let render = render_html(
         "mem://page",

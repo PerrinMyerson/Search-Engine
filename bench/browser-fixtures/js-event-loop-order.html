@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head><title>JS Event Loop Order Fixture</title></head>
+  <body>
+    <p id="order">start</p>
+    <p id="nested">start</p>
+    <script>
+      const order = document.getElementById("order");
+      setTimeout(() => { order.textContent += " timer"; }, 0);
+      queueMicrotask(() => { order.textContent += " micro"; });
+      Promise.resolve().then(() => { order.textContent += " then"; });
+      order.textContent += " sync";
+
+      const nested = document.getElementById("nested");
+      setTimeout(function () {
+        nested.textContent += " t1";
+        Promise.resolve(1).then(function () {
+          nested.textContent += " t1-micro";
+          queueMicrotask(() => { nested.textContent += " nested"; });
+        });
+      }, 0);
+      setTimeout(() => { nested.textContent += " t2"; }, 0);
+    </script>
+  </body>
+</html>
