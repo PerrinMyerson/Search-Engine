@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::{
-    DisplayCommand, DisplayHitTarget, Dom, ElementData, NodeKind, display_command_bounds,
-    is_descendant_of,
-};
+use super::{DisplayCommand, DisplayHitTarget, Dom, ElementData, NodeKind, display_command_bounds};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserFragmentTarget {
@@ -31,6 +28,7 @@ pub(super) fn collect_fragment_targets(
     display_list: &[DisplayCommand],
     hit_targets: &[DisplayHitTarget],
 ) -> Vec<BrowserFragmentTarget> {
+    let min_display_y = min_display_y_by_node(dom, display_list, hit_targets);
     let mut seen = std::collections::HashSet::new();
     let mut fragments = Vec::new();
     for (node_id, node) in dom.nodes.iter().enumerate() {
@@ -39,13 +37,55 @@ pub(super) fn collect_fragment_targets(
         };
         for name in fragment_names_for_element(element) {
             if seen.insert(name.clone())
-                && let Some(y) = first_display_y_for_node(dom, display_list, hit_targets, node_id)
+                && let Some(&y) = min_display_y.get(&node_id)
             {
                 fragments.push(BrowserFragmentTarget { name, y });
             }
         }
     }
     fragments
+}
+
+/// Minimum display-command y for every node, counting commands that target the
+/// node itself or any of its descendants. Built in one pass by propagating each
+/// command's y up the ancestor chain, stopping early once an ancestor already
+/// records an equal-or-smaller y (its own ancestors then do too).
+fn min_display_y_by_node(
+    dom: &Dom,
+    display_list: &[DisplayCommand],
+    hit_targets: &[DisplayHitTarget],
+) -> std::collections::HashMap<usize, usize> {
+    let mut min_display_y = std::collections::HashMap::new();
+    let mut record = |target_node: Option<usize>, y: usize| {
+        let Some(mut node_id) = target_node else {
+            return;
+        };
+        loop {
+            match min_display_y.entry(node_id) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if *entry.get() <= y {
+                        break;
+                    }
+                    entry.insert(y);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(y);
+                }
+            }
+            let Some(parent) = dom.nodes.get(node_id).and_then(|node| node.parent) else {
+                break;
+            };
+            node_id = parent;
+        }
+    };
+    for (command, target) in display_list.iter().zip(hit_targets.iter()) {
+        let y = display_command_bounds(command).y;
+        record(target.target_node, y);
+        for run in &target.text_runs {
+            record(run.target_node, y);
+        }
+    }
+    min_display_y
 }
 
 fn fragment_names_for_element(element: &ElementData) -> Vec<String> {
@@ -63,30 +103,4 @@ fn fragment_names_for_element(element: &ElementData) -> Vec<String> {
         names.push(name.to_owned());
     }
     names
-}
-
-fn first_display_y_for_node(
-    dom: &Dom,
-    display_list: &[DisplayCommand],
-    hit_targets: &[DisplayHitTarget],
-    node_id: usize,
-) -> Option<usize> {
-    display_list
-        .iter()
-        .zip(hit_targets.iter())
-        .filter_map(|(command, target)| {
-            display_target_references_node(dom, target, node_id)
-                .then(|| display_command_bounds(command).y)
-        })
-        .min()
-}
-
-fn display_target_references_node(dom: &Dom, target: &DisplayHitTarget, node_id: usize) -> bool {
-    target.target_node.is_some_and(|target_node| {
-        target_node == node_id || is_descendant_of(dom, target_node, node_id)
-    }) || target.text_runs.iter().any(|run| {
-        run.target_node.is_some_and(|target_node| {
-            target_node == node_id || is_descendant_of(dom, target_node, node_id)
-        })
-    })
 }

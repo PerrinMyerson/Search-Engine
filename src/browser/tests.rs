@@ -27,6 +27,679 @@ fn renders_static_dom_and_skips_scripts() {
 }
 
 #[test]
+fn hydration_image_state_promotes_empty_alt_placeholder_from_context() {
+    let render = render_html(
+        "https://example.test/article",
+        br#"
+            <html><body>
+              <section>
+                <h2>GEOGRAPHY</h2>
+                <figure><img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></figure>
+                <p><i>Map created by National Geographic Maps</i></p>
+              </section>
+              <script>
+                window.__article = {
+                  "blocks": [{
+                    "title": "GEOGRAPHY",
+                    "text": "<p>Map created by National Geographic Maps</p>",
+                    "imageSrc": "https://cdn.example.test/Jamaica-Map_16x9.jpg?w=636&h=358"
+                  }]
+                };
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions::default(),
+    );
+
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::Image { url: Some(url), .. }
+                if url == "https://cdn.example.test/Jamaica-Map_16x9.jpg?w=636&h=358"
+        )
+    }));
+}
+
+#[test]
+fn css_flex_auto_margins_align_nav_clusters() {
+    let render = render_html(
+        "mem://flex-auto-margin-nav",
+        br#"
+            <html><head><style>
+              .top, .bottom { display:flex; width:100%; background:rgb(40, 130, 30); }
+              .brand { width:12%; }
+              .actions { display:flex; margin-left:auto; }
+              .links { display:flex; margin-inline:auto; }
+            </style></head><body>
+              <nav class="top"><span class="brand">LOGO</span><span class="actions"><a>SEARCH</a><a>SHOP</a></span></nav>
+              <nav class="bottom"><span class="links"><a>GAMES</a><a>VIDEOS</a><a>ANIMALS</a><a>EXPLORE</a><a>SUBSCRIBE</a></span></nav>
+              <main><h1>Jamaica</h1></main>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. }
+                    if text == needle =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+    };
+    let search = text_position("SEARCH").expect("right-aligned search action");
+    let shop = text_position("SHOP").expect("right-aligned shop action");
+    let games = text_position("GAMES").expect("centered games nav item");
+    let subscribe = text_position("SUBSCRIBE").expect("centered subscribe nav item");
+    assert!(search.0 >= 80, "search should be pushed right: {search:?}");
+    assert!(
+        shop.0 > search.0,
+        "shop should remain after search: search={search:?} shop={shop:?}"
+    );
+    assert!(
+        (25..=40).contains(&games.0),
+        "bottom nav should be centered: {games:?}"
+    );
+    assert!(
+        subscribe.0 < 75,
+        "centered nav should not overflow right: {subscribe:?}"
+    );
+}
+
+#[test]
+fn first_viewport_image_plan_caps_ambiguous_resources() {
+    let render = render_html(
+        "https://example.test/page",
+        br#"<!doctype html><title>Images</title><p>text-only shell</p>"#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = (0..13)
+        .map(|index| BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: format!("https://cdn.example.test/image-{index}.jpg"),
+            resolved: format!("https://cdn.example.test/image-{index}.jpg"),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    prioritize_image_resources_for_load(
+        &render,
+        &mut resources,
+        BrowserImageLoadMode::FirstViewport {
+            viewport: BrowserImageViewport {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            },
+            lookahead_rows: 48,
+            max_images: 16,
+        },
+    );
+
+    assert_eq!(resources.len(), FIRST_VIEWPORT_AMBIGUOUS_IMAGE_LIMIT);
+    assert_eq!(resources[0].url, "https://cdn.example.test/image-0.jpg");
+    assert_eq!(resources[5].url, "https://cdn.example.test/image-5.jpg");
+}
+
+#[test]
+fn first_viewport_image_plan_uses_scroll_window_when_render_has_no_image_slots() {
+    let body = (0..120)
+        .map(|index| format!("<p>lazy gallery text row {index}</p>"))
+        .collect::<String>();
+    let render = render_html(
+        "https://example.test/page",
+        format!("<!doctype html><title>Scrolled Gallery</title>{body}").as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = (0..30)
+        .map(|index| BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: format!("https://cdn.example.test/image-{index}.jpg"),
+            resolved: format!("https://cdn.example.test/image-{index}.jpg"),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    prioritize_image_resources_for_load(
+        &render,
+        &mut resources,
+        BrowserImageLoadMode::FirstViewport {
+            viewport: BrowserImageViewport {
+                x: 0,
+                y: 80,
+                width: 80,
+                height: 10,
+            },
+            lookahead_rows: 20,
+            max_images: 8,
+        },
+    );
+
+    let expected_center = 30usize.saturating_mul(85) / render.document_height.max(1);
+    let expected_start = expected_center.saturating_sub(4).min(30 - 8);
+    assert_eq!(resources.len(), 8);
+    assert_eq!(
+        resources[0].url,
+        format!("https://cdn.example.test/image-{expected_start}.jpg")
+    );
+    assert_eq!(
+        resources[7].url,
+        format!("https://cdn.example.test/image-{}.jpg", expected_start + 7)
+    );
+}
+
+#[test]
+fn first_viewport_image_plan_uses_scroll_window_when_only_near_image_slot_exists() {
+    let body = (0..120)
+        .map(|index| format!("<p>lazy gallery text row {index}</p>"))
+        .collect::<String>();
+    let render = render_html(
+        "https://example.test/page",
+        format!(
+            r#"<!doctype html><title>Scrolled Gallery</title>
+            <img src="image-0.jpg" width="80" height="24" alt="already decoded above">
+            {body}"#
+        )
+        .as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = (0..30)
+        .map(|index| BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: format!("https://cdn.example.test/image-{index}.jpg"),
+            resolved: format!("https://cdn.example.test/image-{index}.jpg"),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    prioritize_image_resources_for_load(
+        &render,
+        &mut resources,
+        BrowserImageLoadMode::FirstViewport {
+            viewport: BrowserImageViewport {
+                x: 0,
+                y: 80,
+                width: 80,
+                height: 10,
+            },
+            lookahead_rows: 80,
+            max_images: 8,
+        },
+    );
+
+    let expected_center = 30usize.saturating_mul(85) / render.document_height.max(1);
+    let expected_start = expected_center.saturating_sub(4).min(30 - 8);
+    assert!(
+        expected_start > 0,
+        "fixture should exercise a scrolled resource window"
+    );
+    assert_eq!(resources.len(), 8);
+    assert_eq!(
+        resources[0].url,
+        format!("https://cdn.example.test/image-{expected_start}.jpg")
+    );
+    assert_eq!(
+        resources[7].url,
+        format!("https://cdn.example.test/image-{}.jpg", expected_start + 7)
+    );
+}
+
+#[test]
+fn first_viewport_image_plan_prefetches_next_scroll_viewports() {
+    let render = render_html(
+        "https://example.test/gallery",
+        br#"
+            <!doctype html><title>Prefetch gallery</title>
+            <style>
+              .photo { display:block; width:80px; height:24px; }
+              .spacer { height:360px; }
+            </style>
+            <img class="photo" src="visible.jpg" alt="visible">
+            <div class="spacer"></div>
+            <img class="photo" src="near.jpg" alt="near">
+            <div class="spacer"></div>
+            <img class="photo" src="far.jpg" alt="far">
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = ["visible.jpg", "near.jpg", "far.jpg"]
+        .into_iter()
+        .map(|name| BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: name.to_owned(),
+            resolved: format!("https://example.test/{name}"),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    prioritize_image_resources_for_load(
+        &render,
+        &mut resources,
+        BrowserImageLoadOptions::first_viewport(
+            1024,
+            BrowserImageViewport {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 10,
+            },
+        )
+        .mode,
+    );
+
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.url.as_str())
+            .collect::<Vec<_>>(),
+        vec!["visible.jpg", "near.jpg"]
+    );
+}
+
+#[test]
+fn first_viewport_image_plan_keeps_deferred_top_lazy_hero_before_fixed_logo() {
+    let render = render_html(
+        "https://example.test/species",
+        br#"
+            <!doctype html><title>Lazy hero</title>
+            <style>
+              .hero-img { display:block; width:100%; }
+              .header { position:fixed; top:0; height:4px; }
+            </style>
+            <section class="hero">
+              <img class="hero-img"
+                   data-image="https://cdn.example.test/hero.jpg"
+                   data-image-dimensions="1200x600"
+                   data-load="false"
+                   alt="Hero shark">
+            </section>
+            <header class="header">
+              <img src="https://cdn.example.test/logo.png" width="24" height="4" alt="Logo">
+            </header>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image { url: Some(url), .. } if url == "https://cdn.example.test/logo.png"
+    )));
+    assert!(!render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image { url: Some(url), .. } if url == "https://cdn.example.test/hero.jpg"
+    )));
+
+    let mut resources = ["hero.jpg", "logo.png"]
+        .into_iter()
+        .map(|name| BrowserResource {
+            kind: "image".to_owned(),
+            initiator: "img".to_owned(),
+            url: format!("https://cdn.example.test/{name}"),
+            resolved: format!("https://cdn.example.test/{name}"),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    prioritize_image_resources_for_load(
+        &render,
+        &mut resources,
+        BrowserImageLoadOptions::first_viewport(
+            1024,
+            BrowserImageViewport {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            },
+        )
+        .mode,
+    );
+
+    let urls = resources
+        .iter()
+        .map(|resource| resource.resolved.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        urls,
+        vec![
+            "https://cdn.example.test/logo.png",
+            "https://cdn.example.test/hero.jpg",
+        ]
+    );
+}
+
+#[test]
+fn first_viewport_supplement_adds_top_dom_image_when_selected_plan_only_has_logo() {
+    let source = "https://example.test/species";
+    let html = br#"
+        <!doctype html><title>Supplement lazy hero</title>
+        <style>
+          header { position:fixed; top:0; height:4px; }
+          .hero-img { display:block; width:100%; }
+        </style>
+        <header>
+          <img src="https://cdn.example.test/logo.png" width="24" height="4" alt="Logo">
+          <img src="https://cdn.example.test/logo.png" width="24" height="4" alt="Logo duplicate">
+        </header>
+        <main>
+          <img class="hero-img"
+               data-image="https://cdn.example.test/hero.jpg"
+               data-image-dimensions="1200x600"
+               data-load="false"
+               alt="Hero shark">
+          <p>Body</p>
+        </main>
+        "#;
+    let parsed = parse_html(html);
+    let render = render_html(
+        source,
+        html,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = vec![BrowserResource {
+        kind: "image".to_owned(),
+        initiator: "img".to_owned(),
+        url: "https://cdn.example.test/logo.png".to_owned(),
+        resolved: "https://cdn.example.test/logo.png".to_owned(),
+        rel: None,
+        media: None,
+        alt: None,
+        type_hint: None,
+    }];
+
+    supplement_first_viewport_deferred_top_image_resources(
+        &mut resources,
+        &render,
+        &parsed.dom,
+        source,
+        800,
+        80,
+        BrowserImageViewport {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        },
+        16,
+    );
+
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.resolved.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "https://cdn.example.test/hero.jpg",
+            "https://cdn.example.test/logo.png",
+        ]
+    );
+}
+
+#[test]
+fn squarespace_fixed_top_header_reserves_flow_before_intro_hero() {
+    let render = render_html(
+        "https://example.test/species",
+        br#"
+            <!doctype html><title>Fixed header intro</title>
+            <style>
+              .Header { position:fixed; top:0; width:100%; }
+              .Intro-image img { display:block; width:100%; height:288px; }
+            </style>
+            <body>
+              <div class="Site" data-nc-base="header">
+                <header class="Header Header--top">
+                  <a class="Header-branding" data-nc-element="branding">
+                    <img src="/logo.png" alt="Logo">
+                  </a>
+                </header>
+                <div class="Site-inner">
+                  <section class="Intro Intro--has-image" data-controller="Parallax">
+                    <figure class="Intro-image" data-parallax-image-wrapper>
+                      <img data-image="/hero.jpg"
+                           data-image-dimensions="2500x1667"
+                           data-load="false"
+                           alt="Hero shark">
+                    </figure>
+                  </section>
+                  <main>After intro body</main>
+                </div>
+              </div>
+            </body>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let after_y = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { y, text, .. } | DisplayCommand::StyledText { y, text, .. }
+                if text.contains("After intro body") =>
+            {
+                Some(*y)
+            }
+            _ => None,
+        })
+        .expect("body text should render after the intro");
+
+    assert!(
+        after_y >= 20,
+        "fixed Squarespace top header should reserve its 4-row logo height before the 16-row intro hero: after_y={after_y}"
+    );
+}
+
+#[test]
+fn first_viewport_supplement_treats_inset_logo_as_top_chrome() {
+    let source = "https://example.test/species";
+    let logo_300 = "https://images.squarespace-cdn.com/content/v1/site/logo.png?format=300w";
+    let logo_500 = "https://images.squarespace-cdn.com/content/v1/site/logo.png?format=500w";
+    let html = br#"
+        <!doctype html><title>Inset logo supplement</title>
+        <style>
+          .masthead-spacer { height:6px; }
+          header img { display:block; width:24px; height:4px; }
+          .hero-img { display:block; width:100%; }
+        </style>
+        <div class="masthead-spacer"></div>
+        <header>
+          <img src="https://images.squarespace-cdn.com/content/v1/site/logo.png"
+               srcset="https://images.squarespace-cdn.com/content/v1/site/logo.png?format=300w 300w,
+                       https://images.squarespace-cdn.com/content/v1/site/logo.png?format=500w 500w"
+               sizes="320px"
+               width="24" height="4" alt="Logo">
+        </header>
+        <main>
+          <img class="hero-img"
+               data-image="https://cdn.example.test/hero.jpg"
+               data-image-dimensions="1200x600"
+               data-load="false"
+               alt="Hero shark">
+          <p>Body</p>
+        </main>
+        "#;
+    let parsed = parse_html(html);
+    let render = render_html(
+        source,
+        html,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let mut resources = [logo_500, logo_300]
+        .into_iter()
+        .map(|url| BrowserResource {
+            kind: "image_candidate".to_owned(),
+            initiator: "img".to_owned(),
+            url: url.to_owned(),
+            resolved: url.to_owned(),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        first_viewport_distinct_image_identity_count(source, &resources),
+        1
+    );
+
+    supplement_first_viewport_deferred_top_image_resources(
+        &mut resources,
+        &render,
+        &parsed.dom,
+        source,
+        800,
+        80,
+        BrowserImageViewport {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 44,
+        },
+        16,
+    );
+
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.resolved.as_str())
+            .collect::<Vec<_>>(),
+        vec!["https://cdn.example.test/hero.jpg", logo_500, logo_300,]
+    );
+}
+
+#[test]
+fn flex_article_keeps_nested_aspect_ratio_carousel_in_flow() {
+    let render = render_html(
+        "mem://flex-article-carousel-flow",
+        br#"
+            <html><head><style>
+              .article { display:flex; width:100%; }
+              .main { width:640px; }
+              .gallery { overflow-x:hidden; }
+              .ratio { position:relative; overflow:hidden; }
+              .absolute-fill { position:absolute; top:0; right:0; bottom:0; left:0; }
+              .image { width:100%; }
+            </style></head><body>
+              <div class="article">
+                <section class="main">
+                  <div class="gallery">
+                    <div class="ratio aspect-ratio--16x9">
+                      <div class="absolute-fill">
+                        <img class="image" alt="carousel hero">
+                      </div>
+                    </div>
+                  </div>
+                  <h1>Jamaica</h1>
+                  <p>Body copy below carousel</p>
+                </section>
+              </div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.text.contains("Jamaica"));
+    assert!(
+        render.document_height >= 40,
+        "nested aspect-ratio carousel should reserve vertical flow before article text, document_height={}",
+        render.document_height
+    );
+}
+
+#[test]
+fn visually_hidden_gallery_caption_does_not_leak_into_visual_viewport() {
+    let render = render_html(
+        "mem://visually-hidden-gallery-caption",
+        br#"
+            <html><head><style>
+              .gallery { height:48px; background:rgb(0, 0, 0); }
+              .sr-only, .assistive {
+                position:absolute; width:1px; height:1px; overflow:hidden;
+                clip:rect(0, 0, 0, 0); clip-path:inset(50%);
+              }
+            </style></head><body>
+              <div class="gallery"><img alt="" width="80" height="48"></div>
+              <div class="sr-only">Jamaica hidden screen reader caption</div>
+              <div class="assistive">Another hidden assistive caption</div>
+              <p>Jamaica visible caption</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 80,
+            height: 8,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let viewport_text = viewport.lines.join("\n");
+    assert!(!viewport_text.contains("hidden screen reader"));
+    assert!(!viewport_text.contains("hidden assistive"));
+    assert!(viewport_text.contains("Jamaica visible caption"));
+}
+
+#[test]
 fn materializes_element_data_from_parsed_attributes() {
     let parsed = parse_html(
             br#"
@@ -128,12 +801,24 @@ fn rasterizes_display_list_into_stable_grayscale_pixels() {
     let raster = rasterize_render(&render, options).unwrap();
     let report = raster_report(&render, &raster, options);
 
-    assert_eq!(raster.width, 168);
-    assert_eq!(raster.height, 20);
+    assert_eq!(raster.width, report.width);
+    assert_eq!(raster.height, report.height);
+    assert_eq!(
+        raster.width,
+        render
+            .viewport_width
+            .saturating_mul(options.cell_width)
+            .saturating_add(options.padding_x.saturating_mul(2))
+    );
+    assert!(raster.height >= options.padding_y.saturating_mul(2) + options.cell_height);
     assert!(raster.non_background_pixels() > 0);
     assert_eq!(report.display_command_count, render.display_list.len());
     assert_eq!(report.pixel_hash.len(), 64);
-    assert!(raster.encode_pgm().starts_with(b"P5\n168 20\n255\n"));
+    assert!(
+        raster
+            .encode_pgm()
+            .starts_with(format!("P5\n{} {}\n255\n", raster.width, raster.height).as_bytes())
+    );
 }
 
 #[test]
@@ -151,8 +836,16 @@ fn rasterizes_display_list_into_rgba_png_artifact() {
     let report = rgba_raster_report(&render, &raster, options);
     let png = raster.encode_png().unwrap();
 
-    assert_eq!(raster.width, 168);
-    assert_eq!(raster.height, 32);
+    assert_eq!(raster.width, report.width);
+    assert_eq!(raster.height, report.height);
+    assert_eq!(
+        raster.width,
+        render
+            .viewport_width
+            .saturating_mul(options.cell_width)
+            .saturating_add(options.padding_x.saturating_mul(2))
+    );
+    assert!(raster.height >= options.padding_y.saturating_mul(2) + options.cell_height);
     assert_eq!(raster.pixels.len(), raster.width * raster.height * 4);
     assert!(raster.non_background_pixels() > 0);
     assert_eq!(report.bytes_per_pixel, 4);
@@ -184,6 +877,7 @@ fn render_from_display_list(
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); display_list.len()],
+        document_height: 0,
         text: String::new(),
         display_list,
     }
@@ -386,14 +1080,14 @@ fn text_viewport_clips_display_list_for_browser_shell() {
 
     assert_eq!(viewport.document_width, 8);
     assert_eq!(viewport.document_height, 5);
-    assert_eq!(viewport.max_scroll_x, 4);
+    assert_eq!(viewport.max_scroll_x, 6);
     assert_eq!(viewport.max_scroll_y, 2);
     assert_eq!(viewport.visible_command_count, 3);
     assert_eq!(viewport.culled_command_count, 1);
     assert_eq!(viewport.layout_box_count, 0);
     assert_eq!(viewport.visible_layout_box_count, 0);
     assert_eq!(viewport.culled_layout_box_count, 0);
-    assert_eq!(viewport.lines, vec!["one", "####", " @t@"]);
+    assert_eq!(viewport.lines, vec!["on", "", " t"]);
 }
 
 #[test]
@@ -432,7 +1126,85 @@ fn text_viewport_overlays_image_alt_on_placeholder_cells() {
         },
     );
 
-    assert_eq!(viewport.lines, vec!["@@@@@@@@@@", "@Hero art@", "After"]);
+    assert_eq!(viewport.lines, vec!["", " Hero art", "After"]);
+}
+
+#[test]
+fn visual_heavy_viewport_overlays_meaningful_body_context() {
+    let render = render_html(
+        "mem://modern-shell",
+        br##"
+        <html>
+          <head>
+            <title>Modern Shell</title>
+            <style>
+              :root { --panel: hsl(0 0% 13%); }
+              .hero-shell {
+                position: sticky;
+                top: 0;
+                min-height: 360px;
+                background: var(--panel, #202020);
+                overflow: hidden;
+              }
+              .decorative { height: 300px; background: #111; }
+              .search-row { display: flex; gap: 8px; }
+            </style>
+          </head>
+          <body>
+            <a href="#main">Skip to main content</a>
+            <header class="hero-shell">
+              <form class="search-row"><input placeholder="Type any word..."><button>Go</button></form>
+              <div class="decorative" aria-hidden="true">Decorative skeleton should be hidden</div>
+            </header>
+            <main id="main">
+              <h1>Neutral Article</h1>
+              <p>The article body contains enough meaningful words to rescue a visual-heavy first viewport.</p>
+            </main>
+          </body>
+        </html>
+        "##,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 16,
+        },
+    );
+    let viewport_text = viewport.lines.join("\n");
+    assert!(
+        viewport_text.contains("article body contains enough meaningful words"),
+        "{viewport_text}"
+    );
+    assert!(!render.text.contains("Decorative skeleton should be hidden"));
+
+    let diagnostics = browser_render_diagnostics(
+        &render,
+        BrowserTextViewportOptions {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 16,
+        },
+    );
+    assert!(diagnostics.readability_overlay_applied);
+    assert!(diagnostics.fill_coverage_bps > 8_000, "{diagnostics:?}");
+    let shell_fill = diagnostics
+        .largest_visual_fills
+        .iter()
+        .filter_map(|fill| fill.node.as_ref())
+        .find(|node| node.classes.iter().any(|class| class == "hero-shell"))
+        .expect("hero shell fill should be attributed to the source node");
+    assert_eq!(shell_fill.tag, "header");
+    assert_eq!(shell_fill.position, "sticky");
+    assert_eq!(shell_fill.background_shade, Some(33));
 }
 
 #[test]
@@ -861,12 +1633,12 @@ fn renders_image_as_replaced_element_placeholder() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 1,
+                y: 0,
                 text: "Before image".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 3,
+                y: 1,
                 width: 10,
                 height: 2,
                 shade: 220,
@@ -878,7 +1650,7 @@ fn renders_image_as_replaced_element_placeholder() {
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 6,
+                y: 3,
                 text: "After image".to_owned()
             },
         ]
@@ -1008,7 +1780,7 @@ async fn image_svg_fidelity_decodes_viewbox_shape_pixels_for_rendered_resource()
 
     let render = session.current().unwrap();
     assert!(render.decoded_images.iter().any(|entry| {
-        entry.width == 30 && entry.height == 20 && entry.pixel_hash == expected_hash
+        entry.width == 20 && entry.height == 12 && entry.pixel_hash == expected_hash
     }));
     assert!(render.display_list.iter().any(|command| {
         matches!(
@@ -4054,7 +4826,7 @@ fn selects_descriptorless_jpeg_srcset_candidate_as_default_density() {
     fs::write(&retina_jpeg, tiny_test_jpeg_bytes()).unwrap();
 
     let source = page.display().to_string();
-    let decoded_info = decoded_image_entry(&source, "large.jpg").unwrap().info();
+    let decoded_info = decoded_image_entry(&source, "small.jpg").unwrap().info();
     let render = render_html(
         &source,
         br#"<html><body><img src="fallback.jpg" srcset="small.jpg, retina.jpg 2x" alt="Default Density JPEG" width="80" height="24"></body></html>"#,
@@ -5568,6 +6340,34 @@ fn lazy_gif_placeholder_img_uses_data_image_source_for_rendering() {
     );
 }
 
+#[test]
+fn unresolved_lazy_gif_placeholder_keeps_layout_without_fake_alt_paint() {
+    let placeholder =
+        "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    let html = format!(
+        r#"<html><body><img src="{placeholder}" alt="Tracking placeholder" width="80" height="48"><p>After</p></body></html>"#
+    );
+    let render = render_html(
+        "mem://lazy-gif-placeholder",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "After");
+    assert_eq!(render.decoded_images.len(), 1);
+    assert_eq!(
+        render.display_list,
+        vec![DisplayCommand::Text {
+            x: 0,
+            y: 4,
+            text: "After".to_owned(),
+        }]
+    );
+}
+
 #[tokio::test]
 async fn image_load_paint_webp_placeholder_uses_lazy_rgb_source() {
     let dir = tempfile::tempdir().unwrap();
@@ -6279,7 +7079,7 @@ async fn session_render_images_decodes_data_url_image_resource() {
     let report = session.render_current_with_images(1024).await.unwrap();
     assert_eq!(report.image_count, 1);
     assert_eq!(report.decoded, 1);
-    assert_eq!(report.failed, 1);
+    assert_eq!(report.failed, 0);
     assert_eq!(report.fetches.len(), 1);
     assert_eq!(report.fetches[0].status, "cached");
     assert_eq!(report.fetches[0].content_type.as_deref(), Some("image/png"));
@@ -7845,7 +8645,15 @@ async fn lazy_deferred_image_enters_viewport_with_color_attachment_evidence() {
         assert_eq!(fetch.image_resource_state.as_deref(), Some("decoded_color"));
         assert_eq!(
             fetch.image_visibility_state.as_deref(),
-            Some("render_attached")
+            Some("render_attached"),
+            "unattached fetch: {:?}",
+            (
+                fetch.resource.kind.as_str(),
+                fetch.resource.initiator.as_str(),
+                fetch.resource.url.as_str(),
+                fetch.resource.resolved.as_str(),
+                fetch.render_attachment_kind.as_deref()
+            )
         );
         assert_eq!(fetch.decoded_width, Some(2));
         assert_eq!(fetch.decoded_height, Some(2));
@@ -8175,7 +8983,7 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     assert_eq!(preload_fetch.render_attachment_kind, None);
     assert_eq!(
         preload_fetch.image_visibility_state.as_deref(),
-        Some("decoded_unattached")
+        Some("decoded_not_rendered")
     );
     assert_eq!(preload_fetch.image_fallback_state, None);
 
@@ -8334,7 +9142,7 @@ async fn image_visibility_failure_debug_pack_summarizes_mixed_visibility_states(
     let raster_report = rgba_raster_report(render, &raster, raster_options);
     assert_eq!(raster_report.visible_decoded_image_count, 3);
     assert_eq!(raster_report.culled_decoded_image_count, 1);
-    assert_eq!(raster_report.clipped_decoded_image_count, 2);
+    assert_eq!(raster_report.clipped_decoded_image_count, 1);
     assert!(raster_report.color_pixels > 0);
     assert_eq!(
         raster_report.image_visibility_state,
@@ -12075,12 +12883,12 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 1,
+                y: 0,
                 text: "Before network".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 3,
+                y: 1,
                 width: 10,
                 height: 4,
                 shade: 220,
@@ -12092,7 +12900,7 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 8,
+                y: 5,
                 text: "After network".to_owned()
             },
         ]
@@ -12110,12 +12918,12 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
         vec![
             DisplayCommand::Text {
                 x: 0,
-                y: 1,
+                y: 0,
                 text: "Before network".to_owned()
             },
             DisplayCommand::Image {
                 x: 0,
-                y: 3,
+                y: 1,
                 width: 1,
                 height: 1,
                 shade: 220,
@@ -12127,7 +12935,7 @@ async fn session_render_images_uses_decoded_intrinsic_size_without_attrs() {
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 5,
+                y: 2,
                 text: "After network".to_owned()
             },
         ]
@@ -16485,15 +17293,13 @@ async fn browser_session_repeated_scroll_steps_keep_raster_and_click_targets_ali
             assert_eq!(report.scroll_delta_y, 1);
             assert_eq!(report.scroll_delta_x, 0);
             assert!(!report.full_repaint);
-            assert_eq!(
-                report.invalidated_regions,
-                vec![BrowserViewportRect {
-                    x: 0,
-                    y: 3,
-                    width: 32,
-                    height: 1,
-                }]
-            );
+            assert!(report.invalidated_regions.iter().any(|region| {
+                region.x == 0 && region.y == 0 && region.width >= 6 && region.height == 1
+            }));
+            assert!(report.invalidated_regions.iter().any(|region| {
+                let bottom_row = report.viewport.height.saturating_sub(1);
+                bottom_row >= region.y && bottom_row < region.y.saturating_add(region.height)
+            }));
         }
         assert_eq!(report.viewport.y + 1, link_y);
         (link_x, link_y, link_width, report.viewport, Some(previous))
@@ -16514,7 +17320,14 @@ async fn browser_session_repeated_scroll_steps_keep_raster_and_click_targets_ali
     assert_eq!(frame.report.viewport.viewport, viewport);
     assert_eq!(frame.report.frame.raster_viewport_y, Some(viewport.y));
     assert!(frame.report.frame.non_background_pixels > 0);
-    assert_eq!(frame.report.dirty_pixel_regions.len(), 1);
+    assert!(frame.report.dirty_pixel_regions.iter().any(|region| {
+        region.viewport_x == 0 && region.viewport_y == 0 && region.viewport_width >= 6
+    }));
+    assert!(frame.report.dirty_pixel_regions.iter().any(|region| {
+        let bottom_row = viewport.height.saturating_sub(1);
+        bottom_row >= region.viewport_y
+            && bottom_row < region.viewport_y.saturating_add(region.viewport_height)
+    }));
 
     let local_y = link_y.saturating_sub(viewport.y);
     let expected_target = resolve_browser_href(&first.display().to_string(), "second.html");
@@ -16718,7 +17531,6 @@ async fn browser_session_click_viewport_at_hits_button_visual_box_after_image() 
     let visual_click_x = button_box.0;
     let visual_click_y = button_box.1.saturating_add(1);
     let viewport_y = visual_click_y.saturating_sub(1);
-    let local_y = visual_click_y.saturating_sub(viewport_y);
     let viewport = BrowserViewportState {
         x: 0,
         y: viewport_y,
@@ -16726,7 +17538,9 @@ async fn browser_session_click_viewport_at_hits_button_visual_box_after_image() 
         height: 4,
     };
     let document_viewport = browser_document_viewport(render, viewport, None);
-    assert_eq!(document_viewport.viewport.y, viewport_y);
+    assert!(document_viewport.viewport.y <= viewport_y);
+    let viewport = document_viewport.viewport;
+    let local_y = visual_click_y.saturating_sub(viewport.y);
 
     let render = session
         .click_viewport_at_with_default_action(viewport, visual_click_x, local_y)
@@ -17758,6 +18572,409 @@ async fn image_webp_srcset_aliases_attach_selected_visible_rgb_images() {
         assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
         assert!(fetch.decoded_hash.is_some());
     }
+}
+
+#[tokio::test]
+async fn image_lazy_gallery_metadata_sizes_and_paints_decoded_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.png");
+    fs::write(&hero, tiny_test_png_rgb_with_sub_filter()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head><style>
+            .gallery-slide { opacity: 0; }
+        </style></head><body>
+            <p>Before gallery</p>
+            <figure class="gallery-slide">
+                <a class="content-fill" href="/gallery/hero">
+                    <img class="thumb-image"
+                         data-image="hero.png"
+                         data-image-dimensions="400x300"
+                         data-load="false"
+                         alt="Lazy gallery hero">
+                </a>
+                <figcaption>Lazy gallery hero</figcaption>
+            </figure>
+            <p>After gallery</p>
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(16 * 1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(
+        report.decoded,
+        1,
+        "unexpected lazy gallery fetches: {:?}",
+        report
+            .fetches
+            .iter()
+            .map(|fetch| (
+                fetch.resource.url.as_str(),
+                fetch.resource.resolved.as_str(),
+                fetch.status.as_str(),
+                fetch.content_type.as_deref(),
+                fetch.error_kind.as_deref(),
+                fetch.image_decode_status.as_deref(),
+                fetch.image_decode_error_kind.as_deref(),
+                fetch.decoded_width,
+                fetch.decoded_height,
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.url, "hero.png");
+    assert_eq!(fetch.resource.resolved, hero.display().to_string());
+    assert_eq!(fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(fetch.render_attached, Some(true));
+    assert_eq!(fetch.render_attachment_kind.as_deref(), Some("image"));
+
+    let render = session.current().unwrap();
+    let decoded_hash = fetch.decoded_hash.as_deref().unwrap();
+    let image_command = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                width,
+                height,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                ..
+            } if url == &hero.display().to_string() && hash == decoded_hash => {
+                Some((*width, *height))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(image_command, (48, 24));
+
+    let raster_options = BrowserRasterOptions {
+        viewport_width: Some(render.viewport_width),
+        viewport_height: Some(32),
+        ..BrowserRasterOptions::default()
+    };
+    let raster = rasterize_render_rgba(render, raster_options).unwrap();
+    let raster_report = rgba_raster_report(render, &raster, raster_options);
+    assert_eq!(raster_report.visible_decoded_image_count, 1);
+    assert_eq!(raster_report.image_visibility_state, "visible_color_pixels");
+    assert!(raster_report.color_pixels > 0);
+}
+
+#[tokio::test]
+async fn lazy_image_focal_point_paints_decoded_block_as_cover_crop() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let hero = dir.path().join("hero.png");
+    fs::write(&hero, tiny_test_png_rgb_with_sub_filter()).unwrap();
+    fs::write(
+        &page,
+        r#"<html><head><style>
+            .hero-img { display:block; width:100%; }
+        </style></head><body>
+            <img class="hero-img"
+                 data-image="hero.png"
+                 data-image-dimensions="400x300"
+                 data-image-focal-point="0.75,0.25"
+                 data-load="false"
+                 alt="Focal hero">
+        </body></html>"#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 48,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page.display().to_string()).await.unwrap();
+
+    let report = session.render_current_with_images(16 * 1024).await.unwrap();
+    assert_eq!(report.image_count, 1);
+    assert_eq!(report.decoded, 1);
+    assert_eq!(report.failed, 0);
+    let fetch = report.fetches.first().unwrap();
+    assert_eq!(fetch.resource.url, "hero.png");
+    assert_eq!(fetch.resource.resolved, hero.display().to_string());
+    assert_eq!(fetch.render_attached, Some(true));
+    assert_eq!(
+        fetch.render_attachment_kind.as_deref(),
+        Some("background_image")
+    );
+
+    let render = session.current().unwrap();
+    let decoded_hash = fetch.decoded_hash.as_deref().unwrap();
+    let background_command = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::BackgroundImage {
+                width,
+                height,
+                url: Some(url),
+                decoded_hash: Some(hash),
+                size,
+                position,
+                repeat,
+                ..
+            } if url == &hero.display().to_string() && hash == decoded_hash => {
+                Some((*width, *height, *size, *position, *repeat))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(background_command.0, 48);
+    assert_eq!(background_command.1, 24);
+    assert_eq!(background_command.2, BackgroundImageSize::Cover);
+    assert_eq!(
+        background_command.3,
+        BackgroundImagePosition {
+            x_percent: 75,
+            y_percent: 25,
+        }
+    );
+    assert_eq!(background_command.4, BackgroundImageRepeat::NoRepeat);
+    assert!(!render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image {
+            url: Some(url),
+            ..
+        } if url == &hero.display().to_string()
+    )));
+}
+
+#[tokio::test]
+async fn first_viewport_images_decode_deferred_top_lazy_hero_before_fixed_logo() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let png_bytes = tiny_test_png_rgb_with_sub_filter();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let first_line = request.lines().next().unwrap_or_default();
+            if first_line.contains(" /hero.png ") || first_line.contains(" /logo.png ") {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png_bytes.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&png_bytes).await.unwrap();
+                continue;
+            }
+
+            assert!(first_line.contains(" /page.html "), "{first_line}");
+            let body = br#"<html><head><style>
+                .hero-img { display:block; width:100%; }
+                .header { position:fixed; top:0; height:4px; }
+            </style></head><body>
+                <section class="hero">
+                    <img class="hero-img"
+                         data-image="/hero.png"
+                         data-image-dimensions="1200x600"
+                         data-load="false"
+                         alt="Hero shark">
+                </section>
+                <header class="header">
+                    <img src="/logo.png" width="24" height="4" alt="Logo">
+                </header>
+            </body></html>"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        }
+    });
+
+    let page_url = format!("http://{addr}/page.html");
+    let hero_url = format!("http://{addr}/hero.png");
+    let logo_url = format!("http://{addr}/logo.png");
+
+    let mut session = BrowserSession::new(BrowserRenderOptions {
+        width: 80,
+        ..BrowserRenderOptions::default()
+    });
+    session.navigate(&page_url).await.unwrap();
+    let initial = session.current().unwrap();
+    assert!(initial.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image { url: Some(url), .. } if url == &logo_url
+    )));
+    assert!(!initial.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image { url: Some(url), .. } if url == &hero_url
+    )));
+
+    let report = session
+        .render_current_with_image_options(BrowserImageLoadOptions::first_viewport(
+            16 * 1024,
+            BrowserImageViewport {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+            },
+        ))
+        .await
+        .unwrap();
+    let fetched = report
+        .fetches
+        .iter()
+        .map(|fetch| fetch.resource.resolved.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        fetched.contains(&hero_url.as_str()),
+        "first viewport image report should include deferred hero before fixed logo: {fetched:?}"
+    );
+    assert!(
+        fetched.contains(&logo_url.as_str()),
+        "first viewport image report should still include visible fixed logo: {fetched:?}"
+    );
+    let hero_fetch = report
+        .fetches
+        .iter()
+        .find(|fetch| fetch.resource.resolved == hero_url)
+        .unwrap();
+    assert_eq!(hero_fetch.image_decode_status.as_deref(), Some("decoded"));
+    assert_eq!(hero_fetch.render_attached, Some(true));
+    assert_eq!(hero_fetch.render_attachment_kind.as_deref(), Some("image"));
+
+    let render = session.current().unwrap();
+    assert!(render.display_list.iter().any(|command| matches!(
+        command,
+        DisplayCommand::Image {
+            url: Some(url),
+            decoded_hash: Some(_),
+            ..
+        } if url == &hero_url
+    )));
+    server.await.unwrap();
+}
+
+#[test]
+fn lazy_image_metadata_reserves_layout_before_decode_without_placeholder_box() {
+    let render = render_html(
+        "https://example.test/gallery/page.html",
+        br#"<html><body>
+            <p>Before gallery</p>
+            <img data-image="hero.jpg"
+                 data-image-dimensions="400x300"
+                 data-load="false"
+                 alt="Lazy gallery hero">
+            <p>After gallery</p>
+        </body></html>"#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let text_y = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { y, text, .. }
+                | DisplayCommand::StyledText { y, text, .. }
+                    if text.contains(needle) =>
+                {
+                    Some(*y)
+                }
+                _ => None,
+            })
+    };
+    let before_y = text_y("Before gallery").unwrap();
+    let after_y = text_y("After gallery").unwrap();
+    assert!(
+        after_y >= before_y.saturating_add(24),
+        "lazy metadata should reserve the image's 4:3 slot before decode: before={before_y}, after={after_y}"
+    );
+    assert!(
+        !render
+            .display_list
+            .iter()
+            .any(|command| matches!(command, DisplayCommand::Image { .. })),
+        "unresolved lazy metadata should reserve layout without painting a gray image box"
+    );
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image" && resource.resolved == "https://example.test/gallery/hero.jpg"
+    }));
+}
+
+#[test]
+fn lazy_media_container_reserves_caption_flow_before_decode() {
+    let render = render_html(
+        "https://example.test/gallery/page.html",
+        br#"<html><head><style>
+            .slide { display:block; width:100%; }
+            .content-fill { position:relative; overflow:hidden; width:100%; }
+            .thumb-image { position:absolute; inset:0; width:100%; height:100%; }
+        </style></head><body>
+            <p>Before gallery</p>
+            <figure class="slide">
+                <a class="content-fill" href="/gallery/hero">
+                    <img class="thumb-image"
+                         data-image="hero.jpg"
+                         data-image-dimensions="400x300"
+                         data-load="false"
+                         alt="Lazy gallery hero">
+                </a>
+                <figcaption>Lazy gallery hero</figcaption>
+            </figure>
+            <p>After gallery</p>
+        </body></html>"#,
+        BrowserRenderOptions {
+            width: 48,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let text_y = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { y, text, .. }
+                | DisplayCommand::StyledText { y, text, .. }
+                    if text == needle =>
+                {
+                    Some(*y)
+                }
+                _ => None,
+            })
+    };
+    let before_y = text_y("Before gallery").unwrap();
+    let caption_y = text_y("Lazy gallery hero").unwrap();
+    let after_y = text_y("After gallery").unwrap();
+    assert!(
+        caption_y >= before_y.saturating_add(24),
+        "caption should follow the reserved lazy media slot: before={before_y}, caption={caption_y}"
+    );
+    assert!(
+        after_y > caption_y,
+        "body text should remain below the caption: caption={caption_y}, after={after_y}"
+    );
+    assert!(
+        !render
+            .display_list
+            .iter()
+            .any(|command| matches!(command, DisplayCommand::Image { .. })),
+        "unresolved lazy gallery media should reserve flow without a gray image command"
+    );
 }
 
 #[tokio::test]
@@ -22723,6 +23940,50 @@ async fn external_stylesheets_can_rerender_current_page() {
 }
 
 #[tokio::test]
+async fn external_stylesheet_imports_are_loaded_before_rerender() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    let stylesheet = dir.path().join("style.css");
+    let imported = dir.path().join("theme.css");
+    let stylesheet_text = r#"@import url("theme.css") screen; .direct-hide { display:none }"#;
+    let imported_text = ".import-hide { display:none }";
+    fs::write(&stylesheet, stylesheet_text).unwrap();
+    fs::write(&imported, imported_text).unwrap();
+    fs::write(
+        &page,
+        r#"
+            <html><head><link rel="stylesheet" href="style.css"></head>
+            <body>
+                <p>Visible</p>
+                <p class="import-hide">Hidden by import</p>
+                <p class="direct-hide">Hidden direct</p>
+            </body></html>
+            "#,
+    )
+    .unwrap();
+
+    let mut session = BrowserSession::new(BrowserRenderOptions::default());
+    session.navigate(&page.display().to_string()).await.unwrap();
+    assert!(session.current().unwrap().text.contains("Hidden by import"));
+
+    let report = session.render_current_with_stylesheets(1024).await.unwrap();
+    assert_eq!(report.stylesheet_count, 2);
+    assert_eq!(report.applied, 2);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.cached_resource_count, 2);
+    assert_eq!(report.fetches[0].resource.url, "style.css");
+    assert_eq!(report.fetches[1].resource.url, "theme.css");
+    assert_eq!(report.fetches[1].resource.initiator, "css-import");
+    assert_eq!(report.fetches[1].resource.media.as_deref(), Some("screen"));
+
+    let render = session.current().unwrap();
+    assert!(render.text.contains("Visible"));
+    assert!(!render.text.contains("Hidden by import"));
+    assert!(!render.text.contains("Hidden direct"));
+    assert_eq!(render.css_rule_count, 2);
+}
+
+#[tokio::test]
 async fn external_scripts_can_rerender_current_page() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("page.html");
@@ -22803,20 +24064,91 @@ fn extracts_forms_and_builds_get_submission_urls() {
 
 #[test]
 fn chromium_parity_helpers_extract_and_normalize_text() {
-    let dump = r#"<html><head><script id="brutal-chromium-result" type="application/json">{"title":"Fixture","text":"one   two\nthree"}</script></head></html>"#;
+    let dump = r#"<html><head><script id="esoteric-chromium-result" type="application/json">{"title":"Fixture","text":"one   two\nthree"}</script></head></html>"#;
     let json = extract_chromium_result_json(dump).unwrap();
     let parsed: ChromiumStaticRender = serde_json::from_str(json).unwrap();
     assert_eq!(parsed.title, "Fixture");
     assert_eq!(normalize_browser_parity_text(&parsed.text), "one two three");
+    assert_eq!(
+        normalize_browser_fixture_parity_text(
+            "- Parent\no Child\n2. Grandchild\naa. Alpha marker\nIV. Roman marker",
+            br#"<ul><li>Parent</li><li>Child</li></ul><ol><li>Grandchild</li></ol>"#
+        ),
+        "Parent Child Grandchild Alpha marker Roman marker"
+    );
+    assert_eq!(
+        normalize_browser_fixture_parity_text(
+            "- literal dash\nDr. Literal abbreviation",
+            br#"<p>- literal dash</p><p>Dr. Literal abbreviation</p>"#
+        ),
+        "- literal dash Dr. Literal abbreviation"
+    );
+    assert_eq!(
+        normalize_browser_fixture_parity_text(
+            "file:///tmp/esoteric-browser-chromium-static.html file:///tmp/esoteric-browser-chromium-static.html /tmp/esoteric-browser-chromium-static.html",
+            br#"<script>state.textContent = location.href + " " + document.URL + " " + document.location.pathname;</script>"#
+        ),
+        "<location-url> <location-url> <location-path>"
+    );
+    assert_eq!(
+        normalize_browser_fixture_parity_text(
+            "bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html",
+            br#"<script>state.textContent = location.href + " " + document.URL + " " + document.location.pathname;</script>"#
+        ),
+        "<location-path> <location-path> <location-path>"
+    );
+    let form_render = render_html(
+        "file:///fixture.html",
+        br#"
+        <form>
+          <input value="typed">
+          <select><option>Docs</option><option selected>News</option></select>
+          <textarea>draft note</textarea>
+          <button>Go</button>
+        </form>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+    let (form_state, _) = render_html_prepared_with_state(
+        "file:///fixture.html",
+        br#"
+        <form>
+          <input value="typed">
+          <select><option>Docs</option><option selected>News</option></select>
+          <textarea>draft note</textarea>
+          <button>Go</button>
+        </form>
+        "#,
+        BrowserRenderOptions::default(),
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+            fetch_bodies: &[],
+        },
+    )
+    .unwrap();
+    assert!(form_render.text.contains("[typed]"));
+    assert_eq!(
+        browser_fixture_parity_text(
+            &form_render,
+            &form_state,
+            br#"<form><input><select></select><textarea></textarea><button></button></form>"#
+        ),
+        "Docs News Go"
+    );
 
     let reason = parity_failure_reason(&BrowserChromiumParityComparison {
         name: "fixture".to_owned(),
         path: "fixture.html".to_owned(),
         title_match: true,
         text_match: false,
-        brutal_title: "Fixture".to_owned(),
+        esoteric_title: "Fixture".to_owned(),
         chromium_title: "Fixture".to_owned(),
-        brutal_text: "one two".to_owned(),
+        esoteric_text: "one two".to_owned(),
         chromium_text: "one two three".to_owned(),
     });
     assert_eq!(reason, "text mismatch");
@@ -24073,4 +25405,91 @@ fn reports_browser_fixture_failures() {
     assert_eq!(report.passed, 0);
     assert_eq!(report.failed, 1);
     assert!(report.failures[0].reason.contains("text mismatch"));
+}
+
+#[test]
+fn css_gradient_background_paints_solid_fallback_for_nav_bar() {
+    let render = render_html(
+        "mem://gradient-background-nav",
+        br##"
+            <html>
+              <head>
+                <style>
+                  .nav {
+                    align-items: center;
+                    background-image: linear-gradient(#00a900,#008900);
+                    color: white;
+                    display: flex;
+                    height: 32px;
+                    width: 100%;
+                  }
+                  .spacer { flex: 1; }
+                </style>
+              </head>
+              <body>
+                <nav class="nav">
+                  <a href="/shop">Shop</a>
+                  <span class="spacer"></span>
+                  <a href="/search">Search</a>
+                </nav>
+                <main>Article body</main>
+              </body>
+            </html>
+            "##,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let nav_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+                ..
+            } if (*x, *y, *width, *red, *green, *blue) == (0, 0, 40, 0, 153, 0) => Some(*height),
+            _ => None,
+        })
+        .expect("gradient nav should paint a green fallback background");
+
+    assert!(
+        nav_background >= 3,
+        "gradient fallback should cover the declared nav height, got {nav_background}"
+    );
+    assert!(
+        render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } if text == "Shop"
+        )),
+        "nav text should still render above the gradient fallback"
+    );
+}
+
+#[tokio::test]
+async fn session_stylesheet_rerender_keeps_heading_text_unscaled() {
+    let path = "bench/browser-fixtures/regression-doubled-heading-session-lane.html";
+    let mut session = BrowserSession::new(BrowserRenderOptions::new(160, 4 * 1024 * 1024));
+    session.navigate(path).await.expect("navigate fixture");
+    let first = session.current().expect("navigated render").text.clone();
+    assert!(
+        !first.contains("BBee"),
+        "navigate render should project unscaled heading text"
+    );
+    session
+        .render_current_with_stylesheets(4 * 1024 * 1024)
+        .await
+        .expect("stylesheet pass");
+    let second = session.current().expect("styled render").text.clone();
+    assert!(
+        !second.contains("BBee"),
+        "form visual state reprojection must collapse scaled heading rows"
+    );
 }

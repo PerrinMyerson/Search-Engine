@@ -1,0 +1,9290 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
+use std::io::{BufRead, Write};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand, ValueEnum};
+use esoteric_search::crawler::{
+    CrawlBoundary, CrawlOptions, crawl_many, domain_to_seed, load_domain_file, load_seed_file,
+};
+use esoteric_search::daemon::{default_socket_path, send_request};
+use esoteric_search::frontier::{
+    DEFAULT_MAX_FAILED_FRONTIER_RECORDS, FrontierStats, FrontierStore, RecrawlPlanEntry, unix_now,
+};
+use esoteric_search::index::{
+    IndexBuildOptions, IndexManifest, PreloadMode, SearchIndex, TermCorrection, TermSuggestion,
+    build_from_corpus, build_from_fielded_documents,
+};
+use esoteric_search::protocol::{DaemonRequest, DaemonResponse};
+use esoteric_search::query::{SearchOptions, SearchResult};
+use esoteric_search::recrawl::{RecrawlScheduleOptions, load_recrawl_manifest_with_options};
+use esoteric_search::render::render_target;
+use esoteric_search::scheduler::{
+    RecrawlCrawlOptions, RecrawlRoundReport, RecrawlSchedulerOptions, run_recrawl_round,
+};
+use esoteric_search::server::run_search_server;
+use esoteric_search::sitemap::{
+    SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
+};
+use esoteric_search::web_search::{
+    DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_RESULT_LOG_MAX_BYTES,
+    DEFAULT_RESULT_LOG_MAX_ENTRIES, WebSearchStorageArtifactState,
+    WebSearchStorageCompactionOptions, WebSearchStorageCompactionReport,
+    compact_web_search_storage_from_env, durable_web_result_commit_report_lines,
+    web_search_storage_prune_boundary_lines,
+};
+
+const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
+    "manifest.json",
+    "docs.bin",
+    "field_docs.bin",
+    "lexicon.bin",
+    "postings.bin",
+    "texts.bin",
+    "frontier.bin",
+    "crawl-docs.jsonl",
+    "web-cache.jsonl",
+    "brave-results.jsonl",
+    "browser-documents.jsonl",
+    "bench-status.json",
+];
+const WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES: usize = 1;
+const WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES: usize = 1024;
+const WEB_STORAGE_QUERY_EXAMPLE_LIMIT: usize = 3;
+const WEB_STORAGE_PROVIDER_GROWTH_LIMIT: usize = 3;
+const DEFAULT_WEB_STORAGE_STALE_SECS: u64 = 30 * 24 * 60 * 60;
+const DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_INDEX_STORAGE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+const BROWSER_DOCUMENT_LARGE_ROW_BYTES: u64 = 64 * 1024;
+const TEMP_CLEANUP_OLD_TARGET_SECS: u64 = 24 * 60 * 60;
+const INDEX_ARTIFACT_HIGH_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Fast static HTML text search.")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    Crawl {
+        seed_url: Option<String>,
+        #[arg(long = "domain")]
+        domains: Vec<String>,
+        #[arg(long)]
+        domain_file: Option<PathBuf>,
+        #[arg(long)]
+        seed_file: Option<PathBuf>,
+        #[arg(long = "recrawl-manifest")]
+        recrawl_manifests: Vec<PathBuf>,
+        #[arg(long)]
+        include_future_recrawls: bool,
+        #[arg(long = "sitemap")]
+        sitemaps: Vec<String>,
+        #[arg(long)]
+        discover_sitemaps: bool,
+        #[arg(long, default_value_t = 200_000)]
+        max_sitemap_urls: usize,
+        #[arg(long, default_value_t = 1024)]
+        max_sitemaps: usize,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 50_000)]
+        max_pages: usize,
+        #[arg(long, default_value_t = 6)]
+        max_depth: usize,
+        #[arg(long, default_value_t = 64)]
+        concurrency: usize,
+        #[arg(long, default_value_t = 4 * 1024 * 1024)]
+        max_bytes: usize,
+        #[arg(long)]
+        ignore_robots: bool,
+        #[arg(long)]
+        ignore_noindex: bool,
+        #[arg(long, default_value_t = 0)]
+        min_body_terms: u32,
+        #[arg(long, value_enum, default_value = "same-host")]
+        boundary: CliCrawlBoundary,
+        #[arg(long, default_value_t = 4)]
+        max_fetching_per_host: usize,
+    },
+    Index {
+        corpus_dir: PathBuf,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long)]
+        ignore_noindex: bool,
+        #[arg(long, default_value_t = 0)]
+        min_body_terms: u32,
+    },
+    Search {
+        query: String,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Suggest {
+        prefix: String,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Spell {
+        term: String,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Render {
+        target: String,
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    Stats {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        #[arg(long)]
+        no_daemon: bool,
+    },
+    TempCleanupAudit {
+        #[arg(long, default_value = "/private/tmp")]
+        root: PathBuf,
+    },
+    CompactWebCache {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long, default_value_t = 0)]
+        min_entries: usize,
+    },
+    WebReplayBackfill {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+    },
+    RecrawlPlan {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
+        interval_secs: u64,
+        #[arg(long, default_value_t = 10_000)]
+        limit: usize,
+    },
+    RecrawlScheduler {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
+        interval_secs: u64,
+        #[arg(long, default_value_t = 1000)]
+        batch_size: usize,
+        #[arg(long, default_value_t = 300)]
+        poll_secs: u64,
+        #[arg(long)]
+        max_rounds: Option<usize>,
+        #[arg(long, default_value_t = 0)]
+        max_depth: usize,
+        #[arg(long, default_value_t = 64)]
+        concurrency: usize,
+        #[arg(long, default_value_t = 4 * 1024 * 1024)]
+        max_bytes: usize,
+        #[arg(long)]
+        ignore_robots: bool,
+        #[arg(long, value_enum, default_value = "same-host")]
+        boundary: CliCrawlBoundary,
+        #[arg(long, default_value_t = 4)]
+        max_fetching_per_host: usize,
+    },
+    Serve {
+        #[arg(long, default_value = ".esoteric-index")]
+        index: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        addr: SocketAddr,
+        #[arg(long, default_value = "aggressive")]
+        preload: PreloadMode,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Crawl {
+            seed_url,
+            domains,
+            domain_file,
+            seed_file,
+            recrawl_manifests,
+            include_future_recrawls,
+            mut sitemaps,
+            discover_sitemaps,
+            max_sitemap_urls,
+            max_sitemaps,
+            index,
+            max_pages,
+            max_depth,
+            concurrency,
+            max_bytes,
+            ignore_robots,
+            ignore_noindex,
+            min_body_terms,
+            boundary,
+            max_fetching_per_host,
+        } => {
+            let mut seeds = Vec::new();
+            let mut robots_discovery_seeds = Vec::new();
+            let mut recrawl_seeds = Vec::new();
+            let mut recrawl_sitemaps = Vec::new();
+            if let Some(seed_url) = seed_url {
+                robots_discovery_seeds.push(seed_url.clone());
+                seeds.push(seed_url);
+            }
+            for domain in domains {
+                let seed = domain_to_seed(&domain)?;
+                robots_discovery_seeds.push(seed.clone());
+                seeds.push(seed);
+            }
+            if let Some(domain_file) = domain_file.as_deref() {
+                let domain_file_seeds = load_domain_file(domain_file)?;
+                robots_discovery_seeds.extend(domain_file_seeds.iter().cloned());
+                seeds.extend(domain_file_seeds);
+            }
+            if let Some(seed_file) = seed_file.as_deref() {
+                let seed_file_seeds = load_seed_file(seed_file)?;
+                robots_discovery_seeds.extend(seed_file_seeds.iter().cloned());
+                seeds.extend(seed_file_seeds);
+            }
+            let recrawl_options = if include_future_recrawls {
+                RecrawlScheduleOptions::include_all()
+            } else {
+                RecrawlScheduleOptions::due_at(unix_now())
+            };
+            for recrawl_manifest in recrawl_manifests {
+                let recrawl =
+                    load_recrawl_manifest_with_options(&recrawl_manifest, recrawl_options)?;
+                if recrawl.skipped_future > 0 {
+                    eprintln!(
+                        "recrawl manifest {} skipped {} future entries",
+                        recrawl_manifest.display(),
+                        recrawl.skipped_future
+                    );
+                }
+                recrawl_seeds.extend(recrawl.seeds.iter().cloned());
+                robots_discovery_seeds.extend(recrawl.seeds.iter().cloned());
+                seeds.extend(recrawl.seeds);
+                recrawl_sitemaps.extend(recrawl.sitemaps);
+            }
+            if discover_sitemaps {
+                sitemaps.extend(
+                    discover_sitemap_sources_from_robots(
+                        robots_discovery_seeds.iter().map(String::as_str),
+                        max_bytes,
+                    )
+                    .await?,
+                );
+            }
+            if !recrawl_sitemaps.is_empty() {
+                let recrawl_sitemap_seeds = load_sitemap_seeds(
+                    recrawl_sitemaps.iter().map(String::as_str),
+                    SitemapLoadOptions {
+                        max_sitemaps,
+                        max_urls: max_sitemap_urls,
+                        max_bytes,
+                    },
+                )
+                .await?;
+                recrawl_seeds.extend(recrawl_sitemap_seeds.iter().cloned());
+                seeds.extend(recrawl_sitemap_seeds);
+            }
+            if !sitemaps.is_empty() {
+                seeds.extend(
+                    load_sitemap_seeds(
+                        sitemaps.iter().map(String::as_str),
+                        SitemapLoadOptions {
+                            max_sitemaps,
+                            max_urls: max_sitemap_urls,
+                            max_bytes,
+                        },
+                    )
+                    .await?,
+                );
+            }
+            if seeds.is_empty() {
+                bail!(
+                    "provide a seed URL, --domain, --domain-file, --seed-file, --recrawl-manifest, or --sitemap"
+                );
+            }
+
+            let frontier_path = index.join("frontier.bin");
+            let document_snapshot_path = index.join("crawl-docs.jsonl");
+            let docs = crawl_many(
+                seeds.iter().map(String::as_str),
+                CrawlOptions {
+                    max_pages,
+                    max_depth,
+                    concurrency,
+                    max_bytes,
+                    ignore_robots,
+                    boundary: boundary.into(),
+                    frontier_path: Some(frontier_path),
+                    document_snapshot_path: Some(document_snapshot_path),
+                    max_fetching_per_host,
+                    recrawl_seeds,
+                },
+            )
+            .await?;
+            let stats = build_from_fielded_documents(
+                docs,
+                index,
+                build_options(ignore_noindex, min_body_terms),
+            )?;
+            print_build_stats(&stats);
+        }
+        Command::Index {
+            corpus_dir,
+            index,
+            ignore_noindex,
+            min_body_terms,
+        } => {
+            let stats = build_from_corpus(
+                corpus_dir,
+                index,
+                build_options(ignore_noindex, min_body_terms),
+            )?;
+            print_build_stats(&stats);
+        }
+        Command::Search {
+            query,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let results = if !no_daemon {
+                match try_daemon_search(&index, socket.as_deref(), &query, limit).await {
+                    Ok(Some(results)) => results,
+                    Ok(None) => one_shot_search(&index, &query, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_search(&index, &query, limit)?
+                    }
+                }
+            } else {
+                one_shot_search(&index, &query, limit)?
+            };
+            print_results(&results);
+        }
+        Command::Suggest {
+            prefix,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let suggestions = if !no_daemon {
+                match try_daemon_suggest(&index, socket.as_deref(), &prefix, limit).await {
+                    Ok(Some(suggestions)) => suggestions,
+                    Ok(None) => one_shot_suggest(&index, &prefix, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_suggest(&index, &prefix, limit)?
+                    }
+                }
+            } else {
+                one_shot_suggest(&index, &prefix, limit)?
+            };
+            print_suggestions(&suggestions);
+        }
+        Command::Spell {
+            term,
+            index,
+            limit,
+            socket,
+            no_daemon,
+        } => {
+            let corrections = if !no_daemon {
+                match try_daemon_spell(&index, socket.as_deref(), &term, limit).await {
+                    Ok(Some(corrections)) => corrections,
+                    Ok(None) => one_shot_spell(&index, &term, limit)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_spell(&index, &term, limit)?
+                    }
+                }
+            } else {
+                one_shot_spell(&index, &term, limit)?
+            };
+            print_corrections(&corrections);
+        }
+        Command::Render {
+            target,
+            index,
+            socket,
+            no_daemon,
+        } => {
+            let text = if !no_daemon {
+                match try_daemon_render(&index, socket.as_deref(), &target).await {
+                    Ok(Some(text)) => text,
+                    Ok(None) => one_shot_render(&index, &target)?,
+                    Err(error) => {
+                        eprintln!("daemon unavailable: {error:#}");
+                        one_shot_render(&index, &target)?
+                    }
+                }
+            } else {
+                one_shot_render(&index, &target)?
+            };
+            println!("{text}");
+        }
+        Command::Stats {
+            index,
+            socket,
+            no_daemon,
+        } => {
+            if !no_daemon {
+                match try_daemon_stats(&index, socket.as_deref()).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(error) => eprintln!("daemon unavailable: {error:#}"),
+                }
+            }
+            let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+            let manifest = index.manifest();
+            println!("docs: {}", manifest.doc_count);
+            println!("terms: {}", manifest.term_count);
+            println!("total_terms: {}", manifest.total_terms);
+            println!("avg_doc_len: {:.2}", manifest.avg_doc_len);
+            println!("duplicate_clusters: {}", manifest.duplicate_cluster_count);
+            println!("duplicate_docs: {}", manifest.duplicate_doc_count);
+            println!("skipped_noindex: {}", manifest.skipped_noindex_count);
+            println!("skipped_thin: {}", manifest.skipped_thin_count);
+            println!("max_authority_score: {:.4}", manifest.max_authority_score);
+            println!("corpus_hash: {}", manifest.corpus_hash);
+            print_index_storage_stats(index.root())?;
+        }
+        Command::TempCleanupAudit { root } => {
+            for line in temp_cleanup_audit_lines(&root)? {
+                println!("{line}");
+            }
+        }
+        Command::CompactWebCache {
+            index,
+            dry_run,
+            force,
+            min_entries,
+        } => {
+            let options = WebSearchStorageCompactionOptions {
+                dry_run,
+                min_entries,
+            };
+            if !dry_run {
+                let preflight = compact_web_search_storage_from_env(
+                    &index,
+                    WebSearchStorageCompactionOptions {
+                        dry_run: true,
+                        min_entries,
+                    },
+                )?;
+                if !web_storage_compaction_apply_is_justified(&preflight, force) {
+                    println!(
+                        "apply_guard: skipped; projected compaction would not remove bytes or duplicate rows"
+                    );
+                    println!("apply_guard_force_hint: rerun with --force to rewrite anyway");
+                    print_web_storage_compaction_report(&preflight);
+                    return Ok(());
+                }
+                println!("apply_guard: proceeding; projected compaction removes storage pressure");
+            }
+            let report = compact_web_search_storage_from_env(&index, options)?;
+            print_web_storage_compaction_report(&report);
+        }
+        Command::WebReplayBackfill { index } => {
+            let stats = collect_index_storage_stats(&index)?;
+            for line in web_replay_backfill_dry_run_lines(&stats.web_artifacts) {
+                println!("{line}");
+            }
+        }
+        Command::RecrawlPlan {
+            index,
+            output,
+            interval_secs,
+            limit,
+        } => {
+            let frontier = FrontierStore::open(index.join("frontier.bin"))?;
+            let plan = frontier.recrawl_plan(unix_now(), interval_secs, limit);
+            write_recrawl_plan(output.as_deref(), &plan)?;
+            eprintln!("recrawl plan entries: {}", plan.len());
+        }
+        Command::RecrawlScheduler {
+            index,
+            interval_secs,
+            batch_size,
+            poll_secs,
+            max_rounds,
+            max_depth,
+            concurrency,
+            max_bytes,
+            ignore_robots,
+            boundary,
+            max_fetching_per_host,
+        } => {
+            let options = RecrawlSchedulerOptions {
+                index,
+                interval_secs,
+                batch_size,
+                poll_secs,
+                max_rounds,
+                crawl: RecrawlCrawlOptions {
+                    max_depth,
+                    concurrency,
+                    max_bytes,
+                    ignore_robots,
+                    boundary: boundary.into(),
+                    max_fetching_per_host,
+                },
+            };
+            run_recrawl_scheduler_cli(options).await?;
+        }
+        Command::Serve {
+            index,
+            addr,
+            preload,
+        } => {
+            run_search_server(index, addr, preload).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliCrawlBoundary {
+    SameHost,
+    AnyDomain,
+}
+
+impl From<CliCrawlBoundary> for CrawlBoundary {
+    fn from(value: CliCrawlBoundary) -> Self {
+        match value {
+            CliCrawlBoundary::SameHost => CrawlBoundary::SameHost,
+            CliCrawlBoundary::AnyDomain => CrawlBoundary::AnyDomain,
+        }
+    }
+}
+
+fn build_options(ignore_noindex: bool, min_body_terms: u32) -> IndexBuildOptions {
+    IndexBuildOptions {
+        respect_noindex: !ignore_noindex,
+        min_body_terms,
+        ..IndexBuildOptions::default()
+    }
+}
+
+async fn try_daemon_search(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    query: &str,
+    limit: usize,
+) -> Result<Option<Vec<SearchResult>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Search {
+            query: query.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Search { results } => Ok(Some(results)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_spell(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    term: &str,
+    limit: usize,
+) -> Result<Option<Vec<TermCorrection>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Spell {
+            term: term.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Spell { corrections } => Ok(Some(corrections)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_suggest(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    prefix: &str,
+    limit: usize,
+) -> Result<Option<Vec<TermSuggestion>>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Suggest {
+            prefix: prefix.to_owned(),
+            limit,
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Suggest { suggestions } => Ok(Some(suggestions)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_render(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+    target: &str,
+) -> Result<Option<String>> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(None);
+    }
+
+    match send_request(
+        &socket,
+        &DaemonRequest::Render {
+            target: target.to_owned(),
+        },
+    )
+    .await?
+    {
+        DaemonResponse::Render { text } => Ok(Some(text)),
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+async fn try_daemon_stats(
+    index: &std::path::Path,
+    socket: Option<&std::path::Path>,
+) -> Result<bool> {
+    let socket = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(index));
+    if !socket.exists() {
+        return Ok(false);
+    }
+
+    match send_request(&socket, &DaemonRequest::Stats).await? {
+        DaemonResponse::Stats {
+            doc_count,
+            term_count,
+            total_terms,
+            avg_doc_len,
+            duplicate_cluster_count,
+            duplicate_doc_count,
+            skipped_noindex_count,
+            skipped_thin_count,
+            max_authority_score,
+            corpus_hash,
+        } => {
+            println!("docs: {doc_count}");
+            println!("terms: {term_count}");
+            println!("total_terms: {total_terms}");
+            println!("avg_doc_len: {avg_doc_len:.2}");
+            println!("duplicate_clusters: {duplicate_cluster_count}");
+            println!("duplicate_docs: {duplicate_doc_count}");
+            println!("skipped_noindex: {skipped_noindex_count}");
+            println!("skipped_thin: {skipped_thin_count}");
+            println!("max_authority_score: {max_authority_score:.4}");
+            println!("corpus_hash: {corpus_hash}");
+            print_index_storage_stats(index)?;
+            Ok(true)
+        }
+        DaemonResponse::Error { message } => bail!(message),
+        other => bail!("unexpected daemon response: {other:?}"),
+    }
+}
+
+fn one_shot_search(
+    index: &std::path::Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchResult>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    index.search(query, SearchOptions { limit })
+}
+
+fn one_shot_suggest(
+    index: &std::path::Path,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<TermSuggestion>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    Ok(index.suggest(prefix, limit))
+}
+
+fn one_shot_spell(
+    index: &std::path::Path,
+    term: &str,
+    limit: usize,
+) -> Result<Vec<TermCorrection>> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    Ok(index.spellcheck(term, limit))
+}
+
+fn one_shot_render(index: &std::path::Path, target: &str) -> Result<String> {
+    let index = SearchIndex::open(index, PreloadMode::Lazy)?;
+    render_target(&index, target)
+}
+
+fn print_suggestions(suggestions: &[TermSuggestion]) {
+    for suggestion in suggestions {
+        println!(
+            "{}\tdf={}\tcf={}",
+            suggestion.term, suggestion.doc_freq, suggestion.collection_freq
+        );
+    }
+}
+
+fn print_corrections(corrections: &[TermCorrection]) {
+    for correction in corrections {
+        println!(
+            "{}\tdistance={}\tdf={}\tcf={}",
+            correction.term, correction.distance, correction.doc_freq, correction.collection_freq
+        );
+    }
+}
+
+fn print_results(results: &[SearchResult]) {
+    for (rank, result) in results.iter().enumerate() {
+        println!(
+            "{}. [{}] {:.4} {}",
+            rank + 1,
+            result.doc_id,
+            result.score,
+            result.url
+        );
+        if result.authority_score > 0.0 {
+            println!("   authority: {:.4}", result.authority_score);
+        }
+        if let Some(language) = &result.language {
+            println!("   language: {language}");
+        }
+        if let Some(fetched_at_unix) = result.fetched_at_unix {
+            println!("   fetched_at_unix: {fetched_at_unix}");
+        }
+        if !result.title.is_empty() {
+            println!("   {}", result.title);
+        }
+        if !result.snippet.is_empty() {
+            println!("   {}", result.snippet);
+        }
+        if result.duplicate_count > 1 {
+            println!(
+                "   duplicate cluster: {} docs (representative {})",
+                result.duplicate_count, result.duplicate_of
+            );
+        }
+    }
+}
+
+fn print_build_stats(stats: &esoteric_search::BuildStats) {
+    println!("docs: {}", stats.doc_count);
+    println!("terms: {}", stats.term_count);
+    println!("total_terms: {}", stats.total_terms);
+    println!("avg_doc_len: {:.2}", stats.avg_doc_len);
+    println!("duplicate_clusters: {}", stats.duplicate_cluster_count);
+    println!("duplicate_docs: {}", stats.duplicate_doc_count);
+    println!("skipped_noindex: {}", stats.skipped_noindex_count);
+    println!("skipped_thin: {}", stats.skipped_thin_count);
+    println!("max_authority_score: {:.4}", stats.max_authority_score);
+    println!("corpus_hash: {}", stats.corpus_hash);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexStorageArtifact {
+    name: &'static str,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexStorageStats {
+    total_bytes: u64,
+    artifacts: Vec<IndexStorageArtifact>,
+    web_artifacts: Vec<WebStorageArtifactStats>,
+    indexed_document_count: Option<u32>,
+    browser_document_bytes: u64,
+    browser_document_rows: usize,
+    browser_document_session_count: usize,
+    browser_document_unique_rows: usize,
+    browser_document_duplicate_rows: usize,
+    browser_document_unique_row_bytes: u64,
+    browser_document_duplicate_row_bytes: u64,
+    browser_document_max_row_bytes: u64,
+    browser_document_large_row_count: usize,
+    crawl_frontier_bytes: u64,
+    crawl_frontier_stats: Option<FrontierStats>,
+    crawl_snapshot_bytes: u64,
+    crawl_snapshot_entries: usize,
+    crawl_snapshot_unique_entries: usize,
+    crawl_snapshot_duplicate_entries: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebStorageArtifactStats {
+    name: &'static str,
+    bytes: u64,
+    entries: usize,
+    invalid_json_rows: usize,
+    result_rows: usize,
+    durable_result_rows: usize,
+    incomplete_result_rows: usize,
+    unique_entries: usize,
+    duplicate_entries: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
+    query_count: usize,
+    query_examples: Vec<String>,
+    provider_count: usize,
+    provider_growth: Vec<String>,
+    max_entries_per_query: usize,
+    oldest_fetched_at_unix: Option<u64>,
+    newest_fetched_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebStoragePressureSummary {
+    artifact_count: usize,
+    bytes: u64,
+    entries: usize,
+    result_rows: usize,
+    durable_result_rows: usize,
+    incomplete_result_rows: usize,
+    unique_entries: usize,
+    duplicate_entries: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
+    max_entries_per_query: usize,
+    stale_artifacts: usize,
+    suggested_dry_runs: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WebStorageProviderGrowth {
+    entries: usize,
+    bytes: u64,
+    result_rows: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TempCleanupClassification {
+    kind: &'static str,
+    status: &'static str,
+    cleanup_safe: bool,
+    next_action: &'static str,
+}
+
+fn temp_cleanup_classification(
+    name: &str,
+    is_git_worktree: bool,
+    git_dirty: Option<bool>,
+    active_worktree: bool,
+) -> TempCleanupClassification {
+    if name.contains("-target-") || name.ends_with("-target") {
+        return TempCleanupClassification {
+            kind: "validation-target",
+            status: "candidate",
+            cleanup_safe: true,
+            next_action: "remove-merged-target",
+        };
+    }
+
+    if active_worktree {
+        return TempCleanupClassification {
+            kind: "source-worktree",
+            status: "active",
+            cleanup_safe: false,
+            next_action: "preserve-active-worktree",
+        };
+    }
+
+    if is_git_worktree {
+        return match git_dirty {
+            Some(true) => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "dirty",
+                cleanup_safe: false,
+                next_action: "review-dirty-worktree",
+            },
+            Some(false) => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "clean-review-required",
+                cleanup_safe: false,
+                next_action: "unknown-review-required",
+            },
+            None => TempCleanupClassification {
+                kind: "source-worktree",
+                status: "git-status-unavailable",
+                cleanup_safe: false,
+                next_action: "unknown-review-required",
+            },
+        };
+    }
+
+    if temp_cleanup_generated_output_name(name) {
+        return TempCleanupClassification {
+            kind: "generated-output",
+            status: "review-required",
+            cleanup_safe: false,
+            next_action: "review-generated-output",
+        };
+    }
+
+    TempCleanupClassification {
+        kind: "unknown-dir",
+        status: "review-required",
+        cleanup_safe: false,
+        next_action: "unknown-review-required",
+    }
+}
+
+fn temp_cleanup_generated_output_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("session")
+        || lower.contains("cache")
+        || lower.contains("generated")
+        || lower.contains("artifact")
+}
+
+fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut rust_slot_lock_present = false;
+    let mut rust_slot_lock_bytes = 0u64;
+    for entry in
+        std::fs::read_dir(root).with_context(|| format!("read temp root {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name == "search-engine-rust-slot.lock" {
+            rust_slot_lock_present = true;
+            rust_slot_lock_bytes = std::fs::metadata(&path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            continue;
+        }
+        if !path.is_dir() {
+            continue;
+        }
+        if !name.starts_with("search-engine-") {
+            continue;
+        }
+        let is_git_worktree = path.join(".git").exists();
+        let git_dirty = if is_git_worktree {
+            git_worktree_is_dirty(&path)
+        } else {
+            None
+        };
+        let active_worktree = is_git_worktree
+            && std::env::current_dir()
+                .ok()
+                .is_some_and(|current_dir| current_dir == path);
+        let classification =
+            temp_cleanup_classification(name, is_git_worktree, git_dirty, active_worktree);
+        let bytes = directory_size_bytes(&path).unwrap_or(0);
+        let metadata = std::fs::metadata(&path).ok();
+        let modified_age_secs = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let mtime_unix_secs = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        entries.push((
+            path,
+            bytes,
+            classification,
+            modified_age_secs,
+            mtime_unix_secs,
+        ));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut lines = vec![
+        "storage_temp_cleanup_audit: report_only=true deletes=false mutates_esoteric_index=false"
+            .to_owned(),
+        format!("storage_temp_cleanup_root: {}", root.display()),
+    ];
+    let mut safe_candidates = 0usize;
+    let mut review_required = 0usize;
+    let mut old_target_count = 0usize;
+    let mut target_candidate_count = 0usize;
+    let mut target_candidate_bytes = 0u64;
+    let mut target_largest_path = String::from("none");
+    let mut target_largest_bytes = 0u64;
+    let mut dirty_worktree_count = 0usize;
+    let mut unknown_review_count = 0usize;
+    let mut active_worktree_count = 0usize;
+    let mut source_worktree_count = 0usize;
+    let mut clean_worktree_review_count = 0usize;
+    let mut generated_review_count = 0usize;
+    let mut generated_review_bytes = 0u64;
+    let mut generated_oldest_age_secs = 0u64;
+    let mut generated_newest_age_secs: Option<u64> = None;
+    let mut generated_largest_path = String::from("none");
+    let mut generated_largest_bytes = 0u64;
+    let mut generated_session_like_count = 0usize;
+    let mut generated_cache_like_count = 0usize;
+    let mut generated_artifact_like_count = 0usize;
+    let mut total_bytes = 0u64;
+    for (path, bytes, classification, modified_age_secs, mtime_unix_secs) in entries {
+        total_bytes = total_bytes.saturating_add(bytes);
+        if classification.cleanup_safe {
+            safe_candidates += 1;
+        } else {
+            review_required += 1;
+        }
+        if classification.kind == "validation-target" {
+            target_candidate_count += 1;
+            target_candidate_bytes = target_candidate_bytes.saturating_add(bytes);
+            if bytes > target_largest_bytes {
+                target_largest_bytes = bytes;
+                target_largest_path = path.display().to_string();
+            }
+            if modified_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS {
+                old_target_count += 1;
+            }
+        }
+        if classification.status == "dirty" {
+            dirty_worktree_count += 1;
+        }
+        if classification.status == "active" {
+            active_worktree_count += 1;
+        }
+        if classification.kind == "source-worktree" {
+            source_worktree_count += 1;
+        }
+        if classification.status == "clean-review-required" {
+            clean_worktree_review_count += 1;
+        }
+        if classification.kind == "generated-output" {
+            generated_review_count += 1;
+            generated_review_bytes = generated_review_bytes.saturating_add(bytes);
+            generated_oldest_age_secs = generated_oldest_age_secs.max(modified_age_secs);
+            generated_newest_age_secs = Some(
+                generated_newest_age_secs
+                    .map(|age_secs| age_secs.min(modified_age_secs))
+                    .unwrap_or(modified_age_secs),
+            );
+            if bytes > generated_largest_bytes {
+                generated_largest_bytes = bytes;
+                generated_largest_path = path.display().to_string();
+            }
+            let generated_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if generated_name.contains("session") {
+                generated_session_like_count += 1;
+            }
+            if generated_name.contains("cache") {
+                generated_cache_like_count += 1;
+            }
+            if generated_name.contains("artifact") || generated_name.contains("generated") {
+                generated_artifact_like_count += 1;
+            }
+        }
+        if classification.kind == "unknown-dir" || classification.status == "git-status-unavailable"
+        {
+            unknown_review_count += 1;
+        }
+        lines.push(format!(
+            "storage_temp_cleanup_candidate: report_only=true path={} bytes={} age_secs={} mtime_unix_secs={} category={} kind={} status={} cleanup_safe={} next_action={}",
+            path.display(),
+            bytes,
+            modified_age_secs,
+            mtime_unix_secs,
+            classification.kind,
+            classification.kind,
+            classification.status,
+            classification.cleanup_safe,
+            classification.next_action
+        ));
+    }
+    let age_next_action = temp_cleanup_age_pressure_next_action(
+        old_target_count,
+        dirty_worktree_count,
+        unknown_review_count,
+    );
+    lines.push(format!(
+        "storage_temp_cleanup_summary: safe_candidates={safe_candidates} review_required={review_required}"
+    ));
+    lines.push(format!(
+        "storage_temp_cleanup_age_pressure: report_only=true old_target_count={old_target_count} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} total_bytes={total_bytes} next_action={age_next_action} old_target_threshold_secs={TEMP_CLEANUP_OLD_TARGET_SECS}"
+    ));
+    lines.push(format!(
+        "storage_build_target_footprint_dry_run: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} next_action={}",
+        temp_cleanup_target_footprint_next_action(
+            target_candidate_count,
+            target_candidate_bytes,
+            old_target_count,
+        )
+    ));
+    let generated_next_action = temp_cleanup_generated_pressure_next_action(
+        active_worktree_count,
+        generated_review_count,
+        old_target_count,
+    );
+    lines.push(format!(
+        "storage_temp_cleanup_generated_pressure: report_only=true active_worktree_count={active_worktree_count} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} old_target_count={old_target_count} total_bytes={total_bytes} next_action={generated_next_action}"
+    ));
+    let generated_retention_next_action = temp_cleanup_generated_retention_next_action(
+        generated_review_count,
+        generated_review_bytes,
+        generated_oldest_age_secs,
+    );
+    lines.push(format!(
+        "storage_generated_report_retention_dry_run: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} next_action={generated_retention_next_action}",
+        generated_newest_age_secs.unwrap_or(0),
+    ));
+    lines.push(format!(
+        "storage_generated_artifact_inventory_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={generated_retention_next_action}",
+        generated_newest_age_secs.unwrap_or(0),
+    ));
+    lines.push(format!(
+        "storage_generated_output_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} largest_path={generated_largest_path} largest_bytes={generated_largest_bytes} session_like_candidates={generated_session_like_count} cache_like_candidates={generated_cache_like_count} artifact_like_candidates={generated_artifact_like_count} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={}",
+        temp_cleanup_generated_output_boundary_next_action(
+            active_worktree_count,
+            generated_review_count,
+            generated_session_like_count,
+            generated_cache_like_count,
+            generated_artifact_like_count,
+        )
+    ));
+    lines.push(format!(
+        "storage_operational_cleanup_ux: report_only=true deletes=false stops_server=false mutates_esoteric_index=false safe_target_candidates={target_candidate_count} safe_target_bytes={target_candidate_bytes} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} active_worktree_count={active_worktree_count} preserve=.esoteric-index,running-server,active-worktrees,indexed-documents review_required={review_required} next_action={}",
+        storage_operational_cleanup_next_action(
+            target_candidate_count,
+            generated_review_count,
+            dirty_worktree_count,
+            unknown_review_count,
+            active_worktree_count,
+        )
+    ));
+    lines.push(format!(
+        "storage_worktree_cleanup_review_matrix: report_only=true deletes=false source_worktrees={source_worktree_count} active_worktrees={active_worktree_count} dirty_worktrees={dirty_worktree_count} clean_review_worktrees={clean_worktree_review_count} unknown_review_count={unknown_review_count} safe_target_candidates={target_candidate_count} generated_review_count={generated_review_count} preserve=.esoteric-index,running-server,active-worktrees,dirty-worktrees next_action={}",
+        storage_worktree_cleanup_review_next_action(
+            active_worktree_count,
+            dirty_worktree_count,
+            clean_worktree_review_count,
+            unknown_review_count,
+            target_candidate_count,
+            generated_review_count,
+        )
+    ));
+    lines.push(format!(
+        "storage_cleanup_coordination_boundary: report_only=true deletes=false rust_slot_lock_present={rust_slot_lock_present} rust_slot_lock_bytes={rust_slot_lock_bytes} preserve=rust-slot-lock,running-server,.esoteric-index next_action={}",
+        storage_cleanup_coordination_boundary_next_action(rust_slot_lock_present)
+    ));
+    lines.push(format!(
+        "storage_cleanup_inventory_detail: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} generated_candidates={generated_review_count} generated_bytes={generated_review_bytes} largest_generated_path={generated_largest_path} largest_generated_bytes={generated_largest_bytes} stale_generated_oldest_age_secs={generated_oldest_age_secs} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} safe_cleanup_scope=validation-targets-only review_scope=generated-output,dirty-worktrees,unknown-dirs preserve=.esoteric-index,running-server,active-worktrees,indexed-documents next_action={}",
+        storage_cleanup_inventory_detail_next_action(
+            target_candidate_count,
+            old_target_count,
+            generated_review_count,
+            dirty_worktree_count,
+            unknown_review_count,
+        )
+    ));
+    lines.push(
+        "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .esoteric-index, or stop processes"
+            .to_owned(),
+    );
+    Ok(lines)
+}
+
+fn storage_cleanup_coordination_boundary_next_action(rust_slot_lock_present: bool) -> &'static str {
+    if rust_slot_lock_present {
+        "wait-for-validation-slot"
+    } else {
+        "cleanup-reporting-safe"
+    }
+}
+
+fn storage_worktree_cleanup_review_next_action(
+    active_worktree_count: usize,
+    dirty_worktree_count: usize,
+    clean_worktree_review_count: usize,
+    unknown_review_count: usize,
+    target_candidate_count: usize,
+    generated_review_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if dirty_worktree_count > 0 || unknown_review_count > 0 {
+        "review-worktree-state-before-cleanup"
+    } else if clean_worktree_review_count > 0 {
+        "review-clean-worktree-before-removal"
+    } else if generated_review_count > 0 {
+        "review-generated-output-before-worktree-cleanup"
+    } else if target_candidate_count > 0 {
+        "remove-validation-targets-only"
+    } else {
+        "cleanup-low"
+    }
+}
+
+fn storage_cleanup_inventory_detail_next_action(
+    target_candidate_count: usize,
+    old_target_count: usize,
+    generated_review_count: usize,
+    dirty_worktree_count: usize,
+    unknown_review_count: usize,
+) -> &'static str {
+    if dirty_worktree_count > 0 || unknown_review_count > 0 {
+        "review-worktree-state-before-cleanup"
+    } else if generated_review_count > 0 {
+        "review-generated-output-inventory"
+    } else if old_target_count > 0 {
+        "remove-old-validation-targets-only"
+    } else if target_candidate_count > 0 {
+        "review-validation-target-inventory"
+    } else {
+        "cleanup-inventory-low"
+    }
+}
+
+fn storage_operational_cleanup_next_action(
+    target_candidate_count: usize,
+    generated_review_count: usize,
+    dirty_worktree_count: usize,
+    unknown_review_count: usize,
+    active_worktree_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if dirty_worktree_count > 0 || unknown_review_count > 0 {
+        "review-worktrees-before-cleanup"
+    } else if generated_review_count > 0 {
+        "review-generated-output-before-cleanup"
+    } else if target_candidate_count > 0 {
+        "remove-validation-targets-only"
+    } else {
+        "cleanup-low"
+    }
+}
+
+fn temp_cleanup_target_footprint_next_action(
+    target_candidate_count: usize,
+    target_candidate_bytes: u64,
+    old_target_count: usize,
+) -> &'static str {
+    if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else if target_candidate_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "review-large-validation-targets"
+    } else if target_candidate_count > 0 {
+        "review-validation-target-footprint"
+    } else {
+        "target-footprint-low"
+    }
+}
+
+fn temp_cleanup_age_pressure_next_action(
+    old_target_count: usize,
+    dirty_worktree_count: usize,
+    unknown_review_count: usize,
+) -> &'static str {
+    if unknown_review_count > 0 {
+        "review-unknown-temp-dirs"
+    } else if dirty_worktree_count > 0 {
+        "review-dirty-worktrees"
+    } else if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else {
+        "cleanup-low"
+    }
+}
+
+fn temp_cleanup_generated_pressure_next_action(
+    active_worktree_count: usize,
+    generated_review_count: usize,
+    old_target_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if generated_review_count > 0 {
+        "review-generated-output"
+    } else if old_target_count > 0 {
+        "remove-old-merged-targets"
+    } else {
+        "cleanup-low"
+    }
+}
+
+fn temp_cleanup_generated_retention_next_action(
+    generated_review_count: usize,
+    generated_review_bytes: u64,
+    oldest_age_secs: u64,
+) -> &'static str {
+    if generated_review_count == 0 {
+        "generated-report-retention-low"
+    } else if oldest_age_secs >= TEMP_CLEANUP_OLD_TARGET_SECS {
+        "review-stale-generated-reports"
+    } else if generated_review_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "review-large-generated-reports"
+    } else {
+        "review-generated-reports-before-cleanup"
+    }
+}
+
+fn temp_cleanup_generated_output_boundary_next_action(
+    active_worktree_count: usize,
+    generated_review_count: usize,
+    session_like_count: usize,
+    cache_like_count: usize,
+    artifact_like_count: usize,
+) -> &'static str {
+    if active_worktree_count > 0 {
+        "preserve-active-worktree"
+    } else if generated_review_count == 0 {
+        "generated-output-low"
+    } else if session_like_count > 0 || cache_like_count > 0 || artifact_like_count > 0 {
+        "review-browser-generated-output-boundary"
+    } else {
+        "review-generated-output-boundary"
+    }
+}
+
+fn git_worktree_is_dirty(path: &Path) -> Option<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(!output.stdout.is_empty())
+}
+
+fn directory_size_bytes(path: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("stat temp cleanup path {}", path.display()))?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            for entry in std::fs::read_dir(&path)
+                .with_context(|| format!("read temp cleanup dir {}", path.display()))?
+            {
+                stack.push(entry?.path());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn collect_index_storage_stats(index: &Path) -> Result<IndexStorageStats> {
+    let mut stats = IndexStorageStats {
+        total_bytes: 0,
+        artifacts: Vec::new(),
+        web_artifacts: Vec::new(),
+        indexed_document_count: None,
+        browser_document_bytes: 0,
+        browser_document_rows: 0,
+        browser_document_session_count: 0,
+        browser_document_unique_rows: 0,
+        browser_document_duplicate_rows: 0,
+        browser_document_unique_row_bytes: 0,
+        browser_document_duplicate_row_bytes: 0,
+        browser_document_max_row_bytes: 0,
+        browser_document_large_row_count: 0,
+        crawl_frontier_bytes: 0,
+        crawl_frontier_stats: None,
+        crawl_snapshot_bytes: 0,
+        crawl_snapshot_entries: 0,
+        crawl_snapshot_unique_entries: 0,
+        crawl_snapshot_duplicate_entries: 0,
+    };
+
+    for name in INDEX_STORAGE_ARTIFACTS {
+        let path = index.join(name);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("read index storage artifact {}", path.display()));
+            }
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let bytes = metadata.len();
+        stats.total_bytes = stats.total_bytes.saturating_add(bytes);
+        stats.artifacts.push(IndexStorageArtifact { name, bytes });
+        match *name {
+            "manifest.json" => {
+                let manifest = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| bincode::deserialize::<IndexManifest>(&bytes).ok())
+                    .or_else(|| {
+                        std::fs::read_to_string(&path).ok().and_then(|contents| {
+                            serde_json::from_str::<IndexManifest>(&contents).ok()
+                        })
+                    });
+                if let Some(manifest) = manifest {
+                    stats.indexed_document_count = Some(manifest.doc_count);
+                }
+            }
+            "frontier.bin" => {
+                stats.crawl_frontier_bytes = bytes;
+                stats.crawl_frontier_stats = Some(FrontierStore::open(&path)?.stats());
+            }
+            "crawl-docs.jsonl" => {
+                stats.crawl_snapshot_bytes = bytes;
+                let snapshot = crawl_snapshot_artifact_stats(&path)?;
+                stats.crawl_snapshot_entries = snapshot.entries;
+                stats.crawl_snapshot_unique_entries = snapshot.unique_entries;
+                stats.crawl_snapshot_duplicate_entries = snapshot.duplicate_entries;
+            }
+            "browser-documents.jsonl" => {
+                let documents = browser_document_artifact_stats(&path)?;
+                stats.browser_document_bytes = bytes;
+                stats.browser_document_rows = documents.rows;
+                stats.browser_document_session_count = documents.session_count;
+                stats.browser_document_unique_rows = documents.unique_rows;
+                stats.browser_document_duplicate_rows = documents.duplicate_rows;
+                stats.browser_document_unique_row_bytes = documents.unique_row_bytes;
+                stats.browser_document_duplicate_row_bytes = documents.duplicate_row_bytes;
+                stats.browser_document_max_row_bytes = documents.max_row_bytes;
+                stats.browser_document_large_row_count = documents.large_row_count;
+            }
+            _ => {}
+        }
+        if matches!(*name, "web-cache.jsonl" | "brave-results.jsonl") {
+            stats
+                .web_artifacts
+                .push(collect_web_storage_artifact_stats(name, &path)?);
+        }
+    }
+
+    Ok(stats)
+}
+
+fn print_index_storage_stats(index: &Path) -> Result<()> {
+    let stats = collect_index_storage_stats(index)?;
+    println!("index_storage_bytes: {}", stats.total_bytes);
+    for artifact in &stats.artifacts {
+        println!(
+            "index_storage_artifact_bytes: {} {}",
+            artifact.name, artifact.bytes
+        );
+    }
+    for line in index_artifact_storage_pressure_lines(&stats) {
+        println!("{line}");
+    }
+    for line in crawl_storage_pressure_summary_lines(&stats) {
+        println!("{line}");
+    }
+    for line in browser_document_storage_pressure_summary_lines(&stats) {
+        println!("{line}");
+    }
+    let retention_config = web_storage_retention_config();
+    for line in web_storage_retention_config_lines(retention_config) {
+        println!("{line}");
+    }
+    let now = unix_now();
+    let stale_secs = web_storage_stale_threshold_secs();
+    let web_summary = web_storage_pressure_summary(&stats.web_artifacts, now, stale_secs);
+    for line in storage_pressure_rollup_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in storage_budget_pressure_lines(&stats, &web_summary, retention_config) {
+        println!("{line}");
+    }
+    for line in storage_cache_growth_guardrail_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in search_index_retention_audit_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in storage_cleanup_readiness_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in storage_snapshot_readiness_lines(&stats, &web_summary) {
+        println!("{line}");
+    }
+    for line in web_result_durable_commit_report_lines(index)? {
+        println!("{line}");
+    }
+    for line in web_storage_pressure_summary_lines(&stats.web_artifacts, now, stale_secs) {
+        println!("{line}");
+    }
+    for artifact in stats.web_artifacts {
+        println!(
+            "web_storage_artifact_entries: {} {}",
+            artifact.name, artifact.entries
+        );
+        println!(
+            "web_storage_artifact_result_rows: {} {}",
+            artifact.name, artifact.result_rows
+        );
+        println!(
+            "web_storage_artifact_durable_result_rows: {} {}",
+            artifact.name, artifact.durable_result_rows
+        );
+        println!(
+            "web_storage_artifact_incomplete_result_rows: {} {}",
+            artifact.name, artifact.incomplete_result_rows
+        );
+        println!(
+            "web_storage_artifact_unique_entries: {} {}",
+            artifact.name, artifact.unique_entries
+        );
+        println!(
+            "web_storage_artifact_duplicate_entries: {} {}",
+            artifact.name, artifact.duplicate_entries
+        );
+        println!(
+            "web_storage_artifact_queries: {} {}",
+            artifact.name, artifact.query_count
+        );
+        println!(
+            "web_storage_artifact_providers: {} {}",
+            artifact.name, artifact.provider_count
+        );
+        println!(
+            "web_storage_artifact_max_entries_per_query: {} {}",
+            artifact.name, artifact.max_entries_per_query
+        );
+        if let Some(oldest) = artifact.oldest_fetched_at_unix {
+            println!(
+                "web_storage_artifact_oldest_fetched_at_unix: {} {}",
+                artifact.name, oldest
+            );
+        }
+        if let Some(newest) = artifact.newest_fetched_at_unix {
+            println!(
+                "web_storage_artifact_newest_fetched_at_unix: {} {}",
+                artifact.name, newest
+            );
+        }
+        if let Some(age_secs) = web_storage_oldest_age_secs(&artifact, now) {
+            println!(
+                "web_storage_artifact_oldest_age_secs: {} {}",
+                artifact.name, age_secs
+            );
+        }
+        if let Some(suggestion) = web_storage_compaction_suggestion(&artifact, now, stale_secs) {
+            println!(
+                "web_storage_compaction_suggestion: {} {}",
+                artifact.name, suggestion
+            );
+        }
+    }
+    Ok(())
+}
+
+fn index_artifact_storage_pressure_lines(stats: &IndexStorageStats) -> Vec<String> {
+    if stats.total_bytes == 0 && stats.artifacts.is_empty() {
+        return Vec::new();
+    }
+
+    let largest = stats.artifacts.iter().max_by_key(|artifact| artifact.bytes);
+    let largest_component = largest.map(|artifact| artifact.name).unwrap_or("none");
+    let largest_component_bytes = largest.map(|artifact| artifact.bytes).unwrap_or(0);
+    let high_growth_component_count = stats
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES)
+        .count();
+    let next_action = if high_growth_component_count > 1 {
+        "inspect-index-artifact-growth"
+    } else if high_growth_component_count == 1 {
+        "inspect-largest-index-artifact"
+    } else {
+        "index-pressure-low"
+    };
+
+    vec![
+        format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes={} largest_component={largest_component} largest_component_bytes={largest_component_bytes} high_growth_component_count={high_growth_component_count} high_growth_threshold_bytes={INDEX_ARTIFACT_HIGH_GROWTH_BYTES} next_action={next_action}",
+            stats.total_bytes
+        ),
+        "index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .esoteric-index artifacts".to_owned(),
+    ]
+}
+
+fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String> {
+    let retained_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    if retained_bytes == 0 && stats.crawl_snapshot_entries == 0 {
+        return Vec::new();
+    }
+
+    let frontier_failed_projected_removed = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let snapshot_cleanup_useful = stats.crawl_snapshot_duplicate_entries > 0;
+    let frontier_cleanup_useful = frontier_failed_projected_removed > 0;
+    let cleanup_next_action = if snapshot_cleanup_useful && frontier_cleanup_useful {
+        "inspect-crawl-snapshot-and-frontier-dry-runs"
+    } else if snapshot_cleanup_useful {
+        "inspect-crawl-snapshot-compaction"
+    } else if frontier_cleanup_useful {
+        "inspect-frontier-compaction"
+    } else {
+        "cleanup-pointless"
+    };
+
+    let mut lines = vec![
+        format!(
+            "crawl_storage_pressure_summary: retained_bytes={} frontier_bytes={} snapshot_bytes={} snapshot_entries={}",
+            retained_bytes,
+            stats.crawl_frontier_bytes,
+            stats.crawl_snapshot_bytes,
+            stats.crawl_snapshot_entries
+        ),
+        format!("crawl_storage_retained_bytes: {retained_bytes}"),
+        format!(
+            "crawl_storage_frontier_bytes: {}",
+            stats.crawl_frontier_bytes
+        ),
+        format!(
+            "crawl_storage_snapshot_bytes: {}",
+            stats.crawl_snapshot_bytes
+        ),
+        format!(
+            "crawl_storage_snapshot_entries: {}",
+            stats.crawl_snapshot_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_unique_entries: {}",
+            stats.crawl_snapshot_unique_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_duplicate_entries: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_projected_entries_after: {}",
+            stats.crawl_snapshot_unique_entries
+        ),
+        format!(
+            "crawl_storage_snapshot_projected_entries_removed: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+    ];
+    if let Some(frontier) = &stats.crawl_frontier_stats {
+        let frontier_active_records = frontier
+            .queued
+            .saturating_add(frontier.fetching)
+            .saturating_add(frontier.deferred);
+        let frontier_queue_action = if frontier_failed_projected_removed > 0 {
+            "inspect-failed-compaction"
+        } else if frontier.deferred > 0 || frontier.fetching > 0 {
+            "inspect-deferred-fetching"
+        } else if frontier.queued > 0 || stats.crawl_frontier_bytes > 0 {
+            "inspect-frontier-growth"
+        } else {
+            "queue-low"
+        };
+        lines.push(format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action={frontier_queue_action} total_bytes={} frontier_bytes={} queued={} fetching={} deferred={} failed={} active_records={} failed_removable_records={} total_records={}",
+            stats.crawl_frontier_bytes,
+            stats.crawl_frontier_bytes,
+            frontier.queued,
+            frontier.fetching,
+            frontier.deferred,
+            frontier.failed,
+            frontier_active_records,
+            frontier_failed_projected_removed,
+            frontier.total
+        ));
+        lines.push(
+            "crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .esoteric-index"
+                .to_owned(),
+        );
+        lines.push(format!(
+            "crawl_storage_frontier_records: {}",
+            frontier.total
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_queued: {}",
+            frontier.queued
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_fetching: {}",
+            frontier.fetching
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_fetched: {}",
+            frontier.fetched
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed: {}",
+            frontier.failed
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_deferred: {}",
+            frontier.deferred
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_record_cap: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS
+        ));
+        let projected_failed_after = frontier.failed.min(DEFAULT_MAX_FAILED_FRONTIER_RECORDS);
+        let projected_failed_removed = frontier_failed_projected_removed;
+        lines.push(format!(
+            "crawl_storage_frontier_failed_projected_after: {}",
+            projected_failed_after
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_projected_removed: {}",
+            projected_failed_removed
+        ));
+        lines.push(format!(
+            "crawl_storage_frontier_failed_zero_removal: {}",
+            projected_failed_removed == 0
+        ));
+        if projected_failed_removed > 0 {
+            lines.push(
+                "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
+                    .to_owned(),
+            );
+            lines.push(
+                "crawl_storage_frontier_apply_guard: report-only; stats does not mutate frontier.bin, run a dedicated frontier compaction apply path only after projected_removed is nonzero"
+                    .to_owned(),
+            );
+        } else {
+            lines.push(
+                "crawl_storage_frontier_apply_guard: zero-removal; frontier compaction apply would be pointless because all failed records are retained"
+                    .to_owned(),
+            );
+        }
+    }
+    if stats.crawl_snapshot_duplicate_entries > 0 {
+        lines.push(
+            "crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned(),
+        );
+    }
+    lines.push(format!(
+        "storage_crawl_cleanup_next_action: report_only=true action={cleanup_next_action} snapshot_cleanup_useful={snapshot_cleanup_useful} frontier_cleanup_useful={frontier_cleanup_useful} snapshot_duplicate_rows={} frontier_failed_removable_records={frontier_failed_projected_removed}",
+        stats.crawl_snapshot_duplicate_entries
+    ));
+    lines.push(
+        "storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .esoteric-index"
+            .to_owned(),
+    );
+    lines
+}
+
+fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String> {
+    if stats.browser_document_bytes == 0 && stats.browser_document_rows == 0 {
+        return Vec::new();
+    }
+
+    let zero_removal = stats.browser_document_duplicate_rows == 0
+        && stats.browser_document_duplicate_row_bytes == 0;
+    let cleanup_next_action = if zero_removal {
+        "cleanup-pointless"
+    } else {
+        "inspect-browser-document-compaction"
+    };
+    let session_pressure_action =
+        if stats.browser_document_session_count > 1 && stats.browser_document_duplicate_rows > 0 {
+            "inspect-multi-session-duplicates"
+        } else if stats.browser_document_session_count > 1 {
+            "monitor-multi-session-cache"
+        } else if stats.browser_document_duplicate_rows > 0 {
+            "inspect-single-session-duplicates"
+        } else {
+            "cache-pressure-low"
+        };
+    let session_storage_pressure_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-repeated-large-browser-session-records"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-repeated-browser-session-records"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-session-records"
+    } else if stats.browser_document_session_count > 1 {
+        "monitor-multi-session-storage"
+    } else {
+        "session-pressure-low"
+    };
+    let row_size_pressure_action = if stats.browser_document_large_row_count > 0
+        && stats.browser_document_duplicate_row_bytes > 0
+    {
+        "inspect-duplicate-and-large-browser-document-rows"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-document-rows"
+    } else {
+        "row-size-low"
+    };
+    let mut lines = vec![
+        format!(
+            "browser_document_storage_summary: bytes={} rows={} unique_rows={} duplicate_rows={} projected_rows_after={} projected_rows_removed={} projected_row_bytes_after={} projected_row_bytes_removed={} zero_removal={}",
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_row_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            zero_removal
+        ),
+        format!(
+            "browser_document_storage_bytes: {}",
+            stats.browser_document_bytes
+        ),
+        format!(
+            "browser_document_storage_rows: {}",
+            stats.browser_document_rows
+        ),
+        format!(
+            "browser_document_storage_session_count: {}",
+            stats.browser_document_session_count
+        ),
+        format!(
+            "browser_session_cache_pressure: report_only=true sessions={} rows={} bytes={} duplicate_rows={} duplicate_row_bytes={} next_action={session_pressure_action}",
+            stats.browser_document_session_count,
+            stats.browser_document_rows,
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_duplicate_row_bytes
+        ),
+        format!(
+            "browser_session_storage_pressure: report_only=true sessions={} rows={} bytes={} duplicate_rows={} duplicate_row_bytes={} max_row_bytes={} large_row_count={} next_action={session_storage_pressure_action}",
+            stats.browser_document_session_count,
+            stats.browser_document_rows,
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_duplicate_row_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_large_row_count
+        ),
+        browser_session_artifact_footprint_line(stats),
+        browser_runtime_footprint_bounds_line(stats),
+        browser_session_snapshot_history_boundary_line(stats),
+        format!(
+            "browser_document_storage_unique_rows: {}",
+            stats.browser_document_unique_rows
+        ),
+        format!(
+            "browser_document_storage_row_size_pressure: report_only=true action={row_size_pressure_action} bytes={} rows={} max_row_bytes={} large_row_count={} large_row_threshold_bytes={} duplicate_row_bytes={}",
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_large_row_count,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
+        ),
+        format!(
+            "browser_document_storage_duplicate_rows: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "browser_document_storage_projected_rows_after: {}",
+            stats.browser_document_unique_rows
+        ),
+        format!(
+            "browser_document_storage_projected_rows_removed: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "browser_document_storage_projected_row_bytes_after: {}",
+            stats.browser_document_unique_row_bytes
+        ),
+        format!(
+            "browser_document_storage_projected_row_bytes_removed: {}",
+            stats.browser_document_duplicate_row_bytes
+        ),
+        format!("browser_document_storage_zero_removal: {zero_removal}"),
+        format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action={cleanup_next_action} retained_rows={} removable_rows={} retained_row_bytes={} removable_row_bytes={} zero_removal={zero_removal}",
+            stats.browser_document_unique_rows,
+            stats.browser_document_duplicate_rows,
+            stats.browser_document_unique_row_bytes,
+            stats.browser_document_duplicate_row_bytes
+        ),
+        "browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index"
+            .to_owned(),
+    ];
+    if zero_removal {
+        lines.push(
+            "browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing"
+                .to_owned(),
+        );
+    } else {
+        lines.push(
+            "browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data"
+                .to_owned(),
+        );
+    }
+    lines
+}
+
+fn browser_session_artifact_footprint_line(stats: &IndexStorageStats) -> String {
+    let candidate_count = usize::from(stats.browser_document_bytes > 0);
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-duplicate-large-browser-session-artifacts"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-duplicate-browser-session-artifacts"
+    } else if stats.browser_document_large_row_count > 0 {
+        "inspect-large-browser-session-artifacts"
+    } else if stats.browser_document_bytes.saturating_mul(2) >= index_storage_budget_bytes() {
+        "monitor-browser-session-artifact-budget"
+    } else {
+        "browser-session-artifacts-low"
+    };
+
+    format!(
+        "browser_session_artifact_footprint: report_only=true deletes=false compacts=false candidate_artifacts={candidate_count} rows={} bytes={} sessions={} largest_artifact=browser-documents.jsonl largest_artifact_bytes={} max_row_bytes={} large_row_count={} large_row_threshold_bytes={} duplicate_rows={} duplicate_row_bytes={} next_action={next_action}",
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_session_count,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
+        stats.browser_document_large_row_count,
+        BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+    )
+}
+
+fn browser_session_snapshot_history_boundary_line(stats: &IndexStorageStats) -> String {
+    let history_candidate_count = usize::from(stats.browser_document_rows > 0);
+    let snapshot_like_rows = stats.browser_document_large_row_count;
+    let history_like_rows = stats
+        .browser_document_rows
+        .saturating_sub(stats.browser_document_large_row_count);
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "review-snapshot-history-dedup-dry-run"
+    } else if stats.browser_document_large_row_count > 0 {
+        "review-snapshot-payload-boundary"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "review-history-duplicate-boundary"
+    } else if stats.browser_document_rows > 0 {
+        "snapshot-history-boundary-ok"
+    } else {
+        "snapshot-history-boundary-empty"
+    };
+
+    format!(
+        "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count={history_candidate_count} sessions={} rows={} bytes={} snapshot_like_rows={snapshot_like_rows} history_like_rows={history_like_rows} largest_snapshot_bytes={} duplicate_rows={} duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action={next_action}",
+        stats.browser_document_session_count,
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+    )
+}
+
+fn browser_runtime_footprint_bounds_line(stats: &IndexStorageStats) -> String {
+    let resource_cache_bytes = 0u64;
+    let resource_cache_status = "not-scanned";
+    let next_action = if stats.browser_document_duplicate_rows > 0
+        && stats.browser_document_large_row_count > 0
+    {
+        "inspect-duplicate-large-browser-runtime-rows"
+    } else if stats.browser_document_large_row_count > 0
+        || stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES
+    {
+        "inspect-large-browser-runtime-rows"
+    } else if stats.browser_document_duplicate_rows > 0 {
+        "inspect-duplicate-browser-runtime-rows"
+    } else if stats.browser_document_bytes.saturating_mul(2) >= index_storage_budget_bytes() {
+        "monitor-browser-runtime-footprint-budget"
+    } else if stats.browser_document_rows > 0 {
+        "browser-runtime-footprint-ok"
+    } else {
+        "browser-runtime-footprint-empty"
+    };
+
+    format!(
+        "browser_runtime_footprint_bounds: report_only=true deletes=false compacts=false sessions={} browser_document_rows={} browser_document_bytes={} largest_session_payload_bytes={} large_row_count={} duplicate_rows={} duplicate_row_bytes={} resource_cache_bytes={resource_cache_bytes} resource_cache_status={resource_cache_status} suggested_session_payload_cap_bytes={} storage_budget_bytes={} next_action={next_action}",
+        stats.browser_document_session_count,
+        stats.browser_document_rows,
+        stats.browser_document_bytes,
+        stats.browser_document_max_row_bytes,
+        stats.browser_document_large_row_count,
+        stats.browser_document_duplicate_rows,
+        stats.browser_document_duplicate_row_bytes,
+        BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+        index_storage_budget_bytes(),
+    )
+}
+
+fn storage_pressure_rollup_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let core_bytes = storage_core_index_bytes(stats, web_summary);
+    let frontier_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.total)
+        .unwrap_or(0);
+    let web_cache_bytes = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let brave_results_bytes = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let components = [
+        ("core-index", core_bytes),
+        ("web-artifacts", web_summary.bytes),
+        ("browser-documents", stats.browser_document_bytes),
+        ("crawl-artifacts", crawl_bytes),
+    ];
+    let (largest_component, largest_component_bytes) = components
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let budget_status = if stats.total_bytes > index_storage_budget_bytes() {
+        "over-budget"
+    } else if web_summary.duplicate_entries > 0
+        || web_summary.suggested_dry_runs > 0
+        || stats.crawl_snapshot_duplicate_entries > 0
+    {
+        "dry-run-recommended"
+    } else {
+        "within-budget"
+    };
+    let budget_next_action = match budget_status {
+        "over-budget" => "review-largest-artifact-before-cleanup",
+        "dry-run-recommended" => "run-storage-dry-run-before-cleanup",
+        _ => "storage-size-low",
+    };
+    let export_needs_review = stats.total_bytes > index_storage_budget_bytes()
+        || web_summary.duplicate_entries > 0
+        || stats.browser_document_duplicate_rows > 0
+        || stats.crawl_snapshot_duplicate_entries > 0;
+    let git_export_size_class = if stats.total_bytes > index_storage_budget_bytes() {
+        "too-large-for-git-snapshot"
+    } else if export_needs_review {
+        "review-before-export"
+    } else {
+        "git-friendly"
+    };
+    let git_export_next_action = match git_export_size_class {
+        "git-friendly" => "export-metadata-only-ready",
+        "review-before-export" => "review-removable-rows-before-export",
+        "too-large-for-git-snapshot" => "reduce-or-exclude-large-artifacts-before-export",
+        _ => "review-export-readiness",
+    };
+    vec![
+        format!(
+            "storage_git_manifest_readiness: report_only=true status={} exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_rows={} browser_document_rows={} snapshot_entries={} frontier_records={}",
+            if export_needs_review {
+                "needs-review"
+            } else {
+                "ready"
+            },
+            stats.total_bytes,
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes,
+            web_summary.entries,
+            stats.browser_document_rows,
+            stats.crawl_snapshot_entries,
+            frontier_records
+        ),
+        "storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .esoteric-index contents".to_owned(),
+        "storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned(),
+        live_index_web_artifact_inventory_line(
+            stats,
+            web_summary,
+            core_bytes,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+        ),
+        web_replay_artifact_readiness_line(stats, web_summary, web_cache_bytes, brave_results_bytes),
+        web_replay_github_safe_completeness_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+        ),
+        live_index_web_growth_boundary_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+        ),
+        brave_archive_commit_boundary_line(stats, web_summary, brave_results_bytes),
+        format!(
+            "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.esoteric-index/raw-index-data",
+            stats.total_bytes,
+            index_storage_budget_bytes(),
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes
+        ),
+        format!(
+            "storage_git_export_next_action: report_only=true action={git_export_next_action} class={git_export_size_class} removable_web_rows={} browser_document_duplicates={} snapshot_duplicates={} frontier_records={frontier_records}",
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_pressure_summary: total_bytes={} core_index_bytes={} web_bytes={} browser_document_bytes={} crawl_bytes={} web_entries={} web_duplicates={} snapshot_entries={} frontier_records={}",
+            stats.total_bytes,
+            core_bytes,
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes,
+            web_summary.entries,
+            web_summary.duplicate_entries,
+            stats.crawl_snapshot_entries,
+            frontier_records
+        ),
+        format!(
+            "local_artifact_size_budget: report_only=true status={budget_status} total_bytes={} budget_bytes={} web_cache_bytes={} brave_results_bytes={} snapshot_bytes={} generated_artifact_bytes=not-scanned largest_artifact={largest_component} largest_artifact_bytes={largest_component_bytes} next_action={budget_next_action}",
+            stats.total_bytes,
+            index_storage_budget_bytes(),
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes
+        ),
+        storage_hygiene_bounds_inventory_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+            frontier_records,
+        ),
+        search_browser_storage_hygiene_pack_line(
+            stats,
+            web_summary,
+            web_cache_bytes,
+            brave_results_bytes,
+            crawl_bytes,
+            largest_component,
+            largest_component_bytes,
+        ),
+        format!("storage_pressure_total_bytes: {}", stats.total_bytes),
+        format!("storage_pressure_core_index_bytes: {core_bytes}"),
+        format!("storage_pressure_web_bytes: {}", web_summary.bytes),
+        format!(
+            "storage_pressure_browser_document_bytes: {}",
+            stats.browser_document_bytes
+        ),
+        format!("storage_pressure_crawl_bytes: {crawl_bytes}"),
+    ]
+}
+
+fn live_index_web_growth_boundary_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+) -> String {
+    let retention = web_storage_retention_config();
+    let web_budget_bytes = retention
+        .cache_max_bytes
+        .saturating_add(retention.result_log_max_bytes);
+    let github_safe_bytes = web_cache_bytes
+        .saturating_add(brave_results_bytes)
+        .saturating_add(stats.browser_document_bytes)
+        .saturating_add(crawl_bytes);
+    let runtime_only_bytes = storage_core_index_bytes(stats, web_summary);
+    let removable_rows = web_summary
+        .duplicate_entries
+        .saturating_add(stats.browser_document_duplicate_rows)
+        .saturating_add(stats.crawl_snapshot_duplicate_entries);
+    let over_web_budget = web_summary.bytes > web_budget_bytes;
+    let over_storage_budget = stats.total_bytes > index_storage_budget_bytes();
+    let next_action = if over_storage_budget {
+        "review-largest-runtime-only-index-artifacts"
+    } else if over_web_budget {
+        "dry-run-prune-web-artifact-growth"
+    } else if removable_rows > 0 {
+        "review-removable-github-safe-rows"
+    } else if github_safe_bytes > 0 || runtime_only_bytes > 0 {
+        "growth-boundary-monitor"
+    } else {
+        "growth-boundary-empty"
+    };
+
+    format!(
+        "live_index_web_growth_boundary: report_only=true deletes=false compacts=false total_bytes={} storage_budget_bytes={} web_bytes={} web_budget_bytes={web_budget_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} removable_rows={removable_rows} web_duplicate_rows={} browser_duplicate_rows={} snapshot_duplicate_rows={} over_web_budget={over_web_budget} over_storage_budget={over_storage_budget} preserve=.esoteric-index,indexed-documents,running-server github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin next_action={next_action}",
+        stats.total_bytes,
+        index_storage_budget_bytes(),
+        web_summary.bytes,
+        web_summary.duplicate_entries,
+        stats.browser_document_duplicate_rows,
+        stats.crawl_snapshot_duplicate_entries,
+    )
+}
+
+fn web_replay_github_safe_completeness_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+) -> String {
+    let cache = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl");
+    let result_log = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let replayable_rows = cache
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archived_rows = result_log
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archived_not_replayable_rows = archived_rows.saturating_sub(replayable_rows);
+    let github_safe_rows = replayable_rows.saturating_add(archived_not_replayable_rows);
+    let runtime_only_rows = web_summary.result_rows.saturating_sub(github_safe_rows);
+    let complete = web_summary.incomplete_result_rows == 0
+        && runtime_only_rows == 0
+        && web_summary.result_rows == github_safe_rows;
+    let next_action = if web_summary.incomplete_result_rows > 0 {
+        "repair-incomplete-github-safe-replay-rows"
+    } else if archived_not_replayable_rows > 0 {
+        "dry-run-backfill-web-cache-from-archive"
+    } else if runtime_only_rows > 0 {
+        "inspect-runtime-only-web-result-rows"
+    } else if complete {
+        "github-safe-replay-complete"
+    } else {
+        "github-safe-replay-empty"
+    };
+
+    format!(
+        "web_replay_github_safe_completeness: report_only=true mutates_files=false complete={complete} total_result_rows={} github_safe_rows={github_safe_rows} replayable_cache_rows={replayable_rows} archived_rows={archived_rows} archived_not_replayable_rows={archived_not_replayable_rows} runtime_only_rows={runtime_only_rows} incomplete_rows={} duplicate_rows={} github_safe_bytes={} runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=env-secrets,api-keys next_action={next_action}",
+        web_summary.result_rows,
+        web_summary.incomplete_result_rows,
+        web_summary.duplicate_entries,
+        web_cache_bytes.saturating_add(brave_results_bytes),
+    )
+}
+
+fn web_replay_artifact_readiness_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+) -> String {
+    let cache = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl");
+    let result_log = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let replayable_cache_rows = cache
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let replayable_query_buckets = cache.map(|artifact| artifact.query_count).unwrap_or(0);
+    let durable_provider_rows = result_log
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let durable_query_buckets = result_log.map(|artifact| artifact.query_count).unwrap_or(0);
+    let durable_only_rows = durable_provider_rows.saturating_sub(replayable_cache_rows);
+    let missing_query_buckets = durable_query_buckets.saturating_sub(replayable_query_buckets);
+    let replay_ready = replayable_cache_rows > 0
+        && web_summary.incomplete_result_rows == 0
+        && web_summary.duplicate_entries == 0;
+    let next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-replay-artifacts"
+    } else if durable_only_rows > 0 || missing_query_buckets > 0 {
+        "backfill-web-cache-from-brave-results-dry-run"
+    } else if web_summary.duplicate_entries > 0 {
+        "dedup-web-replay-artifacts-dry-run"
+    } else if replay_ready {
+        "replay-ready-from-github-safe-artifacts"
+    } else {
+        "web-replay-artifacts-empty"
+    };
+
+    format!(
+        "web_replay_artifact_readiness: report_only=true mutates_files=false replay_ready={replay_ready} replayable_cache_rows={replayable_cache_rows} replayable_query_buckets={replayable_query_buckets} durable_provider_rows={durable_provider_rows} durable_query_buckets={durable_query_buckets} durable_only_rows={durable_only_rows} missing_query_buckets={missing_query_buckets} incomplete_rows={} duplicate_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
+        web_summary.incomplete_result_rows, web_summary.duplicate_entries,
+    )
+}
+
+fn live_index_web_artifact_inventory_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    core_bytes: u64,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+) -> String {
+    let indexed_documents = stats.indexed_document_count.unwrap_or(0);
+    let github_safe_bytes = web_cache_bytes
+        .saturating_add(brave_results_bytes)
+        .saturating_add(stats.browser_document_bytes)
+        .saturating_add(crawl_bytes);
+    let runtime_only_bytes = core_bytes;
+    let replay_ready = web_summary.durable_result_rows > 0
+        && web_summary.incomplete_result_rows == 0
+        && web_summary.duplicate_entries == 0;
+    let next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-result-artifacts"
+    } else if web_summary.duplicate_entries > 0 {
+        "review-web-artifact-dedup-dry-run"
+    } else if indexed_documents == 0 && web_summary.durable_result_rows > 0 {
+        "backfill-index-from-github-safe-web-artifacts"
+    } else if web_summary.durable_result_rows > 0 {
+        "live-index-web-inventory-ready"
+    } else {
+        "live-index-web-inventory-empty"
+    };
+
+    format!(
+        "live_index_web_artifact_inventory: report_only=true deletes=false compacts=false indexed_documents={indexed_documents} core_index_bytes={core_bytes} web_cache_rows={} brave_result_rows={} durable_web_rows={} incomplete_web_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_document_bytes={} crawl_artifact_bytes={crawl_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} replay_ready={replay_ready} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
+        web_summary.entries,
+        stats
+            .web_artifacts
+            .iter()
+            .find(|artifact| artifact.name == "brave-results.jsonl")
+            .map(|artifact| artifact.result_rows)
+            .unwrap_or(0),
+        web_summary.durable_result_rows,
+        web_summary.incomplete_result_rows,
+        stats.browser_document_bytes,
+    )
+}
+
+fn storage_hygiene_bounds_inventory_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+    frontier_records: usize,
+) -> String {
+    let retention_config = web_storage_retention_config();
+    let web_cap_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+    let frontier_failed_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.failed)
+        .unwrap_or(0);
+    let next_action = if stats.total_bytes > index_storage_budget_bytes() {
+        "review-storage-budget-before-cleanup"
+    } else if web_summary.bytes > web_cap_bytes {
+        "review-web-result-cache-caps"
+    } else if web_summary.duplicate_entries > 0 || stats.crawl_snapshot_duplicate_entries > 0 {
+        "dry-run-prune-duplicate-storage-rows"
+    } else if frontier_failed_records > DEFAULT_MAX_FAILED_FRONTIER_RECORDS {
+        "inspect-frontier-failed-record-growth"
+    } else {
+        "storage-bounds-low"
+    };
+
+    format!(
+        "storage_hygiene_bounds_inventory: report_only=true deletes=false compacts=false web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} web_cap_bytes={web_cap_bytes} snapshot_bytes={} snapshot_entries={} snapshot_duplicates={} frontier_bytes={} frontier_records={frontier_records} frontier_failed_records={frontier_failed_records} generated_artifact_inventory=temp-cleanup-audit preserve=.esoteric-index,indexed-docs,crawl-snapshots github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        crawl_bytes,
+        stats.crawl_snapshot_entries,
+        stats.crawl_snapshot_duplicate_entries,
+        stats.crawl_frontier_bytes,
+    )
+}
+
+fn search_browser_storage_hygiene_pack_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    web_cache_bytes: u64,
+    brave_results_bytes: u64,
+    crawl_bytes: u64,
+    largest_component: &str,
+    largest_component_bytes: u64,
+) -> String {
+    let retention_config = web_storage_retention_config();
+    let candidate_artifacts = usize::from(web_cache_bytes > 0)
+        .saturating_add(usize::from(brave_results_bytes > 0))
+        .saturating_add(usize::from(stats.browser_document_bytes > 0))
+        .saturating_add(usize::from(crawl_bytes > 0));
+    let duplicate_rows = web_summary
+        .duplicate_entries
+        .saturating_add(stats.browser_document_duplicate_rows)
+        .saturating_add(stats.crawl_snapshot_duplicate_entries);
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let cap_bytes = index_storage_budget_bytes();
+    let web_cap_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+    let next_action = if stats.total_bytes > cap_bytes {
+        "review-largest-artifact-before-cleanup"
+    } else if duplicate_rows > 0 || duplicate_bytes > 0 || web_summary.suggested_dry_runs > 0 {
+        "run-storage-hygiene-dry-run"
+    } else if web_summary.bytes > web_cap_bytes {
+        "review-web-cache-caps"
+    } else if stats.browser_document_large_row_count > 0 {
+        "review-browser-session-row-size"
+    } else {
+        "storage-hygiene-low"
+    };
+
+    format!(
+        "search_browser_storage_hygiene_pack: report_only=true deletes=false compacts=false candidate_artifacts={candidate_artifacts} total_bytes={} budget_bytes={cap_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_document_bytes={} snapshot_bytes={crawl_bytes} web_rows={} brave_archive_rows={} browser_document_rows={} snapshot_rows={} duplicate_rows={duplicate_rows} duplicate_bytes={duplicate_bytes} largest_artifact={largest_component} largest_artifact_bytes={largest_component_bytes} web_cap_bytes={web_cap_bytes} browser_large_row_count={} next_action={next_action}",
+        stats.total_bytes,
+        stats.browser_document_bytes,
+        web_summary.result_rows,
+        stats
+            .web_artifacts
+            .iter()
+            .find(|artifact| artifact.name == "brave-results.jsonl")
+            .map(|artifact| artifact.result_rows)
+            .unwrap_or(0),
+        stats.browser_document_rows,
+        stats.crawl_snapshot_entries,
+        stats.browser_document_large_row_count,
+    )
+}
+
+fn storage_budget_pressure_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    retention_config: WebStorageRetentionConfig,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let core_bytes = storage_core_index_bytes(stats, web_summary);
+    let budget_bytes = index_storage_budget_bytes();
+    let remaining_bytes = budget_bytes.saturating_sub(stats.total_bytes);
+    let status = if stats.total_bytes > budget_bytes {
+        "over-budget"
+    } else {
+        "within-budget"
+    };
+    let web_budget_bytes = retention_config
+        .cache_max_bytes
+        .saturating_add(retention_config.result_log_max_bytes);
+
+    vec![
+        format!(
+            "storage_budget_summary: status={} total_bytes={} budget_bytes={} remaining_bytes={} core_index_bytes={} web_bytes={} web_budget_bytes={} browser_document_bytes={} crawl_bytes={}",
+            status,
+            stats.total_bytes,
+            budget_bytes,
+            remaining_bytes,
+            core_bytes,
+            web_summary.bytes,
+            web_budget_bytes,
+            stats.browser_document_bytes,
+            crawl_bytes
+        ),
+        format!("storage_budget_status: {status}"),
+        format!("storage_budget_total_bytes: {}", stats.total_bytes),
+        format!("storage_budget_bytes: {budget_bytes}"),
+        format!("storage_budget_remaining_bytes: {remaining_bytes}"),
+        format!("storage_budget_core_index_bytes: {core_bytes}"),
+        format!("storage_budget_web_bytes: {}", web_summary.bytes),
+        format!("storage_budget_web_budget_bytes: {web_budget_bytes}"),
+        format!(
+            "storage_budget_browser_document_bytes: {}",
+            stats.browser_document_bytes
+        ),
+        format!("storage_budget_crawl_bytes: {crawl_bytes}"),
+        "storage_budget_report_mode: report-only".to_owned(),
+        "storage_budget_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
+    ]
+}
+
+fn storage_cache_growth_guardrail_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let web_bytes = web_summary.bytes;
+    let browser_session_bytes = stats.browser_document_bytes;
+    let resource_cache_bytes = 0u64;
+    let components = [
+        ("web-cache", web_bytes),
+        ("browser-session-cache", browser_session_bytes),
+        ("resource-cache", resource_cache_bytes),
+    ];
+    let (largest_component, largest_component_bytes) = components
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let high_growth_components = components
+        .iter()
+        .filter(|(_, bytes)| *bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES)
+        .count();
+    let next_action = if web_summary.duplicate_row_bytes > 0
+        && stats.browser_document_duplicate_row_bytes > 0
+    {
+        "inspect-multiple-cache-growth"
+    } else if web_summary.duplicate_row_bytes > 0 || web_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-web-cache-growth"
+    } else if stats.browser_document_duplicate_row_bytes > 0
+        || browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+    {
+        "inspect-browser-session-cache-growth"
+    } else {
+        "cache-growth-low"
+    };
+
+    vec![
+        format!(
+            "storage_cache_growth_guardrail: report_only=true web_rows={} web_bytes={web_bytes} browser_session_rows={} browser_session_bytes={browser_session_bytes} resource_cache_bytes={resource_cache_bytes} resource_cache_status=not-scanned duplicate_bytes={duplicate_bytes} largest_component={largest_component} largest_component_bytes={largest_component_bytes} high_growth_component_count={high_growth_components} high_growth_threshold_bytes={INDEX_ARTIFACT_HIGH_GROWTH_BYTES} next_action={next_action}",
+            web_summary.result_rows,
+            stats.browser_document_rows
+        ),
+        storage_runtime_cache_pressure_line(stats, web_summary),
+        storage_cache_session_output_hygiene_line(stats, web_summary),
+        "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .esoteric-index"
+            .to_owned(),
+    ]
+}
+
+fn storage_runtime_cache_pressure_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> String {
+    let browser_session_bytes = stats.browser_document_bytes;
+    let candidate_count = web_summary
+        .artifact_count
+        .saturating_add(usize::from(browser_session_bytes > 0));
+    let candidate_bytes = web_summary.bytes.saturating_add(browser_session_bytes);
+    let (largest_artifact, largest_artifact_bytes) = stats
+        .web_artifacts
+        .iter()
+        .map(|artifact| (artifact.name, artifact.bytes))
+        .chain(std::iter::once((
+            "browser-documents.jsonl",
+            browser_session_bytes,
+        )))
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let next_action =
+        if web_summary.duplicate_row_bytes > 0 && stats.browser_document_duplicate_row_bytes > 0 {
+            "inspect-web-and-browser-runtime-cache"
+        } else if web_summary.duplicate_row_bytes > 0
+            || web_summary.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        {
+            "inspect-web-runtime-cache"
+        } else if stats.browser_document_duplicate_row_bytes > 0
+            || browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        {
+            "inspect-browser-runtime-cache"
+        } else if candidate_bytes > 0 {
+            "runtime-cache-monitor"
+        } else {
+            "runtime-cache-low"
+        };
+
+    format!(
+        "storage_runtime_cache_pressure: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={candidate_bytes} web_rows={} brave_archive_rows={} browser_session_rows={} duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cache_budget_bytes={} result_log_budget_bytes={} next_action={next_action}",
+        web_summary.result_rows,
+        stats
+            .web_artifacts
+            .iter()
+            .find(|artifact| artifact.name == "brave-results.jsonl")
+            .map(|artifact| artifact.result_rows)
+            .unwrap_or(0),
+        stats.browser_document_rows,
+        web_storage_retention_config().cache_max_bytes,
+        web_storage_retention_config().result_log_max_bytes,
+    )
+}
+
+fn storage_cache_session_output_hygiene_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> String {
+    let web_cache_bytes = index_storage_artifact_bytes(stats, "web-cache.jsonl");
+    let brave_results_bytes = index_storage_artifact_bytes(stats, "brave-results.jsonl");
+    let browser_session_bytes = stats.browser_document_bytes;
+    let cache_session_bytes = web_cache_bytes
+        .saturating_add(brave_results_bytes)
+        .saturating_add(browser_session_bytes);
+    let duplicate_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let cap_bytes = web_storage_retention_config()
+        .cache_max_bytes
+        .saturating_add(web_storage_retention_config().result_log_max_bytes)
+        .saturating_add(index_storage_budget_bytes());
+    let artifacts = [
+        ("web-cache.jsonl", web_cache_bytes),
+        ("brave-results.jsonl", brave_results_bytes),
+        ("browser-documents.jsonl", browser_session_bytes),
+    ];
+    let candidate_count = artifacts.iter().filter(|(_, bytes)| *bytes > 0).count();
+    let (largest_artifact, largest_artifact_bytes) = artifacts
+        .iter()
+        .copied()
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let next_action = if cache_session_bytes > cap_bytes {
+        "review-cache-session-cap-before-cleanup"
+    } else if duplicate_bytes > 0 {
+        "dry-run-cache-session-dedup"
+    } else if browser_session_bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-browser-session-output-growth"
+    } else if web_summary.bytes >= INDEX_ARTIFACT_HIGH_GROWTH_BYTES {
+        "inspect-web-cache-output-growth"
+    } else {
+        "cache-session-output-low"
+    };
+
+    format!(
+        "storage_cache_session_output_hygiene: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={cache_session_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_session_bytes={browser_session_bytes} generated_output_inventory=temp-cleanup-audit generated_output_status=report-only-scan duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cap_bytes={cap_bytes} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}"
+    )
+}
+
+fn search_index_retention_audit_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let cache = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl");
+    let result_log = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let cache_rows = cache
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let cache_bytes = cache.map(|artifact| artifact.bytes).unwrap_or(0);
+    let cache_query_buckets = cache.map(|artifact| artifact.query_count).unwrap_or(0);
+    let result_log_rows = result_log
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let result_log_bytes = result_log.map(|artifact| artifact.bytes).unwrap_or(0);
+    let result_log_query_buckets = result_log.map(|artifact| artifact.query_count).unwrap_or(0);
+    let result_log_only_rows = result_log_rows.saturating_sub(cache_rows);
+    let missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
+    let indexed_documents = stats.indexed_document_count.unwrap_or(0);
+    let indexed_document_bytes = index_storage_artifact_bytes(stats, "docs.bin")
+        .saturating_add(index_storage_artifact_bytes(stats, "field_docs.bin"))
+        .saturating_add(index_storage_artifact_bytes(stats, "texts.bin"));
+    let drift_rows = cache_rows.abs_diff(result_log_rows);
+    let durable_not_indexed_rows = web_summary
+        .durable_result_rows
+        .saturating_sub(indexed_documents as usize);
+    let index_gap_next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-result-rows"
+    } else if result_log_only_rows > 0 || missing_query_buckets > 0 {
+        "backfill-web-cache-replay-from-brave-results"
+    } else if durable_not_indexed_rows > 0 {
+        "backfill-local-index-from-retained-web-results"
+    } else {
+        "replay-index-aligned"
+    };
+    let status = if web_summary.result_rows == 0 && indexed_documents == 0 {
+        "empty"
+    } else if web_summary.incomplete_result_rows > 0
+        || result_log_only_rows > 0
+        || missing_query_buckets > 0
+        || (indexed_documents == 0 && web_summary.durable_result_rows > 0)
+        || drift_rows > 0
+    {
+        "needs-review"
+    } else {
+        "ready"
+    };
+    let next_action = if web_summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-web-result-rows"
+    } else if missing_query_buckets > 0 || result_log_only_rows > 0 {
+        "rebuild-web-cache-replay"
+    } else if indexed_documents == 0 && web_summary.durable_result_rows > 0 {
+        "inspect-index-rebuild"
+    } else if drift_rows > 0 {
+        "inspect-web-result-drift"
+    } else {
+        "retention-aligned"
+    };
+
+    vec![
+        format!(
+            "search_index_retention_audit: report_only=true status={status} web_cache_rows={cache_rows} brave_result_rows={result_log_rows} durable_web_rows={} incomplete_web_rows={} result_log_only_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} indexed_document_bytes={indexed_document_bytes} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} drift_rows={drift_rows} next_action={next_action}",
+            web_summary.durable_result_rows,
+            web_summary.incomplete_result_rows
+        ),
+        format!(
+            "brave_web_replay_index_gap: report_only=true replayable_rows={cache_rows} durable_provider_rows={result_log_rows} durable_not_replayable_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} durable_not_indexed_rows={durable_not_indexed_rows} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} next_action={index_gap_next_action}"
+        ),
+        format!(
+            "local_web_index_persistence_boundary: report_only=true durable_provider_rows={result_log_rows} replayable_cache_rows={cache_rows} indexed_documents={indexed_documents} missing_replay_rows={result_log_only_rows} missing_index_rows={durable_not_indexed_rows} persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.esoteric-index/raw-index-data next_action={index_gap_next_action}"
+        ),
+        "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .esoteric-index data".to_owned(),
+    ]
+}
+
+fn index_storage_artifact_bytes(stats: &IndexStorageStats, name: &str) -> u64 {
+    stats
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == name)
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0)
+}
+
+fn storage_cleanup_readiness_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let frontier_failed_removable_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let known_removable_row_bytes = web_summary
+        .duplicate_row_bytes
+        .saturating_add(stats.browser_document_duplicate_row_bytes);
+    let removable_rows = web_summary
+        .duplicate_entries
+        .saturating_add(stats.browser_document_duplicate_rows)
+        .saturating_add(stats.crawl_snapshot_duplicate_entries)
+        .saturating_add(frontier_failed_removable_records);
+    let retained_bytes = stats.total_bytes.saturating_sub(known_removable_row_bytes);
+    let safe_to_clean = removable_rows > 0 || known_removable_row_bytes > 0;
+    let status = if safe_to_clean {
+        "cleanup-available"
+    } else {
+        "zero-removal"
+    };
+    let web_cleanup_useful = web_summary.duplicate_entries > 0
+        || web_summary.duplicate_row_bytes > 0
+        || web_summary.suggested_dry_runs > 0;
+    let browser_document_cleanup_useful =
+        stats.browser_document_duplicate_rows > 0 || stats.browser_document_duplicate_row_bytes > 0;
+    let crawl_cleanup_useful =
+        stats.crawl_snapshot_duplicate_entries > 0 || frontier_failed_removable_records > 0;
+    let component_cleanup_useful = browser_document_cleanup_useful || crawl_cleanup_useful;
+    let cleanup_component_count = usize::from(web_cleanup_useful)
+        .saturating_add(usize::from(browser_document_cleanup_useful))
+        .saturating_add(usize::from(crawl_cleanup_useful));
+    let byte_source_next_action = if !safe_to_clean {
+        "cleanup-pointless"
+    } else if cleanup_component_count > 1 {
+        "inspect-multiple-components"
+    } else if web_cleanup_useful {
+        "inspect-web-compaction"
+    } else if browser_document_cleanup_useful {
+        "inspect-browser-documents"
+    } else if crawl_cleanup_useful {
+        "inspect-crawl-artifacts"
+    } else {
+        "cleanup-pointless"
+    };
+    let next_action = if !safe_to_clean {
+        "cleanup-pointless; all tracked rows are retained"
+    } else if web_cleanup_useful {
+        "run web compaction dry-run first; web-cache/brave-results have removable duplicate pressure"
+    } else if component_cleanup_useful {
+        "inspect browser-document, crawl-snapshot, and frontier dry-run reports before any apply"
+    } else {
+        "review component reports before any apply"
+    };
+
+    let mut lines = vec![
+        format!(
+            "storage_cleanup_readiness: status={} report_mode=report-only retained_bytes={} known_removable_row_bytes={} removable_rows={} web_removable_rows={} browser_document_removable_rows={} snapshot_removable_rows={} frontier_failed_removable_records={}",
+            status,
+            retained_bytes,
+            known_removable_row_bytes,
+            removable_rows,
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries,
+            frontier_failed_removable_records
+        ),
+        format!("storage_cleanup_status: {status}"),
+        "storage_cleanup_report_mode: report-only".to_owned(),
+        format!("storage_cleanup_safe_to_clean: {safe_to_clean}"),
+        format!("storage_cleanup_pointless: {}", !safe_to_clean),
+        format!("storage_cleanup_retained_bytes: {retained_bytes}"),
+        format!(
+            "storage_cleanup_known_removable_row_bytes: {}",
+            known_removable_row_bytes
+        ),
+        format!("storage_cleanup_removable_rows: {removable_rows}"),
+        format!(
+            "storage_cleanup_web_removable_rows: {}",
+            web_summary.duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_browser_document_removable_rows: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "storage_cleanup_snapshot_removable_rows: {}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_frontier_failed_removable_records: {}",
+            frontier_failed_removable_records
+        ),
+        format!(
+            "storage_cleanup_web_reason: duplicate_rows={} duplicate_row_bytes={} suggested_dry_runs={}",
+            web_summary.duplicate_entries,
+            web_summary.duplicate_row_bytes,
+            web_summary.suggested_dry_runs
+        ),
+        format!(
+            "storage_cleanup_browser_document_reason: duplicate_rows={} duplicate_row_bytes={}",
+            stats.browser_document_duplicate_rows, stats.browser_document_duplicate_row_bytes
+        ),
+        format!(
+            "storage_cleanup_snapshot_reason: duplicate_rows={}",
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_frontier_reason: failed_removable_records={}",
+            frontier_failed_removable_records
+        ),
+        format!(
+            "storage_cleanup_byte_sources: report_only=true retained_bytes={retained_bytes} web_duplicate_row_bytes={} browser_document_duplicate_row_bytes={} snapshot_duplicate_rows={} frontier_failed_removable_records={frontier_failed_removable_records}",
+            web_summary.duplicate_row_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        format!(
+            "storage_cleanup_byte_source_next_action: report_only=true action={byte_source_next_action} web_cleanup_useful={web_cleanup_useful} browser_document_cleanup_useful={browser_document_cleanup_useful} crawl_cleanup_useful={crawl_cleanup_useful}"
+        ),
+        format!("storage_cleanup_next_action: report-only; {next_action}"),
+        "storage_cleanup_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned(),
+    ];
+    if safe_to_clean {
+        lines.push(
+            "storage_cleanup_note: cleanup candidates exist; review component dry-run output before applying any rewrite"
+                .to_owned(),
+        );
+    } else {
+        lines.push(
+            "storage_cleanup_note: cleanup would be pointless because all tracked storage rows are retained"
+                .to_owned(),
+        );
+    }
+    lines
+}
+
+fn storage_core_index_bytes(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> u64 {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    stats
+        .total_bytes
+        .saturating_sub(crawl_bytes)
+        .saturating_sub(stats.browser_document_bytes)
+        .saturating_sub(web_summary.bytes)
+}
+
+fn frontier_failed_projected_removed(frontier: &FrontierStats) -> usize {
+    frontier
+        .failed
+        .saturating_sub(frontier.failed.min(DEFAULT_MAX_FAILED_FRONTIER_RECORDS))
+}
+
+fn index_storage_budget_bytes() -> u64 {
+    web_storage_env_u64("ESOTERIC_INDEX_STORAGE_BUDGET_BYTES")
+        .unwrap_or(DEFAULT_INDEX_STORAGE_BUDGET_BYTES)
+}
+
+fn storage_snapshot_readiness_lines(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> Vec<String> {
+    let crawl_bytes = stats
+        .crawl_frontier_bytes
+        .saturating_add(stats.crawl_snapshot_bytes);
+    let frontier_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(|frontier| frontier.total)
+        .unwrap_or(0);
+    let frontier_failed_removable_records = stats
+        .crawl_frontier_stats
+        .as_ref()
+        .map(frontier_failed_projected_removed)
+        .unwrap_or(0);
+    let core_index_bytes = storage_core_index_bytes(stats, web_summary);
+    let export_needs_review = stats.total_bytes > index_storage_budget_bytes()
+        || web_summary.duplicate_entries > 0
+        || web_summary.suggested_dry_runs > 0
+        || stats.browser_document_duplicate_rows > 0
+        || stats.crawl_snapshot_duplicate_entries > 0
+        || frontier_failed_removable_records > 0;
+    let export_status = if export_needs_review {
+        "needs-review"
+    } else {
+        "ready"
+    };
+    let status = if web_summary.suggested_dry_runs > 0 {
+        "needs-web-compaction"
+    } else {
+        "ready"
+    };
+    let mut lines = vec![
+        format!(
+            "storage_snapshot_readiness: status={} total_bytes={} web_bytes={} browser_document_bytes={} browser_document_rows={} browser_document_duplicates={} crawl_bytes={} web_entries={} web_result_rows={} web_unique_entries={} web_duplicates={} web_duplicate_row_bytes={} web_suggested_dry_runs={} snapshot_entries={} frontier_records={}",
+            status,
+            stats.total_bytes,
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            stats.browser_document_rows,
+            stats.browser_document_duplicate_rows,
+            crawl_bytes,
+            web_summary.entries,
+            web_summary.result_rows,
+            web_summary.unique_entries,
+            web_summary.duplicate_entries,
+            web_summary.duplicate_row_bytes,
+            web_summary.suggested_dry_runs,
+            stats.crawl_snapshot_entries,
+            frontier_records
+        ),
+        format!("storage_snapshot_status: {status}"),
+        format!(
+            "storage_snapshot_browser_document_rows: {}",
+            stats.browser_document_rows
+        ),
+        format!(
+            "storage_snapshot_browser_document_duplicates: {}",
+            stats.browser_document_duplicate_rows
+        ),
+        format!(
+            "storage_snapshot_web_suggested_dry_runs: {}",
+            web_summary.suggested_dry_runs
+        ),
+        format!("storage_snapshot_frontier_records: {}", frontier_records),
+        storage_snapshot_replay_budget_dry_run_line(stats, web_summary),
+        format!(
+            "storage_index_export_readiness: report_only=true status={export_status} total_bytes={} core_index_bytes={core_index_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_removable_rows={} browser_document_duplicates={} snapshot_duplicates={} frontier_failed_removable_records={frontier_failed_removable_records}",
+            stats.total_bytes,
+            web_summary.bytes,
+            stats.browser_document_bytes,
+            crawl_bytes,
+            web_summary.duplicate_entries,
+            stats.browser_document_duplicate_rows,
+            stats.crawl_snapshot_duplicate_entries
+        ),
+        "storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .esoteric-index contents".to_owned(),
+    ];
+    if web_summary.suggested_dry_runs > 0 {
+        lines.push(format!(
+            "storage_snapshot_cleanup_hint: esoteric-search compact-web-cache --dry-run --min-entries {}",
+            web_summary.entries.max(1)
+        ));
+    }
+    lines
+}
+
+fn storage_snapshot_replay_budget_dry_run_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+) -> String {
+    let snapshot_candidate_count = usize::from(stats.crawl_snapshot_bytes > 0);
+    let replay_candidate_count = stats
+        .web_artifacts
+        .iter()
+        .filter(|artifact| artifact.bytes > 0)
+        .count();
+    let candidate_artifacts = snapshot_candidate_count.saturating_add(replay_candidate_count);
+    let candidate_bytes = stats.crawl_snapshot_bytes.saturating_add(web_summary.bytes);
+    let (largest_artifact, largest_artifact_bytes) = stats
+        .web_artifacts
+        .iter()
+        .map(|artifact| (artifact.name, artifact.bytes))
+        .chain(std::iter::once((
+            "crawl-docs.jsonl",
+            stats.crawl_snapshot_bytes,
+        )))
+        .max_by_key(|(_, bytes)| *bytes)
+        .unwrap_or(("none", 0));
+    let snapshot_pressure = stats.crawl_snapshot_duplicate_entries > 0;
+    let replay_pressure = web_summary.duplicate_entries > 0 || web_summary.suggested_dry_runs > 0;
+    let next_action = if snapshot_pressure && replay_pressure {
+        "review-snapshot-and-web-replay-dry-runs"
+    } else if snapshot_pressure {
+        "review-crawl-snapshot-dry-run"
+    } else if replay_pressure {
+        "review-web-replay-dry-run"
+    } else if candidate_bytes.saturating_mul(2) >= index_storage_budget_bytes() {
+        "monitor-snapshot-replay-budget"
+    } else {
+        "snapshot-replay-budget-low"
+    };
+
+    format!(
+        "storage_snapshot_replay_budget_dry_run: report_only=true deletes=false compacts=false candidate_artifacts={candidate_artifacts} candidate_bytes={candidate_bytes} snapshot_entries={} replay_entries={} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} snapshot_duplicate_rows={} replay_duplicate_rows={} next_action={next_action}",
+        stats.crawl_snapshot_entries,
+        web_summary.entries,
+        stats.crawl_snapshot_duplicate_entries,
+        web_summary.duplicate_entries,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CrawlSnapshotArtifactStats {
+    entries: usize,
+    unique_entries: usize,
+    duplicate_entries: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrowserDocumentArtifactStats {
+    rows: usize,
+    session_count: usize,
+    unique_rows: usize,
+    duplicate_rows: usize,
+    unique_row_bytes: u64,
+    duplicate_row_bytes: u64,
+    max_row_bytes: u64,
+    large_row_count: usize,
+}
+
+fn browser_document_artifact_stats(path: &Path) -> Result<BrowserDocumentArtifactStats> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open browser document jsonl artifact {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut rows = 0usize;
+    let mut unique_rows = 0usize;
+    let mut duplicate_rows = 0usize;
+    let mut unique_row_bytes = 0u64;
+    let mut duplicate_row_bytes = 0u64;
+    let mut max_row_bytes = 0u64;
+    let mut large_row_count = 0usize;
+    let mut keys = HashSet::new();
+    let mut sessions = HashSet::new();
+
+    for line in reader.lines() {
+        let line = line
+            .with_context(|| format!("read browser document jsonl artifact {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        rows = rows.saturating_add(1);
+        let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        max_row_bytes = max_row_bytes.max(row_bytes);
+        if row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES {
+            large_row_count = large_row_count.saturating_add(1);
+        }
+        let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+            format!("decode browser document jsonl artifact {}", path.display())
+        })?;
+        if let Some(session) = browser_document_session_key(&value) {
+            sessions.insert(session.to_owned());
+        }
+        if let Some(key) = browser_document_storage_key(&value) {
+            if keys.insert(key) {
+                unique_rows = unique_rows.saturating_add(1);
+                unique_row_bytes = unique_row_bytes.saturating_add(row_bytes);
+            } else {
+                duplicate_rows = duplicate_rows.saturating_add(1);
+                duplicate_row_bytes = duplicate_row_bytes.saturating_add(row_bytes);
+            }
+        } else {
+            unique_rows = unique_rows.saturating_add(1);
+            unique_row_bytes = unique_row_bytes.saturating_add(row_bytes);
+        }
+    }
+
+    Ok(BrowserDocumentArtifactStats {
+        rows,
+        session_count: sessions.len(),
+        unique_rows,
+        duplicate_rows,
+        unique_row_bytes,
+        duplicate_row_bytes,
+        max_row_bytes,
+        large_row_count,
+    })
+}
+
+fn browser_document_session_key(value: &serde_json::Value) -> Option<&str> {
+    first_json_string(value, &["session_id", "session", "tab_id", "tab"])
+}
+
+fn browser_document_storage_key(value: &serde_json::Value) -> Option<String> {
+    let url = first_json_string(
+        value,
+        &["url", "document_url", "source", "target", "final_url"],
+    )?;
+    let session = browser_document_session_key(value);
+    Some(match session {
+        Some(session) => format!("{session}\0{url}"),
+        None => url.to_owned(),
+    })
+}
+
+fn first_json_string<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|value| value.as_str()))
+        .filter(|value| !value.is_empty())
+}
+
+fn crawl_snapshot_artifact_stats(path: &Path) -> Result<CrawlSnapshotArtifactStats> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open index storage jsonl artifact {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut entries = 0usize;
+    let mut urls = HashSet::new();
+    for line in reader.lines() {
+        let line =
+            line.with_context(|| format!("read index storage jsonl artifact {}", path.display()))?;
+        if !line.trim().is_empty() {
+            entries = entries.saturating_add(1);
+            let value: serde_json::Value = serde_json::from_str(&line).with_context(|| {
+                format!("decode crawl snapshot jsonl artifact {}", path.display())
+            })?;
+            if let Some(url) = value.get("url").and_then(|url| url.as_str()) {
+                urls.insert(url.to_owned());
+            }
+        }
+    }
+    let unique_entries = urls.len();
+    Ok(CrawlSnapshotArtifactStats {
+        entries,
+        unique_entries,
+        duplicate_entries: entries.saturating_sub(unique_entries),
+    })
+}
+
+fn web_result_durable_commit_report_lines(index: &Path) -> Result<Vec<String>> {
+    durable_web_result_commit_report_lines(
+        &index.join("web-cache.jsonl"),
+        &index.join("brave-results.jsonl"),
+    )
+}
+
+fn web_storage_pressure_summary_lines(
+    artifacts: &[WebStorageArtifactStats],
+    now: u64,
+    stale_secs: u64,
+) -> Vec<String> {
+    let summary = web_storage_pressure_summary(artifacts, now, stale_secs);
+    let cache_pressure_action = web_storage_cache_pressure_next_action(&summary);
+    let invalid_json_rows = artifacts
+        .iter()
+        .map(|artifact| artifact.invalid_json_rows)
+        .sum::<usize>();
+    let invalid_json_artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.invalid_json_rows > 0)
+        .count();
+    let integrity_status = if invalid_json_rows > 0 {
+        "needs-review"
+    } else {
+        "ok"
+    };
+    let integrity_next_action = if invalid_json_rows > 0 {
+        "inspect-or-dry-run-compact"
+    } else {
+        "no-integrity-action-needed"
+    };
+    let operator_status = if invalid_json_rows > 0 {
+        "needs-review"
+    } else if summary.duplicate_entries > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.suggested_dry_runs > 0
+    {
+        "dry-run-recommended"
+    } else {
+        "ok"
+    };
+    let operator_next_action = match operator_status {
+        "needs-review" => "inspect-or-dry-run-compact",
+        "dry-run-recommended" => "run-web-storage-dry-run",
+        _ => "no-storage-action-needed",
+    };
+    let brave_results = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let brave_persisted_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let brave_duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let brave_duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let brave_invalid_rows = brave_results
+        .map(|artifact| artifact.invalid_json_rows)
+        .unwrap_or(0);
+    let brave_archive_status = if brave_invalid_rows > 0 {
+        "needs-review"
+    } else if brave_duplicate_rows > 0 || brave_duplicate_row_bytes > 0 {
+        "duplicate-pressure"
+    } else if brave_persisted_rows > 0 {
+        "ready"
+    } else {
+        "empty"
+    };
+    let brave_archive_next_action = match brave_archive_status {
+        "needs-review" => "inspect-brave-results-jsonl",
+        "duplicate-pressure" => "run-web-cache-dry-run-before-apply",
+        "ready" => "archive-healthy",
+        _ => "no-brave-results-retained",
+    };
+    let mut lines = vec![
+        format!(
+            "web_storage_pressure_summary: artifacts={} bytes={} entries={} result_rows={} durable_result_rows={} incomplete_result_rows={} unique_entries={} duplicates={} duplicate_row_bytes={} stale_artifacts={} suggested_dry_runs={}",
+            summary.artifact_count,
+            summary.bytes,
+            summary.entries,
+            summary.result_rows,
+            summary.durable_result_rows,
+            summary.incomplete_result_rows,
+            summary.unique_entries,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
+        ),
+        format!("web_storage_pressure_artifacts: {}", summary.artifact_count),
+        format!("web_storage_pressure_bytes: {}", summary.bytes),
+        format!("web_storage_pressure_entries: {}", summary.entries),
+        format!("web_storage_pressure_result_rows: {}", summary.result_rows),
+        format!(
+            "web_storage_pressure_durable_result_rows: {}",
+            summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_pressure_incomplete_result_rows: {}",
+            summary.incomplete_result_rows
+        ),
+        format!(
+            "web_storage_pressure_unique_entries: {}",
+            summary.unique_entries
+        ),
+        format!(
+            "web_storage_pressure_projected_entries_after: {}",
+            summary.unique_entries
+        ),
+        format!(
+            "web_storage_pressure_projected_entries_removed: {}",
+            summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_pressure_projected_row_bytes_after: {}",
+            summary.unique_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_projected_row_bytes_removed: {}",
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_retained_result_rows: {}",
+            summary.result_rows
+        ),
+        format!(
+            "web_storage_pressure_removable_row_bytes: {}",
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_zero_removal: {}",
+            summary.duplicate_entries == 0 && summary.duplicate_row_bytes == 0
+        ),
+        format!(
+            "web_storage_pressure_duplicate_entries: {}",
+            summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_pressure_duplicate_row_bytes: {}",
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "web_storage_pressure_max_entries_per_query: {}",
+            summary.max_entries_per_query
+        ),
+        format!(
+            "web_storage_pressure_stale_artifacts: {}",
+            summary.stale_artifacts
+        ),
+        format!(
+            "web_storage_pressure_suggested_dry_runs: {}",
+            summary.suggested_dry_runs
+        ),
+        format!(
+            "web_storage_cache_pressure: report_only=true action={cache_pressure_action} total_rows={} total_bytes={} entries={} duplicate_rows={} duplicate_row_bytes={} max_entries_per_query={} stale_artifacts={} suggested_dry_runs={}",
+            summary.result_rows,
+            summary.bytes,
+            summary.entries,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes,
+            summary.max_entries_per_query,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
+        ),
+        format!(
+            "web_storage_integrity_audit: report_only=true status={integrity_status} invalid_json_rows={invalid_json_rows} affected_artifacts={invalid_json_artifacts} valid_entries={} retained_rows={} malformed_rows={invalid_json_rows} next_action={integrity_next_action}",
+            summary.entries.saturating_sub(invalid_json_rows),
+            summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_operator_summary: report_only=true status={operator_status} retained_rows={} retained_bytes={} malformed_rows={invalid_json_rows} reclaimable_rows={} reclaimable_bytes={} suggested_dry_runs={} next_action={operator_next_action}",
+            summary.durable_result_rows,
+            summary.unique_row_bytes,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes,
+            summary.suggested_dry_runs
+        ),
+        format!(
+            "brave_result_archive_guard: report_only=true status={brave_archive_status} persisted_rows={brave_persisted_rows} duplicate_rows={brave_duplicate_rows} duplicate_row_bytes={brave_duplicate_row_bytes} malformed_rows={brave_invalid_rows} mutates_files=false next_action={brave_archive_next_action}"
+        ),
+        saved_result_file_growth_boundary_line(artifacts, &summary),
+        brave_result_archive_retention_line(artifacts),
+    ];
+    if summary.suggested_dry_runs > 0 {
+        lines.push(format!(
+            "web_storage_pressure_suggestion: esoteric-search compact-web-cache --dry-run --min-entries {}",
+            summary.entries.max(1)
+        ));
+    }
+    lines.extend(web_storage_export_readiness_lines(
+        artifacts, &summary, now, stale_secs,
+    ));
+    lines
+}
+
+fn saved_result_file_growth_boundary_line(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+) -> String {
+    let config = web_storage_retention_config();
+    let cache_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let result_log_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let cap_bytes = config
+        .cache_max_bytes
+        .saturating_add(config.result_log_max_bytes);
+    let saved_result_bytes = cache_bytes.saturating_add(result_log_bytes);
+    let next_action = if summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-saved-results"
+    } else if summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0 {
+        "dry-run-prune-saved-result-duplicates"
+    } else if saved_result_bytes >= cap_bytes {
+        "review-saved-result-byte-caps"
+    } else if summary.durable_result_rows > 0 {
+        "saved-result-growth-bounded"
+    } else {
+        "no-saved-results"
+    };
+
+    format!(
+        "saved_result_file_growth_boundary: report_only=true mutates_files=false saved_result_rows={} saved_result_bytes={saved_result_bytes} cache_bytes={cache_bytes} result_log_bytes={result_log_bytes} duplicate_rows={} duplicate_row_bytes={} malformed_rows={} cap_bytes={cap_bytes} generated_artifact_inventory=temp-cleanup-audit github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        summary.durable_result_rows,
+        summary.duplicate_entries,
+        summary.duplicate_row_bytes,
+        summary.incomplete_result_rows,
+    )
+}
+
+fn brave_archive_commit_boundary_line(
+    stats: &IndexStorageStats,
+    web_summary: &WebStoragePressureSummary,
+    brave_results_bytes: u64,
+) -> String {
+    let config = web_storage_retention_config();
+    let brave_results = stats
+        .web_artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let archive_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archive_entries = brave_results.map(|artifact| artifact.entries).unwrap_or(0);
+    let duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let malformed_rows = brave_results
+        .map(|artifact| artifact.invalid_json_rows)
+        .unwrap_or(0);
+    let incomplete_rows = brave_results
+        .map(|artifact| artifact.incomplete_result_rows)
+        .unwrap_or(0);
+    let query_buckets = brave_results
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let max_entries_per_query = brave_results
+        .map(|artifact| artifact.max_entries_per_query)
+        .unwrap_or(0);
+    let over_byte_cap =
+        config.result_log_max_bytes > 0 && brave_results_bytes > config.result_log_max_bytes;
+    let over_query_cap = config.result_log_max_entries_per_query > 0
+        && max_entries_per_query > config.result_log_max_entries_per_query;
+    let runtime_only_bytes = storage_core_index_bytes(stats, web_summary);
+    let commit_safe = archive_rows > 0
+        && malformed_rows == 0
+        && incomplete_rows == 0
+        && !over_byte_cap
+        && !over_query_cap;
+    let next_action = if malformed_rows > 0 || incomplete_rows > 0 {
+        "repair-brave-archive-before-commit"
+    } else if over_byte_cap || over_query_cap {
+        "dry-run-prune-brave-archive-before-commit"
+    } else if duplicate_rows > 0 || duplicate_row_bytes > 0 {
+        "review-brave-archive-duplicates-before-commit"
+    } else if commit_safe {
+        "commit-safe-brave-archive-ready"
+    } else {
+        "no-brave-archive-to-commit"
+    };
+
+    format!(
+        "brave_archive_commit_boundary: report_only=true deletes=false compacts=false commit_safe={commit_safe} archive_entries={archive_entries} archive_rows={archive_rows} archive_bytes={brave_results_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} malformed_rows={malformed_rows} incomplete_rows={incomplete_rows} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} result_log_max_bytes={} result_log_max_entries_per_query={} over_byte_cap={over_byte_cap} over_query_cap={over_query_cap} runtime_only_bytes={runtime_only_bytes} github_safe_artifacts=brave-results.jsonl,web-cache.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        config.result_log_max_bytes, config.result_log_max_entries_per_query,
+    )
+}
+
+fn brave_result_archive_retention_line(artifacts: &[WebStorageArtifactStats]) -> String {
+    let config = web_storage_retention_config();
+    let brave_results = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let archive_candidates = usize::from(brave_results.is_some());
+    let archive_rows = brave_results
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let archive_bytes = brave_results.map(|artifact| artifact.bytes).unwrap_or(0);
+    let duplicate_rows = brave_results
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let duplicate_row_bytes = brave_results
+        .map(|artifact| artifact.duplicate_row_bytes)
+        .unwrap_or(0);
+    let max_entries_per_query = brave_results
+        .map(|artifact| artifact.max_entries_per_query)
+        .unwrap_or(0);
+    let query_buckets = brave_results
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let (largest_artifact, largest_artifact_bytes) = brave_results
+        .map(|artifact| (artifact.name, artifact.bytes))
+        .unwrap_or(("none", 0));
+    let next_action = if duplicate_rows > 0 || duplicate_row_bytes > 0 {
+        "review-brave-archive-duplicates-dry-run"
+    } else if archive_bytes >= config.result_log_max_bytes {
+        "review-brave-archive-byte-cap"
+    } else if max_entries_per_query > config.result_log_max_entries_per_query {
+        "review-brave-archive-query-cap"
+    } else if archive_rows > 0 {
+        "brave-archive-retention-ok"
+    } else {
+        "no-brave-archive-rows"
+    };
+
+    format!(
+        "brave_result_archive_retention: report_only=true deletes=false compacts=false archive_candidates={archive_candidates} archive_rows={archive_rows} archive_bytes={archive_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} result_log_max_entries={} result_log_max_bytes={} result_log_max_entries_per_query={} next_action={next_action}",
+        config.result_log_max_entries,
+        config.result_log_max_bytes,
+        config.result_log_max_entries_per_query,
+    )
+}
+
+fn web_storage_cache_pressure_next_action(summary: &WebStoragePressureSummary) -> &'static str {
+    if summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0 {
+        "inspect-web-cache-duplicates"
+    } else if summary.suggested_dry_runs > 0
+        || summary.entries >= WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
+        || summary.bytes >= DEFAULT_CACHE_MAX_BYTES
+    {
+        "inspect-web-cache-growth"
+    } else {
+        "web-cache-low"
+    }
+}
+
+fn web_storage_export_readiness_lines(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+    now: u64,
+    stale_secs: u64,
+) -> Vec<String> {
+    let cache_query_buckets = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let cache_replayable_result_rows = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let result_log_unique_urls = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.unique_entries)
+        .unwrap_or(0);
+    let result_log_durable_result_rows = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let result_log_query_buckets = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.query_count)
+        .unwrap_or(0);
+    let replay_missing_query_examples = web_storage_replay_missing_query_examples(artifacts);
+    let provider_buckets = artifacts
+        .iter()
+        .map(|artifact| artifact.provider_count)
+        .max()
+        .unwrap_or(0);
+    let replay_missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
+    let status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.incomplete_result_rows == 0 {
+        "ready"
+    } else {
+        "partial"
+    };
+    let replay_status = if cache_replayable_result_rows > 0 {
+        "ready"
+    } else if result_log_unique_urls > 0 {
+        "miss-risk"
+    } else {
+        "empty"
+    };
+    let newest_age_secs = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.newest_fetched_at_unix)
+        .max()
+        .map(|newest| now.saturating_sub(newest));
+    let oldest_age_secs = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.oldest_fetched_at_unix)
+        .min()
+        .map(|oldest| now.saturating_sub(oldest));
+    let staleness_status = match newest_age_secs {
+        None => "unknown",
+        Some(age_secs) if stale_secs > 0 && age_secs > stale_secs => "stale",
+        Some(_) => "fresh",
+    };
+    let compaction_reason = if summary.duplicate_row_bytes > 0 {
+        "duplicate-bytes"
+    } else if replay_missing_query_buckets > 0 {
+        "replay-misses"
+    } else if provider_buckets > 1 {
+        "multiple-providers"
+    } else if staleness_status == "stale" {
+        "stale-cache"
+    } else {
+        "zero-removal"
+    };
+    let result_log_only_rows =
+        result_log_durable_result_rows.saturating_sub(cache_replayable_result_rows);
+    let git_readiness_status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.duplicate_entries > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.incomplete_result_rows > 0
+        || summary.stale_artifacts > 0
+        || summary.suggested_dry_runs > 0
+        || replay_missing_query_buckets > 0
+        || result_log_only_rows > 0
+    {
+        "needs-review"
+    } else {
+        "ready"
+    };
+    let provider_cleanup_useful = provider_buckets > 1
+        || staleness_status == "stale"
+        || summary.stale_artifacts > 0
+        || summary.duplicate_row_bytes > 0
+        || summary.suggested_dry_runs > 0;
+    let provider_cleanup_status = if provider_cleanup_useful {
+        "needs-review"
+    } else {
+        "ready"
+    };
+    let replay_restore_status = if summary.result_rows == 0 {
+        "empty"
+    } else if cache_replayable_result_rows == 0 && result_log_durable_result_rows > 0 {
+        "durable-only"
+    } else if replay_missing_query_buckets > 0 || result_log_only_rows > 0 {
+        "partial"
+    } else if staleness_status == "stale" {
+        "stale"
+    } else {
+        "ready"
+    };
+    let replay_restore_can_avoid_brave_call = replay_restore_status == "ready";
+    let retention_status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.incomplete_result_rows > 0 {
+        "incomplete"
+    } else if replay_missing_query_buckets > 0 || result_log_only_rows > 0 {
+        "durable-needs-replay"
+    } else if cache_replayable_result_rows > 0 && result_log_durable_result_rows > 0 {
+        "retained-and-replayable"
+    } else if result_log_durable_result_rows > 0 {
+        "durable-only"
+    } else {
+        "needs-review"
+    };
+    let retention_next_action = match retention_status {
+        "retained-and-replayable" => "repeat-search-can-use-local-cache",
+        "durable-needs-replay" => "rebuild-web-cache-replay-before-repeat-search",
+        "durable-only" => "export-or-rebuild-replay-cache-before-repeat-search",
+        "incomplete" => "inspect-incomplete-web-result-rows",
+        "empty" => "no-local-web-results-retained",
+        _ => "inspect-web-result-retention",
+    };
+    let restart_survives = result_log_durable_result_rows > 0;
+    let prune_safe_after_dry_run = summary.duplicate_entries > 0 || summary.duplicate_row_bytes > 0;
+    let restart_next_action = if summary.incomplete_result_rows > 0 {
+        "inspect-incomplete-durable-result-metadata"
+    } else if result_log_only_rows > 0 || replay_missing_query_buckets > 0 {
+        "backfill-web-cache-replay-before-prune"
+    } else if prune_safe_after_dry_run {
+        "dry-run-compact-duplicate-durable-rows"
+    } else if restart_survives {
+        "durable-retention-ready"
+    } else {
+        "no-durable-brave-results"
+    };
+    let replay_restore_action = match replay_restore_status {
+        "ready" => "cache replay can avoid a Brave call",
+        "empty" => "no durable web results are available for replay",
+        "durable-only" => "export or rebuild replay cache before another Brave call",
+        "partial" => "inspect missing replay queries before another Brave call",
+        "stale" => "refresh stale replay cache before relying on local results",
+        _ => "inspect web replay state",
+    };
+    let local_replay_status = if summary.result_rows == 0 {
+        "empty"
+    } else if summary.duplicate_entries > 0 {
+        "duplicate-pressure"
+    } else if cache_replayable_result_rows > 0 && result_log_only_rows == 0 {
+        "ready"
+    } else if cache_replayable_result_rows > 0 && result_log_only_rows > 0 {
+        "partial"
+    } else if result_log_durable_result_rows > 0 {
+        "result-log-only"
+    } else {
+        "needs-review"
+    };
+    let local_replay_next_action = match local_replay_status {
+        "ready" => "repeat-search-uses-local-cache",
+        "partial" => "backfill-result-log-only-replay-rows",
+        "result-log-only" => "rebuild-web-cache-replay",
+        "duplicate-pressure" => "inspect-duplicate-replay-rows",
+        "empty" => "no-local-web-results",
+        _ => "inspect-local-web-replay-state",
+    };
+    vec![
+        format!(
+            "web_storage_export_readiness: status={status} report_only=true cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls} durable_result_rows={} incomplete_result_rows={} duplicate_rows={}",
+            summary.durable_result_rows,
+            summary.incomplete_result_rows,
+            summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_replay_readiness: status={replay_status} report_only=true cache_query_buckets={cache_query_buckets} replayable_result_rows={cache_replayable_result_rows} result_log_unique_urls={result_log_unique_urls}"
+        ),
+        format!(
+            "web_storage_result_log_only_rows: report_only=true durable_result_rows={result_log_durable_result_rows} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={}",
+            result_log_only_rows
+        ),
+        format!(
+            "web_storage_replay_restore_readiness: report_only=true status={replay_restore_status} avoid_brave_call={replay_restore_can_avoid_brave_call} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} staleness_status={staleness_status} action={}",
+            replay_restore_action.replace(' ', "-")
+        ),
+        format!(
+            "web_storage_local_replay_visibility: report_only=true status={local_replay_status} cache_rows={cache_replayable_result_rows} result_log_rows={result_log_durable_result_rows} result_log_only_rows={result_log_only_rows} cache_query_buckets={cache_query_buckets} missing_query_buckets={replay_missing_query_buckets} duplicate_rows={} provider_buckets={provider_buckets} next_action={local_replay_next_action}",
+            summary.duplicate_entries
+        ),
+        format!(
+            "brave_web_result_retention: report_only=true status={retention_status} retained_local_rows={} replayable_cache_rows={cache_replayable_result_rows} durable_result_log_rows={result_log_durable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} unique_result_urls={result_log_unique_urls} retained_bytes={} removable_bytes={} next_action={retention_next_action}",
+            summary.durable_result_rows,
+            summary.unique_row_bytes,
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "durable_brave_restart_retention: report_only=true survives_restart={restart_survives} durable_result_log_rows={result_log_durable_result_rows} replayable_cache_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} retained_bytes={} duplicate_rows={} duplicate_row_bytes={} durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.esoteric-index/raw-index-data prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={restart_next_action}",
+            summary.unique_row_bytes,
+            summary.duplicate_entries,
+            summary.duplicate_row_bytes
+        ),
+        format!(
+            "web_storage_export_git_readiness: report_only=true status={git_readiness_status} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} replayable_result_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} stale_artifacts={} suggested_dry_runs={}",
+            summary.unique_row_bytes,
+            summary.duplicate_row_bytes,
+            summary.unique_entries,
+            summary.duplicate_entries,
+            summary.stale_artifacts,
+            summary.suggested_dry_runs
+        ),
+        web_storage_cache_size_budget_line(artifacts, summary),
+        format!(
+            "web_storage_export_manifest: report_only=true export_status={status} replay_status={replay_status} staleness_status={staleness_status} newest_age_secs={} stale_after_secs={stale_secs} retained_bytes={} removable_bytes={} retained_rows={} removable_rows={} cache_query_buckets={cache_query_buckets} unique_result_urls={result_log_unique_urls}",
+            newest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            summary.unique_row_bytes,
+            summary.duplicate_row_bytes,
+            summary.unique_entries,
+            summary.duplicate_entries
+        ),
+        format!(
+            "web_storage_replay_query_coverage: report_only=true cache_query_buckets={cache_query_buckets} result_log_query_buckets={result_log_query_buckets} missing_query_buckets={replay_missing_query_buckets}"
+        ),
+        format!(
+            "web_storage_replay_missing_query_examples: report_only=true limit={WEB_STORAGE_QUERY_EXAMPLE_LIMIT} examples={}",
+            web_storage_format_query_examples(&replay_missing_query_examples)
+        ),
+        format!(
+            "web_storage_provider_growth: report_only=true limit={WEB_STORAGE_PROVIDER_GROWTH_LIMIT} {}",
+            web_storage_provider_growth_summary(artifacts)
+        ),
+        format!(
+            "web_storage_provider_cleanup_readiness: report_only=true status={provider_cleanup_status} provider_buckets={provider_buckets} stale_artifacts={} duplicate_row_bytes={} suggested_dry_runs={} cleanup_useful={provider_cleanup_useful}",
+            summary.stale_artifacts,
+            summary.duplicate_row_bytes,
+            summary.suggested_dry_runs
+        ),
+        format!(
+            "web_storage_provider_cleanup_hint: report_only=true {}",
+            if provider_cleanup_useful {
+                "run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present"
+            } else {
+                "cleanup would be pointless for provider/stale/duplicate pressure"
+            }
+        ),
+        format!(
+            "web_storage_replay_staleness: status={staleness_status} report_only=true newest_age_secs={} oldest_age_secs={} stale_after_secs={stale_secs}",
+            newest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned()),
+            oldest_age_secs
+                .map(|age_secs| age_secs.to_string())
+                .unwrap_or_else(|| "unknown".to_owned())
+        ),
+        format!(
+            "web_storage_compaction_decision: report_only=true reason={compaction_reason} duplicate_row_bytes={} missing_query_buckets={replay_missing_query_buckets} provider_buckets={provider_buckets} staleness_status={staleness_status}",
+            summary.duplicate_row_bytes
+        ),
+        format!("web_storage_provider_buckets: {provider_buckets}"),
+        format!("web_storage_export_cache_query_buckets: {cache_query_buckets}"),
+        format!("web_storage_replay_missing_query_buckets: {replay_missing_query_buckets}"),
+        format!("web_storage_replayable_result_rows: {cache_replayable_result_rows}"),
+        format!("web_storage_export_unique_result_urls: {result_log_unique_urls}"),
+        format!(
+            "web_storage_export_durable_result_rows: {}",
+            summary.durable_result_rows
+        ),
+        format!(
+            "web_storage_export_incomplete_result_rows: {}",
+            summary.incomplete_result_rows
+        ),
+        format!(
+            "web_storage_export_duplicate_rows: {}",
+            summary.duplicate_entries
+        ),
+        "web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned(),
+    ]
+}
+
+fn web_storage_cache_size_budget_line(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+) -> String {
+    web_storage_cache_size_budget_line_with_config(
+        artifacts,
+        summary,
+        web_storage_retention_config(),
+    )
+}
+
+fn web_storage_cache_size_budget_line_with_config(
+    artifacts: &[WebStorageArtifactStats],
+    summary: &WebStoragePressureSummary,
+    config: WebStorageRetentionConfig,
+) -> String {
+    let cache_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let result_log_bytes = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.bytes)
+        .unwrap_or(0);
+    let over_budget_bytes = cache_bytes
+        .saturating_sub(config.cache_max_bytes)
+        .saturating_add(result_log_bytes.saturating_sub(config.result_log_max_bytes));
+    let near_budget = cache_bytes.saturating_mul(4) >= config.cache_max_bytes.saturating_mul(3)
+        || result_log_bytes.saturating_mul(4) >= config.result_log_max_bytes.saturating_mul(3);
+    let status = if over_budget_bytes > 0 {
+        "over-budget"
+    } else if summary.duplicate_row_bytes > 0 || summary.duplicate_entries > 0 {
+        "duplicate-pressure"
+    } else if near_budget {
+        "near-budget"
+    } else {
+        "within-budget"
+    };
+    let next_action = match status {
+        "over-budget" => "run-web-cache-dry-run-before-apply",
+        "duplicate-pressure" => "inspect-duplicate-web-result-rows",
+        "near-budget" => "monitor-web-cache-growth",
+        _ => "web-cache-budget-ok",
+    };
+
+    format!(
+        "web_storage_cache_size_budget: report_only=true status={status} cache_bytes={cache_bytes} cache_budget_bytes={} result_log_bytes={result_log_bytes} result_log_budget_bytes={} over_budget_bytes={over_budget_bytes} duplicate_row_bytes={} duplicate_rows={} next_action={next_action}",
+        config.cache_max_bytes,
+        config.result_log_max_bytes,
+        summary.duplicate_row_bytes,
+        summary.duplicate_entries
+    )
+}
+
+fn web_storage_replay_missing_query_examples(artifacts: &[WebStorageArtifactStats]) -> Vec<String> {
+    let cache_queries = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl")
+        .map(|artifact| artifact.query_examples.as_slice())
+        .unwrap_or(&[]);
+    let result_log_queries = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl")
+        .map(|artifact| artifact.query_examples.as_slice())
+        .unwrap_or(&[]);
+    let cache_queries = cache_queries
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut examples = result_log_queries
+        .iter()
+        .filter(|query| !cache_queries.contains(query.as_str()))
+        .take(WEB_STORAGE_QUERY_EXAMPLE_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
+    examples.sort();
+    examples
+}
+
+fn web_replay_backfill_dry_run_lines(artifacts: &[WebStorageArtifactStats]) -> Vec<String> {
+    let cache = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "web-cache.jsonl");
+    let result_log = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "brave-results.jsonl");
+    let cache_query_buckets = cache.map(|artifact| artifact.query_count).unwrap_or(0);
+    let replayable_cache_rows = cache
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let cache_bytes = cache.map(|artifact| artifact.bytes).unwrap_or(0);
+    let result_log_query_buckets = result_log.map(|artifact| artifact.query_count).unwrap_or(0);
+    let durable_provider_rows = result_log
+        .map(|artifact| artifact.durable_result_rows)
+        .unwrap_or(0);
+    let incomplete_provider_rows = result_log
+        .map(|artifact| artifact.incomplete_result_rows)
+        .unwrap_or(0);
+    let duplicate_provider_rows = result_log
+        .map(|artifact| artifact.duplicate_entries)
+        .unwrap_or(0);
+    let result_log_bytes = result_log.map(|artifact| artifact.bytes).unwrap_or(0);
+    let missing_query_buckets = result_log_query_buckets.saturating_sub(cache_query_buckets);
+    let result_log_only_rows = durable_provider_rows.saturating_sub(replayable_cache_rows);
+    let skipped_duplicate_rows = duplicate_provider_rows.min(result_log_only_rows);
+    let would_add_rows = result_log_only_rows.saturating_sub(skipped_duplicate_rows);
+    let status = if durable_provider_rows == 0 && replayable_cache_rows == 0 {
+        "empty"
+    } else if incomplete_provider_rows > 0 {
+        "needs-review"
+    } else if would_add_rows > 0 || missing_query_buckets > 0 {
+        "ready"
+    } else {
+        "noop"
+    };
+    let next_action = match status {
+        "ready" => "dry-run-backfill-web-cache-replay",
+        "needs-review" => "inspect-incomplete-provider-rows-before-backfill",
+        "noop" => "backfill-not-needed",
+        "empty" => "no-durable-provider-results",
+        _ => "inspect-web-replay-backfill",
+    };
+    let skipped_rows = replayable_cache_rows
+        .saturating_add(skipped_duplicate_rows)
+        .saturating_add(incomplete_provider_rows);
+    let retention_status = if duplicate_provider_rows > 0 {
+        "duplicate-pressure"
+    } else {
+        status
+    };
+    let retention_next_action = if duplicate_provider_rows > 0 {
+        "inspect-duplicate-provider-rows-before-backfill"
+    } else {
+        next_action
+    };
+    let missing_examples = web_storage_replay_missing_query_examples(artifacts);
+
+    vec![
+        format!(
+            "web_replay_backfill_dry_run: report_only=true mutates_cache=false mutates_index=false status={status} would_add_rows={would_add_rows} skipped_replayable_rows={replayable_cache_rows} skipped_duplicate_rows={skipped_duplicate_rows} skipped_incomplete_rows={incomplete_provider_rows} durable_provider_rows={durable_provider_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} source=brave-results target=web-cache source_bytes={result_log_bytes} target_bytes={cache_bytes} next_action={next_action}"
+        ),
+        format!(
+            "web_replay_backfill_retention_summary: report_only=true status={retention_status} retained_cache_rows={replayable_cache_rows} retained_provider_rows={durable_provider_rows} would_add_rows={would_add_rows} skipped_rows={skipped_rows} skipped_replayable_rows={replayable_cache_rows} skipped_duplicate_rows={skipped_duplicate_rows} skipped_incomplete_rows={incomplete_provider_rows} missing_query_buckets={missing_query_buckets} source_bytes={result_log_bytes} target_bytes={cache_bytes} next_action={retention_next_action}"
+        ),
+        format!(
+            "web_replay_backfill_skip_reasons: report_only=true already_replayable_rows={replayable_cache_rows} duplicate_provider_rows={duplicate_provider_rows} incomplete_provider_rows={incomplete_provider_rows} missing_query_buckets={missing_query_buckets}"
+        ),
+        format!(
+            "web_replay_backfill_missing_query_examples: report_only=true limit={WEB_STORAGE_QUERY_EXAMPLE_LIMIT} examples={}",
+            web_storage_format_query_examples(&missing_examples)
+        ),
+        "web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned(),
+    ]
+}
+
+fn web_storage_format_query_examples(examples: &[String]) -> String {
+    if examples.is_empty() {
+        return "none".to_owned();
+    }
+    examples
+        .iter()
+        .map(|query| web_storage_sanitize_token(query))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn web_storage_provider_growth_summary(artifacts: &[WebStorageArtifactStats]) -> String {
+    let summaries = artifacts
+        .iter()
+        .filter(|artifact| !artifact.provider_growth.is_empty())
+        .map(|artifact| format!("{}={}", artifact.name, artifact.provider_growth.join("|")))
+        .collect::<Vec<_>>();
+    if summaries.is_empty() {
+        "providers=none".to_owned()
+    } else {
+        summaries.join(" ")
+    }
+}
+
+fn web_storage_sanitize_token(value: &str) -> String {
+    value.replace(|ch: char| ch.is_whitespace() || ch == ',' || ch == '|', "_")
+}
+
+fn web_storage_pressure_summary(
+    artifacts: &[WebStorageArtifactStats],
+    now: u64,
+    stale_secs: u64,
+) -> WebStoragePressureSummary {
+    WebStoragePressureSummary {
+        artifact_count: artifacts.len(),
+        bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.bytes)
+        }),
+        entries: artifacts.iter().map(|artifact| artifact.entries).sum(),
+        result_rows: artifacts.iter().map(|artifact| artifact.result_rows).sum(),
+        durable_result_rows: artifacts
+            .iter()
+            .map(|artifact| artifact.durable_result_rows)
+            .sum(),
+        incomplete_result_rows: artifacts
+            .iter()
+            .map(|artifact| artifact.incomplete_result_rows)
+            .sum(),
+        unique_entries: artifacts
+            .iter()
+            .map(|artifact| artifact.unique_entries)
+            .sum(),
+        duplicate_entries: artifacts
+            .iter()
+            .map(|artifact| artifact.duplicate_entries)
+            .sum(),
+        unique_row_bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.unique_row_bytes)
+        }),
+        duplicate_row_bytes: artifacts.iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.duplicate_row_bytes)
+        }),
+        max_entries_per_query: artifacts
+            .iter()
+            .map(|artifact| artifact.max_entries_per_query)
+            .max()
+            .unwrap_or(0),
+        stale_artifacts: artifacts
+            .iter()
+            .filter(|artifact| {
+                stale_secs > 0
+                    && web_storage_oldest_age_secs(artifact, now)
+                        .is_some_and(|age_secs| age_secs > stale_secs)
+            })
+            .count(),
+        suggested_dry_runs: artifacts
+            .iter()
+            .filter(|artifact| {
+                web_storage_compaction_suggestion(artifact, now, stale_secs).is_some()
+            })
+            .count(),
+    }
+}
+
+fn web_storage_compaction_suggestion(
+    artifact: &WebStorageArtifactStats,
+    now: u64,
+    stale_secs: u64,
+) -> Option<String> {
+    if artifact.duplicate_entries >= WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES {
+        return Some(format!(
+            "esoteric-search compact-web-cache --dry-run --min-entries {}",
+            artifact.entries.max(artifact.duplicate_entries)
+        ));
+    }
+    if artifact.entries >= WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES {
+        return Some(format!(
+            "esoteric-search compact-web-cache --dry-run --min-entries {}",
+            WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
+        ));
+    }
+    if stale_secs > 0
+        && web_storage_oldest_age_secs(artifact, now).is_some_and(|age_secs| age_secs > stale_secs)
+    {
+        return Some("esoteric-search compact-web-cache --dry-run --min-entries 1".to_owned());
+    }
+    None
+}
+
+fn web_storage_oldest_age_secs(artifact: &WebStorageArtifactStats, now: u64) -> Option<u64> {
+    artifact
+        .oldest_fetched_at_unix
+        .map(|oldest| now.saturating_sub(oldest))
+}
+
+fn web_storage_stale_threshold_secs() -> u64 {
+    env::var("ESOTERIC_WEB_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_WEB_STORAGE_STALE_SECS)
+}
+
+fn print_web_storage_compaction_report(report: &WebSearchStorageCompactionReport) {
+    println!("dry_run: {}", report.dry_run);
+    println!("skipped: {}", report.skipped);
+    if report.dry_run && !report.skipped {
+        println!("dry_run_note: no files were rewritten; projected_after shows retained rows");
+    }
+    for line in web_storage_compaction_snapshot_readiness_lines(report) {
+        println!("{line}");
+    }
+    for line in web_storage_result_log_query_cap_lines(web_storage_result_log_query_cap()) {
+        println!("{line}");
+    }
+    for line in web_search_storage_prune_boundary_lines(report) {
+        println!("{line}");
+    }
+    print_web_storage_compaction_artifact(
+        "web-cache",
+        &report.cache_path,
+        report.cache_before,
+        report.cache_after,
+        report.cache_projected_after,
+    );
+    print_web_storage_compaction_artifact(
+        "brave-results",
+        &report.result_log_path,
+        report.result_log_before,
+        report.result_log_after,
+        report.result_log_projected_after,
+    );
+}
+
+fn print_web_storage_compaction_artifact(
+    label: &str,
+    path: &Path,
+    before: WebSearchStorageArtifactState,
+    after: WebSearchStorageArtifactState,
+    projected_after: WebSearchStorageArtifactState,
+) {
+    for line in web_storage_compaction_artifact_lines(label, path, before, after, projected_after) {
+        println!("{line}");
+    }
+}
+
+fn web_storage_compaction_snapshot_readiness_lines(
+    report: &WebSearchStorageCompactionReport,
+) -> Vec<String> {
+    let before_bytes = report
+        .cache_before
+        .bytes
+        .saturating_add(report.result_log_before.bytes);
+    let projected_bytes = report
+        .cache_projected_after
+        .bytes
+        .saturating_add(report.result_log_projected_after.bytes);
+    let projected_duplicates = report
+        .cache_projected_after
+        .duplicate_entries
+        .saturating_add(report.result_log_projected_after.duplicate_entries);
+    let projected_removed_bytes = before_bytes.saturating_sub(projected_bytes);
+    let projected_removed_duplicates = web_storage_compaction_projected_removed_duplicates(report);
+    let zero_removal = web_storage_compaction_zero_removal(report);
+    let cache_removed_bytes = report
+        .cache_before
+        .bytes
+        .saturating_sub(report.cache_projected_after.bytes);
+    let result_log_removed_bytes = report
+        .result_log_before
+        .bytes
+        .saturating_sub(report.result_log_projected_after.bytes);
+    let cache_removed_duplicates = report
+        .cache_before
+        .duplicate_entries
+        .saturating_sub(report.cache_projected_after.duplicate_entries);
+    let result_log_removed_duplicates = report
+        .result_log_before
+        .duplicate_entries
+        .saturating_sub(report.result_log_projected_after.duplicate_entries);
+    let cache_removed_entries = report
+        .cache_before
+        .entries
+        .saturating_sub(report.cache_projected_after.entries);
+    let result_log_removed_entries = report
+        .result_log_before
+        .entries
+        .saturating_sub(report.result_log_projected_after.entries);
+    let status = if report.skipped {
+        "skipped"
+    } else if zero_removal {
+        "zero-removal"
+    } else if projected_duplicates == 0 {
+        "ready"
+    } else {
+        "needs-compaction"
+    };
+    let cache_cleanup_useful =
+        cache_removed_bytes > 0 || cache_removed_entries > 0 || cache_removed_duplicates > 0;
+    let result_log_cleanup_useful = result_log_removed_bytes > 0
+        || result_log_removed_entries > 0
+        || result_log_removed_duplicates > 0;
+    let cleanup_next_action = if report.skipped {
+        "cleanup-skipped-review-inputs"
+    } else if zero_removal {
+        "cleanup-pointless"
+    } else if cache_cleanup_useful && result_log_cleanup_useful {
+        "review-web-cache-and-brave-results-dry-run"
+    } else if cache_cleanup_useful {
+        "review-web-cache-dry-run"
+    } else if result_log_cleanup_useful {
+        "review-brave-results-dry-run"
+    } else {
+        "cleanup-pointless"
+    };
+    let cache_rewrite_projected = cache_cleanup_useful;
+    let result_log_rewrite_projected = result_log_cleanup_useful;
+    let compaction_evidence_next_action = if report.skipped {
+        "cleanup-skipped-review-inputs"
+    } else if zero_removal {
+        "cleanup-pointless"
+    } else if cache_rewrite_projected && result_log_rewrite_projected {
+        "rewrite-web-cache-and-brave-results"
+    } else if cache_rewrite_projected {
+        "rewrite-web-cache"
+    } else if result_log_rewrite_projected {
+        "rewrite-brave-results"
+    } else {
+        "cleanup-pointless"
+    };
+    let reclaimable_rows = cache_removed_entries.saturating_add(result_log_removed_entries);
+    let reclaimable_duplicates =
+        cache_removed_duplicates.saturating_add(result_log_removed_duplicates);
+    let plan_status = if report.skipped {
+        "skipped"
+    } else if zero_removal {
+        "noop"
+    } else if reclaimable_duplicates > 0 || projected_removed_bytes > 0 || reclaimable_rows > 0 {
+        "pressure"
+    } else {
+        "review"
+    };
+    let plan_next_action = match plan_status {
+        "pressure" => "run-compact-web-cache-dry-run-before-apply",
+        "noop" => "compaction-not-useful",
+        "skipped" => "review-skipped-compaction-inputs",
+        _ => "inspect-web-artifact-compaction-plan",
+    };
+
+    vec![
+        format!(
+            "web_storage_snapshot_readiness: status={} projected_bytes={} projected_removed_bytes={} projected_duplicates={}",
+            status, projected_bytes, projected_removed_bytes, projected_duplicates
+        ),
+        format!("web_storage_snapshot_projected_bytes: {projected_bytes}"),
+        format!("web_storage_snapshot_projected_removed_bytes: {projected_removed_bytes}"),
+        format!("web_storage_snapshot_projected_duplicates: {projected_duplicates}"),
+        format!("web_storage_snapshot_retained_bytes: {projected_bytes}"),
+        format!("web_storage_snapshot_removable_bytes: {projected_removed_bytes}"),
+        format!("web_storage_snapshot_removable_duplicates: {projected_removed_duplicates}"),
+        format!(
+            "web_storage_snapshot_cache_retained_bytes: {}",
+            report.cache_projected_after.bytes
+        ),
+        format!("web_storage_snapshot_cache_removable_bytes: {cache_removed_bytes}"),
+        format!(
+            "web_storage_snapshot_cache_retained_rows: {}",
+            report.cache_projected_after.entries
+        ),
+        format!("web_storage_snapshot_cache_removable_rows: {cache_removed_entries}"),
+        format!("web_storage_snapshot_cache_removable_duplicates: {cache_removed_duplicates}"),
+        format!(
+            "web_storage_snapshot_result_log_retained_bytes: {}",
+            report.result_log_projected_after.bytes
+        ),
+        format!("web_storage_snapshot_result_log_removable_bytes: {result_log_removed_bytes}"),
+        format!(
+            "web_storage_snapshot_result_log_retained_rows: {}",
+            report.result_log_projected_after.entries
+        ),
+        format!("web_storage_snapshot_result_log_removable_rows: {result_log_removed_entries}"),
+        format!(
+            "web_storage_snapshot_result_log_removable_duplicates: {result_log_removed_duplicates}"
+        ),
+        format!(
+            "web_storage_snapshot_cleanup_scope: report-only dry_run={} cache_path={} result_log_path={}",
+            report.dry_run,
+            report.cache_path.display(),
+            report.result_log_path.display()
+        ),
+        format!(
+            "web_storage_snapshot_cleanup_next_action: report_only=true action={cleanup_next_action} cache_cleanup_useful={cache_cleanup_useful} result_log_cleanup_useful={result_log_cleanup_useful} dry_run={} zero_removal={zero_removal}",
+            report.dry_run
+        ),
+        format!(
+            "web_storage_compaction_evidence_summary: report_only=true cache_rewrite_projected={cache_rewrite_projected} result_log_rewrite_projected={result_log_rewrite_projected} cache_retained_bytes={} cache_removable_bytes={cache_removed_bytes} cache_retained_rows={} cache_removable_rows={cache_removed_entries} cache_removable_duplicates={cache_removed_duplicates} result_log_retained_bytes={} result_log_removable_bytes={result_log_removed_bytes} result_log_retained_rows={} result_log_removable_rows={result_log_removed_entries} result_log_removable_duplicates={result_log_removed_duplicates}",
+            report.cache_projected_after.bytes,
+            report.cache_projected_after.entries,
+            report.result_log_projected_after.bytes,
+            report.result_log_projected_after.entries
+        ),
+        format!(
+            "web_storage_compaction_evidence_next_action: report_only=true action={compaction_evidence_next_action} dry_run={} zero_removal={zero_removal}",
+            report.dry_run
+        ),
+        format!(
+            "web_storage_compaction_plan_preview: report_only=true status={plan_status} dry_run={} mutates_files=false cache_reclaimable_rows={cache_removed_entries} cache_reclaimable_bytes={cache_removed_bytes} cache_reclaimable_duplicates={cache_removed_duplicates} result_log_reclaimable_rows={result_log_removed_entries} result_log_reclaimable_bytes={result_log_removed_bytes} result_log_reclaimable_duplicates={result_log_removed_duplicates} total_reclaimable_rows={reclaimable_rows} total_reclaimable_bytes={projected_removed_bytes} total_reclaimable_duplicates={reclaimable_duplicates} next_action={plan_next_action}",
+            report.dry_run
+        ),
+        format!("web_storage_snapshot_zero_removal: {zero_removal}"),
+    ]
+}
+
+fn web_storage_compaction_apply_is_justified(
+    report: &WebSearchStorageCompactionReport,
+    force: bool,
+) -> bool {
+    if force {
+        return true;
+    }
+    if report.skipped {
+        return false;
+    }
+    web_storage_compaction_projected_removed_bytes(report) > 0
+        || web_storage_compaction_projected_removed_duplicates(report) > 0
+}
+
+fn web_storage_compaction_projected_removed_bytes(
+    report: &WebSearchStorageCompactionReport,
+) -> u64 {
+    report
+        .cache_before
+        .bytes
+        .saturating_add(report.result_log_before.bytes)
+        .saturating_sub(
+            report
+                .cache_projected_after
+                .bytes
+                .saturating_add(report.result_log_projected_after.bytes),
+        )
+}
+
+fn web_storage_compaction_projected_removed_duplicates(
+    report: &WebSearchStorageCompactionReport,
+) -> usize {
+    report
+        .cache_before
+        .duplicate_entries
+        .saturating_add(report.result_log_before.duplicate_entries)
+        .saturating_sub(
+            report
+                .cache_projected_after
+                .duplicate_entries
+                .saturating_add(report.result_log_projected_after.duplicate_entries),
+        )
+}
+
+fn web_storage_compaction_zero_removal(report: &WebSearchStorageCompactionReport) -> bool {
+    !report.skipped
+        && web_storage_compaction_projected_removed_bytes(report) == 0
+        && web_storage_compaction_projected_removed_duplicates(report) == 0
+}
+
+fn web_storage_compaction_artifact_lines(
+    label: &str,
+    path: &Path,
+    before: WebSearchStorageArtifactState,
+    after: WebSearchStorageArtifactState,
+    projected_after: WebSearchStorageArtifactState,
+) -> Vec<String> {
+    vec![
+        format!("{label}_path: {}", path.display()),
+        format!("{label}_bytes_before: {}", before.bytes),
+        format!("{label}_bytes_after: {}", after.bytes),
+        format!("{label}_bytes_projected_after: {}", projected_after.bytes),
+        format!(
+            "{label}_bytes_projected_retained: {}",
+            projected_after.bytes
+        ),
+        format!(
+            "{label}_bytes_removed: {}",
+            before.bytes.saturating_sub(after.bytes)
+        ),
+        format!(
+            "{label}_bytes_projected_removed: {}",
+            before.bytes.saturating_sub(projected_after.bytes)
+        ),
+        format!("{label}_entries_before: {}", before.entries),
+        format!("{label}_entries_after: {}", after.entries),
+        format!(
+            "{label}_entries_projected_after: {}",
+            projected_after.entries
+        ),
+        format!(
+            "{label}_entries_projected_retained: {}",
+            projected_after.entries
+        ),
+        format!(
+            "{label}_entries_removed: {}",
+            before.entries.saturating_sub(after.entries)
+        ),
+        format!(
+            "{label}_entries_projected_removed: {}",
+            before.entries.saturating_sub(projected_after.entries)
+        ),
+        format!("{label}_unique_entries_before: {}", before.unique_entries),
+        format!("{label}_unique_entries_after: {}", after.unique_entries),
+        format!(
+            "{label}_unique_entries_projected_after: {}",
+            projected_after.unique_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_before: {}",
+            before.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_after: {}",
+            after.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_projected_after: {}",
+            projected_after.duplicate_entries
+        ),
+        format!(
+            "{label}_duplicate_entries_projected_removed: {}",
+            before
+                .duplicate_entries
+                .saturating_sub(projected_after.duplicate_entries)
+        ),
+    ]
+}
+
+fn web_storage_result_log_query_cap() -> usize {
+    web_storage_env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebStorageRetentionConfig {
+    cache_max_entries: usize,
+    cache_max_bytes: u64,
+    result_log_max_entries: usize,
+    result_log_max_bytes: u64,
+    result_log_max_entries_per_query: usize,
+}
+
+fn web_storage_retention_config() -> WebStorageRetentionConfig {
+    WebStorageRetentionConfig {
+        cache_max_entries: web_storage_env_usize("ESOTERIC_WEB_CACHE_MAX_ENTRIES")
+            .unwrap_or(DEFAULT_CACHE_MAX_ENTRIES),
+        cache_max_bytes: web_storage_env_u64("ESOTERIC_WEB_CACHE_MAX_BYTES")
+            .unwrap_or(DEFAULT_CACHE_MAX_BYTES),
+        result_log_max_entries: web_storage_env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES")
+            .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES),
+        result_log_max_bytes: web_storage_env_u64("ESOTERIC_WEB_RESULT_LOG_MAX_BYTES")
+            .unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES),
+        result_log_max_entries_per_query: web_storage_result_log_query_cap(),
+    }
+}
+
+fn web_storage_env_usize(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+fn web_storage_env_u64(name: &str) -> Option<u64> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn web_storage_retention_config_lines(config: WebStorageRetentionConfig) -> Vec<String> {
+    vec![
+        format!(
+            "web_storage_retention_summary: web-cache_max_entries={} web-cache_max_bytes={} brave-results_max_entries={} brave-results_max_bytes={} brave-results_max_entries_per_query={}",
+            config.cache_max_entries,
+            config.cache_max_bytes,
+            config.result_log_max_entries,
+            config.result_log_max_bytes,
+            config.result_log_max_entries_per_query
+        ),
+        format!(
+            "web_storage_cache_max_entries: {}",
+            config.cache_max_entries
+        ),
+        format!("web_storage_cache_max_bytes: {}", config.cache_max_bytes),
+        format!(
+            "web_storage_result_log_max_entries: {}",
+            config.result_log_max_entries
+        ),
+        format!(
+            "web_storage_result_log_max_bytes: {}",
+            config.result_log_max_bytes
+        ),
+        format!(
+            "web_storage_result_log_max_entries_per_query: {}",
+            config.result_log_max_entries_per_query
+        ),
+        "web_storage_retention_note: normal search preserves durable web-cache and brave-results rows while enforcing global entry/byte caps; per-query caps apply during compact-web-cache dry-run/compaction when configured".to_owned(),
+    ]
+}
+
+fn web_storage_result_log_query_cap_lines(max_entries_per_query: usize) -> Vec<String> {
+    if max_entries_per_query == 0 {
+        return Vec::new();
+    }
+    vec![
+        format!("brave-results_entries_per_query_cap: {max_entries_per_query}"),
+        "brave-results_entries_per_query_cap_note: applies only to compact-web-cache and dry-run projection; normal search append is unchanged".to_owned(),
+    ]
+}
+
+fn collect_web_storage_artifact_stats(
+    name: &'static str,
+    path: &Path,
+) -> Result<WebStorageArtifactStats> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("open web storage artifact {}", path.display()))?;
+    let bytes = file
+        .metadata()
+        .with_context(|| format!("read web storage artifact metadata {}", path.display()))?
+        .len();
+    let mut stats = WebStorageArtifactStats {
+        name,
+        bytes,
+        entries: 0,
+        invalid_json_rows: 0,
+        result_rows: 0,
+        durable_result_rows: 0,
+        incomplete_result_rows: 0,
+        unique_entries: 0,
+        duplicate_entries: 0,
+        unique_row_bytes: 0,
+        duplicate_row_bytes: 0,
+        query_count: 0,
+        query_examples: Vec::new(),
+        provider_count: 0,
+        provider_growth: Vec::new(),
+        max_entries_per_query: 0,
+        oldest_fetched_at_unix: None,
+        newest_fetched_at_unix: None,
+    };
+    let mut unique_keys = std::collections::HashSet::new();
+    let mut query_counts = HashMap::new();
+    let mut providers = std::collections::HashSet::new();
+    let mut provider_growth = BTreeMap::new();
+
+    for (line_no, line) in std::io::BufRead::lines(std::io::BufReader::new(file)).enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "read line {} from web storage artifact {}",
+                line_no + 1,
+                path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        stats.entries += 1;
+        let row_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            stats.invalid_json_rows = stats.invalid_json_rows.saturating_add(1);
+            continue;
+        };
+        let durability = web_storage_result_row_durability(name, &value);
+        stats.result_rows = stats.result_rows.saturating_add(durability.total);
+        stats.durable_result_rows = stats.durable_result_rows.saturating_add(durability.durable);
+        stats.incomplete_result_rows = stats
+            .incomplete_result_rows
+            .saturating_add(durability.incomplete);
+        if let Some(key) = web_storage_unique_key(name, &value) {
+            if unique_keys.insert(key) {
+                stats.unique_entries += 1;
+                stats.unique_row_bytes = stats.unique_row_bytes.saturating_add(row_bytes);
+            } else {
+                stats.duplicate_entries += 1;
+                stats.duplicate_row_bytes = stats.duplicate_row_bytes.saturating_add(row_bytes);
+            }
+        }
+        if let Some(query) = value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+            .filter(|query| !query.is_empty())
+        {
+            *query_counts.entry(query.to_owned()).or_insert(0usize) += 1;
+        }
+        if let Some(provider) = value
+            .get("provider")
+            .and_then(|value| value.as_str())
+            .filter(|provider| !provider.is_empty())
+        {
+            providers.insert(provider.to_owned());
+            let growth =
+                provider_growth
+                    .entry(provider.to_owned())
+                    .or_insert(WebStorageProviderGrowth {
+                        entries: 0,
+                        bytes: 0,
+                        result_rows: 0,
+                    });
+            growth.entries = growth.entries.saturating_add(1);
+            growth.bytes = growth.bytes.saturating_add(row_bytes);
+            growth.result_rows = growth.result_rows.saturating_add(durability.total);
+        }
+        let Some(fetched_at_unix) = value
+            .get("fetched_at_unix")
+            .and_then(|value| value.as_u64())
+        else {
+            continue;
+        };
+        stats.oldest_fetched_at_unix = Some(
+            stats
+                .oldest_fetched_at_unix
+                .map_or(fetched_at_unix, |oldest| oldest.min(fetched_at_unix)),
+        );
+        stats.newest_fetched_at_unix = Some(
+            stats
+                .newest_fetched_at_unix
+                .map_or(fetched_at_unix, |newest| newest.max(fetched_at_unix)),
+        );
+    }
+    let mut query_examples = query_counts.keys().cloned().collect::<Vec<_>>();
+    query_examples.sort();
+    query_examples.truncate(WEB_STORAGE_QUERY_EXAMPLE_LIMIT);
+    stats.query_count = query_counts.len();
+    stats.query_examples = query_examples;
+    stats.provider_count = providers.len();
+    stats.provider_growth = provider_growth
+        .into_iter()
+        .take(WEB_STORAGE_PROVIDER_GROWTH_LIMIT)
+        .map(|(provider, growth)| {
+            format!(
+                "{}:entries={}:bytes={}:result_rows={}",
+                web_storage_sanitize_token(&provider),
+                growth.entries,
+                growth.bytes,
+                growth.result_rows
+            )
+        })
+        .collect();
+    stats.max_entries_per_query = query_counts.into_values().max().unwrap_or(0);
+
+    Ok(stats)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct WebStorageResultRowDurability {
+    total: usize,
+    durable: usize,
+    incomplete: usize,
+}
+
+fn web_storage_result_row_durability(
+    name: &str,
+    value: &serde_json::Value,
+) -> WebStorageResultRowDurability {
+    match name {
+        "web-cache.jsonl" => {
+            let Some(results) = value.get("results").and_then(|value| value.as_array()) else {
+                return WebStorageResultRowDurability::default();
+            };
+            let has_entry_metadata = json_string_present(value, "normalized_query")
+                && json_string_present(value, "provider")
+                && value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64())
+                    .is_some();
+            let durable = results
+                .iter()
+                .filter(|result| {
+                    has_entry_metadata
+                        && json_string_present(result, "url")
+                        && result
+                            .get("title")
+                            .and_then(|value| value.as_str())
+                            .is_some()
+                        && result
+                            .get("snippet")
+                            .and_then(|value| value.as_str())
+                            .is_some()
+                })
+                .count();
+            WebStorageResultRowDurability {
+                total: results.len(),
+                durable,
+                incomplete: results.len().saturating_sub(durable),
+            }
+        }
+        "brave-results.jsonl" => {
+            let durable = json_string_present(value, "normalized_query")
+                && json_string_present(value, "provider")
+                && json_string_present(value, "url")
+                && value
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && value
+                    .get("snippet")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+                && value
+                    .get("fetched_at_unix")
+                    .and_then(|value| value.as_u64())
+                    .is_some()
+                && value.get("rank").and_then(|value| value.as_u64()).is_some();
+            WebStorageResultRowDurability {
+                total: 1,
+                durable: usize::from(durable),
+                incomplete: usize::from(!durable),
+            }
+        }
+        _ => WebStorageResultRowDurability::default(),
+    }
+}
+
+fn json_string_present(value: &serde_json::Value, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.is_empty())
+}
+
+fn web_storage_unique_key(name: &str, value: &serde_json::Value) -> Option<String> {
+    match name {
+        "web-cache.jsonl" => value
+            .get("normalized_query")
+            .and_then(|value| value.as_str())
+            .filter(|query| !query.is_empty())
+            .map(|query| query.to_owned()),
+        "brave-results.jsonl" => {
+            let query = value
+                .get("normalized_query")
+                .and_then(|value| value.as_str())
+                .filter(|query| !query.is_empty())?;
+            let provider = value
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let url = value
+                .get("url")
+                .and_then(|value| value.as_str())
+                .filter(|url| !url.is_empty())?;
+            Some(format!("{query}\t{provider}\t{url}"))
+        }
+        _ => None,
+    }
+}
+
+async fn run_recrawl_scheduler_cli(options: RecrawlSchedulerOptions) -> Result<()> {
+    let mut round = 0usize;
+    loop {
+        if options.max_rounds == Some(0) {
+            return Ok(());
+        }
+
+        round += 1;
+        let report = run_recrawl_round(&options, round).await?;
+        print_scheduler_report(&report)?;
+
+        if options
+            .max_rounds
+            .is_some_and(|max_rounds| round >= max_rounds)
+        {
+            return Ok(());
+        }
+
+        if options.poll_secs > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(options.poll_secs)).await;
+        }
+    }
+}
+
+fn print_scheduler_report(report: &RecrawlRoundReport) -> Result<()> {
+    println!("{}", serde_json::to_string(report)?);
+    std::io::stdout().lock().flush()?;
+    Ok(())
+}
+
+fn write_recrawl_plan(output: Option<&std::path::Path>, plan: &[RecrawlPlanEntry]) -> Result<()> {
+    if let Some(path) = output {
+        write_recrawl_plan_file(path, plan, recrawl_plan_output_max_bytes())?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        write_recrawl_plan_entries(&mut stdout, plan)?;
+    }
+
+    Ok(())
+}
+
+fn write_recrawl_plan_file(
+    path: &std::path::Path,
+    plan: &[RecrawlPlanEntry],
+    max_bytes: u64,
+) -> Result<()> {
+    let lines = recrawl_plan_entry_lines(plan)?;
+    let total_bytes = lines
+        .iter()
+        .fold(0u64, |total, line| total.saturating_add(line.len() as u64));
+    if max_bytes > 0 && total_bytes > max_bytes {
+        bail!(
+            "recrawl plan output {} is {} bytes, above ESOTERIC_RECRAWL_PLAN_OUTPUT_MAX_BYTES={}",
+            path.display(),
+            total_bytes,
+            max_bytes
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create recrawl plan output parent {}", parent.display()))?;
+    }
+    let tmp_path = path.with_extension("tmp");
+    {
+        let mut file = std::fs::File::create(&tmp_path)
+            .with_context(|| format!("create recrawl plan temp {}", tmp_path.display()))?;
+        for line in &lines {
+            file.write_all(line)?;
+        }
+        file.flush()?;
+    }
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "replace recrawl plan output {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn write_recrawl_plan_entries<W: Write>(writer: &mut W, plan: &[RecrawlPlanEntry]) -> Result<()> {
+    for line in recrawl_plan_entry_lines(plan)? {
+        writer.write_all(&line)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn recrawl_plan_entry_lines(plan: &[RecrawlPlanEntry]) -> Result<Vec<Vec<u8>>> {
+    let mut lines = Vec::with_capacity(plan.len());
+    for entry in plan {
+        let mut line = Vec::new();
+        serde_json::to_writer(
+            &mut line,
+            &serde_json::json!({
+                "url": entry.url.as_str(),
+                "priority": entry.priority,
+                "recrawl_after": entry.recrawl_after.to_string(),
+                "last_fetched_at": entry.last_fetched_at,
+                "age_secs": entry.age_secs,
+            }),
+        )?;
+        line.push(b'\n');
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
+fn recrawl_plan_output_max_bytes() -> u64 {
+    web_storage_env_u64("ESOTERIC_RECRAWL_PLAN_OUTPUT_MAX_BYTES")
+        .unwrap_or(DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+
+    #[test]
+    fn recrawl_plan_file_respects_output_byte_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recrawl-plan.jsonl");
+        let plan = vec![RecrawlPlanEntry {
+            url: format!("https://example.com/{}", "x".repeat(128)),
+            priority: 100,
+            recrawl_after: 10,
+            last_fetched_at: 1,
+            age_secs: 9,
+        }];
+
+        write_recrawl_plan_file(&path, &plan, 64).unwrap_err();
+        assert!(!path.exists());
+
+        write_recrawl_plan_file(&path, &plan, 0).unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        assert!(contents.contains("https://example.com/"));
+    }
+
+    #[test]
+    fn index_storage_stats_sum_known_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.json"), b"12345").unwrap();
+        std::fs::write(
+            dir.path().join("web-cache.jsonl"),
+            b"{\"fetched_at_unix\":100}\n{\"fetched_at_unix\":120}\n",
+        )
+        .unwrap();
+        let frontier_path = dir.path().join("frontier.bin");
+        let mut frontier = FrontierStore::open(&frontier_path).unwrap();
+        frontier
+            .discover(Url::parse("https://example.com/queued").unwrap(), 0, 100)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(110, 10).unwrap();
+        frontier.record_failed(&claim.url, "timeout".to_owned(), 0, 120);
+        frontier
+            .discover(Url::parse("https://example.com/fetched").unwrap(), 0, 130)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(140, 10).unwrap();
+        frontier.record_fetched(&claim.url, 200, None, None, 150);
+        frontier
+            .discover(Url::parse("https://example.com/deferred").unwrap(), 0, 160)
+            .then_some(())
+            .unwrap();
+        let claim = frontier.claim_next(170, 10).unwrap();
+        frontier.record_failed(&claim.url, "retry later".to_owned(), 60, 180);
+        frontier
+            .discover(
+                Url::parse("https://example.com/queued-next").unwrap(),
+                0,
+                190,
+            )
+            .then_some(())
+            .unwrap();
+        frontier.save().unwrap();
+        std::fs::write(
+            dir.path().join("crawl-docs.jsonl"),
+            b"{\"url\":\"https://example.com/1\"}\n\n{\"url\":\"https://example.com/2\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("brave-results.jsonl"),
+            b"{\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("untracked.tmp"), b"ignore me").unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+
+        let frontier_bytes = std::fs::metadata(&frontier_path).unwrap().len();
+        assert_eq!(stats.total_bytes, 142 + frontier_bytes);
+        assert_eq!(
+            stats.artifacts,
+            vec![
+                IndexStorageArtifact {
+                    name: "manifest.json",
+                    bytes: 5
+                },
+                IndexStorageArtifact {
+                    name: "frontier.bin",
+                    bytes: frontier_bytes
+                },
+                IndexStorageArtifact {
+                    name: "crawl-docs.jsonl",
+                    bytes: 65
+                },
+                IndexStorageArtifact {
+                    name: "web-cache.jsonl",
+                    bytes: 48
+                },
+                IndexStorageArtifact {
+                    name: "brave-results.jsonl",
+                    bytes: 24
+                }
+            ]
+        );
+        assert_eq!(stats.crawl_frontier_bytes, frontier_bytes);
+        assert_eq!(
+            stats.crawl_frontier_stats,
+            Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: 1,
+                deferred: 1,
+                total: 4,
+            })
+        );
+        assert_eq!(stats.crawl_snapshot_bytes, 65);
+        assert_eq!(stats.crawl_snapshot_entries, 2);
+        assert_eq!(stats.crawl_snapshot_unique_entries, 2);
+        assert_eq!(stats.crawl_snapshot_duplicate_entries, 0);
+        assert_eq!(
+            stats.web_artifacts,
+            vec![
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    bytes: 48,
+                    entries: 2,
+                    invalid_json_rows: 0,
+                    result_rows: 0,
+                    durable_result_rows: 0,
+                    incomplete_result_rows: 0,
+                    unique_entries: 0,
+                    duplicate_entries: 0,
+                    unique_row_bytes: 0,
+                    duplicate_row_bytes: 0,
+                    query_count: 0,
+                    query_examples: Vec::new(),
+                    provider_count: 0,
+                    provider_growth: Vec::new(),
+                    max_entries_per_query: 0,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    bytes: 24,
+                    entries: 1,
+                    invalid_json_rows: 0,
+                    result_rows: 1,
+                    durable_result_rows: 0,
+                    incomplete_result_rows: 1,
+                    unique_entries: 0,
+                    duplicate_entries: 0,
+                    unique_row_bytes: 0,
+                    duplicate_row_bytes: 0,
+                    query_count: 0,
+                    query_examples: Vec::new(),
+                    provider_count: 0,
+                    provider_growth: Vec::new(),
+                    max_entries_per_query: 0,
+                    oldest_fetched_at_unix: Some(130),
+                    newest_fetched_at_unix: Some(130),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn index_storage_stats_skip_missing_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+
+        assert_eq!(stats.total_bytes, 0);
+        assert!(stats.artifacts.is_empty());
+        assert!(stats.web_artifacts.is_empty());
+        assert_eq!(stats.browser_document_bytes, 0);
+        assert_eq!(stats.browser_document_rows, 0);
+        assert_eq!(stats.browser_document_unique_rows, 0);
+        assert_eq!(stats.browser_document_duplicate_rows, 0);
+        assert_eq!(stats.browser_document_unique_row_bytes, 0);
+        assert_eq!(stats.browser_document_duplicate_row_bytes, 0);
+        assert_eq!(stats.crawl_frontier_bytes, 0);
+        assert!(stats.crawl_frontier_stats.is_none());
+        assert_eq!(stats.crawl_snapshot_bytes, 0);
+        assert_eq!(stats.crawl_snapshot_entries, 0);
+        assert_eq!(stats.crawl_snapshot_unique_entries, 0);
+        assert_eq!(stats.crawl_snapshot_duplicate_entries, 0);
+    }
+
+    #[test]
+    fn storage_temp_cleanup_readiness_reports_target_and_worktree_candidates() {
+        let target = temp_cleanup_classification(
+            "search-engine-storage-temp-cleanup-audit-target-5819222",
+            false,
+            None,
+            false,
+        );
+        assert_eq!(target.kind, "validation-target");
+        assert_eq!(target.status, "candidate");
+        assert!(target.cleanup_safe);
+        assert_eq!(target.next_action, "remove-merged-target");
+
+        let dirty_worktree = temp_cleanup_classification(
+            "search-engine-storage-temp-cleanup-audit-5819222",
+            true,
+            Some(true),
+            false,
+        );
+        assert_eq!(dirty_worktree.kind, "source-worktree");
+        assert_eq!(dirty_worktree.status, "dirty");
+        assert!(!dirty_worktree.cleanup_safe);
+        assert_eq!(dirty_worktree.next_action, "review-dirty-worktree");
+
+        let clean_worktree = temp_cleanup_classification(
+            "search-engine-image-merged-5819222",
+            true,
+            Some(false),
+            false,
+        );
+        assert_eq!(clean_worktree.kind, "source-worktree");
+        assert_eq!(clean_worktree.status, "clean-review-required");
+        assert!(!clean_worktree.cleanup_safe);
+        assert_eq!(clean_worktree.next_action, "unknown-review-required");
+
+        let generated_cache =
+            temp_cleanup_classification("search-engine-leftover-cache", false, None, false);
+        assert_eq!(generated_cache.kind, "generated-output");
+        assert_eq!(generated_cache.status, "review-required");
+        assert!(!generated_cache.cleanup_safe);
+        assert_eq!(generated_cache.next_action, "review-generated-output");
+
+        let active_worktree =
+            temp_cleanup_classification("search-engine-active-worktree", true, Some(false), true);
+        assert_eq!(active_worktree.kind, "source-worktree");
+        assert_eq!(active_worktree.status, "active");
+        assert!(!active_worktree.cleanup_safe);
+        assert_eq!(active_worktree.next_action, "preserve-active-worktree");
+    }
+
+    #[test]
+    fn storage_temp_cleanup_audit_reports_age_pressure_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir
+            .path()
+            .join("search-engine-storage-temp-cleanup-age-target-b56c72f");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("artifact.bin"), b"target").unwrap();
+        let unknown = dir.path().join("search-engine-leftover-resource-cache");
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::fs::write(unknown.join("cache.bin"), b"unknown").unwrap();
+        let stale_worktree = dir.path().join("search-engine-stale-source-worktree");
+        std::fs::create_dir_all(stale_worktree.join(".git")).unwrap();
+        std::fs::write(stale_worktree.join("note.txt"), b"review").unwrap();
+        let rust_slot_lock = dir.path().join("search-engine-rust-slot.lock");
+        std::fs::write(&rust_slot_lock, b"lock").unwrap();
+        let rust_slot_lock_before = std::fs::read(&rust_slot_lock).unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_candidate: report_only=true path=")
+                && line.contains("search-engine-storage-temp-cleanup-age-target-b56c72f")
+                && line.contains(" bytes=6 ")
+                && line.contains(" age_secs=")
+                && line.contains(" mtime_unix_secs=")
+                && line.contains(" category=validation-target kind=validation-target status=candidate cleanup_safe=true next_action=remove-merged-target")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_candidate: report_only=true path=")
+                && line.contains("search-engine-leftover-resource-cache")
+                && line.contains(" bytes=7 ")
+                && line.contains(" category=generated-output kind=generated-output status=review-required cleanup_safe=false next_action=review-generated-output")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_age_pressure: report_only=true")
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" dirty_worktree_count=0 ")
+                && line.contains(" unknown_review_count=1 ")
+                && line.contains(" next_action=review-unknown-temp-dirs ")
+                && line.contains(" old_target_threshold_secs=86400")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_temp_cleanup_generated_pressure: report_only=true")
+                && line.contains(" active_worktree_count=0 ")
+                && line.contains(" generated_review_count=1 ")
+                && line.contains(" generated_review_bytes=7 ")
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" next_action=review-generated-output")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_worktree_cleanup_review_matrix: report_only=true deletes=false",
+            ) && line.contains(" source_worktrees=1 ")
+                && line.contains(" active_worktrees=0 ")
+                && line.contains(" dirty_worktrees=0 ")
+                && line.contains(" clean_review_worktrees=0 ")
+                && line.contains(" unknown_review_count=1 ")
+                && line.contains(" safe_target_candidates=1 ")
+                && line.contains(" generated_review_count=1 ")
+                && line.contains(
+                    " preserve=.esoteric-index,running-server,active-worktrees,dirty-worktrees ",
+                )
+                && line.contains(" next_action=review-worktree-state-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_cleanup_coordination_boundary: report_only=true deletes=false",
+            ) && line.contains(" rust_slot_lock_present=true ")
+                && line.contains(" rust_slot_lock_bytes=4 ")
+                && line.contains(" preserve=rust-slot-lock,running-server,.esoteric-index ")
+                && line.contains(" next_action=wait-for-validation-slot")
+        }));
+        assert_eq!(
+            std::fs::read(&rust_slot_lock).unwrap(),
+            rust_slot_lock_before
+        );
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(1, 0, 0),
+            "remove-old-merged-targets"
+        );
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(0, 1, 0),
+            "review-dirty-worktrees"
+        );
+        assert_eq!(
+            temp_cleanup_age_pressure_next_action(0, 0, 0),
+            "cleanup-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_pressure_next_action(1, 1, 1),
+            "preserve-active-worktree"
+        );
+        assert_eq!(
+            temp_cleanup_generated_pressure_next_action(0, 1, 1),
+            "review-generated-output"
+        );
+        assert_eq!(
+            storage_cleanup_coordination_boundary_next_action(true),
+            "wait-for-validation-slot"
+        );
+        assert_eq!(
+            storage_cleanup_coordination_boundary_next_action(false),
+            "cleanup-reporting-safe"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(1, 1, 1, 1, 1, 1),
+            "preserve-active-worktree"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 0, 1, 1, 1),
+            "review-worktree-state-before-cleanup"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 1, 0, 1, 1),
+            "review-clean-worktree-before-removal"
+        );
+        assert_eq!(
+            storage_worktree_cleanup_review_next_action(0, 0, 0, 0, 1, 0),
+            "remove-validation-targets-only"
+        );
+    }
+
+    #[test]
+    fn storage_build_target_footprint_dry_run_reports_target_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let small_target = dir
+            .path()
+            .join("search-engine-storage-small-target-53a24a5");
+        std::fs::create_dir_all(&small_target).unwrap();
+        let small_path = small_target.join("small.o");
+        let small_bytes = b"small";
+        std::fs::write(&small_path, small_bytes).unwrap();
+        let large_target = dir
+            .path()
+            .join("search-engine-storage-large-target-53a24a5");
+        std::fs::create_dir_all(&large_target).unwrap();
+        let large_path = large_target.join("large.o");
+        let large_bytes = b"larger-target";
+        std::fs::write(&large_path, large_bytes).unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let expected_target_bytes = small_bytes.len() + large_bytes.len();
+        let expected_largest_bytes = large_bytes.len();
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_build_target_footprint_dry_run: report_only=true deletes=false",
+            ) && line.contains(" target_candidates=2 ")
+                && line.contains(&format!(" target_bytes={expected_target_bytes} "))
+                && line.contains("search-engine-storage-large-target-53a24a5")
+                && line.contains(&format!(" largest_target_bytes={expected_largest_bytes} "))
+                && line.contains(" old_target_count=0 ")
+                && line.contains(" next_action=review-validation-target-footprint")
+        }));
+        assert_eq!(std::fs::read(&small_path).unwrap(), small_bytes);
+        assert_eq!(std::fs::read(&large_path).unwrap(), large_bytes);
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(0, 0, 0),
+            "target-footprint-low"
+        );
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(1, INDEX_ARTIFACT_HIGH_GROWTH_BYTES, 0),
+            "review-large-validation-targets"
+        );
+        assert_eq!(
+            temp_cleanup_target_footprint_next_action(1, 1, 1),
+            "remove-old-merged-targets"
+        );
+    }
+
+    #[test]
+    fn storage_generated_report_retention_dry_run_reports_generated_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let report_dir = dir.path().join("search-engine-generated-report-output");
+        std::fs::create_dir_all(&report_dir).unwrap();
+        let report_path = report_dir.join("operator-report.txt");
+        std::fs::write(&report_path, b"report").unwrap();
+        let cache_dir = dir.path().join("search-engine-render-cache-artifacts");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let cache_path = cache_dir.join("cache.bin");
+        std::fs::write(&cache_path, b"cache-bytes").unwrap();
+        let browser_document_path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        let browser_documents = format!(
+            "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+            large_payload, large_payload
+        );
+        std::fs::write(&browser_document_path, browser_documents.as_bytes()).unwrap();
+        let browser_documents_before = std::fs::read(&browser_document_path).unwrap();
+
+        let lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let browser_lines = browser_document_storage_pressure_summary_lines(&stats);
+        assert!(browser_lines.iter().any(|line| {
+            line.starts_with("browser_session_snapshot_history_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("metadata_artifacts=browser-documents.jsonl")
+                && line.contains("local_runtime_payloads=excluded")
+                && line.contains("history_candidate_count=1")
+                && line.contains("sessions=2")
+                && line.contains("rows=3")
+                && line.contains("snapshot_like_rows=2")
+                && line.contains("history_like_rows=1")
+                && line.contains(&format!(
+                    "largest_snapshot_bytes={}",
+                    stats.browser_document_max_row_bytes
+                ))
+                && line.contains("duplicate_rows=1")
+                && line.contains("github_safe_artifacts=browser-documents-metadata-only")
+                && line.contains("excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys")
+                && line.contains("next_action=review-snapshot-history-dedup-dry-run")
+        }));
+        assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
+        assert_eq!(std::fs::read(&cache_path).unwrap(), b"cache-bytes");
+        assert_eq!(
+            std::fs::read(&browser_document_path).unwrap(),
+            browser_documents_before
+        );
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with(
+                "storage_generated_report_retention_dry_run: report_only=true deletes=false",
+            ) && line.contains(" candidates=2 ")
+                && line.contains(" bytes=17 ")
+                && line.contains(" oldest_age_secs=")
+                && line.contains(" newest_age_secs=")
+                && line.contains(" next_action=review-generated-reports-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_generated_output_boundary: report_only=true")
+                && line.contains(" deletes=false ")
+                && line.contains(" candidates=2 ")
+                && line.contains(" bytes=17 ")
+                && line.contains("search-engine-render-cache-artifacts")
+                && line.contains(" largest_bytes=11 ")
+                && line.contains(" session_like_candidates=0 ")
+                && line.contains(" cache_like_candidates=1 ")
+                && line.contains(" artifact_like_candidates=2 ")
+                && line.contains(" github_safe_artifacts=reports-metadata-only ")
+                && line.contains(" excluded=.esoteric-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" next_action=review-browser-generated-output-boundary")
+        }));
+        assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
+        assert_eq!(std::fs::read(&cache_path).unwrap(), b"cache-bytes");
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(0, 0, 0),
+            "generated-report-retention-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(1, 1, TEMP_CLEANUP_OLD_TARGET_SECS),
+            "review-stale-generated-reports"
+        );
+        assert_eq!(
+            temp_cleanup_generated_retention_next_action(1, INDEX_ARTIFACT_HIGH_GROWTH_BYTES, 0),
+            "review-large-generated-reports"
+        );
+        assert_eq!(
+            temp_cleanup_generated_output_boundary_next_action(0, 0, 0, 0, 0),
+            "generated-output-low"
+        );
+        assert_eq!(
+            temp_cleanup_generated_output_boundary_next_action(0, 1, 0, 1, 0),
+            "review-browser-generated-output-boundary"
+        );
+    }
+
+    #[test]
+    fn index_artifact_storage_pressure_reports_largest_components() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docs.bin"), b"docs").unwrap();
+        let postings_path = dir.path().join("postings.bin");
+        let postings = std::fs::File::create(&postings_path).unwrap();
+        postings.set_len(INDEX_ARTIFACT_HIGH_GROWTH_BYTES).unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = index_artifact_storage_pressure_lines(&stats);
+
+        assert_eq!(stats.total_bytes, INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 4);
+        assert!(lines.contains(&format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes={} largest_component=postings.bin largest_component_bytes={} high_growth_component_count=1 high_growth_threshold_bytes={} next_action=inspect-largest-index-artifact",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 4,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
+        assert!(lines.contains(&"index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .esoteric-index artifacts".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 4,
+            artifacts: vec![IndexStorageArtifact {
+                name: "docs.bin",
+                bytes: 4,
+            }],
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_lines = index_artifact_storage_pressure_lines(&clean_stats);
+        assert!(clean_lines.contains(&format!(
+            "index_artifact_storage_pressure: report_only=true total_bytes=4 largest_component=docs.bin largest_component_bytes=4 high_growth_component_count=0 high_growth_threshold_bytes={} next_action=index-pressure-low",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
+    }
+
+    #[test]
+    fn storage_cache_growth_guardrail_reports_high_growth_components() {
+        let stats = IndexStorageStats {
+            total_bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES + 500,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 600,
+            browser_document_rows: 3,
+            browser_document_session_count: 2,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 400,
+            browser_document_duplicate_row_bytes: 200,
+            browser_document_max_row_bytes: 300,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            entries: 4,
+            result_rows: 5,
+            durable_result_rows: 5,
+            incomplete_result_rows: 0,
+            unique_entries: 3,
+            duplicate_entries: 1,
+            unique_row_bytes: INDEX_ARTIFACT_HIGH_GROWTH_BYTES - 50,
+            duplicate_row_bytes: 50,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cache_growth_guardrail_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&format!(
+            "storage_cache_growth_guardrail: report_only=true web_rows=5 web_bytes={} browser_session_rows=3 browser_session_bytes=600 resource_cache_bytes=0 resource_cache_status=not-scanned duplicate_bytes=250 largest_component=web-cache largest_component_bytes={} high_growth_component_count=1 high_growth_threshold_bytes={} next_action=inspect-multiple-cache-growth",
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
+            INDEX_ARTIFACT_HIGH_GROWTH_BYTES
+        )));
+        assert!(lines.contains(&"storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .esoteric-index".to_owned()));
+    }
+
+    #[test]
+    fn storage_runtime_cache_pressure_reports_runtime_cache_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let web_cache_path = dir.path().join("web-cache.jsonl");
+        let web_cache = b"{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n";
+        std::fs::write(&web_cache_path, web_cache).unwrap();
+        let brave_results_path = dir.path().join("brave-results.jsonl");
+        let brave_results = b"{\"normalized_query\":\"runtime\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n";
+        std::fs::write(&brave_results_path, brave_results).unwrap();
+        let browser_documents_path = dir.path().join("browser-documents.jsonl");
+        let browser_documents = b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(&browser_documents_path, browser_documents).unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let lines = storage_cache_growth_guardrail_lines(&stats, &web_summary);
+        let expected_bytes = web_summary.bytes + stats.browser_document_bytes;
+        let (largest_artifact, largest_artifact_bytes) = stats
+            .web_artifacts
+            .iter()
+            .map(|artifact| (artifact.name, artifact.bytes))
+            .chain(std::iter::once((
+                "browser-documents.jsonl",
+                stats.browser_document_bytes,
+            )))
+            .max_by_key(|(_, bytes)| *bytes)
+            .unwrap();
+        let duplicate_bytes = web_summary
+            .duplicate_row_bytes
+            .saturating_add(stats.browser_document_duplicate_row_bytes);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_runtime_cache_pressure: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(" candidates=3 ")
+                && line.contains(&format!(" bytes={expected_bytes} "))
+                && line.contains(" web_rows=3 ")
+                && line.contains(" brave_archive_rows=1 ")
+                && line.contains(" browser_session_rows=2 ")
+                && line.contains(&format!(" duplicate_bytes={duplicate_bytes} "))
+                && line.contains(&format!(" largest_artifact={largest_artifact} "))
+                && line.contains(&format!(
+                    " largest_artifact_bytes={largest_artifact_bytes} "
+                ))
+                && line.contains(" next_action=inspect-web-and-browser-runtime-cache")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_cache_session_output_hygiene: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(" candidates=3 ")
+                && line.contains(&format!(" bytes={expected_bytes} "))
+                && line.contains(&format!(" web_cache_bytes={} ", web_cache.len()))
+                && line.contains(&format!(" brave_results_bytes={} ", brave_results.len()))
+                && line.contains(&format!(
+                    " browser_session_bytes={} ",
+                    browser_documents.len()
+                ))
+                && line.contains(" generated_output_inventory=temp-cleanup-audit ")
+                && line.contains(" generated_output_status=report-only-scan ")
+                && line.contains(&format!(" duplicate_bytes={duplicate_bytes} "))
+                && line.contains(&format!(" largest_artifact={largest_artifact} "))
+                && line.contains(" github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only ")
+                && line.contains(" excluded=.esoteric-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" next_action=dry-run-cache-session-dedup")
+        }));
+        assert_eq!(std::fs::read(&web_cache_path).unwrap(), web_cache);
+        assert_eq!(std::fs::read(&brave_results_path).unwrap(), brave_results);
+        assert_eq!(
+            std::fs::read(&browser_documents_path).unwrap(),
+            browser_documents
+        );
+    }
+
+    #[test]
+    fn crawl_storage_pressure_summary_reports_frontier_and_snapshots() {
+        let stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 2,
+                fetched: 3,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 5,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 13,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 3,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+
+        let lines = crawl_storage_pressure_summary_lines(&stats);
+
+        assert!(lines.contains(
+            &"crawl_storage_pressure_summary: retained_bytes=170 frontier_bytes=50 snapshot_bytes=120 snapshot_entries=4".to_owned()
+        ));
+        assert!(lines.contains(&"crawl_storage_retained_bytes: 170".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_bytes: 50".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_records: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 13
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_queued: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_fetching: 2".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_fetched: 3".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed: {}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_deferred: 5".to_owned()));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_record_cap: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_projected_after: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_zero_removal: false".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_apply_guard: report-only; stats does not mutate frontier.bin, run a dedicated frontier compaction apply path only after projected_removed is nonzero".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_bytes: 120".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_entries: 4".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_unique_entries: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_duplicate_entries: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_after: 3".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_projected_entries_removed: 1".to_owned()));
+        assert!(lines.contains(&"crawl_storage_snapshot_dry_run_note: duplicate crawl-docs rows are retained until crawl snapshot compaction rewrites latest unique docs".to_owned()));
+    }
+
+    #[test]
+    fn crawl_storage_frontier_apply_guard_reports_zero_removal() {
+        let stats = IndexStorageStats {
+            total_bytes: 80,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+            }),
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+
+        let lines = crawl_storage_pressure_summary_lines(&stats);
+
+        assert!(lines.contains(&format!(
+            "crawl_storage_frontier_failed_projected_after: {DEFAULT_MAX_FAILED_FRONTIER_RECORDS}"
+        )));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_projected_removed: 0".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_failed_zero_removal: true".to_owned()));
+        assert!(lines.contains(&"crawl_storage_frontier_apply_guard: zero-removal; frontier compaction apply would be pointless because all failed records are retained".to_owned()));
+        assert!(!lines.iter().any(|line| {
+            line == "crawl_storage_frontier_dry_run_note: failed frontier records exceed retention cap and are removable by frontier compaction without deleting fetched documents"
+        }));
+    }
+
+    #[test]
+    fn crawl_storage_cleanup_next_action_reports_snapshot_and_frontier_pressure() {
+        let mut stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 3,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+
+        let both_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(both_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-crawl-snapshot-and-frontier-dry-runs snapshot_cleanup_useful=true frontier_cleanup_useful=true snapshot_duplicate_rows=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(both_lines.contains(&"storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .esoteric-index".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+        });
+        let snapshot_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(snapshot_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-crawl-snapshot-compaction snapshot_cleanup_useful=true frontier_cleanup_useful=false snapshot_duplicate_rows=1 frontier_failed_removable_records=0".to_owned()));
+
+        stats.crawl_snapshot_duplicate_entries = 0;
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+        });
+        let frontier_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(frontier_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-frontier-compaction snapshot_cleanup_useful=false frontier_cleanup_useful=true snapshot_duplicate_rows=0 frontier_failed_removable_records=2".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 2,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 3,
+        });
+        let zero_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(zero_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=cleanup-pointless snapshot_cleanup_useful=false frontier_cleanup_useful=false snapshot_duplicate_rows=0 frontier_failed_removable_records=0".to_owned()));
+    }
+
+    #[test]
+    fn crawl_storage_frontier_queue_pressure_reports_growth_actions() {
+        let mut stats = IndexStorageStats {
+            total_bytes: 170,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 50,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 2,
+                fetching: 0,
+                fetched: 3,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 4,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+
+        let growth_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(growth_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-frontier-growth total_bytes=50 frontier_bytes=50 queued=2 fetching=0 deferred=0 failed={DEFAULT_MAX_FAILED_FRONTIER_RECORDS} active_records=2 failed_removable_records=0 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5
+        )));
+        assert!(growth_lines.contains(&"crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .esoteric-index".to_owned()));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 1,
+            fetched: 3,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 4,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 8,
+        });
+        let deferred_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(deferred_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-deferred-fetching total_bytes=50 frontier_bytes=50 queued=0 fetching=1 deferred=4 failed={DEFAULT_MAX_FAILED_FRONTIER_RECORDS} active_records=5 failed_removable_records=0 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 8
+        )));
+
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 0,
+            fetched: 3,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5,
+        });
+        let failed_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(failed_lines.contains(&format!(
+            "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-failed-compaction total_bytes=50 frontier_bytes=50 queued=0 fetching=0 deferred=0 failed={} active_records=0 failed_removable_records=2 total_records={}",
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5
+        )));
+
+        stats.crawl_frontier_bytes = 0;
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 0,
+            fetching: 0,
+            fetched: 3,
+            failed: 0,
+            deferred: 0,
+            total: 3,
+        });
+        let low_lines = crawl_storage_pressure_summary_lines(&stats);
+        assert!(low_lines.contains(&"crawl_storage_frontier_queue_pressure: report_only=true action=queue-low total_bytes=0 frontier_bytes=0 queued=0 fetching=0 deferred=0 failed=0 active_records=0 failed_removable_records=0 total_records=3".to_owned()));
+    }
+
+    #[test]
+    fn storage_live_index_replay_and_cleanup_boundaries_report_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir
+            .path()
+            .join("search-engine-storage-live-index-web-inventory-target-0f75923");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target_path = target_dir.join("test.o");
+        std::fs::write(&target_path, b"target").unwrap();
+        let generated_dir = dir
+            .path()
+            .join("search-engine-browser-session-artifact-output");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        let generated_path = generated_dir.join("session.bin");
+        std::fs::write(&generated_path, b"session").unwrap();
+        let target_before = std::fs::read(&target_path).unwrap();
+        let generated_before = std::fs::read(&generated_path).unwrap();
+
+        let web_cache = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            bytes: 100,
+            entries: 1,
+            invalid_json_rows: 0,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            query_count: 1,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 2,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(100),
+        };
+        let brave_results = WebStorageArtifactStats {
+            name: "brave-results.jsonl",
+            bytes: 120,
+            entries: 3,
+            invalid_json_rows: 0,
+            result_rows: 3,
+            durable_result_rows: 3,
+            incomplete_result_rows: 0,
+            unique_entries: 3,
+            duplicate_entries: 0,
+            unique_row_bytes: 120,
+            duplicate_row_bytes: 0,
+            query_count: 2,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 2,
+            oldest_fetched_at_unix: Some(110),
+            newest_fetched_at_unix: Some(120),
+        };
+        let stats = IndexStorageStats {
+            total_bytes: 300,
+            artifacts: Vec::new(),
+            web_artifacts: vec![web_cache, brave_results],
+            indexed_document_count: Some(4),
+            browser_document_bytes: 10,
+            browser_document_rows: 1,
+            browser_document_session_count: 1,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 10,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 10,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 5,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 15,
+            crawl_snapshot_entries: 1,
+            crawl_snapshot_unique_entries: 1,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let rollup_lines = storage_pressure_rollup_lines(&stats, &web_summary);
+        let cleanup_lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+
+        assert_eq!(std::fs::read(&target_path).unwrap(), target_before);
+        assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("live_index_web_artifact_inventory: report_only=true")
+                && line.contains("indexed_documents=4")
+                && line.contains("core_index_bytes=50")
+                && line.contains("web_cache_rows=4")
+                && line.contains("brave_result_rows=3")
+                && line.contains("durable_web_rows=5")
+                && line.contains("incomplete_web_rows=0")
+                && line.contains("github_safe_bytes=250")
+                && line.contains("runtime_only_bytes=50")
+                && line.contains("replay_ready=true")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("next_action=live-index-web-inventory-ready")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("web_replay_artifact_readiness: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("replay_ready=true")
+                && line.contains("replayable_cache_rows=2")
+                && line.contains("replayable_query_buckets=1")
+                && line.contains("durable_provider_rows=3")
+                && line.contains("durable_query_buckets=2")
+                && line.contains("durable_only_rows=1")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("next_action=backfill-web-cache-from-brave-results-dry-run")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("web_replay_github_safe_completeness: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("complete=false")
+                && line.contains("total_result_rows=5")
+                && line.contains("github_safe_rows=3")
+                && line.contains("runtime_only_rows=2")
+                && line.contains("next_action=dry-run-backfill-web-cache-from-archive")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("live_index_web_growth_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("total_bytes=300")
+                && line.contains("web_bytes=220")
+                && line.contains("github_safe_bytes=250")
+                && line.contains("runtime_only_bytes=50")
+                && line.contains("removable_rows=0")
+                && line.contains("over_web_budget=false")
+                && line.contains("over_storage_budget=false")
+                && line.contains("preserve=.esoteric-index,indexed-documents,running-server")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("next_action=growth-boundary-monitor")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("brave_archive_commit_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("commit_safe=true")
+                && line.contains("archive_entries=3")
+                && line.contains("archive_rows=3")
+                && line.contains("archive_bytes=120")
+                && line.contains("duplicate_rows=0")
+                && line.contains("malformed_rows=0")
+                && line.contains("incomplete_rows=0")
+                && line.contains("query_buckets=2")
+                && line.contains("max_entries_per_query=2")
+                && line.contains("over_byte_cap=false")
+                && line.contains("over_query_cap=false")
+                && line.contains("runtime_only_bytes=50")
+                && line.contains("github_safe_artifacts=brave-results.jsonl,web-cache.jsonl")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=commit-safe-brave-archive-ready")
+        }));
+        assert!(cleanup_lines.iter().any(|line| {
+            line.starts_with("storage_operational_cleanup_ux: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("stops_server=false")
+                && line.contains("mutates_esoteric_index=false")
+                && line.contains("safe_target_candidates=1")
+                && line.contains("safe_target_bytes=6")
+                && line.contains("generated_review_count=1")
+                && line.contains("generated_review_bytes=7")
+                && line.contains(
+                    "preserve=.esoteric-index,running-server,active-worktrees,indexed-documents",
+                )
+                && line.contains("next_action=review-generated-output-before-cleanup")
+        }));
+        assert!(cleanup_lines.iter().any(|line| {
+            line.starts_with("storage_cleanup_inventory_detail: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("target_candidates=1")
+                && line.contains("target_bytes=6")
+                && line.contains("largest_target_bytes=6")
+                && line.contains("old_target_count=0")
+                && line.contains("generated_candidates=1")
+                && line.contains("generated_bytes=7")
+                && line.contains("largest_generated_bytes=7")
+                && line.contains("safe_cleanup_scope=validation-targets-only")
+                && line.contains("review_scope=generated-output,dirty-worktrees,unknown-dirs")
+                && line.contains(
+                    "preserve=.esoteric-index,running-server,active-worktrees,indexed-documents",
+                )
+                && line.contains("next_action=review-generated-output-inventory")
+        }));
+    }
+
+    #[test]
+    fn storage_pressure_rollup_separates_core_web_and_crawl_bytes() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 3,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_pressure_rollup_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_pressure_total_bytes: 1000".to_owned()));
+        assert!(lines.contains(&"storage_pressure_core_index_bytes: 350".to_owned()));
+        assert!(lines.contains(&"storage_pressure_web_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_pressure_browser_document_bytes: 50".to_owned()));
+        assert!(lines.contains(&"storage_pressure_crawl_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_pressure_summary: total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_entries=30 web_duplicates=4 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_replay_github_safe_completeness: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("complete=false")
+                && line.contains("total_result_rows=45")
+                && line.contains("github_safe_rows=0")
+                && line.contains("replayable_cache_rows=0")
+                && line.contains("archived_rows=0")
+                && line.contains("archived_not_replayable_rows=0")
+                && line.contains("runtime_only_rows=45")
+                && line.contains("incomplete_rows=5")
+                && line.contains("duplicate_rows=4")
+                && line.contains("github_safe_bytes=0")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excluded=env-secrets,api-keys")
+                && line.contains("next_action=repair-incomplete-github-safe-replay-rows")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_replay_artifact_readiness: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("replay_ready=false")
+                && line.contains("replayable_cache_rows=0")
+                && line.contains("replayable_query_buckets=0")
+                && line.contains("durable_provider_rows=0")
+                && line.contains("durable_query_buckets=0")
+                && line.contains("durable_only_rows=0")
+                && line.contains("missing_query_buckets=0")
+                && line.contains("incomplete_rows=5")
+                && line.contains("duplicate_rows=4")
+                && line.contains("web_cache_bytes=0")
+                && line.contains("brave_results_bytes=0")
+                && line.contains("github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("excluded=env-secrets,api-keys")
+                && line.contains("next_action=inspect-incomplete-web-replay-artifacts")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("live_index_web_artifact_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("indexed_documents=0")
+                && line.contains("core_index_bytes=350")
+                && line.contains("web_cache_rows=30")
+                && line.contains("brave_result_rows=0")
+                && line.contains("durable_web_rows=40")
+                && line.contains("incomplete_web_rows=5")
+                && line.contains("web_cache_bytes=0")
+                && line.contains("brave_results_bytes=0")
+                && line.contains("browser_document_bytes=50")
+                && line.contains("crawl_artifact_bytes=300")
+                && line.contains("github_safe_bytes=350")
+                && line.contains("runtime_only_bytes=350")
+                && line.contains("replay_ready=false")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("excluded=env-secrets,api-keys")
+                && line.contains("next_action=inspect-incomplete-web-result-artifacts")
+        }));
+        assert!(lines.contains(&format!(
+            "local_artifact_size_budget: report_only=true status=dry-run-recommended total_bytes=1000 budget_bytes={} web_cache_bytes=0 brave_results_bytes=0 snapshot_bytes=300 generated_artifact_bytes=not-scanned largest_artifact=core-index largest_artifact_bytes=350 next_action=run-storage-dry-run-before-cleanup",
+            index_storage_budget_bytes()
+        )));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("web_cache_bytes=0")
+                && line.contains("brave_results_bytes=0")
+                && line.contains("snapshot_bytes=300")
+                && line.contains("snapshot_entries=5")
+                && line.contains("frontier_bytes=100")
+                && line.contains("frontier_records=10")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
+        }));
+    }
+
+    #[test]
+    fn local_artifact_size_budget_reports_temp_artifacts_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path();
+        std::fs::write(index.join("docs.bin"), b"core-index-bytes").unwrap();
+        let web_cache = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n";
+        std::fs::write(index.join("web-cache.jsonl"), web_cache).unwrap();
+        let brave_results = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n";
+        std::fs::write(index.join("brave-results.jsonl"), brave_results).unwrap();
+        let browser_docs = b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(index.join("browser-documents.jsonl"), browser_docs).unwrap();
+        let crawl_docs =
+            b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(index.join("crawl-docs.jsonl"), crawl_docs).unwrap();
+        let before_cache = std::fs::read(index.join("web-cache.jsonl")).unwrap();
+        let before_results = std::fs::read(index.join("brave-results.jsonl")).unwrap();
+        let before_browser_docs = std::fs::read(index.join("browser-documents.jsonl")).unwrap();
+        let before_snapshot = std::fs::read(index.join("crawl-docs.jsonl")).unwrap();
+
+        let stats = collect_index_storage_stats(index).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let lines = storage_pressure_rollup_lines(&stats, &web_summary);
+
+        assert_eq!(
+            before_cache,
+            std::fs::read(index.join("web-cache.jsonl")).unwrap()
+        );
+        assert_eq!(
+            before_results,
+            std::fs::read(index.join("brave-results.jsonl")).unwrap()
+        );
+        assert_eq!(
+            before_browser_docs,
+            std::fs::read(index.join("browser-documents.jsonl")).unwrap()
+        );
+        assert_eq!(
+            before_snapshot,
+            std::fs::read(index.join("crawl-docs.jsonl")).unwrap()
+        );
+        assert!(lines.iter().any(|line| {
+            line.starts_with("local_artifact_size_budget: report_only=true")
+                && line.contains("status=dry-run-recommended")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("generated_artifact_bytes=not-scanned")
+                && line.contains("next_action=run-storage-dry-run-before-cleanup")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("snapshot_entries=2")
+                && line.contains("snapshot_duplicates=1")
+                && line.contains("frontier_bytes=0")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("search_browser_storage_hygiene_pack: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("candidate_artifacts=4")
+                && line.contains(&format!("web_cache_bytes={}", web_cache.len()))
+                && line.contains(&format!("brave_results_bytes={}", brave_results.len()))
+                && line.contains(&format!("browser_document_bytes={}", browser_docs.len()))
+                && line.contains(&format!("snapshot_bytes={}", crawl_docs.len()))
+                && line.contains("web_rows=3")
+                && line.contains("brave_archive_rows=1")
+                && line.contains("browser_document_rows=2")
+                && line.contains("snapshot_rows=2")
+                && line.contains("duplicate_rows=3")
+                && line.contains("largest_artifact=web-artifacts")
+                && line.contains("next_action=run-storage-hygiene-dry-run")
+        }));
+    }
+
+    #[test]
+    fn storage_git_manifest_readiness_reports_exportable_artifacts() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_pressure_rollup_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_git_manifest_readiness: report_only=true status=needs-review exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_rows=30 browser_document_rows=3 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .esoteric-index contents".to_owned()));
+        assert!(lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = storage_pressure_rollup_lines(&clean_stats, &clean_web_summary);
+
+        assert!(clean_lines.contains(&"storage_git_manifest_readiness: report_only=true status=ready exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_rows=10 browser_document_rows=1 snapshot_entries=2 frontier_records=0".to_owned()));
+    }
+
+    #[test]
+    fn storage_git_export_size_class_reports_component_thresholds() {
+        let review_stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let review_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let review_lines = storage_pressure_rollup_lines(&review_stats, &review_web_summary);
+        assert!(review_lines.contains(&format!(
+            "storage_git_export_size_class: report_only=true class=review-before-export total_bytes=1000 budget_bytes={} core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.esoteric-index/raw-index-data",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES
+        )));
+        assert!(review_lines.contains(&"storage_git_export_next_action: report_only=true action=review-removable-rows-before-export class=review-before-export removable_web_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_records=10".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let clean_lines = storage_pressure_rollup_lines(&clean_stats, &clean_web_summary);
+        assert!(clean_lines.contains(&"storage_git_export_next_action: report_only=true action=export-metadata-only-ready class=git-friendly removable_web_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_records=0".to_owned()));
+
+        let large_stats = IndexStorageStats {
+            total_bytes: DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let large_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 30,
+            durable_result_rows: 30,
+            incomplete_result_rows: 0,
+            unique_entries: 30,
+            duplicate_entries: 0,
+            unique_row_bytes: 300,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let large_lines = storage_pressure_rollup_lines(&large_stats, &large_web_summary);
+        assert!(large_lines.contains(&format!(
+            "storage_git_export_size_class: report_only=true class=too-large-for-git-snapshot total_bytes={} budget_bytes={} core_index_bytes={} web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.esoteric-index/raw-index-data",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1 - 650
+        )));
+        assert!(large_lines.contains(&"storage_git_export_next_action: report_only=true action=reduce-or-exclude-large-artifacts-before-export class=too-large-for-git-snapshot removable_web_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_records=0".to_owned()));
+    }
+
+    #[test]
+    fn storage_budget_pressure_reports_component_bytes_without_mutation() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 3,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 50,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+        let retention_config = WebStorageRetentionConfig {
+            cache_max_entries: 10,
+            cache_max_bytes: 200,
+            result_log_max_entries: 20,
+            result_log_max_bytes: 250,
+            result_log_max_entries_per_query: 0,
+        };
+
+        let lines = storage_budget_pressure_lines(&stats, &web_summary, retention_config);
+
+        assert!(lines.contains(&format!(
+            "storage_budget_summary: status=within-budget total_bytes=1000 budget_bytes={} remaining_bytes={} core_index_bytes=350 web_bytes=300 web_budget_bytes=450 browser_document_bytes=50 crawl_bytes=300",
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES,
+            DEFAULT_INDEX_STORAGE_BUDGET_BYTES - 1_000
+        )));
+        assert!(lines.contains(&"storage_budget_status: within-budget".to_owned()));
+        assert!(lines.contains(&"storage_budget_core_index_bytes: 350".to_owned()));
+        assert!(lines.contains(&"storage_budget_web_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_budget_web_budget_bytes: 450".to_owned()));
+        assert!(lines.contains(&"storage_budget_browser_document_bytes: 50".to_owned()));
+        assert!(lines.contains(&"storage_budget_crawl_bytes: 300".to_owned()));
+        assert!(lines.contains(&"storage_budget_report_mode: report-only".to_owned()));
+        assert!(lines.contains(&"storage_budget_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned()));
+    }
+
+    #[test]
+    fn storage_cleanup_readiness_reports_safe_and_pointless_cleanup() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_cleanup_readiness: status=cleanup-available report_mode=report-only retained_bytes=945 known_removable_row_bytes=55 removable_rows=8 web_removable_rows=4 browser_document_removable_rows=1 snapshot_removable_rows=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_safe_to_clean: true".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_pointless: false".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_web_removable_rows: 4".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_browser_document_removable_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_snapshot_removable_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_frontier_failed_removable_records: 2".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            }),
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = storage_cleanup_readiness_lines(&clean_stats, &clean_web_summary);
+
+        assert!(clean_lines.contains(&"storage_cleanup_readiness: status=zero-removal report_mode=report-only retained_bytes=700 known_removable_row_bytes=0 removable_rows=0 web_removable_rows=0 browser_document_removable_rows=0 snapshot_removable_rows=0 frontier_failed_removable_records=0".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_safe_to_clean: false".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_pointless: true".to_owned()));
+        assert!(clean_lines.contains(&"storage_cleanup_note: cleanup would be pointless because all tracked storage rows are retained".to_owned()));
+    }
+
+    #[test]
+    fn storage_cleanup_readiness_reports_component_reasons() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_cleanup_web_reason: duplicate_rows=4 duplicate_row_bytes=40 suggested_dry_runs=1".to_owned()));
+        assert!(
+            lines.contains(
+                &"storage_cleanup_browser_document_reason: duplicate_rows=1 duplicate_row_bytes=15"
+                    .to_owned()
+            )
+        );
+        assert!(lines.contains(&"storage_cleanup_snapshot_reason: duplicate_rows=1".to_owned()));
+        assert!(
+            lines.contains(
+                &"storage_cleanup_frontier_reason: failed_removable_records=2".to_owned()
+            )
+        );
+        assert!(lines.contains(&"storage_cleanup_next_action: report-only; run web compaction dry-run first; web-cache/brave-results have removable duplicate pressure".to_owned()));
+
+        let component_only_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 2,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 20,
+            browser_document_duplicate_row_bytes: 5,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 1,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+                deferred: 0,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+            }),
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 3,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let component_only_lines =
+            storage_cleanup_readiness_lines(&component_only_stats, &clean_web_summary);
+
+        assert!(component_only_lines.contains(&"storage_cleanup_next_action: report-only; inspect browser-document, crawl-snapshot, and frontier dry-run reports before any apply".to_owned()));
+    }
+
+    #[test]
+    fn storage_cleanup_readiness_reports_byte_source_actions() {
+        let mut stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 100,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 200,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let mut web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let multiple_lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+        assert!(multiple_lines.contains(&"storage_cleanup_byte_sources: report_only=true retained_bytes=945 web_duplicate_row_bytes=40 browser_document_duplicate_row_bytes=15 snapshot_duplicate_rows=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(multiple_lines.contains(&"storage_cleanup_byte_source_next_action: report_only=true action=inspect-multiple-components web_cleanup_useful=true browser_document_cleanup_useful=true crawl_cleanup_useful=true".to_owned()));
+
+        stats.browser_document_duplicate_rows = 0;
+        stats.browser_document_duplicate_row_bytes = 0;
+        stats.crawl_snapshot_duplicate_entries = 0;
+        stats.crawl_frontier_stats = Some(FrontierStats {
+            queued: 1,
+            fetching: 0,
+            fetched: 1,
+            failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS,
+            deferred: 0,
+            total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+        });
+        let web_only_lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+        assert!(web_only_lines.contains(&"storage_cleanup_byte_source_next_action: report_only=true action=inspect-web-compaction web_cleanup_useful=true browser_document_cleanup_useful=false crawl_cleanup_useful=false".to_owned()));
+
+        web_summary.duplicate_entries = 0;
+        web_summary.duplicate_row_bytes = 0;
+        web_summary.suggested_dry_runs = 0;
+        stats.browser_document_duplicate_rows = 1;
+        stats.browser_document_duplicate_row_bytes = 15;
+        let browser_only_lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+        assert!(browser_only_lines.contains(&"storage_cleanup_byte_source_next_action: report_only=true action=inspect-browser-documents web_cleanup_useful=false browser_document_cleanup_useful=true crawl_cleanup_useful=false".to_owned()));
+
+        stats.browser_document_duplicate_rows = 0;
+        stats.browser_document_duplicate_row_bytes = 0;
+        stats.crawl_snapshot_duplicate_entries = 1;
+        let crawl_only_lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+        assert!(crawl_only_lines.contains(&"storage_cleanup_byte_source_next_action: report_only=true action=inspect-crawl-artifacts web_cleanup_useful=false browser_document_cleanup_useful=false crawl_cleanup_useful=true".to_owned()));
+
+        stats.crawl_snapshot_duplicate_entries = 0;
+        let clean_lines = storage_cleanup_readiness_lines(&stats, &web_summary);
+        assert!(clean_lines.contains(&"storage_cleanup_byte_source_next_action: report_only=true action=cleanup-pointless web_cleanup_useful=false browser_document_cleanup_useful=false crawl_cleanup_useful=false".to_owned()));
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_web_compaction_pressure() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: 3,
+                deferred: 4,
+                total: 10,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 5,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_snapshot_readiness: status=needs-web-compaction total_bytes=1000 web_bytes=300 browser_document_bytes=50 browser_document_rows=3 browser_document_duplicates=1 crawl_bytes=200 web_entries=30 web_result_rows=45 web_unique_entries=26 web_duplicates=4 web_duplicate_row_bytes=40 web_suggested_dry_runs=1 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_status: needs-web-compaction".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_rows: 3".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_duplicates: 1".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
+        assert!(lines.contains(
+            &"storage_snapshot_cleanup_hint: esoteric-search compact-web-cache --dry-run --min-entries 30".to_owned()
+        ));
+    }
+
+    #[test]
+    fn storage_snapshot_replay_budget_dry_run_reports_snapshot_and_replay_pressure() {
+        let dir = tempfile::tempdir().unwrap();
+        let crawl_snapshot_path = dir.path().join("crawl-docs.jsonl");
+        let crawl_snapshot =
+            b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
+        std::fs::write(&crawl_snapshot_path, crawl_snapshot).unwrap();
+        let web_cache_path = dir.path().join("web-cache.jsonl");
+        let web_cache = b"{\"normalized_query\":\"rust\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"rust\",\"provider\":\"brave\",\"fetched_at_unix\":101,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n";
+        std::fs::write(&web_cache_path, web_cache).unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 101, 60);
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+        let expected_bytes = u64::try_from(crawl_snapshot.len() + web_cache.len()).unwrap();
+        let largest_artifact = if crawl_snapshot.len() >= web_cache.len() {
+            "crawl-docs.jsonl"
+        } else {
+            "web-cache.jsonl"
+        };
+        let largest_artifact_bytes = crawl_snapshot.len().max(web_cache.len());
+
+        assert!(lines.contains(&format!(
+            "storage_snapshot_replay_budget_dry_run: report_only=true deletes=false compacts=false candidate_artifacts=2 candidate_bytes={expected_bytes} snapshot_entries=2 replay_entries=2 largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} snapshot_duplicate_rows=1 replay_duplicate_rows=1 next_action=review-snapshot-and-web-replay-dry-runs"
+        )));
+        assert_eq!(std::fs::read(&crawl_snapshot_path).unwrap(), crawl_snapshot);
+        assert_eq!(std::fs::read(&web_cache_path).unwrap(), web_cache);
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_index_export_risk() {
+        let stats = IndexStorageStats {
+            total_bytes: 1_000,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 50,
+            browser_document_rows: 3,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 2,
+            browser_document_duplicate_rows: 1,
+            browser_document_unique_row_bytes: 35,
+            browser_document_duplicate_row_bytes: 15,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 80,
+            crawl_frontier_stats: Some(FrontierStats {
+                queued: 1,
+                fetching: 0,
+                fetched: 2,
+                failed: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 2,
+                deferred: 4,
+                total: DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 9,
+            }),
+            crawl_snapshot_bytes: 120,
+            crawl_snapshot_entries: 5,
+            crawl_snapshot_unique_entries: 4,
+            crawl_snapshot_duplicate_entries: 1,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 300,
+            entries: 30,
+            result_rows: 45,
+            durable_result_rows: 40,
+            incomplete_result_rows: 5,
+            unique_entries: 26,
+            duplicate_entries: 4,
+            unique_row_bytes: 260,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 3,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_index_export_readiness: report_only=true status=needs-review total_bytes=1000 core_index_bytes=450 web_bytes=300 browser_document_bytes=50 crawl_bytes=200 web_removable_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_failed_removable_records=2".to_owned()));
+        assert!(lines.contains(&"storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .esoteric-index contents".to_owned()));
+
+        let clean_stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let clean_web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = storage_snapshot_readiness_lines(&clean_stats, &clean_web_summary);
+
+        assert!(clean_lines.contains(&"storage_index_export_readiness: report_only=true status=ready total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_removable_rows=0 browser_document_duplicates=0 snapshot_duplicates=0 frontier_failed_removable_records=0".to_owned()));
+    }
+
+    #[test]
+    fn storage_snapshot_readiness_reports_ready_when_web_pressure_is_clean() {
+        let stats = IndexStorageStats {
+            total_bytes: 700,
+            artifacts: Vec::new(),
+            web_artifacts: Vec::new(),
+            indexed_document_count: None,
+            browser_document_bytes: 25,
+            browser_document_rows: 1,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 1,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 25,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 40,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 60,
+            crawl_snapshot_entries: 2,
+            crawl_snapshot_unique_entries: 2,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let web_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 100,
+            entries: 10,
+            result_rows: 12,
+            durable_result_rows: 12,
+            incomplete_result_rows: 0,
+            unique_entries: 10,
+            duplicate_entries: 0,
+            unique_row_bytes: 100,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
+
+        assert!(lines.contains(&"storage_snapshot_readiness: status=ready total_bytes=700 web_bytes=100 browser_document_bytes=25 browser_document_rows=1 browser_document_duplicates=0 crawl_bytes=100 web_entries=10 web_result_rows=12 web_unique_entries=10 web_duplicates=0 web_duplicate_row_bytes=0 web_suggested_dry_runs=0 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_status: ready".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_rows: 1".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_browser_document_duplicates: 0".to_owned()));
+        assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 0".to_owned()));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("storage_snapshot_cleanup_hint:"))
+        );
+    }
+
+    #[test]
+    fn browser_session_cache_pressure_reports_session_counts_and_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_session_count, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert!(stats.browser_document_bytes > 0);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&"browser_document_storage_session_count: 2".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_session_cache_pressure: report_only=true sessions=2 rows=3 bytes={} duplicate_rows=1 duplicate_row_bytes={} next_action=inspect-multi-session-duplicates",
+            stats.browser_document_bytes, stats.browser_document_duplicate_row_bytes
+        )));
+    }
+
+    #[test]
+    fn browser_session_storage_pressure_reports_document_row_pressure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+
+        let before = std::fs::read(&path).unwrap();
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+        let after = std::fs::read(&path).unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(stats.browser_document_session_count, 2);
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert_eq!(stats.browser_document_large_row_count, 2);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+        assert!(lines.contains(&format!(
+            "browser_session_storage_pressure: report_only=true sessions=2 rows=3 bytes={} duplicate_rows=1 duplicate_row_bytes={} max_row_bytes={} large_row_count=2 next_action=inspect-repeated-large-browser-session-records",
+            stats.browser_document_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            stats.browser_document_max_row_bytes
+        )));
+        assert!(lines.contains(&format!(
+            "browser_session_artifact_footprint: report_only=true deletes=false compacts=false candidate_artifacts=1 rows=3 bytes={} sessions=2 largest_artifact=browser-documents.jsonl largest_artifact_bytes={} max_row_bytes={} large_row_count=2 large_row_threshold_bytes={} duplicate_rows=1 duplicate_row_bytes={} next_action=inspect-duplicate-large-browser-session-artifacts",
+            stats.browser_document_bytes,
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
+        )));
+        assert!(lines.contains(&format!(
+            "browser_runtime_footprint_bounds: report_only=true deletes=false compacts=false sessions=2 browser_document_rows=3 browser_document_bytes={} largest_session_payload_bytes={} large_row_count=2 duplicate_rows=1 duplicate_row_bytes={} resource_cache_bytes=0 resource_cache_status=not-scanned suggested_session_payload_cap_bytes={} storage_budget_bytes={} next_action=inspect-duplicate-large-browser-runtime-rows",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_duplicate_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            index_storage_budget_bytes()
+        )));
+        assert!(lines.contains(&format!(
+            "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count=1 sessions=2 rows=3 bytes={} snapshot_like_rows=2 history_like_rows=1 largest_snapshot_bytes={} duplicate_rows=1 duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action=review-snapshot-history-dedup-dry-run",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            stats.browser_document_duplicate_row_bytes
+        )));
+    }
+
+    #[test]
+    fn local_web_index_footprint_hygiene_reports_bounds_and_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser_path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &browser_path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s2\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"local\",\"provider\":\"cache\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet A\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"local\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet A\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"local\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Snippet B\",\"fetched_at_unix\":101}\n",
+        )
+        .unwrap();
+
+        let before_browser = std::fs::read(&browser_path).unwrap();
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let web_summary = web_storage_pressure_summary(&stats.web_artifacts, 120, 60);
+        let browser_lines = browser_document_storage_pressure_summary_lines(&stats);
+        let rollup_lines = storage_pressure_rollup_lines(&stats, &web_summary);
+        let retention_lines = search_index_retention_audit_lines(&stats, &web_summary);
+
+        assert_eq!(before_browser, std::fs::read(&browser_path).unwrap());
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
+        assert!(browser_lines.iter().any(|line| {
+            line.starts_with("browser_runtime_footprint_bounds: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("sessions=2")
+                && line.contains("browser_document_rows=3")
+                && line.contains("resource_cache_bytes=0")
+                && line.contains("resource_cache_status=not-scanned")
+                && line.contains("suggested_session_payload_cap_bytes=65536")
+                && line.contains("next_action=inspect-duplicate-large-browser-runtime-rows")
+        }));
+        assert!(rollup_lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
+        assert!(retention_lines.iter().any(|line| {
+            line.starts_with("local_web_index_persistence_boundary: report_only=true")
+                && line.contains("durable_provider_rows=2")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("missing_replay_rows=1")
+                && line.contains("persists=brave-results.jsonl,web-cache.jsonl")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
+        }));
+    }
+
+    #[test]
+    fn browser_document_storage_pressure_reports_zero_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 2);
+        assert_eq!(stats.browser_document_unique_rows, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 0);
+        assert!(lines.contains(&format!(
+            "browser_document_storage_bytes: {}",
+            stats.browser_document_bytes
+        )));
+        assert!(lines.contains(&"browser_document_storage_rows: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_unique_rows: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_duplicate_rows: 0".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 0".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_zero_removal: true".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action=cleanup-pointless retained_rows=2 removable_rows=0 retained_row_bytes={} removable_row_bytes=0 zero_removal=true",
+            stats.browser_document_unique_row_bytes
+        )));
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing".to_owned()));
+    }
+
+    #[test]
+    fn browser_document_storage_cleanup_next_action_reports_duplicate_pressure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        std::fs::write(
+            &path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}\n",
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_unique_rows, 2);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 1".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_zero_removal: false".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action=inspect-browser-document-compaction retained_rows=2 removable_rows=1 retained_row_bytes={} removable_row_bytes={} zero_removal=false",
+            stats.browser_document_unique_row_bytes, stats.browser_document_duplicate_row_bytes
+        )));
+        assert!(stats.browser_document_unique_row_bytes > 0);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data".to_owned()));
+    }
+
+    #[test]
+    fn browser_document_storage_row_size_pressure_reports_large_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-documents.jsonl");
+        let large_payload = "x".repeat(BROWSER_DOCUMENT_LARGE_ROW_BYTES as usize);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/a\",\"snapshot\":\"{}\"}}\n{{\"session_id\":\"s1\",\"url\":\"https://example.com/b\"}}\n",
+                large_payload, large_payload
+            ),
+        )
+        .unwrap();
+
+        let stats = collect_index_storage_stats(dir.path()).unwrap();
+        let lines = browser_document_storage_pressure_summary_lines(&stats);
+
+        assert_eq!(stats.browser_document_rows, 3);
+        assert_eq!(stats.browser_document_duplicate_rows, 1);
+        assert_eq!(stats.browser_document_large_row_count, 2);
+        assert!(stats.browser_document_max_row_bytes >= BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+        assert!(stats.browser_document_duplicate_row_bytes > 0);
+        assert!(lines.contains(&format!(
+            "browser_document_storage_row_size_pressure: report_only=true action=inspect-duplicate-and-large-browser-document-rows bytes={} rows=3 max_row_bytes={} large_row_count=2 large_row_threshold_bytes={} duplicate_row_bytes={}",
+            stats.browser_document_bytes,
+            stats.browser_document_max_row_bytes,
+            BROWSER_DOCUMENT_LARGE_ROW_BYTES,
+            stats.browser_document_duplicate_row_bytes
+        )));
+
+        let clean_path = dir.path().join("browser-documents-clean.jsonl");
+        std::fs::write(
+            &clean_path,
+            b"{\"session_id\":\"s1\",\"url\":\"https://example.com/a\"}\n",
+        )
+        .unwrap();
+        let clean_stats = browser_document_artifact_stats(&clean_path).unwrap();
+        assert_eq!(clean_stats.large_row_count, 0);
+        assert!(clean_stats.max_row_bytes < BROWSER_DOCUMENT_LARGE_ROW_BYTES);
+    }
+
+    #[test]
+    fn web_result_durable_commit_report_lines_exposes_cli_boundary_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"rank\":1,\"title\":\"One\",\"url\":\"https://example.com/one\",\"snippet\":\"Snippet one\",\"score\":1.0}\n{\"query\":\"Query\",\"normalized_query\":\"query\",\"provider\":\"brave\",\"fetched_at_unix\":101,\"rank\":2,\"title\":\"Two\",\"url\":\"https://example.com/two\",\"snippet\":\"Snippet two\",\"score\":0.8}\n",
+        )
+        .unwrap();
+
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
+        let lines = web_result_durable_commit_report_lines(dir.path()).unwrap();
+
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_web_result_commit_report: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("survives_restart=true")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("durable_result_log_rows=2")
+                && line.contains("result_log_only_rows=1")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
+                && line.contains("next_action=backfill-web-cache-replay-before-prune")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_web_result_prune_boundary: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("result_log_only_rows=1")
+                && line.contains("preserve_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("preserve_secrets=false")
+        }));
+    }
+
+    #[test]
+    fn web_storage_stats_counts_unique_and_duplicate_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"one\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\"},{\"url\":\"https://example.com/b\"}]}\n{\"normalized_query\":\"one\",\"fetched_at_unix\":120,\"results\":[{\"url\":\"https://example.com/c\"}]}\n{\"normalized_query\":\"two\",\"fetched_at_unix\":130,\"results\":[{\"url\":\"https://example.com/d\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/a\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"rank\":3,\"url\":\"https://example.com/b\",\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+
+        assert_eq!(cache_stats.entries, 3);
+        assert!(cache_stats.bytes > 147);
+        assert_eq!(cache_stats.result_rows, 4);
+        assert_eq!(cache_stats.durable_result_rows, 0);
+        assert_eq!(cache_stats.incomplete_result_rows, 4);
+        assert_eq!(cache_stats.unique_entries, 2);
+        assert_eq!(cache_stats.duplicate_entries, 1);
+        assert_eq!(cache_stats.query_count, 2);
+        assert_eq!(
+            cache_stats.query_examples,
+            vec!["one".to_owned(), "two".to_owned()]
+        );
+        assert_eq!(cache_stats.provider_count, 0);
+        assert_eq!(cache_stats.max_entries_per_query, 2);
+        assert_eq!(log_stats.entries, 3);
+        assert_eq!(log_stats.result_rows, 3);
+        assert_eq!(log_stats.durable_result_rows, 0);
+        assert_eq!(log_stats.incomplete_result_rows, 3);
+        assert_eq!(log_stats.bytes, 321);
+        assert_eq!(log_stats.unique_entries, 2);
+        assert_eq!(log_stats.duplicate_entries, 1);
+        assert_eq!(log_stats.query_count, 1);
+        assert_eq!(log_stats.query_examples, vec!["one".to_owned()]);
+        assert_eq!(log_stats.provider_count, 1);
+        assert_eq!(log_stats.max_entries_per_query, 3);
+    }
+
+    #[test]
+    fn web_storage_compaction_suggestion_points_to_dry_run() {
+        let duplicate_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            bytes: 120,
+            entries: 3,
+            invalid_json_rows: 0,
+            result_rows: 4,
+            durable_result_rows: 4,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 1,
+            unique_row_bytes: 80,
+            duplicate_row_bytes: 40,
+            query_count: 2,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 2,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let large_artifact = WebStorageArtifactStats {
+            name: "brave-results.jsonl",
+            bytes: 4096,
+            entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            invalid_json_rows: 0,
+            result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            durable_result_rows: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            incomplete_result_rows: 0,
+            unique_entries: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            duplicate_entries: 0,
+            unique_row_bytes: 4096,
+            duplicate_row_bytes: 0,
+            query_count: WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 1,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let small_clean_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            bytes: 80,
+            entries: 2,
+            invalid_json_rows: 0,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 80,
+            duplicate_row_bytes: 0,
+            query_count: 2,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 1,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+
+        assert_eq!(
+            web_storage_compaction_suggestion(
+                &duplicate_artifact,
+                200,
+                DEFAULT_WEB_STORAGE_STALE_SECS
+            )
+            .as_deref(),
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 3")
+        );
+        assert_eq!(
+            web_storage_compaction_suggestion(&large_artifact, 200, DEFAULT_WEB_STORAGE_STALE_SECS)
+                .as_deref(),
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 1024")
+        );
+        assert!(
+            web_storage_compaction_suggestion(
+                &small_clean_artifact,
+                200,
+                DEFAULT_WEB_STORAGE_STALE_SECS
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn web_storage_compaction_suggestion_flags_stale_artifacts() {
+        let stale_artifact = WebStorageArtifactStats {
+            name: "web-cache.jsonl",
+            bytes: 120,
+            entries: 2,
+            invalid_json_rows: 0,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 120,
+            duplicate_row_bytes: 0,
+            query_count: 2,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 1,
+            oldest_fetched_at_unix: Some(100),
+            newest_fetched_at_unix: Some(120),
+        };
+        let fresh_artifact = WebStorageArtifactStats {
+            name: "brave-results.jsonl",
+            bytes: 90,
+            entries: 2,
+            invalid_json_rows: 0,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            query_count: 2,
+            query_examples: Vec::new(),
+            provider_count: 1,
+            provider_growth: Vec::new(),
+            max_entries_per_query: 1,
+            oldest_fetched_at_unix: Some(190),
+            newest_fetched_at_unix: Some(200),
+        };
+
+        assert_eq!(web_storage_oldest_age_secs(&stale_artifact, 200), Some(100));
+        assert_eq!(
+            web_storage_compaction_suggestion(&stale_artifact, 200, 60).as_deref(),
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 1")
+        );
+        assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
+    }
+
+    #[test]
+    fn web_storage_cache_pressure_reports_rows_bytes_and_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"one\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"alpha\"}]}\n{\"normalized_query\":\"one\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"beta\"}]}\n",
+        )
+        .unwrap();
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats.clone()], 120, 60);
+
+        assert_eq!(cache_stats.entries, 2);
+        assert_eq!(cache_stats.result_rows, 2);
+        assert_eq!(cache_stats.duplicate_entries, 1);
+        assert!(cache_stats.bytes > 0);
+        assert!(cache_stats.duplicate_row_bytes > 0);
+        assert!(lines.contains(&format!(
+            "web_storage_cache_pressure: report_only=true action=inspect-web-cache-duplicates total_rows=2 total_bytes={} entries=2 duplicate_rows=1 duplicate_row_bytes={} max_entries_per_query=2 stale_artifacts=0 suggested_dry_runs=1",
+            cache_stats.bytes,
+            cache_stats.duplicate_row_bytes
+        )));
+
+        let growth_summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: DEFAULT_CACHE_MAX_BYTES,
+            entries: 1,
+            result_rows: 1,
+            durable_result_rows: 1,
+            incomplete_result_rows: 0,
+            unique_entries: 1,
+            duplicate_entries: 0,
+            unique_row_bytes: DEFAULT_CACHE_MAX_BYTES,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        assert_eq!(
+            web_storage_cache_pressure_next_action(&growth_summary),
+            "inspect-web-cache-growth"
+        );
+        let low_summary = WebStoragePressureSummary {
+            bytes: 1,
+            ..growth_summary
+        };
+        assert_eq!(
+            web_storage_cache_pressure_next_action(&low_summary),
+            "web-cache-low"
+        );
+    }
+
+    #[test]
+    fn web_storage_integrity_audit_reports_malformed_jsonl_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let cache_contents = b"{\"normalized_query\":\"valid\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{not valid json\n";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        let before = std::fs::read(&cache_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats.clone()], 120, 60);
+        let after = std::fs::read(&cache_path).unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(cache_stats.entries, 2);
+        assert_eq!(cache_stats.invalid_json_rows, 1);
+        assert_eq!(cache_stats.durable_result_rows, 1);
+        assert!(lines.contains(&"web_storage_integrity_audit: report_only=true status=needs-review invalid_json_rows=1 affected_artifacts=1 valid_entries=1 retained_rows=1 malformed_rows=1 next_action=inspect-or-dry-run-compact".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_operator_summary_reports_health_and_preserves_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let cache_contents = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\"}]}\n{malformed json\n";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        let before = std::fs::read(&cache_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[cache_stats], 120, 60);
+        let after = std::fs::read(&cache_path).unwrap();
+
+        assert_eq!(before, after);
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_operator_summary: report_only=true")
+                && line.contains("status=needs-review")
+                && line.contains("retained_rows=2")
+                && line.contains("malformed_rows=1")
+                && line.contains("reclaimable_rows=1")
+                && line.contains("suggested_dry_runs=1")
+                && line.contains("next_action=inspect-or-dry-run-compact")
+        }));
+    }
+
+    #[test]
+    fn saved_result_and_generated_artifact_boundaries_report_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let crawl_snapshot_path = dir.path().join("crawl-docs.jsonl");
+        let generated_dir = dir.path().join("search-engine-generated-report-output");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        let generated_path = generated_dir.join("storage-report.txt");
+        let cache_contents = br#"{"normalized_query":"same","provider":"brave","fetched_at_unix":100,"results":[{"url":"https://example.com/a","title":"A","snippet":"Alpha"}]}
+"#;
+        let result_log_contents = br#"{"normalized_query":"same","provider":"brave","rank":1,"url":"https://example.com/a","title":"A","snippet":"Alpha","fetched_at_unix":100}
+{"normalized_query":"same","provider":"brave","rank":2,"url":"https://example.com/a","title":"A duplicate","snippet":"Alpha duplicate","fetched_at_unix":110}
+"#;
+        let crawl_snapshot_contents =
+            b"{\"url\":\"https://example.com/a\"}\n{\"url\":\"https://example.com/a\"}\n";
+        let generated_contents = b"report artifact
+";
+        std::fs::write(&cache_path, cache_contents).unwrap();
+        std::fs::write(&result_log_path, result_log_contents).unwrap();
+        std::fs::write(&crawl_snapshot_path, crawl_snapshot_contents).unwrap();
+        std::fs::write(&generated_path, generated_contents).unwrap();
+        let cache_before = std::fs::read(&cache_path).unwrap();
+        let result_log_before = std::fs::read(&result_log_path).unwrap();
+        let crawl_snapshot_before = std::fs::read(&crawl_snapshot_path).unwrap();
+        let generated_before = std::fs::read(&generated_path).unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let result_log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let web_lines =
+            web_storage_pressure_summary_lines(&[cache_stats, result_log_stats], 120, 60);
+        let temp_lines = temp_cleanup_audit_lines(dir.path()).unwrap();
+        let index_stats = collect_index_storage_stats(dir.path()).unwrap();
+        let index_web_summary = web_storage_pressure_summary(&index_stats.web_artifacts, 120, 60);
+        let rollup_lines = storage_pressure_rollup_lines(&index_stats, &index_web_summary);
+
+        assert_eq!(cache_before, std::fs::read(&cache_path).unwrap());
+        assert_eq!(result_log_before, std::fs::read(&result_log_path).unwrap());
+        assert_eq!(
+            crawl_snapshot_before,
+            std::fs::read(&crawl_snapshot_path).unwrap()
+        );
+        assert_eq!(generated_before, std::fs::read(&generated_path).unwrap());
+        assert!(web_lines.iter().any(|line| {
+            line.starts_with("saved_result_file_growth_boundary: report_only=true")
+                && line.contains("mutates_files=false")
+                && line.contains("saved_result_rows=3")
+                && line.contains("duplicate_rows=1")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-saved-result-duplicates")
+        }));
+        assert!(temp_lines.iter().any(|line| {
+            line.starts_with("storage_generated_artifact_inventory_boundary: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("candidates=1")
+                && line.contains(&format!("bytes={}", generated_contents.len()))
+                && line.contains("github_safe_artifacts=reports-metadata-only")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=review-generated-reports-before-cleanup")
+        }));
+        assert!(rollup_lines.iter().any(|line| {
+            line.starts_with("storage_hygiene_bounds_inventory: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains(&format!("web_cache_bytes={}", cache_contents.len()))
+                && line.contains(&format!("brave_results_bytes={}", result_log_contents.len()))
+                && line.contains(&format!(
+                    "snapshot_bytes={}",
+                    crawl_snapshot_contents.len()
+                ))
+                && line.contains("snapshot_entries=2")
+                && line.contains("snapshot_duplicates=1")
+                && line.contains("generated_artifact_inventory=temp-cleanup-audit")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
+        }));
+    }
+
+    #[test]
+    fn brave_result_archive_guard_reports_duplicate_pressure_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        let result_log_contents = b"{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"same\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha duplicate\",\"fetched_at_unix\":110}\n";
+        std::fs::write(&result_log_path, result_log_contents).unwrap();
+        let before = std::fs::read(&result_log_path).unwrap();
+
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines = web_storage_pressure_summary_lines(&[log_stats], 120, 60);
+        let after = std::fs::read(&result_log_path).unwrap();
+
+        assert_eq!(before, after);
+        assert!(lines.iter().any(|line| {
+            line.starts_with("brave_result_archive_guard: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("persisted_rows=2")
+                && line.contains("duplicate_rows=1")
+                && line.contains("malformed_rows=0")
+                && line.contains("mutates_files=false")
+                && line.contains("next_action=run-web-cache-dry-run-before-apply")
+        }));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("brave_result_archive_retention: report_only=true")
+                && line.contains("deletes=false")
+                && line.contains("compacts=false")
+                && line.contains("archive_candidates=1")
+                && line.contains("archive_rows=2")
+                && line.contains(&format!("archive_bytes={}", result_log_contents.len()))
+                && line.contains("duplicate_rows=1")
+                && line.contains("query_buckets=1")
+                && line.contains("max_entries_per_query=2")
+                && line.contains("largest_artifact=brave-results.jsonl")
+                && line.contains(&format!(
+                    "largest_artifact_bytes={}",
+                    result_log_contents.len()
+                ))
+                && line.contains("next_action=review-brave-archive-duplicates-dry-run")
+        }));
+    }
+
+    #[test]
+    fn web_storage_pressure_summary_lines_report_aggregate_pressure() {
+        let lines = web_storage_pressure_summary_lines(
+            &[
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    bytes: 120,
+                    entries: 3,
+                    invalid_json_rows: 0,
+                    result_rows: 4,
+                    durable_result_rows: 4,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 1,
+                    unique_row_bytes: 80,
+                    duplicate_row_bytes: 40,
+                    query_count: 2,
+                    query_examples: Vec::new(),
+                    provider_count: 1,
+                    provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                    max_entries_per_query: 2,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    bytes: 90,
+                    entries: 2,
+                    invalid_json_rows: 0,
+                    result_rows: 2,
+                    durable_result_rows: 2,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 0,
+                    unique_row_bytes: 90,
+                    duplicate_row_bytes: 0,
+                    query_count: 2,
+                    query_examples: Vec::new(),
+                    provider_count: 1,
+                    provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                    max_entries_per_query: 1,
+                    oldest_fetched_at_unix: Some(190),
+                    newest_fetched_at_unix: Some(200),
+                },
+            ],
+            200,
+            60,
+        );
+
+        assert!(lines.contains(
+            &"web_storage_pressure_summary: artifacts=2 bytes=210 entries=5 result_rows=6 durable_result_rows=6 incomplete_result_rows=0 unique_entries=4 duplicates=1 duplicate_row_bytes=40 stale_artifacts=1 suggested_dry_runs=1".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_pressure_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_durable_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_incomplete_result_rows: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_unique_entries: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_entries_after: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_entries_removed: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_after: 170".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_projected_row_bytes_removed: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_retained_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_removable_row_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_zero_removal: false".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_duplicate_row_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_duplicate_entries: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_max_entries_per_query: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_cache_query_buckets: 2".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=4 result_log_only_rows=0".to_owned()));
+        assert!(lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_export_unique_result_urls: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_export_durable_result_rows: 6".to_owned()));
+        assert!(lines.contains(&"web_storage_export_incomplete_result_rows: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_export_duplicate_rows: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 replayable_result_rows=4 result_log_only_rows=0 stale_artifacts=1 suggested_dry_runs=1".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_pressure_suggestion: esoteric-search compact-web-cache --dry-run --min-entries 5".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_export_readiness_lines_explain_report_only_manifest() {
+        let ready_summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 4,
+            duplicate_entries: 1,
+            unique_row_bytes: 170,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let ready_lines = web_storage_export_readiness_lines(
+            &[
+                WebStorageArtifactStats {
+                    name: "web-cache.jsonl",
+                    bytes: 120,
+                    entries: 3,
+                    invalid_json_rows: 0,
+                    result_rows: 4,
+                    durable_result_rows: 4,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 1,
+                    unique_row_bytes: 80,
+                    duplicate_row_bytes: 40,
+                    query_count: 2,
+                    query_examples: vec!["one".to_owned(), "two".to_owned()],
+                    provider_count: 1,
+                    provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                    max_entries_per_query: 2,
+                    oldest_fetched_at_unix: Some(100),
+                    newest_fetched_at_unix: Some(120),
+                },
+                WebStorageArtifactStats {
+                    name: "brave-results.jsonl",
+                    bytes: 90,
+                    entries: 2,
+                    invalid_json_rows: 0,
+                    result_rows: 2,
+                    durable_result_rows: 2,
+                    incomplete_result_rows: 0,
+                    unique_entries: 2,
+                    duplicate_entries: 0,
+                    unique_row_bytes: 90,
+                    duplicate_row_bytes: 0,
+                    query_count: 2,
+                    query_examples: vec!["one".to_owned(), "two".to_owned()],
+                    provider_count: 1,
+                    provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                    max_entries_per_query: 1,
+                    oldest_fetched_at_unix: Some(190),
+                    newest_fetched_at_unix: Some(200),
+                },
+            ],
+            &ready_summary,
+            200,
+            60,
+        );
+
+        assert!(ready_lines.contains(
+            &"web_storage_export_readiness: status=ready report_only=true cache_query_buckets=2 unique_result_urls=2 durable_result_rows=6 incomplete_result_rows=0 duplicate_rows=1".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_readiness: status=ready report_only=true cache_query_buckets=2 replayable_result_rows=4 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(ready_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=4 result_log_only_rows=0".to_owned()));
+        assert!(ready_lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 replayable_result_rows=4 result_log_only_rows=0 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
+        assert!(ready_lines.contains(
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=ready staleness_status=fresh newest_age_secs=0 stale_after_secs=60 retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 cache_query_buckets=2 unique_result_urls=2".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=2 result_log_query_buckets=2 missing_query_buckets=0".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=none".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_provider_growth: report_only=true limit=3 web-cache.jsonl=brave:entries=3:bytes=120:result_rows=4 brave-results.jsonl=brave:entries=2:bytes=90:result_rows=2".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_replay_staleness: status=fresh report_only=true newest_age_secs=0 oldest_age_secs=100 stale_after_secs=60".to_owned()
+        ));
+        assert!(ready_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=duplicate-bytes duplicate_row_bytes=40 missing_query_buckets=0 provider_buckets=1 staleness_status=fresh".to_owned()
+        ));
+        assert!(ready_lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
+        assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
+        assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
+        assert!(ready_lines.contains(
+            &"web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned()
+        ));
+
+        let mut partial_summary = ready_summary.clone();
+        partial_summary.incomplete_result_rows = 1;
+        partial_summary.duplicate_entries = 0;
+        partial_summary.duplicate_row_bytes = 0;
+        let partial_lines = web_storage_export_readiness_lines(&[], &partial_summary, 200, 60);
+        assert!(partial_lines.contains(
+            &"web_storage_export_readiness: status=partial report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=6 incomplete_result_rows=1 duplicate_rows=0".to_owned()
+        ));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_readiness: status=empty report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=0".to_owned()
+        ));
+        assert!(partial_lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=0 replayable_result_rows=0 result_log_only_rows=0".to_owned()));
+        assert!(partial_lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=0 retained_rows=4 removable_rows=0 replayable_result_rows=0 result_log_only_rows=0 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_staleness: status=unknown report_only=true newest_age_secs=unknown oldest_age_secs=unknown stale_after_secs=60".to_owned()
+        ));
+        assert!(partial_lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=none".to_owned()
+        ));
+        assert!(partial_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=zero-removal duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=0 staleness_status=unknown".to_owned()
+        ));
+
+        let mut empty_summary = ready_summary;
+        empty_summary.result_rows = 0;
+        empty_summary.durable_result_rows = 0;
+        empty_summary.incomplete_result_rows = 0;
+        let empty_lines = web_storage_export_readiness_lines(&[], &empty_summary, 200, 60);
+        assert!(empty_lines.contains(
+            &"web_storage_export_readiness: status=empty report_only=true cache_query_buckets=0 unique_result_urls=0 durable_result_rows=0 incomplete_result_rows=0 duplicate_rows=1".to_owned()
+        ));
+    }
+
+    #[test]
+    fn search_index_retention_audit_reports_web_index_drift() {
+        let stats = IndexStorageStats {
+            total_bytes: 190,
+            artifacts: vec![
+                IndexStorageArtifact {
+                    name: "docs.bin",
+                    bytes: 40,
+                },
+                IndexStorageArtifact {
+                    name: "texts.bin",
+                    bytes: 60,
+                },
+            ],
+            web_artifacts: vec![WebStorageArtifactStats {
+                name: "brave-results.jsonl",
+                bytes: 90,
+                entries: 2,
+                invalid_json_rows: 0,
+                result_rows: 2,
+                durable_result_rows: 2,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 0,
+                unique_row_bytes: 90,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                max_entries_per_query: 1,
+                oldest_fetched_at_unix: Some(190),
+                newest_fetched_at_unix: Some(200),
+            }],
+            indexed_document_count: Some(3),
+            browser_document_bytes: 0,
+            browser_document_rows: 0,
+            browser_document_session_count: 0,
+            browser_document_unique_rows: 0,
+            browser_document_duplicate_rows: 0,
+            browser_document_unique_row_bytes: 0,
+            browser_document_duplicate_row_bytes: 0,
+            browser_document_max_row_bytes: 0,
+            browser_document_large_row_count: 0,
+            crawl_frontier_bytes: 0,
+            crawl_frontier_stats: None,
+            crawl_snapshot_bytes: 0,
+            crawl_snapshot_entries: 0,
+            crawl_snapshot_unique_entries: 0,
+            crawl_snapshot_duplicate_entries: 0,
+        };
+        let summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 90,
+            entries: 2,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+
+        let lines = search_index_retention_audit_lines(&stats, &summary);
+
+        assert!(lines.contains(&"search_index_retention_audit: report_only=true status=needs-review web_cache_rows=0 brave_result_rows=2 durable_web_rows=2 incomplete_web_rows=0 result_log_only_rows=2 missing_query_buckets=2 indexed_documents=3 indexed_document_bytes=100 web_cache_bytes=0 brave_result_bytes=90 drift_rows=2 next_action=rebuild-web-cache-replay".to_owned()));
+        assert!(lines.contains(&"brave_web_replay_index_gap: report_only=true replayable_rows=0 durable_provider_rows=2 durable_not_replayable_rows=2 missing_query_buckets=2 indexed_documents=3 durable_not_indexed_rows=0 web_cache_bytes=0 brave_result_bytes=90 next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
+        assert!(lines.contains(&"local_web_index_persistence_boundary: report_only=true durable_provider_rows=2 replayable_cache_rows=0 indexed_documents=3 missing_replay_rows=2 missing_index_rows=0 persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.esoteric-index/raw-index-data next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
+        assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .esoteric-index data".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_replay_readiness_flags_result_log_only_state() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 90,
+            entries: 2,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "brave-results.jsonl",
+                bytes: 90,
+                entries: 2,
+                invalid_json_rows: 0,
+                result_rows: 2,
+                durable_result_rows: 2,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 0,
+                unique_row_bytes: 90,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                max_entries_per_query: 1,
+                oldest_fetched_at_unix: Some(190),
+                newest_fetched_at_unix: Some(200),
+            }],
+            &summary,
+            300,
+            60,
+        );
+
+        assert!(lines.contains(
+            &"web_storage_replay_readiness: status=miss-risk report_only=true cache_query_buckets=0 replayable_result_rows=0 result_log_unique_urls=2".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_result_log_only_rows: report_only=true durable_result_rows=2 replayable_result_rows=0 result_log_only_rows=2".to_owned()));
+        assert!(lines.contains(&"brave_web_result_retention: report_only=true status=durable-needs-replay retained_local_rows=2 replayable_cache_rows=0 durable_result_log_rows=2 result_log_only_rows=2 missing_query_buckets=2 unique_result_urls=2 retained_bytes=90 removable_bytes=0 next_action=rebuild-web-cache-replay-before-repeat-search".to_owned()));
+        assert!(lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 replayable_result_rows=0 result_log_only_rows=2 stale_artifacts=0 suggested_dry_runs=0".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_replay_query_coverage: report_only=true cache_query_buckets=0 result_log_query_buckets=2 missing_query_buckets=2".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=cached_only,result_only".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_provider_growth: report_only=true limit=3 brave-results.jsonl=brave:entries=2:bytes=90:result_rows=2".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_replay_staleness: status=stale report_only=true newest_age_secs=100 oldest_age_secs=110 stale_after_secs=60".to_owned()
+        ));
+        assert!(lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=replay-misses duplicate_row_bytes=0 missing_query_buckets=2 provider_buckets=1 staleness_status=stale".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_provider_buckets: 1".to_owned()));
+        assert!(lines.contains(&"web_storage_replay_missing_query_buckets: 2".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_export_manifest: report_only=true export_status=ready replay_status=miss-risk staleness_status=stale newest_age_secs=100 stale_after_secs=60 retained_bytes=90 removable_bytes=0 retained_rows=2 removable_rows=0 cache_query_buckets=0 unique_result_urls=2".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_replay_restore_readiness_reports_result_log_only_rows() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 90,
+            entries: 2,
+            result_rows: 2,
+            durable_result_rows: 2,
+            incomplete_result_rows: 0,
+            unique_entries: 2,
+            duplicate_entries: 0,
+            unique_row_bytes: 90,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 1,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "brave-results.jsonl",
+                bytes: 90,
+                entries: 2,
+                invalid_json_rows: 0,
+                result_rows: 2,
+                durable_result_rows: 2,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 0,
+                unique_row_bytes: 90,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: vec!["cached only".to_owned(), "result only".to_owned()],
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=2:bytes=90:result_rows=2".to_owned()],
+                max_entries_per_query: 1,
+                oldest_fetched_at_unix: Some(190),
+                newest_fetched_at_unix: Some(200),
+            }],
+            &summary,
+            300,
+            60,
+        );
+
+        assert!(lines.contains(&"web_storage_replay_restore_readiness: report_only=true status=durable-only avoid_brave_call=false replayable_result_rows=0 result_log_only_rows=2 missing_query_buckets=2 staleness_status=stale action=export-or-rebuild-replay-cache-before-another-Brave-call".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=cached_only,result_only".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_local_replay_visibility_reports_source_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\",\"fetched_at_unix\":110}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta duplicate\",\"fetched_at_unix\":120}\n",
+        )
+        .unwrap();
+
+        let before_cache = std::fs::read(&cache_path).unwrap();
+        let before_result_log = std::fs::read(&result_log_path).unwrap();
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 130, 60);
+        let lines = web_storage_export_readiness_lines(&artifacts, &summary, 130, 60);
+
+        assert_eq!(before_cache, std::fs::read(&cache_path).unwrap());
+        assert_eq!(before_result_log, std::fs::read(&result_log_path).unwrap());
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_local_replay_visibility: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("cache_rows=1")
+                && line.contains("result_log_rows=3")
+                && line.contains("result_log_only_rows=2")
+                && line.contains("cache_query_buckets=1")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("duplicate_rows=1")
+                && line.contains("provider_buckets=1")
+                && line.contains("next_action=inspect-duplicate-replay-rows")
+        }));
+        assert!(lines.contains(
+            &"web_storage_replay_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()
+        ));
+        assert!(lines.iter().any(|line| {
+            line.starts_with("durable_brave_restart_retention: report_only=true")
+                && line.contains("survives_restart=true")
+                && line.contains("durable_result_log_rows=3")
+                && line.contains("replayable_cache_rows=1")
+                && line.contains("result_log_only_rows=2")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet")
+                && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
+                && line.contains("prune_safe_after_dry_run=true")
+                && line.contains("next_action=backfill-web-cache-replay-before-prune")
+        }));
+    }
+
+    #[test]
+    fn web_storage_compaction_decision_reports_provider_and_staleness_reasons() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 5,
+            duplicate_entries: 0,
+            unique_row_bytes: 210,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let provider_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                invalid_json_rows: 0,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 2,
+                provider_growth: vec![
+                    "brave:entries=2:bytes=80:result_rows=2".to_owned(),
+                    "cache:entries=1:bytes=40:result_rows=2".to_owned(),
+                ],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            130,
+            60,
+        );
+        assert!(provider_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=multiple-providers duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=2 staleness_status=fresh".to_owned()
+        ));
+        assert!(provider_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=2 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=true".to_owned()));
+        assert!(provider_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present".to_owned()));
+
+        let stale_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                invalid_json_rows: 0,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            300,
+            60,
+        );
+        assert!(stale_lines.contains(
+            &"web_storage_compaction_decision: report_only=true reason=stale-cache duplicate_row_bytes=0 missing_query_buckets=0 provider_buckets=1 staleness_status=stale".to_owned()
+        ));
+        assert!(stale_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=true".to_owned()));
+
+        let clean_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                invalid_json_rows: 0,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            130,
+            60,
+        );
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=ready provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=false".to_owned()));
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true cleanup would be pointless for provider/stale/duplicate pressure".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_provider_cleanup_readiness_reports_thresholds() {
+        let summary = WebStoragePressureSummary {
+            artifact_count: 2,
+            bytes: 210,
+            entries: 5,
+            result_rows: 6,
+            durable_result_rows: 6,
+            incomplete_result_rows: 0,
+            unique_entries: 4,
+            duplicate_entries: 1,
+            unique_row_bytes: 170,
+            duplicate_row_bytes: 40,
+            max_entries_per_query: 2,
+            stale_artifacts: 1,
+            suggested_dry_runs: 1,
+        };
+        let pressure_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                invalid_json_rows: 0,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 2,
+                duplicate_entries: 1,
+                unique_row_bytes: 80,
+                duplicate_row_bytes: 40,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 2,
+                provider_growth: vec![
+                    "brave:entries=2:bytes=80:result_rows=2".to_owned(),
+                    "cache:entries=1:bytes=40:result_rows=2".to_owned(),
+                ],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &summary,
+            300,
+            60,
+        );
+
+        assert!(pressure_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=needs-review provider_buckets=2 stale_artifacts=1 duplicate_row_bytes=40 suggested_dry_runs=1 cleanup_useful=true".to_owned()));
+        assert!(pressure_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true run compact-web-cache --dry-run before apply; provider/stale/duplicate pressure is present".to_owned()));
+
+        let clean_summary = WebStoragePressureSummary {
+            artifact_count: 1,
+            bytes: 120,
+            entries: 3,
+            result_rows: 4,
+            durable_result_rows: 4,
+            incomplete_result_rows: 0,
+            unique_entries: 3,
+            duplicate_entries: 0,
+            unique_row_bytes: 120,
+            duplicate_row_bytes: 0,
+            max_entries_per_query: 2,
+            stale_artifacts: 0,
+            suggested_dry_runs: 0,
+        };
+        let clean_lines = web_storage_export_readiness_lines(
+            &[WebStorageArtifactStats {
+                name: "web-cache.jsonl",
+                bytes: 120,
+                entries: 3,
+                invalid_json_rows: 0,
+                result_rows: 4,
+                durable_result_rows: 4,
+                incomplete_result_rows: 0,
+                unique_entries: 3,
+                duplicate_entries: 0,
+                unique_row_bytes: 120,
+                duplicate_row_bytes: 0,
+                query_count: 2,
+                query_examples: Vec::new(),
+                provider_count: 1,
+                provider_growth: vec!["brave:entries=3:bytes=120:result_rows=4".to_owned()],
+                max_entries_per_query: 2,
+                oldest_fetched_at_unix: Some(100),
+                newest_fetched_at_unix: Some(120),
+            }],
+            &clean_summary,
+            130,
+            60,
+        );
+
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_readiness: report_only=true status=ready provider_buckets=1 stale_artifacts=0 duplicate_row_bytes=0 suggested_dry_runs=0 cleanup_useful=false".to_owned()));
+        assert!(clean_lines.contains(&"web_storage_provider_cleanup_hint: report_only=true cleanup would be pointless for provider/stale/duplicate pressure".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_stats_report_durable_and_incomplete_result_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"complete\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet\"}]}\n{\"normalized_query\":\"partial\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/b\",\"title\":\"B\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"complete\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Snippet\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"partial\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"fetched_at_unix\":110}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines =
+            web_storage_pressure_summary_lines(&[cache_stats.clone(), log_stats.clone()], 120, 60);
+
+        assert_eq!(cache_stats.result_rows, 2);
+        assert_eq!(cache_stats.durable_result_rows, 1);
+        assert_eq!(cache_stats.incomplete_result_rows, 1);
+        assert_eq!(log_stats.result_rows, 2);
+        assert_eq!(log_stats.durable_result_rows, 1);
+        assert_eq!(log_stats.incomplete_result_rows, 1);
+        assert!(lines.contains(&"web_storage_pressure_result_rows: 4".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_durable_result_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_pressure_incomplete_result_rows: 2".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_cache_size_budget_reports_duplicate_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"fetched_at_unix\":110,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha again\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"duplicate\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 120, 60);
+        let lines = web_storage_export_readiness_lines(&artifacts, &summary, 120, 60);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_storage_cache_size_budget: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("cache_budget_bytes=8388608")
+                && line.contains("result_log_budget_bytes=8388608")
+                && line.contains("over_budget_bytes=0")
+                && line.contains("duplicate_rows=1")
+                && line.contains("next_action=inspect-duplicate-web-result-rows")
+        }));
+        assert!(lines.contains(
+            &"web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_cache_size_budget_reports_configured_over_budget_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"budget\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"budget\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let artifacts = vec![cache_stats, log_stats];
+        let summary = web_storage_pressure_summary(&artifacts, 120, 60);
+        let line = web_storage_cache_size_budget_line_with_config(
+            &artifacts,
+            &summary,
+            WebStorageRetentionConfig {
+                cache_max_entries: DEFAULT_CACHE_MAX_ENTRIES,
+                cache_max_bytes: 8,
+                result_log_max_entries: DEFAULT_RESULT_LOG_MAX_ENTRIES,
+                result_log_max_bytes: 8,
+                result_log_max_entries_per_query: 0,
+            },
+        );
+
+        assert!(
+            line.starts_with("web_storage_cache_size_budget: report_only=true status=over-budget")
+        );
+        assert!(line.contains("cache_budget_bytes=8"));
+        assert!(line.contains("result_log_budget_bytes=8"));
+        assert!(line.contains("next_action=run-web-cache-dry-run-before-apply"));
+        assert!(!line.contains("over_budget_bytes=0"));
+    }
+
+    #[test]
+    fn web_replay_backfill_dry_run_reports_adds_and_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\",\"fetched_at_unix\":110}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/c\",\"title\":\"C\",\"snippet\":\"Gamma\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":3,\"url\":\"https://example.com/c\",\"title\":\"C\",\"snippet\":\"Gamma duplicate\",\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines = web_replay_backfill_dry_run_lines(&[cache_stats, log_stats]);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_replay_backfill_dry_run: report_only=true")
+                && line.contains("mutates_cache=false")
+                && line.contains("mutates_index=false")
+                && line.contains("status=ready")
+                && line.contains("would_add_rows=2")
+                && line.contains("skipped_replayable_rows=1")
+                && line.contains("skipped_duplicate_rows=1")
+                && line.contains("skipped_incomplete_rows=0")
+                && line.contains("durable_provider_rows=4")
+                && line.contains("result_log_only_rows=3")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("source=brave-results")
+                && line.contains("target=web-cache")
+                && line.contains("next_action=dry-run-backfill-web-cache-replay")
+        }));
+        assert!(lines.contains(&"web_replay_backfill_skip_reasons: report_only=true already_replayable_rows=1 duplicate_provider_rows=1 incomplete_provider_rows=0 missing_query_buckets=1".to_owned()));
+        assert!(lines.contains(&"web_replay_backfill_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()));
+        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned()));
+    }
+
+    #[test]
+    fn web_replay_backfill_retention_summary_reports_retained_and_skipped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("web-cache.jsonl");
+        std::fs::write(
+            &cache_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"fetched_at_unix\":100,\"results\":[{\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\"}]}\n",
+        )
+        .unwrap();
+        let result_log_path = dir.path().join("brave-results.jsonl");
+        std::fs::write(
+            &result_log_path,
+            b"{\"normalized_query\":\"cached\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/a\",\"title\":\"A\",\"snippet\":\"Alpha\",\"fetched_at_unix\":100}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":1,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta\",\"fetched_at_unix\":110}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":2,\"url\":\"https://example.com/b\",\"title\":\"B\",\"snippet\":\"Beta duplicate\",\"fetched_at_unix\":120}\n{\"normalized_query\":\"result only\",\"provider\":\"brave\",\"rank\":3,\"url\":\"https://example.com/c\",\"title\":\"C\",\"fetched_at_unix\":130}\n",
+        )
+        .unwrap();
+
+        let cache_stats =
+            collect_web_storage_artifact_stats("web-cache.jsonl", &cache_path).unwrap();
+        let log_stats =
+            collect_web_storage_artifact_stats("brave-results.jsonl", &result_log_path).unwrap();
+        let lines = web_replay_backfill_dry_run_lines(&[cache_stats, log_stats]);
+
+        assert!(lines.iter().any(|line| {
+            line.starts_with("web_replay_backfill_retention_summary: report_only=true")
+                && line.contains("status=duplicate-pressure")
+                && line.contains("retained_cache_rows=1")
+                && line.contains("retained_provider_rows=3")
+                && line.contains("would_add_rows=1")
+                && line.contains("skipped_rows=3")
+                && line.contains("skipped_replayable_rows=1")
+                && line.contains("skipped_duplicate_rows=1")
+                && line.contains("skipped_incomplete_rows=1")
+                && line.contains("missing_query_buckets=1")
+                && line.contains("next_action=inspect-duplicate-provider-rows-before-backfill")
+        }));
+        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_artifact_lines_include_projected_savings() {
+        let lines = web_storage_compaction_artifact_lines(
+            "web-cache",
+            Path::new("/tmp/web-cache.jsonl"),
+            WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 6,
+                unique_entries: 4,
+                duplicate_entries: 2,
+            },
+            WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 6,
+                unique_entries: 4,
+                duplicate_entries: 2,
+            },
+            WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+        );
+
+        assert!(lines.contains(&"web-cache_bytes_projected_after: 80".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_projected_retained: 80".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_projected_removed: 40".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_after: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_retained: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_unique_entries_projected_after: 4".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_before: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_projected_after: 0".to_owned()));
+        assert!(lines.contains(&"web-cache_duplicate_entries_projected_removed: 2".to_owned()));
+        assert!(lines.contains(&"web-cache_bytes_removed: 0".to_owned()));
+        assert!(lines.contains(&"web-cache_entries_removed: 0".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_reports_projected_pressure() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_readiness: status=ready projected_bytes=150 projected_removed_bytes=60 projected_duplicates=0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_bytes: 150".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_removed_bytes: 60".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_projected_duplicates: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_retained_bytes: 150".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 60".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 3".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_zero_removal: false".to_owned()));
+    }
+
+    #[test]
+    fn web_search_storage_prune_boundary_reports_cli_visibility() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_search_storage_prune_boundary_lines(&report);
+        let boundary = lines
+            .iter()
+            .find(|line| line.starts_with("web_search_storage_prune_boundary:"))
+            .unwrap();
+
+        assert!(boundary.contains("report_only=true"));
+        assert!(boundary.contains("dry_run=true"));
+        assert!(boundary.contains("mutates_files=false"));
+        assert!(boundary.contains("cache_reclaimable_rows=2"));
+        assert!(boundary.contains("result_log_reclaimable_rows=1"));
+        assert!(boundary.contains("total_reclaimable_rows=3"));
+        assert!(boundary.contains("total_reclaimable_bytes=60"));
+        assert!(boundary.contains("saved_rows=4"));
+        assert!(boundary.contains("pruned_rows=0"));
+        assert!(boundary.contains("deferred_rows=3"));
+        assert!(boundary.contains("skipped_rows=0"));
+        assert!(boundary.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
+        assert!(boundary.contains("excludes=api-keys,.esoteric-index/raw-index-data"));
+        assert!(boundary.contains("next_action=review-dry-run-before-apply"));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_reports_artifact_cleanup_split() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_cache_retained_bytes: 80".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_bytes: 40".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_retained_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_cache_removable_duplicates: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_retained_bytes: 70".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_removable_bytes: 20".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_retained_rows: 2".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_result_log_removable_rows: 1".to_owned()));
+        assert!(
+            lines.contains(&"web_storage_snapshot_result_log_removable_duplicates: 1".to_owned())
+        );
+        assert!(lines.contains(&"web_storage_snapshot_cleanup_scope: report-only dry_run=true cache_path=web-cache.jsonl result_log_path=brave-results.jsonl".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_snapshot_cleanup_next_action_reports_cache_and_result_log_pressure() {
+        let mut report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let both_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(both_lines.contains(&"web_storage_snapshot_cleanup_next_action: report_only=true action=review-web-cache-and-brave-results-dry-run cache_cleanup_useful=true result_log_cleanup_useful=true dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let cache_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(cache_only_lines.contains(&"web_storage_snapshot_cleanup_next_action: report_only=true action=review-web-cache-dry-run cache_cleanup_useful=true result_log_cleanup_useful=false dry_run=true zero_removal=false".to_owned()));
+
+        report.cache_projected_after = report.cache_before;
+        report.result_log_projected_after = WebSearchStorageArtifactState {
+            bytes: 70,
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+        };
+        let result_log_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(result_log_only_lines.contains(&"web_storage_snapshot_cleanup_next_action: report_only=true action=review-brave-results-dry-run cache_cleanup_useful=false result_log_cleanup_useful=true dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let zero_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(zero_lines.contains(&"web_storage_snapshot_cleanup_next_action: report_only=true action=cleanup-pointless cache_cleanup_useful=false result_log_cleanup_useful=false dry_run=true zero_removal=true".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_evidence_reports_artifact_rewrites() {
+        let mut report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let both_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(both_lines.contains(&"web_storage_compaction_evidence_summary: report_only=true cache_rewrite_projected=true result_log_rewrite_projected=true cache_retained_bytes=80 cache_removable_bytes=40 cache_retained_rows=2 cache_removable_rows=2 cache_removable_duplicates=2 result_log_retained_bytes=70 result_log_removable_bytes=20 result_log_retained_rows=2 result_log_removable_rows=1 result_log_removable_duplicates=1".to_owned()));
+        assert!(both_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-web-cache-and-brave-results dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let cache_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(cache_only_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-web-cache dry_run=true zero_removal=false".to_owned()));
+
+        report.cache_projected_after = report.cache_before;
+        report.result_log_projected_after = WebSearchStorageArtifactState {
+            bytes: 70,
+            entries: 2,
+            unique_entries: 2,
+            duplicate_entries: 0,
+        };
+        let result_log_only_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(result_log_only_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=rewrite-brave-results dry_run=true zero_removal=false".to_owned()));
+
+        report.result_log_projected_after = report.result_log_before;
+        let zero_lines = web_storage_compaction_snapshot_readiness_lines(&report);
+        assert!(zero_lines.contains(&"web_storage_compaction_evidence_next_action: report_only=true action=cleanup-pointless dry_run=true zero_removal=true".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_plan_preview_reports_reclaimable_pressure() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 2,
+                duplicate_entries: 2,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 2,
+                duplicate_entries: 1,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 70,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_compaction_plan_preview: report_only=true status=pressure dry_run=true mutates_files=false cache_reclaimable_rows=2 cache_reclaimable_bytes=40 cache_reclaimable_duplicates=2 result_log_reclaimable_rows=1 result_log_reclaimable_bytes=20 result_log_reclaimable_duplicates=1 total_reclaimable_rows=3 total_reclaimable_bytes=60 total_reclaimable_duplicates=3 next_action=run-compact-web-cache-dry-run-before-apply".to_owned()));
+    }
+
+    #[test]
+    fn web_storage_compaction_snapshot_readiness_flags_zero_removal() {
+        let report = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 4,
+                unique_entries: 4,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 90,
+                entries: 3,
+                unique_entries: 3,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+
+        let lines = web_storage_compaction_snapshot_readiness_lines(&report);
+
+        assert!(lines.contains(&"web_storage_snapshot_readiness: status=zero-removal projected_bytes=210 projected_removed_bytes=0 projected_duplicates=0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_retained_bytes: 210".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_bytes: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_removable_duplicates: 0".to_owned()));
+        assert!(lines.contains(&"web_storage_snapshot_zero_removal: true".to_owned()));
+        assert!(!web_storage_compaction_apply_is_justified(&report, false));
+    }
+
+    #[test]
+    fn web_storage_compaction_apply_guard_requires_projected_pressure() {
+        let unchanged = WebSearchStorageCompactionReport {
+            cache_path: PathBuf::from("web-cache.jsonl"),
+            result_log_path: PathBuf::from("brave-results.jsonl"),
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            cache_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 2,
+                duplicate_entries: 0,
+            },
+            result_log_before: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            result_log_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 80,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            skipped: false,
+            dry_run: true,
+        };
+        let duplicate_pressure = WebSearchStorageCompactionReport {
+            cache_before: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 2,
+                unique_entries: 1,
+                duplicate_entries: 1,
+            },
+            cache_projected_after: WebSearchStorageArtifactState {
+                bytes: 120,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            ..unchanged.clone()
+        };
+        let byte_pressure = WebSearchStorageCompactionReport {
+            result_log_projected_after: WebSearchStorageArtifactState {
+                bytes: 40,
+                entries: 1,
+                unique_entries: 1,
+                duplicate_entries: 0,
+            },
+            ..unchanged.clone()
+        };
+        let skipped = WebSearchStorageCompactionReport {
+            skipped: true,
+            ..unchanged.clone()
+        };
+
+        assert!(!web_storage_compaction_apply_is_justified(
+            &unchanged, false
+        ));
+        assert!(web_storage_compaction_apply_is_justified(&unchanged, true));
+        assert!(web_storage_compaction_apply_is_justified(
+            &duplicate_pressure,
+            false
+        ));
+        assert!(web_storage_compaction_apply_is_justified(
+            &byte_pressure,
+            false
+        ));
+        assert!(!web_storage_compaction_apply_is_justified(&skipped, false));
+    }
+
+    #[test]
+    fn web_storage_result_log_query_cap_lines_explain_compaction_scope() {
+        assert!(web_storage_result_log_query_cap_lines(0).is_empty());
+
+        let lines = web_storage_result_log_query_cap_lines(2);
+
+        assert!(lines.contains(&"brave-results_entries_per_query_cap: 2".to_owned()));
+        assert!(lines.contains(
+            &"brave-results_entries_per_query_cap_note: applies only to compact-web-cache and dry-run projection; normal search append is unchanged".to_owned()
+        ));
+    }
+
+    #[test]
+    fn web_storage_retention_config_lines_explain_effective_caps() {
+        let lines = web_storage_retention_config_lines(WebStorageRetentionConfig {
+            cache_max_entries: 11,
+            cache_max_bytes: 44,
+            result_log_max_entries: 22,
+            result_log_max_bytes: 33,
+            result_log_max_entries_per_query: 3,
+        });
+
+        assert!(lines.contains(
+            &"web_storage_retention_summary: web-cache_max_entries=11 web-cache_max_bytes=44 brave-results_max_entries=22 brave-results_max_bytes=33 brave-results_max_entries_per_query=3".to_owned()
+        ));
+        assert!(lines.contains(&"web_storage_cache_max_entries: 11".to_owned()));
+        assert!(lines.contains(&"web_storage_cache_max_bytes: 44".to_owned()));
+        assert!(lines.contains(&"web_storage_result_log_max_entries: 22".to_owned()));
+        assert!(lines.contains(&"web_storage_result_log_max_bytes: 33".to_owned()));
+        assert!(lines.contains(&"web_storage_result_log_max_entries_per_query: 3".to_owned()));
+        assert!(lines.contains(
+            &"web_storage_retention_note: normal search preserves durable web-cache and brave-results rows while enforcing global entry/byte caps; per-query caps apply during compact-web-cache dry-run/compaction when configured".to_owned()
+        ));
+    }
+}

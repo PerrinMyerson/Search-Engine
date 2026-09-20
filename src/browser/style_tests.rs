@@ -29,6 +29,501 @@ fn renders_css_text_color_as_styled_text() {
 }
 
 #[test]
+fn percent_sized_svg_in_inline_container_stays_icon_sized() {
+    let render = render_html(
+        "mem://percent-svg-icon",
+        br#"
+        <html><head><style>
+          .icon { display: inline-flex; line-height: 1; }
+          .item .icon svg { width: 100%; height: 100%; }
+        </style></head>
+        <body><div class="item"><span class="icon"><svg width="768" height="768" viewBox="0 0 768 768"><path d="M384 720c185 0 336-150 336-336s-150-336-336-336-336 150-336 336 150 336 336 336z"/></svg></span> or Register</div></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 160,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let widest_dark = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::ColorRect {
+                width,
+                red: 0,
+                green: 0,
+                blue: 0,
+                ..
+            } => Some(*width),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    assert!(
+        widest_dark <= 2,
+        "percent-sized svg in a shrink-wrap inline container should stay icon-sized, got {widest_dark} cells"
+    );
+    assert!(render.text.contains("or Register"));
+}
+
+#[test]
+fn css_calc_expressions_resolve_with_var_terms() {
+    let render = render_html(
+        "mem://css-calc-var",
+        br#"
+        <html><head><style>
+          .h { --w: 180px; --hh: calc(var(--w) * 479 / 836); }
+          .logo { max-width: var(--w); max-height: var(--hh); height: auto; }
+          .plain { width: calc(100px + 60px); background: rgb(220,220,220); }
+        </style></head>
+        <body>
+          <div class="h"><img class="logo" src="mem://logo.png" width="836" height="479" alt=""></div>
+          <div class="plain">sized</div>
+        </body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (width, height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { width, height, .. } => Some((*width, *height)),
+            _ => None,
+        })
+        .expect("calc-sized image should render");
+    assert!(
+        (20..=23).contains(&width),
+        "max-width var should clamp to ~180px; got {width} cells"
+    );
+    assert!(
+        height <= 9,
+        "calc-derived max-height (~103px) should cap the image; got {height} rows"
+    );
+    let plain_width = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                width, shade: 220, ..
+            } => Some(*width),
+            _ => None,
+        })
+        .expect("calc-sized div background should paint");
+    assert_eq!(
+        plain_width, 20,
+        "calc(100px + 60px) should resolve to 160px"
+    );
+}
+
+#[test]
+fn scoped_custom_properties_prefer_later_declarations() {
+    let render = render_html(
+        "mem://scoped-var-order",
+        br#"
+        <html><head><style>
+          .theme { --w: 80px; }
+          .custom { --w: 200px; }
+          .box { width: var(--w); background: rgb(220,220,220); }
+        </style></head>
+        <body><div class="box">Sized</div></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let width = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                width, shade: 220, ..
+            } => Some(*width),
+            _ => None,
+        })
+        .expect("box background should paint");
+    assert_eq!(
+        width, 25,
+        "the later scoped --w declaration (200px) should win per cascade order"
+    );
+}
+
+#[test]
+fn scoped_css_custom_properties_resolve_when_root_leaves_them_undefined() {
+    let render = render_html(
+        "mem://scoped-custom-property",
+        br#"
+        <html><head><style>
+          .header-logo { --k-logo-width: 180px; }
+          .main-logo { max-width: var(--k-logo-width); height: auto; }
+        </style></head>
+        <body>
+          <div class="header-logo"><img class="main-logo" src="mem://logo.png" width="800" height="200" alt="logo"></div>
+        </body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (width, height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { width, height, .. } => Some((*width, *height)),
+            _ => None,
+        })
+        .expect("logo image should render");
+    assert!(
+        (20..=23).contains(&width),
+        "var(--k-logo-width) from a scoped rule should clamp the image to ~180px; got {width} cells"
+    );
+    assert!(
+        height <= 5,
+        "height should follow the intrinsic ratio after the var-clamped width; got {height} rows"
+    );
+}
+
+#[test]
+fn link_pseudo_class_selector_styles_unvisited_anchors() {
+    let render = render_html(
+        "mem://link-pseudo",
+        br#"
+        <html><head><style>
+          td { color: #828282; }
+          a:link { color: #000000; }
+          .c82 a:link { color: #828282; }
+        </style></head>
+        <body><table><tr><td>
+          <span>faded</span> <a href="/story">Story title</a>
+        </td></tr></table></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.text.contains("Story title"));
+    let link_color = render
+        .display_list
+        .iter()
+        .zip(render.hit_targets.iter())
+        .find_map(|(command, target)| match command {
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                if text.contains("Story title") =>
+            {
+                Some(target.text_color)
+            }
+            _ => None,
+        })
+        .expect("link text should render");
+    assert_eq!(
+        link_color,
+        Some((0, 0, 0)),
+        "a:link should override the inherited td color for unvisited anchors"
+    );
+}
+
+#[test]
+fn rgba_raster_preserves_css_text_rgb_color() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>.teal { color: rgb(28, 123, 132); }</style></head>
+        <body><p class="teal">Color</p></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "Color");
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::StyledText { text, .. } if text == "Color"
+        )
+    }));
+
+    let rgba = rasterize_render_rgba(&render, BrowserRasterOptions::default())
+        .expect("rasterize css text color");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [28, 123, 132, 255]),
+        "RGBA raster should preserve CSS text RGB instead of only the grayscale shade"
+    );
+}
+
+#[test]
+fn rgba_raster_softens_colored_glyph_edges() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>.teal { color: rgb(28, 123, 132); font-size: 16px; }</style></head>
+        <body><p class="teal">HH</p></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let (text_x, text_y) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { x, y, text, .. } if text == "HH" => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("styled text command");
+    let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
+        ..BrowserRasterOptions::default()
+    };
+    assert_eq!(raster_glyph_scale(raster_options), 2);
+    let rgba = rasterize_render_rgba(&render, raster_options).expect("rasterize colored glyph");
+    let glyph_x = raster_options
+        .padding_x
+        .saturating_add(text_x.saturating_mul(raster_options.cell_width))
+        .saturating_add(1);
+    let glyph_y = raster_options
+        .padding_y
+        .saturating_add(text_y.saturating_mul(raster_options.cell_height))
+        .saturating_add(2);
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+
+    assert_eq!(pixel(glyph_x, glyph_y), &[28, 123, 132, 255]);
+    let softened_edge = pixel(glyph_x + 1, glyph_y);
+    assert_ne!(softened_edge, &[28, 123, 132, 255]);
+    assert_ne!(softened_edge, &[255, 255, 255, 255]);
+    assert!(
+        softened_edge[0] > 28 && softened_edge[1] > 123 && softened_edge[2] > 132,
+        "softened colored edge should blend toward the white background, got {softened_edge:?}"
+    );
+}
+
+#[test]
+fn rgba_raster_uses_proportional_glyph_advance() {
+    let render = render_html(
+        "mem://page",
+        br#"<html><body><p>im</p></body></html>"#,
+        BrowserRenderOptions {
+            width: 10,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
+        ..BrowserRasterOptions::default()
+    };
+    let rgba = rasterize_render_rgba(&render, raster_options).expect("rasterize proportional text");
+    let monospace_m_start = raster_options
+        .padding_x
+        .saturating_add(raster_options.cell_width);
+    let proportional_m_start = raster_options
+        .padding_x
+        .saturating_add(raster_glyph_advance('i', raster_options.cell_width));
+    let pixel = |x: usize, y: usize| {
+        let index = y
+            .saturating_mul(rgba.width)
+            .saturating_add(x)
+            .saturating_mul(4);
+        &rgba.pixels[index..index.saturating_add(4)]
+    };
+    let proportional_slot_has_ink = (raster_options.padding_y
+        ..raster_options
+            .padding_y
+            .saturating_add(raster_options.cell_height))
+        .any(|y| {
+            (proportional_m_start..monospace_m_start).any(|x| pixel(x, y) != [255, 255, 255, 255])
+        });
+
+    assert!(proportional_m_start < monospace_m_start);
+    assert!(
+        proportional_slot_has_ink,
+        "second glyph should begin before the old fixed-width cell boundary"
+    );
+}
+
+#[test]
+fn rgba_raster_paints_css_bold_weight_with_thicker_glyphs() {
+    let ink_pixels_for_weight = |weight: &str| {
+        let html = format!(
+            r#"
+            <html><head><style>
+              .sample {{ color: rgb(28, 123, 132); font-weight: {weight}; }}
+            </style></head>
+            <body><p class="sample">HH</p></body></html>
+            "#
+        );
+        let render = render_html(
+            "mem://page",
+            html.as_bytes(),
+            BrowserRenderOptions {
+                width: 20,
+                ..BrowserRenderOptions::default()
+            },
+        );
+        let rgba = rasterize_render_rgba(
+            &render,
+            BrowserRasterOptions {
+                cell_width: 12,
+                cell_height: 18,
+                ..BrowserRasterOptions::default()
+            },
+        )
+        .expect("rasterize weighted text");
+        rgba.pixels
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != [255, 255, 255, 255])
+            .count()
+    };
+
+    let normal_pixels = ink_pixels_for_weight("400");
+    let bold_pixels = ink_pixels_for_weight("700");
+
+    assert!(
+        bold_pixels > normal_pixels,
+        "font-weight:700 should thicken glyph paint, normal={normal_pixels}, bold={bold_pixels}"
+    );
+}
+
+#[test]
+fn rgba_raster_inherits_parent_css_color_over_default_link_blue() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>.nav { color: rgb(126, 188, 199); }</style></head>
+        <body><nav class="nav"><a href="/about">About</a></nav></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "About");
+    let rgba = rasterize_render_rgba(&render, BrowserRasterOptions::default())
+        .expect("rasterize inherited link color");
+    assert!(
+        rgba.pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [126, 188, 199, 255]),
+        "author color inherited from the parent should beat default link blue"
+    );
+    assert!(
+        !rgba
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 0, 255, 255]),
+        "default link blue should not override inherited author color"
+    );
+}
+
+#[test]
+fn css_current_color_variable_background_uses_resolved_text_rgb() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>
+          :root { --brand-fill: currentColor; }
+          .badge { color: rgb(244, 201, 28); background-color: var(--brand-fill); }
+        </style></head>
+        <body><section class="badge">Gold</section></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::ColorRect {
+                red: 244,
+                green: 201,
+                blue: 28,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn css_current_color_border_preserves_rgb_paint() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>
+          .outline { color: rgb(42, 96, 180); border: 1px solid currentColor; }
+        </style></head>
+        <body><section class="outline">Outlined</section></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(render.display_list.iter().any(|command| {
+        matches!(
+            command,
+            DisplayCommand::ColorRect {
+                red: 42,
+                green: 96,
+                blue: 180,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn css_text_decoration_none_suppresses_link_underline_rects() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><head><style>
+          nav a { text-decoration: none; }
+        </style></head>
+        <body><nav><a href="/about">About</a></nav></body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 20,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert_eq!(render.text, "About");
+    assert!(
+        !render.display_list.iter().any(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rect { shade, .. } if *shade == LINK_UNDERLINE_SHADE
+            )
+        }),
+        "author text-decoration:none should remove the default anchor underline paint"
+    );
+}
+
+#[test]
 fn renders_inline_css_text_color_runs_on_one_line() {
     let render = render_html(
         "mem://page",

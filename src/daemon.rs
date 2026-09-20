@@ -12,7 +12,7 @@ use crate::query::SearchOptions;
 use crate::render::render_target;
 
 pub fn default_socket_path(index_dir: &Path) -> PathBuf {
-    index_dir.join("brutal-searchd.sock")
+    index_dir.join("esoteric-searchd.sock")
 }
 
 pub async fn run_daemon(index_dir: PathBuf, socket: PathBuf, preload: PreloadMode) -> Result<()> {

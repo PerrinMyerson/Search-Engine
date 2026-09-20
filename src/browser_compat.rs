@@ -556,6 +556,7 @@ fn run_browser_compat_test(
         let fixture = BrowserFixture {
             name: test.name.clone(),
             path: context.path.clone(),
+            source: None,
             width: test.width,
             external_scripts: test.external_scripts,
             click_selector: test.click_selector.clone(),
@@ -879,7 +880,7 @@ fn build_browser_compat_report(input: BrowserCompatReportInput) -> BrowserCompat
         .collect::<Vec<_>>();
 
     BrowserCompatReport {
-        engine: "brutal-browser-compat-local".to_owned(),
+        engine: "esoteric-browser-compat-local".to_owned(),
         suite: input.suite,
         manifest: input.manifest,
         manifest_hash: input.manifest_hash,
@@ -1090,7 +1091,7 @@ fn browser_compat_suite_hash(
     tests: &[BrowserCompatTest],
 ) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"brutal-browser-compat-suite-v1");
+    hasher.update(b"esoteric-browser-compat-suite-v1");
     hasher.update(manifest_hash.as_bytes());
     hasher.update(&[0]);
     for test in tests {

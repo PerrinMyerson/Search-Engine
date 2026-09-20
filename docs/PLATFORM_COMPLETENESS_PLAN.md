@@ -1,6 +1,6 @@
 # Platform Completeness Plan
 
-This plan covers the non-negotiable browser platform work required before Brutal
+This plan covers the non-negotiable browser platform work required before Esoteric
 Browser can credibly claim desktop browser readiness for any named page class.
 It is a gate plan, not proof that the platform is implemented.
 
@@ -24,7 +24,7 @@ It is a gate plan, not proof that the platform is implemented.
 | CSS visual effects | Cascade completeness, selectors, box model, positioning, transforms, filters, animations. Current baseline has display/color/background/border parsing, text color paint, plus block padding, margin, sizing, max-width, and horizontal auto-margin layout fixtures; full cascade and standards box model remain required. | CSS standards subset, visual regression, layout stress benchmarks |
 | Canvas/WebGL/WebGPU | Canvas 2D, image data, text drawing, WebGL/WebGPU strategy, GPU/resource isolation, shader/cache policy | Canvas pixel tests, graphics conformance subset, GPU crash/timeout tests |
 | Media | Audio/video decode, controls, captions, autoplay policy, streaming, device policy; WebRTC/media capture is either implemented with permission/privacy tests or explicitly deferred from the claim scope | Media fixture suite, codec matrix, playback timing, permission tests |
-| Accessibility | Accessibility tree, ARIA, focus order, keyboard nav, platform accessibility bridge. Current baseline has a deterministic static role/name/state snapshot for the supported DOM/CSS/tiny-script subset through `brutal-browser accessibility-tree`; focus, keyboard navigation, live regions, and platform bridge remain required. | Accessibility audits, tree snapshots, keyboard navigation fixtures |
+| Accessibility | Accessibility tree, ARIA, focus order, keyboard nav, platform accessibility bridge. Current baseline has a deterministic static role/name/state snapshot for the supported DOM/CSS/tiny-script subset through `esoteric-browser accessibility-tree`; focus, keyboard navigation, live regions, and platform bridge remain required. | Accessibility audits, tree snapshots, keyboard navigation fixtures |
 | Input and editing | Keyboard, pointer, touch, IME, selection, clipboard, drag/drop, forms, editing | Input event fixtures, IME tests, form validation, clipboard permission tests |
 | Storage and profiles | Persistent profile directory, cookies, localStorage, IndexedDB, Cache API, quota, eviction, profile isolation, private browsing, keychain/encryption integration | Storage WPT subset, quota/eviction tests, clear-data and private-mode tests |
 | Downloads and files | Safe downloads, file picker, MIME handling, blocked schemes, external-app handoff, completed/partial file lifecycle | Download policy tests, file access denial tests, dangerous file warnings, handoff workflow tests |
@@ -48,12 +48,12 @@ It is a gate plan, not proof that the platform is implemented.
   reload/stop, downloads, permission prompts, settings, crash recovery, and
   profile switching workflows. The current reusable `BrowserApp` scaffold owns
   tabs, navigation, viewport scrolling, input actions, and presentable RGBA
-  frames over the supported `BrowserSession` path, and `brutal-browser app`
+  frames over the supported `BrowserSession` path, and `esoteric-browser app`
   can drive that state boundary with scripted actions, an interactive/stdin
   command stream, JSON cookie/localStorage files, JSON app-level visit
   history/bookmarks, find/find-next match state, visible viewport text, and PNG
   frame output plus a deterministic browser-window PNG with simple chrome and
-  narrow window-coordinate hit testing. The feature-gated `brutal-browser
+  narrow window-coordinate hit testing. The feature-gated `esoteric-browser
   window` command presents that frame in a native CPU-backed window and routes
   mouse, wheel, basic keyboard input, narrow location entry, focused-control
   text input, resize-aware viewport updates through `BrowserApp`,
@@ -246,5 +246,5 @@ It is a gate plan, not proof that the platform is implemented.
 8. Implement media pipeline strategy and permission/autoplay policy.
 9. Implement devtools protocol and extension policy.
 10. Implement signed packages, updater, rollback, and platform QA.
-11. Promote `Platform Completeness` in `brutal-bench readiness` only when the
+11. Promote `Platform Completeness` in `esoteric-bench readiness` only when the
     gates above have direct passing evidence.

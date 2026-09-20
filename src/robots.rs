@@ -94,7 +94,7 @@ impl RobotsTxt {
                         group_matches = false;
                         group_has_rules = false;
                     }
-                    group_matches |= value == "*" || value.eq_ignore_ascii_case("brutal-search");
+                    group_matches |= value == "*" || value.eq_ignore_ascii_case("esoteric-search");
                 }
                 "disallow" => {
                     group_has_rules = true;
@@ -153,7 +153,7 @@ fn build_client() -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("brutal-search/0.1 robots-fetcher"),
+        HeaderValue::from_static("esoteric-search/0.1 robots-fetcher"),
     );
 
     Ok(reqwest::Client::builder()
@@ -208,7 +208,7 @@ mod tests {
     fn user_agent_lines_share_group_until_rules_start() {
         let robots = RobotsTxt::parse(
             r#"
-            User-agent: brutal-search
+            User-agent: esoteric-search
             User-agent: otherbot
             Disallow: /shared
 

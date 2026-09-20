@@ -1,4 +1,4 @@
-# Brutal Browser Roadmap
+# Esoteric Internet Roadmap
 
 This project is now browser-first. The primary target is an independent
 Rust-native browser engine and shell. The existing fast Rust static-text search
@@ -14,7 +14,7 @@ The work has two linked systems:
    and continuously refresh the public web.
 
 The plan below keeps the speed thesis but narrows claims. We do not ask "are we
-better than Chrome?" globally. We ask whether Brutal Browser is better for a
+better than Chrome?" globally. We ask whether Esoteric Internet is better for a
 named page class under named correctness, performance, memory, stability, and
 security gates.
 
@@ -47,9 +47,9 @@ Implemented:
   with URL, domain, and sitemap inputs. It now honors `priority` and
   `recrawl_after` as a single-run due queue, requeues already-fetched frontier
   records, and keeps latest fetched text when rebuilding from crawl snapshots.
-- Frontier-driven recrawl planning: `brutal-search recrawl-plan` emits due JSONL
+- Frontier-driven recrawl planning: `esoteric-search recrawl-plan` emits due JSONL
   manifests from fetched frontier records using an age interval and limit.
-- Single-machine recrawl scheduler: `brutal-search recrawl-scheduler` loops over
+- Single-machine recrawl scheduler: `esoteric-search recrawl-scheduler` loops over
   due frontier batches, recrawls them, rebuilds the hot index from latest crawl
   snapshots, and reports changed/unchanged/missing counts per round.
 - Fielded document schema for canonical URL, title, meta description, language,
@@ -72,10 +72,10 @@ Implemented:
   term/site/filetype/language/freshness filters are parsed before scoring.
   Required `+term` filters and uppercase `OR` term groups are also supported as
   candidate filters.
-- Local HTTP search API and minimal browser UI via `brutal-search serve`,
+- Local HTTP search API and minimal browser UI via `esoteric-search serve`,
   including index stats, host-level crawl status, result filters,
   lexicon-backed prefix suggestions, and first-pass spelling corrections.
-- Minimal browser-runtime skeleton: `brutal-browser` can load local or HTTP(S)
+- Minimal browser-runtime skeleton: `esoteric-browser` can load local or HTTP(S)
   static HTML, build an independent DOM tree, parse simple CSS
   `display`/color/background/border/padding/margin/size rules, run block text and
   small box-model layout, extract/resolve anchor links, discover static
@@ -105,7 +105,7 @@ Implemented:
   fixed terminal/text viewport window from whole-document scroll offsets; this
   is fixture raster evidence, not browser-accurate scrolling, compositor
   tiling, or full browser screenshots. An early
-  `brutal-browser browse` CLI shell makes this subset playable with
+  `esoteric-browser browse` CLI shell makes this subset playable with
   open/back/forward, current-page-relative open/go target resolution,
   current-page reload/refresh, current-page location reporting, current
   in-memory cookie inspection/clearing plus optional local JSON `--cookie-jar`
@@ -171,10 +171,10 @@ Implemented:
   form ownership, target/enctype/dialog handling, keyboard events, selection,
   IME, autofill, POST, full reload lifecycle, cache policy, service worker
   handling, tab/process isolation, devtools/accessibility, or Chromium parity.
-  `brutal-browser coverage` now emits a machine-readable
+  `esoteric-browser coverage` now emits a machine-readable
   feature-fixture coverage report and optional gates for required feature IDs
   and implemented-ratio thresholds; the unweighted ratios are not
-  browser-completion percentages. `brutal-browser compare-chromium` compares
+  browser-completion percentages. `esoteric-browser compare-chromium` compares
   static and tiny-script fixture title/text output against headless Chromium.
 
 Not implemented yet:
@@ -289,14 +289,14 @@ Browser/runtime target:
 - Add learned ranking after sufficient click/judgment data exists.
 - Build evaluation sets with queries, judged documents, and expected failure
   cases; track NDCG, MRR, recall, freshness, spam rate, and latency together.
-  The first `brutal-bench eval` path now reports MRR, NDCG@K, recall@K,
+  The first `esoteric-bench eval` path now reports MRR, NDCG@K, recall@K,
   precision@K, unresolved judgments, and per-query diagnostics from JSONL
   judgments, with threshold gates for MRR, NDCG, recall, precision, and
   unresolved judgments.
 
 ### 5. Query Serving
 
-- Keep `brutal-searchd` as the single-node hot-path prototype.
+- Keep `esoteric-searchd` as the single-node hot-path prototype.
 - Add a query server API with structured JSON/HTTP and a compact binary protocol
   for internal clients.
 - Add distributed shard fanout, timeout budgets, partial results, result merging,
@@ -316,7 +316,7 @@ Browser/runtime target:
 
 ### 6. Browser Runtime / Chromium-Class Track
 
-- Current seed implementation: `brutal-browser` is a static-page engine skeleton
+- Current seed implementation: `esoteric-browser` is a static-page engine skeleton
   covering URL/file load, HTML token parsing, DOM tree construction, simple CSS
   `display` selector matching, a tiny inline/external-script DOM creation/text
   and tree mutation/traversal/insertion/`DocumentFragment`/selector-method/`innerHTML`/form-property subset, classList mutations over supported class selectors, DOM query
@@ -376,13 +376,13 @@ Serious browser-product execution gates:
 | Storage/profile | Implement persistent profiles, cookies, localStorage, IndexedDB, Cache API, quotas, eviction, private browsing, clear-data, encryption/keychain hooks, and partitioning | Storage WPT subsets, quota/eviction tests, profile isolation tests, private-mode tests, and data deletion/export checks |
 | Accessibility | Generate an accessibility tree, keyboard navigation, focus/editing/IME behavior, name/role/value mapping, and platform adapter strategy | Accessibility audits, keyboard-only smoke tests, platform-tree snapshots, and regression fixtures |
 | Devtools | Add protocol endpoint, inspector, console, network panel, storage viewer, performance traces, logs, crash/debug bundles, and compatibility with automation hooks | Devtools smoke suite, protocol tests, trace artifact review, and debugging workflow acceptance |
-| Release engineering | Produce signed reproducible builds, updater/rollback, crash reporting, versioned feature flags, release manifests, CI shards, WPT expectation files, flake quarantine, and release-blocking dashboards | `brutal-bench audit --claim browser --require-complete`, release checklist, security/compat/perf signoff, and documented exceptions |
+| Release engineering | Produce signed reproducible builds, updater/rollback, crash reporting, versioned feature flags, release manifests, CI shards, WPT expectation files, flake quarantine, and release-blocking dashboards | `esoteric-bench audit --claim browser --require-complete`, release checklist, security/compat/perf signoff, and documented exceptions |
 
 ### 7. User Product
 
 - Add a minimal local search UI first: query box, results, snippets, render text,
   crawl status, and index stats.
-- Add the `brutal-browser browse` CLI shell as a local playable wrapper around
+- Add the `esoteric-browser browse` CLI shell as a local playable wrapper around
   the supported static `BrowserSession` subset, including current-page link
   listing, resolved-link activation by index, text, or anchor selector,
   coordinate-click routing through display-list hit testing, and narrow anchor
@@ -397,7 +397,7 @@ Serious browser-product execution gates:
 
 - Search latency gate: resident daemon p95 query-plus-render latency must beat
   the headless Chromium JS baseline over the same local corpus. The current
-  `brutal-bench search --chromium-baseline --require-speedup 10` command emits a
+  `esoteric-bench search --chromium-baseline --require-speedup 10` command emits a
   reproducible report, can persist `bench-status.json` for the served status UI,
   and exits non-zero when the p95 speedup gate is unmet.
 - Crawl throughput gate: pages fetched, extracted, deduped, and indexed per
@@ -412,7 +412,7 @@ Serious browser-product execution gates:
   hardware, OS, Rust, build profile, and pinned Chromium version recorded.
 - Reliability gate: crash-free daemon uptime, corrupt-index recovery, crawl
   restart correctness, and deterministic benchmark reports.
-- Claim readiness gate: `brutal-bench readiness --require-complete` must pass
+- Claim readiness gate: `esoteric-bench readiness --require-complete` must pass
   before any search or browser completion claim. The report
   keeps plan coverage, search, browser, JavaScript/Web APIs, security, platform,
   and operations gaps explicit. Security/privacy is partial only while the
@@ -431,7 +431,7 @@ Serious browser-product execution gates:
 
 - Keep the current CLI/daemon/index working.
 - Add clearer crawl-first UX, benchmark docs, and reproducible local fixtures.
-  The current `brutal-bench smoke` command builds a deterministic fixture
+  The current `esoteric-bench smoke` command builds a deterministic fixture
   corpus, searches, renders, and benchmarks from one command.
 - Add more extractor and index tests before changing storage formats.
 
@@ -517,7 +517,7 @@ and pinned Chromium comparison for the same URLs.
 5. Expand benchmark corpora, relevance diagnostics, and result exploration now
    that the search UI has filters, host-level crawl details, and benchmark
    status.
-6. Expand `brutal-browser` beyond the current fixture verifier with a
+6. Expand `esoteric-browser` beyond the current fixture verifier with a
    standards-test-backed parser/style/layout subset, curated display-list
    baselines, WPT expectation files, and screenshot baselines.
 7. Expand the tiny script subset into a JS-render-worker design and API:
@@ -545,4 +545,4 @@ only when the project has:
   against named browser-product expectations.
 - A completion matrix tying every search, browser, platform, security, and
   operations claim to reproducible evidence before any public claim ships.
-- A passing `brutal-bench readiness --require-complete` report.
+- A passing `esoteric-bench readiness --require-complete` report.

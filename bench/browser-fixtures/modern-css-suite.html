@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Modern CSS Suite Fixture</title>
+    <style>
+      .grid { display: flex; flex-wrap: wrap; }
+      .card { width: 25%; }
+      .inset { width: calc(100% - 160px); background: rgb(230,230,230); }
+      .faded { opacity: 0.4; }
+      .hero { background: linear-gradient(rgb(0,0,0), rgb(255,255,255)); }
+    </style>
+  </head>
+  <body>
+    <div class="grid">
+      <div class="card"><p>Alpha</p></div>
+      <div class="card"><p>Beta</p></div>
+      <div class="card"><p>Gamma</p></div>
+      <div class="card"><p>Delta</p></div>
+      <div class="card"><p>Omega</p></div>
+    </div>
+    <div class="inset">Inset region</div>
+    <p class="faded">Faded caption</p>
+    <div class="hero">Hero text</div>
+  </body>
+</html>

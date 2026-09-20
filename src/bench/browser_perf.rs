@@ -467,7 +467,7 @@ pub fn run_browser_perf(options: BrowserPerfOptions) -> Result<BrowserPerfReport
     });
 
     Ok(BrowserPerfReport {
-        engine: "brutal-browser-fixture-render".to_owned(),
+        engine: "esoteric-browser-fixture-render".to_owned(),
         manifest: options.manifest.display().to_string(),
         fixture_count: fixtures.len(),
         iteration_count: options.iterations,
@@ -669,7 +669,7 @@ fn run_browser_perf_chromium_baseline(
         .collect::<Result<Vec<_>>>()?;
     let wrapper = chromium_browser_perf_wrapper_html(&inputs, iterations, warmup)?;
     let path = std::env::temp_dir().join(format!(
-        "brutal-browser-perf-chromium-{}.html",
+        "esoteric-browser-perf-chromium-{}.html",
         std::process::id()
     ));
     fs::write(&path, wrapper).with_context(|| format!("write {}", path.display()))?;
@@ -906,7 +906,7 @@ fn inline_chromium_script_tag(fixture_path: &Path, src: &str) -> Result<String> 
         )
     })?;
     Ok(format!(
-        r#"<script data-brutal-inlined-src="{}">
+        r#"<script data-esoteric-inlined-src="{}">
 {}
 </script>"#,
         html_escape::encode_double_quoted_attribute(src),
@@ -943,7 +943,7 @@ fn chromium_browser_perf_wrapper_html(
     Ok(format!(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Brutal Browser Chromium Perf</title></head>
+<head><meta charset="utf-8"><title>Esoteric Internet Chromium Perf</title></head>
 <body>
 <script>
 const FIXTURES = {fixtures_json};
@@ -992,7 +992,7 @@ function renderFixture(fixture, done) {{
   function finish() {{
     const out = document.createElement("script");
     out.type = "application/json";
-    out.id = "brutal-browser-perf-result";
+    out.id = "esoteric-browser-perf-result";
     out.textContent = JSON.stringify({{ samples }}).replaceAll("</", "<\\/");
     document.documentElement.appendChild(out);
   }}
@@ -1034,13 +1034,13 @@ fn normalize_browser_perf_text(text: &str) -> String {
 
 fn hash_browser_perf_text(text: &str) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"brutal-browser-perf-text-v1");
+    hasher.update(b"esoteric-browser-perf-text-v1");
     hasher.update(text.as_bytes());
     hasher.finalize().to_hex().to_string()
 }
 
 fn extract_chromium_browser_perf_json(dump: &str) -> Option<&str> {
-    let marker = "id=\"brutal-browser-perf-result\"";
+    let marker = "id=\"esoteric-browser-perf-result\"";
     let marker_index = dump.find(marker)?;
     let after_marker = &dump[marker_index..];
     let start = after_marker.find('>')? + marker_index + 1;
@@ -1087,6 +1087,7 @@ mod tests {
         crate::browser::BrowserFixture {
             name: Some("fixture".to_owned()),
             path: PathBuf::from("page.html"),
+            source: None,
             width: 80,
             external_scripts: false,
             click_selector: None,
@@ -1117,7 +1118,7 @@ mod tests {
         let inlined = inline_local_external_scripts_for_chromium(html, &page).unwrap();
 
         assert!(!inlined.contains("<script src=\"external.js\""));
-        assert!(inlined.contains("data-brutal-inlined-src=\"external.js\""));
+        assert!(inlined.contains("data-esoteric-inlined-src=\"external.js\""));
         assert!(inlined.contains("document.body.textContent = \"Loaded\";"));
     }
 

@@ -20,9 +20,92 @@ fn render_from_display_list(
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); display_list.len()],
+        document_height: 0,
         text: String::new(),
         display_list,
     }
+}
+
+fn assert_viewport_cells(regions: &[BrowserViewportRect], expected: &[(usize, usize)]) {
+    let mut actual = std::collections::BTreeSet::new();
+    for region in regions {
+        for y in region.y..region.y.saturating_add(region.height) {
+            for x in region.x..region.x.saturating_add(region.width) {
+                assert!(
+                    actual.insert((x, y)),
+                    "dirty viewport cell ({x}, {y}) was reported by overlapping regions: {regions:?}"
+                );
+            }
+        }
+    }
+    let expected = expected
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn assert_frame_dirty_viewport_cells(
+    regions: &[BrowserViewportFrameDirtyRect],
+    expected: &[(usize, usize)],
+) {
+    let mut actual = std::collections::BTreeSet::new();
+    for region in regions {
+        for y in region.viewport_y..region.viewport_y.saturating_add(region.viewport_height) {
+            for x in region.viewport_x..region.viewport_x.saturating_add(region.viewport_width) {
+                assert!(
+                    actual.insert((x, y)),
+                    "dirty frame viewport cell ({x}, {y}) was reported by overlapping regions: {regions:?}"
+                );
+            }
+        }
+    }
+    let expected = expected
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn image_alt_text_viewport_clears_visual_underlay_noise() {
+    let render = render_from_display_list(
+        "mem://image-alt-clears-underlay",
+        36,
+        vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 36,
+                height: 4,
+                shade: 0,
+            },
+            DisplayCommand::Image {
+                x: 0,
+                y: 0,
+                width: 36,
+                height: 4,
+                shade: 220,
+                alt: Some("Jamaica beach hero".to_owned()),
+                url: Some("mem://hero.jpg".to_owned()),
+                decoded_width: Some(2),
+                decoded_height: Some(2),
+                decoded_hash: None,
+            },
+        ],
+    );
+
+    let viewport = browser_text_viewport(
+        &render,
+        BrowserTextViewportOptions {
+            width: 36,
+            height: 5,
+            ..BrowserTextViewportOptions::default()
+        },
+    );
+    let text = viewport.lines.join("\n");
+    assert!(text.contains("Jamaica beach hero"), "{text}");
+    assert!(!text.contains('#'), "{text}");
 }
 
 #[test]
@@ -102,22 +185,9 @@ fn document_viewport_reports_clamped_state_and_dirty_regions() {
     assert_eq!(scrolled.scroll_delta_x, 1);
     assert_eq!(scrolled.scroll_delta_y, 1);
     assert!(!scrolled.full_repaint);
-    assert_eq!(
-        scrolled.invalidated_regions,
-        vec![
-            BrowserViewportRect {
-                x: 0,
-                y: 2,
-                width: 4,
-                height: 1
-            },
-            BrowserViewportRect {
-                x: 3,
-                y: 0,
-                width: 1,
-                height: 2
-            },
-        ]
+    assert_viewport_cells(
+        &scrolled.invalidated_regions,
+        &[(3, 0), (3, 1), (0, 2), (1, 2), (2, 2), (3, 2)],
     );
     assert_eq!(scrolled.invalidated_area, 6);
     assert_eq!(scrolled.reused_area, 6);
@@ -202,31 +272,12 @@ fn viewport_frame_maps_dirty_regions_to_rgba_pixels() {
     .unwrap();
 
     assert!(!scrolled.report.viewport.full_repaint);
-    assert_eq!(
-        scrolled.report.dirty_pixel_regions,
-        vec![
-            BrowserViewportFrameDirtyRect {
-                x: 4,
-                y: 28,
-                width: 32,
-                height: 12,
-                viewport_x: 0,
-                viewport_y: 2,
-                viewport_width: 4,
-                viewport_height: 1,
-            },
-            BrowserViewportFrameDirtyRect {
-                x: 28,
-                y: 4,
-                width: 8,
-                height: 24,
-                viewport_x: 3,
-                viewport_y: 0,
-                viewport_width: 1,
-                viewport_height: 2,
-            },
-        ]
+    assert_frame_dirty_viewport_cells(
+        &scrolled.report.dirty_pixel_regions,
+        &[(3, 0), (3, 1), (0, 2), (1, 2), (2, 2), (3, 2)],
     );
+    assert_eq!(scrolled.report.dirty_pixel_area, 576);
+    assert_eq!(scrolled.report.reused_pixel_area, 1184);
     assert_eq!(scrolled.report.dirty_pixel_area, 576);
     assert_eq!(scrolled.report.frame.raster_viewport_x, Some(1));
     assert_eq!(scrolled.report.frame.raster_viewport_y, Some(1));
@@ -286,6 +337,7 @@ fn repeated_scroll_projection_keeps_visual_hits_and_raster_rows_aligned() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -491,6 +543,7 @@ fn repeated_after_scroll_preserves_overlay_and_lower_content_viewport_hits() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -751,6 +804,7 @@ fn pinned_layers_paint_above_later_normal_content_in_text_and_grayscale_viewport
             DisplayHitTarget::node(Some(99)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Rect {
                 x: 0,
@@ -936,6 +990,7 @@ fn successive_scroll_dirty_regions_merge_without_stale_mixed_raster_hits() {
             DisplayHitTarget::node(Some(91)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -1190,6 +1245,7 @@ fn continuous_scroll_reports_moved_clamped_and_rerendered_viewports() {
             DisplayHitTarget::node(Some(91)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -1402,6 +1458,7 @@ fn continuous_wheel_and_page_scroll_clamps_without_resetting_visible_crop() {
             DisplayHitTarget::node(Some(91)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -1617,6 +1674,7 @@ fn key_page_home_end_scroll_preserves_mixed_viewport_hits_and_raster() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -1862,6 +1920,7 @@ fn diagonal_scroll_dirty_regions_keep_mixed_hits_and_raster_aligned() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -2131,6 +2190,7 @@ fn scrolled_visible_commands_report_pinned_layers_in_paint_order() {
                 target_node: Some(77),
             }]),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,

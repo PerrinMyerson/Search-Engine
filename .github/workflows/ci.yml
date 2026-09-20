@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-gate:
+    name: Build, test, and fixture gates
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the channel from rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build release binaries
+        run: cargo build --release --bins
+
+      - name: Run test suite
+        run: cargo test --release
+
+      - name: Browser fixture gate
+        run: ./target/release/esoteric-browser verify bench/browser-fixtures/manifest.json
+
+      - name: Document page gate
+        run: ./target/release/esoteric-browser verify bench/document-pages/manifest.json
+
+      - name: Local WPT-subset compatibility gate
+        run: ./target/release/esoteric-bench browser-compat --min-pass-rate 1.0 --max-failures 0 --max-crashes 0 --max-timeouts 0

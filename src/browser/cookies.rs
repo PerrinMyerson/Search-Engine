@@ -50,6 +50,25 @@ impl BrowserCookieJar {
         }
     }
 
+    pub(super) fn merge_snapshot_delta(
+        &mut self,
+        before: &[BrowserCookie],
+        after: &[BrowserCookie],
+    ) {
+        for previous in before {
+            if !after.iter().any(|cookie| same_cookie_key(cookie, previous)) {
+                self.cookies
+                    .retain(|cookie| !same_cookie_key(cookie, previous));
+            }
+        }
+        for next in after {
+            if before.iter().find(|cookie| same_cookie_key(cookie, next)) != Some(next) {
+                self.cookies.retain(|cookie| !same_cookie_key(cookie, next));
+                self.cookies.push(next.clone());
+            }
+        }
+    }
+
     fn store_from_set_cookie(&mut self, response_url: &str, header: &str) {
         let Ok(url) = Url::parse(response_url) else {
             return;
@@ -124,6 +143,10 @@ impl BrowserCookieJar {
             self.cookies.push(cookie);
         }
     }
+}
+
+fn same_cookie_key(left: &BrowserCookie, right: &BrowserCookie) -> bool {
+    left.name == right.name && left.domain == right.domain && left.path == right.path
 }
 
 fn cookie_matches(cookie: &BrowserCookie, host: &str, path: &str, secure_request: bool) -> bool {

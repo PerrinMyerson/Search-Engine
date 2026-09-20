@@ -1,7 +1,7 @@
 # Security And Privacy Plan
 
 This plan covers the security, privacy, abuse, and compliance work required
-before Brutal Browser can credibly claim browser-product readiness, and before
+before Esoteric Internet can credibly claim browser-product readiness, and before
 its search mode can credibly claim Google-style search behavior. It is a gate
 plan, not proof of implementation.
 
@@ -155,5 +155,5 @@ plan, not proof of implementation.
 8. Add fuzz harnesses for URL, HTML, CSS, JavaScript bridge, IPC, and index
    parsers.
 9. Add signed update and packaging security gates.
-10. Promote `Security And Privacy` in `brutal-bench readiness` only when the
+10. Promote `Security And Privacy` in `esoteric-bench readiness` only when the
     gates above have direct passing evidence.

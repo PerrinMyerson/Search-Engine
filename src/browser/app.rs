@@ -1192,7 +1192,7 @@ fn browser_app_report_text_label(text: &str) -> String {
         .take(BROWSER_APP_REPORT_TEXT_MAX_CHARS)
         .collect();
     format!(
-        "{preview}\n[brutal-app-report-text-truncated text_chars={text_chars} retained_chars={BROWSER_APP_REPORT_TEXT_MAX_CHARS}]"
+        "{preview}\n[esoteric-app-report-text-truncated text_chars={text_chars} retained_chars={BROWSER_APP_REPORT_TEXT_MAX_CHARS}]"
     )
 }
 
@@ -2526,7 +2526,7 @@ document.addEventListener("wheel", () => {
         assert!(report.text_chars > BROWSER_APP_REPORT_TEXT_MAX_CHARS);
         assert!(report.visible_text_chars <= report.text_chars);
         assert_ne!(serialized_text, report.text);
-        assert!(serialized_text.contains("brutal-app-report-text-truncated"));
+        assert!(serialized_text.contains("esoteric-app-report-text-truncated"));
         assert!(serialized_text.contains(&format!("text_chars={}", report.text_chars)));
         assert!(serialized_text.chars().count() <= BROWSER_APP_REPORT_TEXT_MAX_CHARS + 128);
     }

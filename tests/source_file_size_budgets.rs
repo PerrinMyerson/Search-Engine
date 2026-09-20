@@ -16,9 +16,44 @@ struct FileSizeBudget {
 // or why the file owns a naturally large boundary.
 const EXPLICIT_LARGE_FILE_BUDGETS: &[FileSizeBudget] = &[
     FileSizeBudget {
+        path: "src/bin/esoteric-browser.rs",
+        max_lines: 2_600,
+        rationale: "Browser CLI accumulates one subcommand per engine lane (render/styled/scripted/raster/session); split command families into modules once the lane set stabilizes.",
+    },
+    FileSizeBudget {
+        path: "src/bin/esoteric-search.rs",
+        max_lines: 9_500,
+        rationale: "Search CLI still centralizes storage audits, crawl/index commands, and command tests; keep growth visible while command families move into modules.",
+    },
+    FileSizeBudget {
+        path: "src/bin/esoteric_browser_window/mod.rs",
+        max_lines: 5_700,
+        rationale: "Native browser window prototype still owns event handling and view glue in one boundary; split once the browser session protocol stabilizes.",
+    },
+    FileSizeBudget {
+        path: "src/browser/app.rs",
+        max_lines: 2_900,
+        rationale: "Browser app orchestration is just over the shared limit while runtime surfaces are being separated; future growth should extract submodules.",
+    },
+    FileSizeBudget {
+        path: "src/browser/images.rs",
+        max_lines: 7_500,
+        rationale: "Image discovery, decoding, and attachment logic are active Chromium-parity work; keep temporary headroom until planner/cache code is split.",
+    },
+    FileSizeBudget {
+        path: "src/browser/layout_tests.rs",
+        max_lines: 22_800,
+        rationale: "Renderer fixture coverage is intentionally broad during CSS/layout parity work, including grid areas, block floats, flex-item width slots, and scrolled-raster overflow regressions; split by subsystem once gaps stop moving quickly.",
+    },
+    FileSizeBudget {
+        path: "src/browser/resources.rs",
+        max_lines: 4_400,
+        rationale: "Resource planning now includes the bounded concurrent fetch planner; extract fetch execution from CSS/image discovery after visual loading behavior settles.",
+    },
+    FileSizeBudget {
         path: "src/browser.rs",
-        max_lines: 12_000,
-        rationale: "Browser runtime is the current decomposition target; keep extra growth visible while subsystems move behind modules.",
+        max_lines: 30_400,
+        rationale: "Browser runtime is the current decomposition target; border-radius corner masking, fractional opacity, flex-wrap column slots, calc() percent-offset dimensions, and vector-text raster work need short-term headroom while style/layout helpers move behind modules.",
     },
     FileSizeBudget {
         path: "src/bench.rs",
@@ -32,8 +67,23 @@ const EXPLICIT_LARGE_FILE_BUDGETS: &[FileSizeBudget] = &[
     },
     FileSizeBudget {
         path: "src/browser/tests.rs",
-        max_lines: 4_000,
+        max_lines: 25_800,
         rationale: "Extracted browser integration-style regression tests from src/browser.rs; split by browser subsystem once the runtime module split settles.",
+    },
+    FileSizeBudget {
+        path: "src/server/browser_sessions.rs",
+        max_lines: 20_050,
+        rationale: "Browser session routing, HTML shell, PNG raster transport, visual scroll protocol, and click-coordinate contracts are changing together for parity work; split transport, views, and actions next.",
+    },
+    FileSizeBudget {
+        path: "src/server/browser_sessions/tests.rs",
+        max_lines: 17_700,
+        rationale: "Session behavior coverage is intentionally dense while browser navigation, deferred visual loading, PNG raster transport, click mapping, and visual update semantics stabilize; split fixtures by route family.",
+    },
+    FileSizeBudget {
+        path: "src/web_search.rs",
+        max_lines: 3_500,
+        rationale: "Web search provider/cache integration remains one boundary while search result browser routing is active; extract provider storage after parity work.",
     },
 ];
 

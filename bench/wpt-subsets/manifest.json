@@ -1,117 +1,509 @@
 {
-  "name": "local-wpt-compatibility-scaffold",
-  "description": "Tiny local WPT-subset/compatibility scaffold backed by bench/browser-fixtures; this is not a full upstream WPT import.",
-  "expectations": "expectations.jsonl",
-  "fixtures": [
+ "name": "local-wpt-compatibility-scaffold",
+ "description": "Tiny local WPT-subset/compatibility scaffold backed by bench/browser-fixtures; this is not a full upstream WPT import.",
+ "expectations": "expectations.jsonl",
+ "fixtures": [
+  {
+   "id": "html-static-text-display-none",
+   "name": "HTML static text and display none",
+   "subsystem": "html",
+   "path": "../browser-fixtures/static-text.html",
+   "width": 80,
+   "expected_title": "Static Text Fixture",
+   "expected_text": "Static Text Fixture\nVisible words render plainly.\nNext page"
+  },
+  {
+   "id": "dom-inline-text-mutation",
+   "name": "DOM inline script text mutation",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/inline-js-dom-text.html",
+   "width": 80,
+   "expected_title": "Inline JS Fixture",
+   "expected_text": "Hydrated from inline script\nStatic sibling"
+  },
+  {
+   "id": "css-text-color",
+   "name": "CSS text color display list",
+   "subsystem": "css",
+   "path": "../browser-fixtures/text-color.html",
+   "width": 40,
+   "expected_title": "Text Color Fixture",
+   "expected_text": "Muted text",
+   "expected_display_list": [
     {
-      "id": "html-static-text-display-none",
-      "name": "HTML static text and display none",
-      "subsystem": "html",
-      "path": "../browser-fixtures/static-text.html",
-      "width": 80,
-      "expected_title": "Static Text Fixture",
-      "expected_text": "Static Text Fixture\nVisible words render plainly.\nNext page"
-    },
-    {
-      "id": "dom-inline-text-mutation",
-      "name": "DOM inline script text mutation",
-      "subsystem": "dom",
-      "path": "../browser-fixtures/inline-js-dom-text.html",
-      "width": 80,
-      "expected_title": "Inline JS Fixture",
-      "expected_text": "Hydrated from inline script\nStatic sibling"
-    },
-    {
-      "id": "css-text-color",
-      "name": "CSS text color display list",
-      "subsystem": "css",
-      "path": "../browser-fixtures/text-color.html",
-      "width": 40,
-      "expected_title": "Text Color Fixture",
-      "expected_text": "Muted text",
-      "expected_display_list": [
-        {"command": "styled_text", "x": 0, "y": 0, "text": "Muted text", "shade": 128}
-      ]
-    },
-    {
-      "id": "rendering-rect-paint",
-      "name": "Rendering rectangle paint command",
-      "subsystem": "rendering",
-      "path": "../browser-fixtures/paint-rect.html",
-      "width": 40,
-      "expected_title": "Paint Rect Fixture",
-      "expected_text": "Above rule\nBelow rule",
-      "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Above rule"},
-        {"command": "rect", "x": 0, "y": 1, "width": 40, "height": 1, "shade": 96},
-        {"command": "text", "x": 0, "y": 2, "text": "Below rule"}
-      ],
-      "expected_raster_hash": "006ba751090ee4f8077b067d7c5b2d83e865ab2e18d35623748e098f4850cbe0"
-    },
-    {
-      "id": "rendering-display-list-hit-test",
-      "name": "Rendering display-list hit test",
-      "subsystem": "rendering",
-      "path": "../browser-fixtures/background-paint.html",
-      "width": 40,
-      "expected_title": "Background Paint Fixture",
-      "expected_text": "Background card\nStill text first",
-      "expected_hit_tests": [
-        {"x": 1, "y": 0, "expected": {"kind": "text", "text": "Background card"}},
-        {"x": 30, "y": 0, "expected": {"kind": "rect", "shade": 208}},
-        {"x": 40, "y": 0, "expected": null}
-      ],
-      "expected_raster_hash": "14594532705fa108c3200ddebe69690a85e7df81716c2e2c2a8c181a23e8a36c"
-    },
-    {
-      "id": "rendering-layer-tree-snapshot",
-      "name": "Rendering layer-tree snapshot",
-      "subsystem": "rendering",
-      "path": "../browser-fixtures/image-placeholder.html",
-      "width": 40,
-      "expected_title": "Image Placeholder Fixture",
-      "expected_text": "Before image\nAfter image",
-      "expected_layers": [
-        {"id": 0, "parent": null, "kind": "root", "reason": "document-root", "x": 0, "y": 0, "width": 40, "height": 4, "paint_order": 0, "command_indices": [0, 2]},
-        {"id": 1, "parent": 0, "kind": "image", "reason": "image-replaced-element", "x": 0, "y": 1, "width": 10, "height": 2, "paint_order": 1, "command_indices": [1]}
-      ],
-      "expected_raster_hash": "bda76c1a50338bedea2d5bab7a1a856aaa18af8432a3ca8d713ecee56b4de8bd"
-    },
-    {
-      "id": "rendering-viewport-raster-culling",
-      "name": "Rendering viewport raster culling",
-      "subsystem": "rendering",
-      "path": "../browser-fixtures/viewport-scroll.html",
-      "width": 24,
-      "expected_title": "Viewport Raster Fixture",
-      "expected_text": "Zero row\nOne row\nTwo row\nThree row\nFour row",
-      "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Zero row"},
-        {"command": "text", "x": 0, "y": 1, "text": "One row"},
-        {"command": "text", "x": 0, "y": 2, "text": "Two row"},
-        {"command": "text", "x": 0, "y": 3, "text": "Three row"},
-        {"command": "text", "x": 0, "y": 4, "text": "Four row"}
-      ],
-      "raster_viewport_y": 1,
-      "raster_viewport_height": 2,
-      "expected_visible_command_count": 2,
-      "expected_culled_command_count": 3,
-      "expected_raster_hash": "7875d5aa49a34c3fc9f7b6239e871011b31c4b0193bc04999b44b83fc534d2dc"
-    },
-    {
-      "id": "images-responsive-selection",
-      "name": "Images responsive source selection",
-      "subsystem": "images",
-      "path": "../browser-fixtures/responsive-image.html",
-      "width": 40,
-      "expected_title": "Responsive Image Fixture",
-      "expected_text": "Before responsive\nAfter responsive",
-      "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Before responsive"},
-        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Responsive tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
-        {"command": "text", "x": 0, "y": 3, "text": "After responsive"}
-      ],
-      "expected_raster_hash": "98e878ba7473ade89d67a90fb32c8cd05dedac86cc313ca5ea5c82b526773e2a"
+     "command": "styled_text",
+     "x": 0,
+     "y": 0,
+     "text": "Muted text",
+     "shade": 128
     }
-  ]
+   ]
+  },
+  {
+   "id": "rendering-rect-paint",
+   "name": "Rendering rectangle paint command",
+   "subsystem": "rendering",
+   "path": "../browser-fixtures/paint-rect.html",
+   "width": 40,
+   "expected_title": "Paint Rect Fixture",
+   "expected_text": "Above rule\nBelow rule",
+   "expected_display_list": [
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Above rule"
+    },
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 1,
+     "width": 40,
+     "height": 1,
+     "shade": 96
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 2,
+     "text": "Below rule"
+    }
+   ],
+   "expected_raster_hash": "840c47ceedbb6466e1d2cfccd70adbc3139f6c550a5db3d5e15f37456fa2daf0"
+  },
+  {
+   "id": "rendering-display-list-hit-test",
+   "name": "Rendering display-list hit test",
+   "subsystem": "rendering",
+   "path": "../browser-fixtures/background-paint.html",
+   "width": 40,
+   "expected_title": "Background Paint Fixture",
+   "expected_text": "Background card\nStill text first",
+   "expected_hit_tests": [
+    {
+     "x": 1,
+     "y": 0,
+     "expected": {
+      "kind": "text",
+      "text": "Background card"
+     }
+    },
+    {
+     "x": 30,
+     "y": 0,
+     "expected": {
+      "kind": "rect",
+      "shade": 208
+     }
+    },
+    {
+     "x": 40,
+     "y": 0,
+     "expected": null
+    }
+   ],
+   "expected_raster_hash": "355b03224805de2e4709b19a6205153b8b8f43f340c27bebc350debc912487e9"
+  },
+  {
+   "id": "rendering-layer-tree-snapshot",
+   "name": "Rendering layer-tree snapshot",
+   "subsystem": "rendering",
+   "path": "../browser-fixtures/image-placeholder.html",
+   "width": 40,
+   "expected_title": "Image Placeholder Fixture",
+   "expected_text": "Before image\nAfter image",
+   "expected_layers": [
+    {
+     "id": 0,
+     "parent": null,
+     "kind": "root",
+     "reason": "document-root",
+     "x": 0,
+     "y": 0,
+     "width": 40,
+     "height": 4,
+     "paint_order": 0,
+     "command_indices": [
+      0,
+      2
+     ]
+    },
+    {
+     "id": 1,
+     "parent": 0,
+     "kind": "image",
+     "reason": "image-replaced-element",
+     "x": 0,
+     "y": 1,
+     "width": 10,
+     "height": 2,
+     "paint_order": 1,
+     "command_indices": [
+      1
+     ]
+    }
+   ],
+   "expected_raster_hash": "a391629d3bfe8a0a2e08f8c07e019542e2fc8662507694131e3ac4ce9425f7f2"
+  },
+  {
+   "id": "rendering-viewport-raster-culling",
+   "name": "Rendering viewport raster culling",
+   "subsystem": "rendering",
+   "path": "../browser-fixtures/viewport-scroll.html",
+   "width": 24,
+   "expected_title": "Viewport Raster Fixture",
+   "expected_text": "Zero row\nOne row\nTwo row\nThree row\nFour row",
+   "expected_display_list": [
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Zero row"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 1,
+     "text": "One row"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 2,
+     "text": "Two row"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 3,
+     "text": "Three row"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 4,
+     "text": "Four row"
+    }
+   ],
+   "raster_viewport_y": 1,
+   "raster_viewport_height": 2,
+   "expected_visible_command_count": 2,
+   "expected_culled_command_count": 3,
+   "expected_raster_hash": "60c3cf8625ad82577e935b757a20166a5a49cb519a6038455d68400d025af2d5"
+  },
+  {
+   "id": "images-responsive-selection",
+   "name": "Images responsive source selection",
+   "subsystem": "images",
+   "path": "../browser-fixtures/responsive-image.html",
+   "width": 40,
+   "expected_title": "Responsive Image Fixture",
+   "expected_text": "Before responsive\nAfter responsive",
+   "expected_display_list": [
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Before responsive"
+    },
+    {
+     "command": "image",
+     "x": 0,
+     "y": 1,
+     "width": 10,
+     "height": 2,
+     "shade": 220,
+     "alt": "Responsive tile",
+     "url": "simple-image.svg",
+     "decoded_width": 80,
+     "decoded_height": 24,
+     "decoded_hash": "519f4e9d8857b511a0a98e4f7e9a908d24ca1f361f32eefee8d0fe2648ec696d"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 3,
+     "text": "After responsive"
+    }
+   ],
+   "expected_raster_hash": "dbd80af11b97e42d2d3d62ebe3704b4da08032f5253916c415458e3e887a5025"
+  },
+  {
+   "id": "css-grid-template-areas-shell",
+   "name": "CSS grid template areas shell placement",
+   "subsystem": "css",
+   "path": "../browser-fixtures/grid-areas-shell.html",
+   "width": 60,
+   "expected_title": "Grid Areas Shell Fixture",
+   "expected_text": "Notice banner\nSidebar contents\nArticle column text",
+   "expected_display_list": [
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Notice banner"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 1,
+     "text": "Sidebar contents"
+    },
+    {
+     "command": "text",
+     "x": 30,
+     "y": 1,
+     "text": "Article column text"
+    }
+   ]
+  },
+  {
+   "id": "css-float-link-color-paint",
+   "name": "CSS block float, bgcolor, and link pseudo-class paint",
+   "subsystem": "css",
+   "path": "../browser-fixtures/float-link-color.html",
+   "width": 40,
+   "expected_title": "Float Link Color Fixture",
+   "expected_text": "Facts box\nStory title details",
+   "expected_display_list": [
+    {
+     "command": "rect",
+     "x": 30,
+     "y": 0,
+     "width": 10,
+     "height": 1,
+     "shade": 238
+    },
+    {
+     "command": "color_rect",
+     "x": 0,
+     "y": 0,
+     "width": 19,
+     "height": 1,
+     "red": 255,
+     "green": 102,
+     "blue": 0,
+     "shade": 136
+    },
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 11,
+     "height": 1,
+     "shade": 144
+    },
+    {
+     "command": "text",
+     "x": 30,
+     "y": 0,
+     "text": "Facts box"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Story title"
+    },
+    {
+     "command": "styled_text",
+     "x": 11,
+     "y": 0,
+     "text": " details",
+     "shade": 130
+    }
+   ]
+  },
+  {
+   "id": "css-modern-suite",
+   "name": "Modern CSS: flex-wrap slots, calc percent, opacity, gradient midpoint",
+   "subsystem": "css",
+   "path": "../browser-fixtures/modern-css-suite.html",
+   "width": 80,
+   "expected_title": "Modern CSS Suite Fixture",
+   "expected_text": "Alpha\nBeta\nGamma\nDelta\nOmega\nInset region\nFaded caption\nHero text",
+   "expected_display_list": [
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 2,
+     "width": 60,
+     "height": 1,
+     "shade": 230
+    },
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 4,
+     "width": 80,
+     "height": 1,
+     "shade": 127
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Alpha"
+    },
+    {
+     "command": "text",
+     "x": 20,
+     "y": 0,
+     "text": "Beta"
+    },
+    {
+     "command": "text",
+     "x": 40,
+     "y": 0,
+     "text": "Gamma"
+    },
+    {
+     "command": "text",
+     "x": 60,
+     "y": 0,
+     "text": "Delta"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 1,
+     "text": "Omega"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 2,
+     "text": "Inset region"
+    },
+    {
+     "command": "styled_text",
+     "x": 0,
+     "y": 3,
+     "text": "Faded caption",
+     "shade": 153
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 4,
+     "text": "Hero text"
+    }
+   ]
+  },
+  {
+   "id": "css-effects-suite",
+   "name": "Effects: border-radius+box-shadow card, static translate, overlay suppression",
+   "subsystem": "css",
+   "path": "../browser-fixtures/effects-suite.html",
+   "width": 60,
+   "expected_title": "Effects Suite Fixture",
+   "expected_text": "Card label\nShifted box\nStatic below",
+   "expected_display_list": [
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 60,
+     "height": 6,
+     "shade": 255
+    },
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 0,
+     "width": 25,
+     "height": 4,
+     "shade": 245
+    },
+    {
+     "command": "rect",
+     "x": 10,
+     "y": 6,
+     "width": 15,
+     "height": 1,
+     "shade": 220
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 0,
+     "text": "Card label"
+    },
+    {
+     "command": "text",
+     "x": 10,
+     "y": 6,
+     "text": "Shifted box"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 5,
+     "text": "Static below"
+    }
+   ]
+  },
+  {
+   "id": "js-control-flow",
+   "name": "JS: arithmetic for-loop, for-of over query list, function args + conditional",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/js-control-flow.html",
+   "width": 40,
+   "expected_title": "JS Control Flow Fixture",
+   "expected_text": "10\n- done\n- done\n- three\nlabeled"
+  },
+  {
+   "id": "css-sizing-suite",
+   "name": "Sizing: transform scale(2) on image extent, scoped var cascade order",
+   "subsystem": "css",
+   "path": "../browser-fixtures/sizing-suite.html",
+   "width": 60,
+   "expected_title": "Sizing Suite Fixture",
+   "expected_text": "Var box",
+   "expected_display_list": [
+    {
+     "command": "rect",
+     "x": 0,
+     "y": 8,
+     "width": 25,
+     "height": 1,
+     "shade": 220
+    },
+    {
+     "command": "image",
+     "x": 0,
+     "y": 0,
+     "width": 20,
+     "height": 8,
+     "shade": 220,
+     "alt": "",
+     "url": "mem://scaled.png"
+    },
+    {
+     "command": "text",
+     "x": 0,
+     "y": 8,
+     "text": "Var box"
+    }
+   ]
+  },
+  {
+   "id": "js-event-loop-order",
+   "name": "JS: microtask checkpoints between sync script, timers, and nested microtasks",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/js-event-loop-order.html",
+   "width": 40,
+   "expected_title": "JS Event Loop Order Fixture",
+   "expected_text": "start sync micro then timer\nstart t1 t1-micro nested t2"
+  },
+  {
+   "id": "js-fetch-then",
+   "name": "JS: fetch().then chains settle after queued timers with response.text() passthrough",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/js-fetch-then.html",
+   "width": 40,
+   "expected_title": "JS Fetch Then Fixture",
+   "expected_text": "start sync timer fetched\nhello from fetch\nagain: hello from fetch"
+  }
+ ]
 }

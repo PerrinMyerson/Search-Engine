@@ -6,3 +6,11 @@
 {"id":"rendering-layer-tree-snapshot","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching deterministic layer-tree snapshot expectations."}
 {"id":"rendering-viewport-raster-culling","subsystem":"rendering","expected_status":"PASS","reason":"Local browser fixture currently defines matching whole-document viewport-window CPU raster culling expectations."}
 {"id":"images-responsive-selection","subsystem":"images","expected_status":"PASS","reason":"Local browser fixture currently defines matching responsive image source selection, decode, display-list, and raster expectations."}
+{"id":"css-grid-template-areas-shell","subsystem":"css","expected_status":"PASS","reason":"Grid template areas place children by named area with column slots; locked after 2026-07-25 grid composition work."}
+{"id":"css-float-link-color-paint","subsystem":"css","expected_status":"PASS","reason":"Block floats, bgcolor presentational backgrounds, and a:link colors paint deterministically; locked after 2026-07-25 parity work."}
+{"id": "css-modern-suite", "expected_status": "pass"}
+{"id": "css-effects-suite", "expected_status": "pass"}
+{"id": "js-control-flow", "expected_status": "pass"}
+{"id": "css-sizing-suite", "expected_status": "pass"}
+{"id": "js-event-loop-order", "expected_status": "pass"}
+{"id": "js-fetch-then", "expected_status": "pass"}

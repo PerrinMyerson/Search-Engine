@@ -1,14 +1,14 @@
-# Brutal Browser Architecture
+# Esoteric Internet Architecture
 
 This document shows the target architecture for the browser-first project.
-Brutal Browser is the primary engine and product direction. Blackium Starium✴ is the
+Esoteric Internet is the primary engine and product direction. Blackium Starium✴ is the
 fast text/index/extraction mode that shares loading, parsing, extraction,
 benchmarking, and automation infrastructure with the browser engine.
 
 The current repository implements static extraction, local index, CLI, daemon,
 benchmark pieces, a first link-authority ranking feature over indexed outbound
 links, first-pass query operators including language/freshness filters, and a
-first `brutal-browser` runtime skeleton with static DOM/CSS text and text-color
+first `esoteric-browser` runtime skeleton with static DOM/CSS text and text-color
 rendering, tiny inline/external script DOM
 creation/text/tree traversal/insertion/fragment/selector/inner-html/attribute
 mutations, and first inline/listener click dispatch plus early CLI link
@@ -129,8 +129,8 @@ work should split it into focused modules before growing broad feature sets.
 | Input/events | Event targets/listeners/payloads, focus/input/keyboard/edit dispatch, cancellation, propagation, and default-action ordering | Event-order fixtures, session-event tests, hit-test-to-event traces, DOM Events WPT slices |
 | Session/navigation | `BrowserSession`, history, link activation, navigation lifecycle, BFCache/session restore, page state | Session smoke tests, navigation fixtures, crash-recovery gates |
 | Storage/profile | Cookies, localStorage, IndexedDB, Cache API, permissions, profile dirs, private mode, partitioning | Storage WPT subsets, quota/eviction, profile-isolation tests |
-| Shell/CLI | `brutal-browser browse`, command parsing, local render output, scripted runs, product-shell handoff | CLI smoke tests, workflow fixtures, UX/product gates |
-| Benchmarks/gates | Browser coverage, perf reports, WPT/compat dashboards, readiness/audit integration | `brutal-browser coverage`, `brutal-bench browser-perf`, readiness audit |
+| Shell/CLI | `esoteric-browser browse`, command parsing, local render output, scripted runs, product-shell handoff | CLI smoke tests, workflow fixtures, UX/product gates |
+| Benchmarks/gates | Browser coverage, perf reports, WPT/compat dashboards, readiness/audit integration | `esoteric-browser coverage`, `esoteric-bench browser-perf`, readiness audit |
 
 Rules for future agents:
 
@@ -221,7 +221,7 @@ Required properties:
   cookie propagation, external stylesheet application for text layout,
   query-safe local loading, text/styled-text display-list commands, and
   terminal/JSON render output plus fixture-manifest verification.
-- `BrowserShell`: the early `brutal-browser browse` local CLI shell over
+- `BrowserShell`: the early `esoteric-browser browse` local CLI shell over
   the supported `BrowserSession` subset: open/back/forward, current-page
   relative open/go target resolution, current-page location reporting, current
   in-memory cookie inspection/clearing, optional JSON `--cookie-jar` load/save,
@@ -258,7 +258,7 @@ Required properties:
   `viewport-frame` path adds deterministic RGBA pixels and dirty pixel
   rectangles for that same supported whole-document viewport. `BrowserApp`
   owns reusable Rust app state for tabs, navigation, viewport scrolling, input
-  actions, and frame presentation decisions; the scripted `brutal-browser app`
+  actions, and frame presentation decisions; the scripted `esoteric-browser app`
   command drives that state boundary, can keep an interactive/stdin command
   stream alive across tabs and navigations, can load/save JSON cookie/
   localStorage files, can persist app-level visit history/bookmarks in a JSON
@@ -266,7 +266,7 @@ Required properties:
   visible text viewport, can refresh the viewport PNG, and can compose a
   deterministic browser-window PNG with simple tab/location/status chrome for
   future native shell backends, plus narrow window-coordinate hit testing for
-  simple chrome and page clicks. The feature-gated `brutal-browser window`
+  simple chrome and page clicks. The feature-gated `esoteric-browser window`
   command presents that same RGBA frame in a native CPU-backed window and routes
   mouse, wheel, basic keyboard input, narrow location entry, focused-control
   text input, resize-aware viewport updates through `BrowserApp`. This is

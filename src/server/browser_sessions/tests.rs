@@ -1,6 +1,25 @@
 use super::super::RequestTarget;
 use super::*;
 
+fn run_browser_session_async_test_with_stack<F, Fut>(test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name("browser-session-test".to_owned())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("browser session test runtime");
+            runtime.block_on(test());
+        })
+        .expect("spawn browser session test thread");
+    handle.join().expect("browser session test thread panicked");
+}
+
 fn assert_chrome_status_flags(
     topbar_html: &str,
     navigation: bool,
@@ -75,6 +94,294 @@ fn assert_address_submit_state(
     )));
 }
 
+#[test]
+fn browser_session_scroll_script_supports_optimistic_raster_translation() {
+    let script = render_browser_session_viewport_scroll_script();
+
+    assert!(script.contains("const optimisticPixelOffsetForTarget = (target) =>"));
+    assert!(script.contains("const rasterCellSize = () =>"));
+    assert!(script.contains("const rasterBoundedTarget = (target) =>"));
+    assert!(script.contains("const canCommitViewportScrollLocally = (target) =>"));
+    assert!(script.contains("const nativeRasterScrollEnabled = () =>"));
+    assert!(script.contains("const nativeRasterImageReady = () =>"));
+    assert!(script.contains("const canUseNativeRasterScroll = () =>"));
+    assert!(script.contains("const setNativeRasterScrollPosition = (target) =>"));
+    assert!(script.contains("const installNativeRasterLoadSync = () =>"));
+    assert!(script.contains(
+        r#"raster.addEventListener("load", scheduleNativeRasterPositionSync, { once: true });"#
+    ));
+    assert!(script.contains("if (raster.complete)"));
+    assert!(script.contains(
+        "const commitNativeRasterScrollPosition = (inputSource = \"native\", options = {}) =>"
+    ));
+    assert!(script.contains("cancelBrowserAnimationFrame(nativeRasterScrollFrame);"));
+    assert!(script.contains("let nativeRasterScrollTimeout = null;"));
+    assert!(script.contains("let nativeRasterScrollMonitorFrame = null;"));
+    assert!(script.contains("let nativeRasterLastObservedOffset = null;"));
+    assert!(script.contains("const nativeRasterCurrentPixelOffset = () =>"));
+    assert!(script.contains("const flushNativeRasterScrollCommit = () =>"));
+    assert!(script.contains("nativeRasterScrollTimeout = setTimeout(() =>"));
+    assert!(script.contains("const nativeRasterScrollTargetChanged = () =>"));
+    assert!(
+        script.contains(
+            "const maybeCommitNativeRasterScroll = (inputSource = \"native-monitor\") =>"
+        )
+    );
+    assert!(script.contains("const nativeRasterScrollMonitorMs = 80;"));
+    assert!(script.contains(
+        "setInterval(() => maybeCommitNativeRasterScroll(\"native-monitor\"), nativeRasterScrollMonitorMs);"
+    ));
+    assert!(
+        script.contains(
+            "const observeNativeRasterScrollOffset = (inputSource = \"native-frame\") =>"
+        )
+    );
+    assert!(script.contains("shell.dataset.browserNativeRasterScrollState = \"native-observed\";"));
+    assert!(script.contains("const runNativeRasterFrameMonitor = () =>"));
+    assert!(script.contains("observeNativeRasterScrollOffset(\"native-frame\");"));
+    assert!(script.contains(
+        "nativeRasterScrollMonitorFrame = browserAnimationFrame(runNativeRasterFrameMonitor);"
+    ));
+    assert!(script.contains("let nativeRasterProgrammaticOffset = null;"));
+    assert!(script.contains("nativeRasterProgrammaticOffset = { x: offset.x, y: offset.y };"));
+    assert!(script.contains("nativeRasterLastObservedOffset = { x: offset.x, y: offset.y };"));
+    assert!(script.contains("const isProgrammaticOffset = nativeRasterProgrammaticOffset"));
+    assert!(script.contains("clearNativeRasterProgrammaticScroll();"));
+    assert!(script.contains(
+        "const handleNativeRasterScrollEvent = (inputSource = nativeRasterScrollInputSource) =>"
+    ));
+    assert!(script.contains("const eventPointInsideViewportShell = (event) =>"));
+    assert!(script.contains("const scheduleNativeRasterWheelCommit = () =>"));
+    assert!(script.contains(r#"document.addEventListener("scroll", (event) =>"#));
+    assert!(script.contains(r#"document.addEventListener("wheel", (event) =>"#));
+    assert!(script.contains("setTimeout(() => observeNativeRasterScrollOffset(\"wheel\"), 0);"));
+    assert!(script.contains("const viewportPointBase = () => canUseNativeRasterScroll()"));
+    assert!(script.contains("Math.floor(shell.scrollLeft / Math.max(1, cell.width))"));
+    assert!(script.contains("Math.floor(shell.scrollTop / Math.max(1, cell.height))"));
+    assert!(script.contains("const nativeRasterCanScrollDelta = (deltaX, deltaY) =>"));
+    assert!(script.contains("const commitViewportScrollLocally = (scroll, inputSource) =>"));
+    assert!(script.contains("const viewportInteractionRect = () =>"));
+    assert!(script.contains("shell.dataset.browserRasterViewportPixelWidth"));
+    assert!(script.contains(r#"shell.dataset.browserOverscanRaster === "true""#));
+    assert!(script.contains(r#"shell.dataset.browserScrollLocalCommit = "overscan""#));
+    assert!(
+        script
+            .contains("const syncLocalScrollCommitState = (scroll, inputSource, options = {}) =>")
+    );
+    assert!(script.contains("const shouldDeferLocalScrollHeavySync = (inputSource) =>"));
+    assert!(script.contains("const runLocalScrollHeavySync = (scroll, inputSource) =>"));
+    assert!(script.contains("const scheduleLocalScrollHeavySync = (scroll, inputSource) =>"));
+    assert!(script.contains(r#"shell.dataset.browserScrollDeferredHeavySync = "scheduled""#));
+    assert!(script.contains(r#"shell.dataset.browserScrollDeferredHeavySync = "applied""#));
+    assert!(script.contains("let localScrollHeavySyncTimer = null;"));
+    assert!(script.contains("let localScrollHeavySyncTarget = null;"));
+    assert!(script.contains("const runLocalScrollBookkeeping = (scroll, inputSource) =>"));
+    assert!(script.contains("const deferLocalScrollBookkeeping = (scroll, inputSource) =>"));
+    assert!(script.contains("let localScrollBookkeepingTimeout = null;"));
+    assert!(script.contains("localScrollBookkeepingFrame = browserAnimationFrame(flush);"));
+    assert!(script.contains("localScrollBookkeepingTimeout = setTimeout(flush, 16);"));
+    assert!(script.contains("scheduleBackgroundViewportRefresh(scroll, inputSource);"));
+    assert!(script.contains("scheduleLocalScrollHeavySync(scroll, inputSource);"));
+    assert!(script.contains("shell.dataset.browserScrollImmediateSync = \"true\";"));
+    assert!(script.contains(
+        "syncLocalScrollCommitState(target, inputSource, { deferHeavySync: Boolean(options.deferHeavySync) });"
+    ));
+    assert!(script.contains("syncLocalScrollCommitState(scroll, inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });"));
+    assert!(script.contains("deferLocalScrollBookkeeping(scroll, inputSource);"));
+    assert!(script.contains("syncNativeRasterScrollPosition();"));
+    assert!(script.contains("installNativeRasterLoadSync();"));
+    assert!(script.contains(
+        "syncNativeRasterScrollPosition();\n  installNativeRasterLoadSync();\n  syncViewportHistory();"
+    ));
+    assert!(script.contains(r#"shell.dataset.browserWheelScrollMode = "native-overscan""#));
+    assert!(script.contains(r#"scheduleNativeRasterScrollCommit("wheel");"#));
+    assert!(script.contains("handleNativeRasterScrollEvent(nativeRasterScrollInputSource);"));
+    assert!(script.contains("const viewportPointFromEvent = (event, options = {}) =>"));
+    assert!(script.contains("if (options.commitNativeScroll)"));
+    assert!(
+        script.contains("commitNativeRasterScrollPosition(options.inputSource || \"pointer\");")
+    );
+    assert!(script.contains("if (partialRequestInFlight) {"));
+    assert!(script.contains("abortPartialViewportRequest();"));
+    assert!(script.contains("const base = viewportPointBase();"));
+    assert!(script.contains("const rasterBitmapSize = () =>"));
+    assert!(script.contains("const rasterDisplayMetrics = () =>"));
+    assert!(script.contains("scaleX: bitmap.width / Math.max(1, rasterRect.width)"));
+    assert!(script.contains("const rasterContentPointFromEvent = (event) =>"));
+    assert!(script.contains("const explicitCellWidth = Number(shell.dataset.browserRasterCellWidth), explicitCellHeight = Number(shell.dataset.browserRasterCellHeight);"));
+    assert!(script.contains("return { width: explicitCellWidth, height: explicitCellHeight };"));
+    assert!(script.contains("const explicitPaddingX = Number(shell.dataset.browserRasterPaddingX), explicitPaddingY = Number(shell.dataset.browserRasterPaddingY);"));
+    assert!(script.contains("return { x: explicitPaddingX, y: explicitPaddingY };"));
+    assert!(script.contains(
+        "const shellContentX = event.clientX - metrics.shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft;"
+    ));
+    assert!(script.contains(
+        "const shellContentY = event.clientY - metrics.shellRect.top - (shell.clientTop || 0) + shell.scrollTop;"
+    ));
+    assert!(script.contains("const viewportRasterPixelPadding = () =>"));
+    assert!(script.contains("const maxPageY = numberData(\"maxScrollY\") + viewportHeight - 1;"));
+    assert!(script.contains(
+        "const domY = clamp(Math.floor((rawY - padding.y) / Math.max(1, cell.height)), 0, viewportHeight - 1);"
+    ));
+    assert!(script.contains("contentX: contentPoint.contentX"));
+    assert!(script.contains("const pageY = clamp(base.y + domY, 0, maxPageY);"));
+    assert!(script.contains(
+        "const hadPendingUi = shell.dataset.viewportPending === \"true\" || shell.dataset.viewportRequest || partialRequestInFlight || Boolean(pendingScrollTimer);"
+    ));
+    assert!(script.contains(
+        "if (hadPendingUi) {\n      clearViewportPending();\n    } else {\n      clearOptimisticScroll();"
+    ));
+    assert!(script.contains("updateViewportSummaryForLocalCommit(scroll);"));
+    assert!(script.contains("runLocalScrollHeavySync(scroll, inputSource);"));
+    assert!(script.contains(
+        "shell.dataset.viewportState = \"settled\";\n    shell.dataset.settledViewportX = String(scroll.x);\n    shell.dataset.settledViewportY = String(scroll.y);\n    syncLocalScrollCommitState(scroll, inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });\n    deferLocalScrollBookkeeping(scroll, inputSource);"
+    ));
+    assert!(script.contains(
+        "const scheduleBackgroundViewportRefresh = (target, inputSource = \"local\") =>"
+    ));
+    assert!(script.contains("const flushBackgroundViewportRefresh = () =>"));
+    assert!(script.contains("const viewportPartialRasterDecodeTimeoutMs = 80;"));
+    assert!(script.contains("const backgroundViewportPartialRasterDecodeTimeoutMs = 320;"));
+    assert!(script.contains("const predecodeViewportPartialRaster = (html, options = {}) =>"));
+    assert!(script.contains("const viewportPartialRasterReadyForSwap = () =>"));
+    assert!(script.contains(
+        r#"const image = typeof Image === "function" ? new Image() : document.createElement("img");"#
+    ));
+    assert!(
+        script.contains(r#"shell.dataset.browserViewportPartialRasterDecode = "unavailable";"#)
+    );
+    assert!(
+        script.contains(r#"shell.dataset.browserViewportPartialRasterDecode = "parse-error";"#)
+    );
+    assert!(script.contains(
+        "const rasterDecodeState = shell.dataset.browserViewportPartialRasterDecode || \"\";"
+    ));
+    assert!(script.contains(r#"const currentRaster = shell.querySelector(".browser-raster");"#));
+    assert!(script.contains(r#"const nextRaster = nextShell.querySelector(".browser-raster");"#));
+    assert!(script.contains("if (currentRaster && !nextRaster) {"));
+    assert!(script.contains(r#"shell.dataset.browserViewportPartialPreservedRaster = "true";"#));
+    assert!(script.contains(
+        r#"shell.dataset.browserViewportPartialRasterDecode = "missing-raster-preserved";"#
+    ));
+    assert!(
+        script.contains("shell.dataset.browserViewportPartialRasterDecode = rasterDecodeState;")
+    );
+    assert_eq!(
+        script
+            .matches(".then((html) => predecodeViewportPartialRaster(html)).then((html) =>")
+            .count(),
+        1
+    );
+    assert_eq!(
+        script
+            .matches("predecodeViewportPartialRaster(html, {\n      timeoutMs: backgroundViewportPartialRasterDecodeTimeoutMs\n    })")
+            .count(),
+        1
+    );
+    assert!(
+        script.contains(
+            r#"shell.dataset.browserScrollBackgroundRefresh = "preserved-raster-unready";"#
+        )
+    );
+    assert!(script.contains(
+        "shell.dataset.browserScrollBackgroundRefreshPreservedReason = shell.dataset.browserViewportPartialRasterDecode || \"unknown\";"
+    ));
+    assert!(script.contains("const isInteractiveScrollInput = (inputSource) => inputSource === \"wheel\" || inputSource === \"drag\";"));
+    assert!(script.contains("const interactiveScrollRefreshIdleMs = 160;"));
+    assert!(
+        script
+            .contains("const backgroundViewportRefreshDelayMs = (inputSource, nearRasterEdge) =>")
+    );
+    assert!(script.contains("return nearRasterEdge ? 64 : 220;"));
+    assert!(script.contains("return nearRasterEdge ? 32 : 120;"));
+    assert!(script.contains("if (isInteractiveScrollInput(backgroundViewportRefreshInputSource))"));
+    assert!(script.contains("backgroundViewportRefreshInputSource = inputSource;"));
+    assert!(script.contains("lastInteractiveScrollAt = Date.now();"));
+    assert!(script.contains(r#"const canScrollHorizontally = numberData("maxScrollX") > 0;"#));
+    assert!(script.contains(r#"const canScrollVertically = numberData("maxScrollY") > 0;"#));
+    assert!(script.contains(
+        "const nearHorizontalEdge = canScrollHorizontally && (left <= lookaheadX || right <= lookaheadX);"
+    ));
+    assert!(script.contains(
+        "const nearVerticalEdge = canScrollVertically && (top <= lookaheadY || bottom <= lookaheadY);"
+    ));
+    assert!(script.contains("nearRasterEdge && !isInteractiveScrollInput(inputSource)"));
+    assert!(script.contains(r#"? "coalesced-during-interaction""#));
+    assert!(script.contains(r#": "coalesced-while-in-flight""#));
+    assert!(script.contains(
+        "const scheduleBackgroundViewportRefreshTimer = (inputSource, nearRasterEdge) =>"
+    ));
+    assert!(
+        !script.contains(
+            r#"shell.dataset.browserScrollBackgroundRefresh = "aborted-for-interaction""#
+        )
+    );
+    assert!(script.contains("if (requestSeq !== backgroundViewportRefreshSeq)"));
+    assert!(script.contains(r#"? "waiting-for-interaction-idle-near-edge""#));
+    assert!(script.contains(r#": "waiting-for-interaction-idle""#));
+    assert!(script.contains("let lastInteractiveScrollAt = 0;"));
+    assert!(script.contains(r#"url.searchParams.set("action", "current")"#));
+    assert!(script.contains(r#"url.searchParams.set("partial", "viewport")"#));
+    assert!(script.contains("if (!viewportTargetMatchesCurrent(target))"));
+    assert!(script.contains(r#"shell.dataset.browserScrollBackgroundRefresh = "in-flight""#));
+    assert!(script.contains(r#"shell.dataset.browserScrollBackgroundRefresh = "applied""#));
+    assert!(script.contains("if (commitViewportScrollLocally(pending, inputSource))"));
+    assert!(script.contains("const applyOptimisticScroll = (target) =>"));
+    assert!(script.contains("const clearOptimisticScroll = () =>"));
+    assert!(script.contains(r#"shell.dataset.browserOptimisticScroll = "true""#));
+    assert!(
+        script.contains(
+            r#"shell.dataset.browserOptimisticScrollState = offset.clipped ? "translated-clipped" : "translated""#
+        )
+    );
+    assert!(script.contains("shell.dataset.browserOptimisticVisualTargetY"));
+    assert!(script.contains(r#"shell.style.setProperty("--browser-optimistic-scroll-x""#));
+    assert!(script.contains(r#"shell.style.removeProperty("--browser-optimistic-scroll-x")"#));
+    assert!(script.contains("applyOptimisticScroll(pending);"));
+    assert!(script.contains("applyOptimisticScroll(scroll);"));
+    assert!(script.contains("applyOptimisticScroll(queued);"));
+    assert!(script.contains("abortBackgroundViewportRefresh();"));
+    assert!(script.contains("const markScrollQueued = (inputSource) =>"));
+    assert!(script.contains("if (commitViewportScrollLocally(pending, inputSource))"));
+    assert!(script.contains("markScrollQueued(inputSource);"));
+}
+
+#[test]
+fn browser_session_current_visual_refresh_gets_startup_budget_without_slowing_scroll() {
+    assert_eq!(
+        browser_visual_viewport_refresh_timeout(&BrowserSessionAction::Current),
+        BROWSER_VISUAL_VIEWPORT_CURRENT_REFRESH_TIMEOUT
+    );
+    assert_eq!(
+        browser_visual_viewport_refresh_timeout(&BrowserSessionAction::Scroll { dx: 0, dy: 1 }),
+        BROWSER_VISUAL_VIEWPORT_REFRESH_TIMEOUT
+    );
+}
+
+#[test]
+fn browser_session_viewport_image_uses_bounded_realtime_overscan_window() {
+    assert_eq!(
+        browser_session_overscan_viewport(0, 44, 100, 44, 100, 1000),
+        (0, 0, 100, 176)
+    );
+    assert_eq!(
+        browser_session_overscan_viewport(0, 0, 100, 44, 100, 1000),
+        (0, 0, 100, 176)
+    );
+    assert_eq!(
+        browser_session_overscan_viewport(0, 500, 100, 44, 100, 1000),
+        (0, 434, 100, 176)
+    );
+    assert_eq!(
+        browser_session_overscan_viewport(0, 956, 100, 44, 100, 1000),
+        (0, 824, 100, 176)
+    );
+    assert_eq!(
+        browser_session_overscan_viewport(100, 0, 40, 10, 300, 10),
+        (100, 0, 40, 10)
+    );
+}
+
 fn assert_chrome_page_action_state(
     topbar_html: &str,
     payload: &BrowserSessionPayload,
@@ -118,6 +425,31 @@ fn assert_chrome_page_action_state(
             "images",
             image_href,
         );
+    }
+}
+
+fn empty_render_diagnostics() -> BrowserRenderDiagnosticsReport {
+    BrowserRenderDiagnosticsReport {
+        source: "about:blank".to_owned(),
+        title: String::new(),
+        viewport: BrowserViewportState {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        document_width: 1,
+        document_height: 1,
+        display_command_count: 0,
+        visible_command_count: 0,
+        visual_fill_command_count: 0,
+        visual_fill_area: 0,
+        viewport_area: 1,
+        fill_coverage_bps: 0,
+        meaningful_text_rows: 0,
+        meaningful_text_rows_outside_visual: 0,
+        readability_overlay_applied: false,
+        largest_visual_fills: Vec::new(),
     }
 }
 
@@ -2128,378 +2460,380 @@ async fn browser_session_registry_reports_and_jumps_page_anchors() {
     assert!(payload.viewport.contains("Top"));
 }
 
-#[tokio::test]
-async fn browser_session_registry_finds_and_cycles_page_text() {
-    let dir = tempfile::tempdir().unwrap();
-    let page = dir.path().join("find.html");
-    std::fs::write(
+#[test]
+fn browser_session_registry_finds_and_cycles_page_text() {
+    run_browser_session_async_test_with_stack(|| async {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("find.html");
+        std::fs::write(
         &page,
         r#"<!doctype html><title>Find</title><p>intro</p><p>needle first</p><p>middle</p><p>needle second</p><p>tail</p>"#,
     )
     .unwrap();
 
-    let registry = BrowserSessionRegistry::default();
-    let create = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![("url".to_owned(), page.display().to_string())],
-    };
-    let (payload, _) = registry.create_target(&create).await.unwrap();
-    let original_id = payload.id.clone();
+        let registry = BrowserSessionRegistry::default();
+        let create = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![("url".to_owned(), page.display().to_string())],
+        };
+        let (payload, _) = registry.create_target(&create).await.unwrap();
+        let original_id = payload.id.clone();
 
-    let find = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("action".to_owned(), "find".to_owned()),
-            ("q".to_owned(), "needle".to_owned()),
-        ],
-    };
-    let (payload, _) = registry.apply_target(&find).await.unwrap();
-    assert_eq!(payload.find_query, "needle");
-    assert_eq!(payload.find_match_count, 2);
-    assert_eq!(payload.find_current_index, Some(0));
-    assert_eq!(payload.find_current_line, Some(1));
-    assert_eq!(payload.find_current_column, Some(0));
-    assert_eq!(payload.find_matches.len(), 2);
-    assert_eq!(payload.find_matches[0].line + 1, 2);
-    assert_eq!(payload.find_matches[0].column + 1, 1);
-    assert!(payload.find_matches[0].current);
-    assert!(payload.find_matches[0].text.contains("needle first"));
-    assert_eq!(payload.find_matches[1].line + 1, 4);
-    assert_eq!(payload.find_matches[1].column + 1, 1);
-    assert!(!payload.find_matches[1].current);
-    assert!(
-        payload.find_matches[1]
-            .action_url
-            .contains("action=find-match")
-    );
-    assert!(payload.find_matches[1].action_url.contains("match=2"));
-    assert!(
-        payload.find_matches[1]
-            .new_session_url
-            .contains("action=find-match-new-session")
-    );
-    assert!(payload.find_matches[1].new_session_url.contains("match=2"));
-    assert!(
-        payload.find_matches[1]
-            .background_session_url
-            .contains("action=find-match-background-session")
-    );
-    assert!(
-        payload.find_matches[1]
-            .background_session_url
-            .contains("match=2")
-    );
-    assert!(payload.viewport.contains("needle first"));
-    let html = render_browser_session_page(&payload, "/search?q=find");
-    assert!(html.contains(r#"data-browser-address type="text" inputmode="url""#));
-    assert!(html.contains(r#"data-browser-find type="search" name="q" value="needle""#));
-    assert!(html.contains(r#"<script data-browser-keyboard-controls>"#));
-    assert!(html.contains(r#"event.metaKey || event.ctrlKey"#));
-    assert!(html.contains("focusAndSelect(addressInput)"));
-    assert!(html.contains("focusAndSelect(findInput)"));
-    assert!(html.contains("window.location.href = reloadUrl"));
-    assert!(html.contains("<mark>needle</mark> first"));
-    assert!(html.contains(">Previous</a>"));
-    assert!(html.contains(">Next</a>"));
-    assert!(html.contains("Find JSON"));
-    assert!(html.contains("format=find-json"));
-    assert!(html.contains("Find CSV"));
-    assert!(html.contains("format=find-csv"));
-    assert!(html.contains(r#"class="find-match current""#));
-    assert!(html.contains("action=find-match"));
-    assert!(html.contains("action=find-match-new-session"));
-    assert!(html.contains("action=find-match-background-session"));
-    assert!(html.contains("action=open-find-matches-new-sessions"));
-    assert!(html.contains("action=open-find-matches-background-sessions"));
-    let find_json_export = RequestTarget {
-        path: "/api/browser-session".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("format".to_owned(), "find-json".to_owned()),
-        ],
-    };
-    let response = browser_session_api_response(&find_json_export, &payload);
-    assert_eq!(response.status, 200);
-    assert_eq!(response.content_type, "application/json; charset=utf-8");
-    let exported_find: serde_json::Value = serde_json::from_str(&response.body).unwrap();
-    assert_eq!(exported_find["format"], "browser-find");
-    assert_eq!(exported_find["id"], payload.id);
-    assert_eq!(exported_find["query"], "needle");
-    assert_eq!(exported_find["match_count"], 2);
-    assert_eq!(exported_find["current_index"], 0);
-    assert_eq!(exported_find["current_line"], 1);
-    assert_eq!(exported_find["current_column"], 0);
-    assert_eq!(exported_find["matches"].as_array().unwrap().len(), 2);
-    assert_eq!(exported_find["matches"][0]["text"], "needle first");
-    assert_eq!(exported_find["matches"][0]["column"], 0);
-    assert_eq!(exported_find["matches"][0]["current"], true);
-    assert!(
-        exported_find["matches"][1]["action_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match")
-    );
-    assert!(
-        exported_find["matches"][1]["new_session_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match-new-session")
-    );
-    assert!(
-        exported_find["matches"][1]["background_session_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match-background-session")
-    );
-    assert!(
-        exported_find["csv_url"]
-            .as_str()
-            .unwrap()
-            .contains("format=find-csv")
-    );
-    assert!(
-        exported_find["session_state_url"]
-            .as_str()
-            .unwrap()
-            .contains("format=session-state")
-    );
-    let find_csv_export = RequestTarget {
-        path: "/api/browser-session".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("format".to_owned(), "find-csv".to_owned()),
-        ],
-    };
-    let response = browser_session_api_response(&find_csv_export, &payload);
-    assert_eq!(response.status, 200);
-    assert_eq!(response.content_type, "text/csv; charset=utf-8");
-    assert!(response.body.starts_with("match_index,line,column,current,query,text,action_url,new_session_url,background_session_url,session_id,source,match_count,current_match_index,current_line,current_column\n"));
-    assert_eq!(response.body.lines().count(), 3);
-    assert!(response.body.contains("1,2,1,true,needle,needle first"));
-    assert!(response.body.contains("2,4,1,false,needle,needle second"));
-    assert!(response.body.contains("action=find-match"));
-    assert!(response.body.contains("action=find-match-new-session"));
-    assert!(
-        response
-            .body
-            .contains("action=find-match-background-session")
-    );
-    assert!(response.body.contains(",2,1,2,1"));
-    let state_export = RequestTarget {
-        path: "/api/browser-session".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("format".to_owned(), "session-state".to_owned()),
-        ],
-    };
-    let response = browser_session_api_response(&state_export, &payload);
-    assert_eq!(response.status, 200);
-    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
-    assert_eq!(exported["find"]["query"], "needle");
-    assert_eq!(exported["find"]["match_count"], 2);
-    assert_eq!(exported["find"]["current_index"], 0);
-    assert_eq!(exported["find"]["current_line"], 1);
-    assert_eq!(exported["find"]["current_column"], 0);
-    assert_eq!(exported["find"]["matches"].as_array().unwrap().len(), 2);
-    assert_eq!(exported["find"]["matches"][0]["text"], "needle first");
-    assert_eq!(exported["find"]["matches"][0]["column"], 0);
-    assert_eq!(exported["find"]["matches"][0]["current"], true);
-    assert!(
-        exported["find"]["matches"][1]["action_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match")
-    );
-    assert!(
-        exported["find"]["matches"][1]["new_session_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match-new-session")
-    );
-    assert!(
-        exported["find"]["matches"][1]["background_session_url"]
-            .as_str()
-            .unwrap()
-            .contains("action=find-match-background-session")
-    );
-    assert!(
-        exported["action_urls"]["open_find_matches_new_sessions"]
-            .as_str()
-            .unwrap()
-            .contains("action=open-find-matches-new-sessions")
-    );
-    assert!(
-        exported["action_urls"]["open_find_matches_background"]
-            .as_str()
-            .unwrap()
-            .contains("action=open-find-matches-background-sessions")
-    );
-    assert!(
-        exported["action_urls"]["clear_find"]
-            .as_str()
-            .unwrap()
-            .contains("action=clear-find")
-    );
-    let state_csv_export = RequestTarget {
-        path: "/api/browser-session".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("format".to_owned(), "session-state-csv".to_owned()),
-        ],
-    };
-    let response = browser_session_api_response(&state_csv_export, &payload);
-    assert_eq!(response.status, 200);
-    assert_eq!(response.content_type, "text/csv; charset=utf-8");
-    assert!(response.body.contains("find,,needle,match_count,2,1,2,1,"));
-    assert!(response.body.contains("action=clear-find"));
-
-    let jump_second = RequestTarget {
-        path: "/browser".to_owned(),
-        params: form_urlencoded::parse(
+        let find = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("action".to_owned(), "find".to_owned()),
+                ("q".to_owned(), "needle".to_owned()),
+            ],
+        };
+        let (payload, _) = registry.apply_target(&find).await.unwrap();
+        assert_eq!(payload.find_query, "needle");
+        assert_eq!(payload.find_match_count, 2);
+        assert_eq!(payload.find_current_index, Some(0));
+        assert_eq!(payload.find_current_line, Some(1));
+        assert_eq!(payload.find_current_column, Some(0));
+        assert_eq!(payload.find_matches.len(), 2);
+        assert_eq!(payload.find_matches[0].line + 1, 2);
+        assert_eq!(payload.find_matches[0].column + 1, 1);
+        assert!(payload.find_matches[0].current);
+        assert!(payload.find_matches[0].text.contains("needle first"));
+        assert_eq!(payload.find_matches[1].line + 1, 4);
+        assert_eq!(payload.find_matches[1].column + 1, 1);
+        assert!(!payload.find_matches[1].current);
+        assert!(
             payload.find_matches[1]
                 .action_url
-                .trim_start_matches("/browser?")
-                .as_bytes(),
-        )
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect(),
-    };
-    let (payload, _) = registry.apply_target(&jump_second).await.unwrap();
-    assert_eq!(payload.find_match_count, 2);
-    assert_eq!(payload.find_current_index, Some(1));
-    assert_eq!(payload.find_current_column, Some(0));
-    assert!(payload.viewport.contains("needle second"));
+                .contains("action=find-match")
+        );
+        assert!(payload.find_matches[1].action_url.contains("match=2"));
+        assert!(
+            payload.find_matches[1]
+                .new_session_url
+                .contains("action=find-match-new-session")
+        );
+        assert!(payload.find_matches[1].new_session_url.contains("match=2"));
+        assert!(
+            payload.find_matches[1]
+                .background_session_url
+                .contains("action=find-match-background-session")
+        );
+        assert!(
+            payload.find_matches[1]
+                .background_session_url
+                .contains("match=2")
+        );
+        assert!(payload.viewport.contains("needle first"));
+        let html = render_browser_session_page(&payload, "/search?q=find");
+        assert!(html.contains(r#"data-browser-address type="text" inputmode="url""#));
+        assert!(html.contains(r#"data-browser-find type="search" name="q" value="needle""#));
+        assert!(html.contains(r#"<script data-browser-keyboard-controls>"#));
+        assert!(html.contains(r#"event.metaKey || event.ctrlKey"#));
+        assert!(html.contains("focusAndSelect(addressInput)"));
+        assert!(html.contains("focusAndSelect(findInput)"));
+        assert!(html.contains("window.location.href = reloadUrl"));
+        assert!(html.contains("<mark>needle</mark> first"));
+        assert!(html.contains(">Previous</a>"));
+        assert!(html.contains(">Next</a>"));
+        assert!(html.contains("Find JSON"));
+        assert!(html.contains("format=find-json"));
+        assert!(html.contains("Find CSV"));
+        assert!(html.contains("format=find-csv"));
+        assert!(html.contains(r#"class="find-match current""#));
+        assert!(html.contains("action=find-match"));
+        assert!(html.contains("action=find-match-new-session"));
+        assert!(html.contains("action=find-match-background-session"));
+        assert!(html.contains("action=open-find-matches-new-sessions"));
+        assert!(html.contains("action=open-find-matches-background-sessions"));
+        let find_json_export = RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "find-json".to_owned()),
+            ],
+        };
+        let response = browser_session_api_response(&find_json_export, &payload);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "application/json; charset=utf-8");
+        let exported_find: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(exported_find["format"], "browser-find");
+        assert_eq!(exported_find["id"], payload.id);
+        assert_eq!(exported_find["query"], "needle");
+        assert_eq!(exported_find["match_count"], 2);
+        assert_eq!(exported_find["current_index"], 0);
+        assert_eq!(exported_find["current_line"], 1);
+        assert_eq!(exported_find["current_column"], 0);
+        assert_eq!(exported_find["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(exported_find["matches"][0]["text"], "needle first");
+        assert_eq!(exported_find["matches"][0]["column"], 0);
+        assert_eq!(exported_find["matches"][0]["current"], true);
+        assert!(
+            exported_find["matches"][1]["action_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match")
+        );
+        assert!(
+            exported_find["matches"][1]["new_session_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match-new-session")
+        );
+        assert!(
+            exported_find["matches"][1]["background_session_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match-background-session")
+        );
+        assert!(
+            exported_find["csv_url"]
+                .as_str()
+                .unwrap()
+                .contains("format=find-csv")
+        );
+        assert!(
+            exported_find["session_state_url"]
+                .as_str()
+                .unwrap()
+                .contains("format=session-state")
+        );
+        let find_csv_export = RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "find-csv".to_owned()),
+            ],
+        };
+        let response = browser_session_api_response(&find_csv_export, &payload);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/csv; charset=utf-8");
+        assert!(response.body.starts_with("match_index,line,column,current,query,text,action_url,new_session_url,background_session_url,session_id,source,match_count,current_match_index,current_line,current_column\n"));
+        assert_eq!(response.body.lines().count(), 3);
+        assert!(response.body.contains("1,2,1,true,needle,needle first"));
+        assert!(response.body.contains("2,4,1,false,needle,needle second"));
+        assert!(response.body.contains("action=find-match"));
+        assert!(response.body.contains("action=find-match-new-session"));
+        assert!(
+            response
+                .body
+                .contains("action=find-match-background-session")
+        );
+        assert!(response.body.contains(",2,1,2,1"));
+        let state_export = RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "session-state".to_owned()),
+            ],
+        };
+        let response = browser_session_api_response(&state_export, &payload);
+        assert_eq!(response.status, 200);
+        let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(exported["find"]["query"], "needle");
+        assert_eq!(exported["find"]["match_count"], 2);
+        assert_eq!(exported["find"]["current_index"], 0);
+        assert_eq!(exported["find"]["current_line"], 1);
+        assert_eq!(exported["find"]["current_column"], 0);
+        assert_eq!(exported["find"]["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(exported["find"]["matches"][0]["text"], "needle first");
+        assert_eq!(exported["find"]["matches"][0]["column"], 0);
+        assert_eq!(exported["find"]["matches"][0]["current"], true);
+        assert!(
+            exported["find"]["matches"][1]["action_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match")
+        );
+        assert!(
+            exported["find"]["matches"][1]["new_session_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match-new-session")
+        );
+        assert!(
+            exported["find"]["matches"][1]["background_session_url"]
+                .as_str()
+                .unwrap()
+                .contains("action=find-match-background-session")
+        );
+        assert!(
+            exported["action_urls"]["open_find_matches_new_sessions"]
+                .as_str()
+                .unwrap()
+                .contains("action=open-find-matches-new-sessions")
+        );
+        assert!(
+            exported["action_urls"]["open_find_matches_background"]
+                .as_str()
+                .unwrap()
+                .contains("action=open-find-matches-background-sessions")
+        );
+        assert!(
+            exported["action_urls"]["clear_find"]
+                .as_str()
+                .unwrap()
+                .contains("action=clear-find")
+        );
+        let state_csv_export = RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "session-state-csv".to_owned()),
+            ],
+        };
+        let response = browser_session_api_response(&state_csv_export, &payload);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/csv; charset=utf-8");
+        assert!(response.body.contains("find,,needle,match_count,2,1,2,1,"));
+        assert!(response.body.contains("action=clear-find"));
 
-    let previous = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("action".to_owned(), "find-prev".to_owned()),
-        ],
-    };
-    let (payload, _) = registry.apply_target(&previous).await.unwrap();
-    assert_eq!(payload.find_current_index, Some(0));
-    assert_eq!(payload.find_current_column, Some(0));
-    assert!(payload.viewport.contains("needle first"));
+        let jump_second = RequestTarget {
+            path: "/browser".to_owned(),
+            params: form_urlencoded::parse(
+                payload.find_matches[1]
+                    .action_url
+                    .trim_start_matches("/browser?")
+                    .as_bytes(),
+            )
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+        };
+        let (payload, _) = registry.apply_target(&jump_second).await.unwrap();
+        assert_eq!(payload.find_match_count, 2);
+        assert_eq!(payload.find_current_index, Some(1));
+        assert_eq!(payload.find_current_column, Some(0));
+        assert!(payload.viewport.contains("needle second"));
 
-    let next = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("action".to_owned(), "find-next".to_owned()),
-        ],
-    };
-    let (payload, _) = registry.apply_target(&next).await.unwrap();
-    assert_eq!(payload.find_match_count, 2);
-    assert_eq!(payload.find_current_index, Some(1));
-    assert_eq!(payload.find_current_column, Some(0));
-    assert!(payload.viewport.contains("needle second"));
+        let previous = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("action".to_owned(), "find-prev".to_owned()),
+            ],
+        };
+        let (payload, _) = registry.apply_target(&previous).await.unwrap();
+        assert_eq!(payload.find_current_index, Some(0));
+        assert_eq!(payload.find_current_column, Some(0));
+        assert!(payload.viewport.contains("needle first"));
 
-    let second_new_session_url = payload.find_matches[1].new_session_url.clone();
-    let first_background_session_url = payload.find_matches[0].background_session_url.clone();
-    let open_second_new_session = RequestTarget {
-        path: "/browser".to_owned(),
-        params: form_urlencoded::parse(
-            second_new_session_url
-                .trim_start_matches("/browser?")
-                .as_bytes(),
-        )
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect(),
-    };
-    let (payload, _) = registry
-        .apply_target(&open_second_new_session)
-        .await
-        .unwrap();
-    let second_session_id = payload.id.clone();
-    assert_ne!(second_session_id, original_id);
-    assert_eq!(payload.title, "Find");
-    assert_eq!(payload.find_query, "needle");
-    assert_eq!(payload.find_current_index, Some(1));
-    assert!(payload.viewport.contains("needle second"));
-    assert_eq!(payload.sessions.len(), 2);
-    assert!(
-        payload
+        let next = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("action".to_owned(), "find-next".to_owned()),
+            ],
+        };
+        let (payload, _) = registry.apply_target(&next).await.unwrap();
+        assert_eq!(payload.find_match_count, 2);
+        assert_eq!(payload.find_current_index, Some(1));
+        assert_eq!(payload.find_current_column, Some(0));
+        assert!(payload.viewport.contains("needle second"));
+
+        let second_new_session_url = payload.find_matches[1].new_session_url.clone();
+        let first_background_session_url = payload.find_matches[0].background_session_url.clone();
+        let open_second_new_session = RequestTarget {
+            path: "/browser".to_owned(),
+            params: form_urlencoded::parse(
+                second_new_session_url
+                    .trim_start_matches("/browser?")
+                    .as_bytes(),
+            )
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+        };
+        let (payload, _) = registry
+            .apply_target(&open_second_new_session)
+            .await
+            .unwrap();
+        let second_session_id = payload.id.clone();
+        assert_ne!(second_session_id, original_id);
+        assert_eq!(payload.title, "Find");
+        assert_eq!(payload.find_query, "needle");
+        assert_eq!(payload.find_current_index, Some(1));
+        assert!(payload.viewport.contains("needle second"));
+        assert_eq!(payload.sessions.len(), 2);
+        assert!(
+            payload
+                .sessions
+                .iter()
+                .any(|session| session.id == original_id && !session.current)
+        );
+
+        let open_first_background_session = RequestTarget {
+            path: "/browser".to_owned(),
+            params: form_urlencoded::parse(
+                first_background_session_url
+                    .trim_start_matches("/browser?")
+                    .as_bytes(),
+            )
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+        };
+        let (payload, _) = registry
+            .apply_target(&open_first_background_session)
+            .await
+            .unwrap();
+        assert_eq!(payload.id, original_id);
+        assert_eq!(payload.find_current_index, Some(1));
+        assert!(payload.viewport.contains("needle second"));
+        assert_eq!(payload.sessions.len(), 3);
+        let background_session = payload
             .sessions
             .iter()
-            .any(|session| session.id == original_id && !session.current)
-    );
+            .find(|session| !session.current && session.id != second_session_id)
+            .unwrap();
+        let background_session_id = background_session.id.clone();
+        let switch_background = RequestTarget {
+            path: "/browser".to_owned(),
+            params: form_urlencoded::parse(
+                background_session
+                    .action_url
+                    .trim_start_matches("/browser?")
+                    .as_bytes(),
+            )
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect(),
+        };
+        let (payload, _) = registry.apply_target(&switch_background).await.unwrap();
+        assert_eq!(payload.id, background_session_id);
+        assert_eq!(payload.find_query, "needle");
+        assert_eq!(payload.find_current_index, Some(0));
+        assert_eq!(payload.find_current_column, Some(0));
+        assert!(payload.viewport.contains("needle first"));
 
-    let open_first_background_session = RequestTarget {
-        path: "/browser".to_owned(),
-        params: form_urlencoded::parse(
-            first_background_session_url
-                .trim_start_matches("/browser?")
-                .as_bytes(),
-        )
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect(),
-    };
-    let (payload, _) = registry
-        .apply_target(&open_first_background_session)
-        .await
-        .unwrap();
-    assert_eq!(payload.id, original_id);
-    assert_eq!(payload.find_current_index, Some(1));
-    assert!(payload.viewport.contains("needle second"));
-    assert_eq!(payload.sessions.len(), 3);
-    let background_session = payload
-        .sessions
-        .iter()
-        .find(|session| !session.current && session.id != second_session_id)
-        .unwrap();
-    let background_session_id = background_session.id.clone();
-    let switch_background = RequestTarget {
-        path: "/browser".to_owned(),
-        params: form_urlencoded::parse(
-            background_session
-                .action_url
-                .trim_start_matches("/browser?")
-                .as_bytes(),
-        )
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect(),
-    };
-    let (payload, _) = registry.apply_target(&switch_background).await.unwrap();
-    assert_eq!(payload.id, background_session_id);
-    assert_eq!(payload.find_query, "needle");
-    assert_eq!(payload.find_current_index, Some(0));
-    assert_eq!(payload.find_current_column, Some(0));
-    assert!(payload.viewport.contains("needle first"));
+        let clear = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id),
+                ("action".to_owned(), "clear-find".to_owned()),
+            ],
+        };
+        let (payload, _) = registry.apply_target(&clear).await.unwrap();
+        assert!(payload.find_query.is_empty());
+        assert_eq!(payload.find_match_count, 0);
+        assert_eq!(payload.find_current_index, None);
+        assert_eq!(payload.find_current_column, None);
 
-    let clear = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id),
-            ("action".to_owned(), "clear-find".to_owned()),
-        ],
-    };
-    let (payload, _) = registry.apply_target(&clear).await.unwrap();
-    assert!(payload.find_query.is_empty());
-    assert_eq!(payload.find_match_count, 0);
-    assert_eq!(payload.find_current_index, None);
-    assert_eq!(payload.find_current_column, None);
-
-    let no_match = RequestTarget {
-        path: "/browser".to_owned(),
-        params: vec![
-            ("id".to_owned(), payload.id.clone()),
-            ("action".to_owned(), "find".to_owned()),
-            ("q".to_owned(), "missing".to_owned()),
-        ],
-    };
-    let (payload, _) = registry.apply_target(&no_match).await.unwrap();
-    assert_eq!(payload.find_query, "missing");
-    assert_eq!(payload.find_match_count, 0);
-    assert!(payload.find_matches.is_empty());
-    let html = render_browser_session_page(&payload, "/search?q=find");
-    assert!(html.contains("0 matches for missing"));
-    assert!(!html.contains(">Previous</a>"));
-    assert!(!html.contains(">Next</a>"));
-    assert!(html.contains("Find JSON"));
-    assert!(html.contains("Find CSV"));
-    assert!(html.contains(">Clear</a>"));
+        let no_match = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("action".to_owned(), "find".to_owned()),
+                ("q".to_owned(), "missing".to_owned()),
+            ],
+        };
+        let (payload, _) = registry.apply_target(&no_match).await.unwrap();
+        assert_eq!(payload.find_query, "missing");
+        assert_eq!(payload.find_match_count, 0);
+        assert!(payload.find_matches.is_empty());
+        let html = render_browser_session_page(&payload, "/search?q=find");
+        assert!(html.contains("0 matches for missing"));
+        assert!(!html.contains(">Previous</a>"));
+        assert!(!html.contains(">Next</a>"));
+        assert!(html.contains("Find JSON"));
+        assert!(html.contains("Find CSV"));
+        assert!(html.contains(">Clear</a>"));
+    });
 }
 
 #[tokio::test]
@@ -2776,8 +3110,14 @@ async fn browser_session_fresh_scroll_url_canonicalizes_to_session_id() {
     );
 }
 
-#[tokio::test]
-async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
+#[test]
+fn browser_session_registry_scrolls_visual_viewport_horizontally() {
+    run_browser_session_async_test_with_stack(
+        browser_session_registry_scrolls_visual_viewport_horizontally_impl,
+    );
+}
+
+async fn browser_session_registry_scrolls_visual_viewport_horizontally_impl() {
     let dir = tempfile::tempdir().unwrap();
     let page = dir.path().join("wide.html");
     let stylesheet = dir.path().join("style.css");
@@ -2889,7 +3229,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(topbar_html.contains("data-browser-chrome-scroll-width=\"40\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-height=\"16\""));
     assert!(topbar_html.contains("data-browser-chrome-scroll-coalescing=\"queued-target\""));
-    assert!(topbar_html.contains("data-browser-chrome-scroll-flush-delay-ms=\"18\""));
+    assert!(topbar_html.contains("data-browser-chrome-scroll-flush-delay-ms=\"8\""));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-pending-state="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-action-state="idle""#));
     assert!(topbar_html.contains(r#"data-browser-chrome-scroll-input-source="idle""#));
@@ -3005,7 +3345,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(controls_html.contains(r#"data-browser-scroll-control-width="40""#));
     assert!(controls_html.contains(r#"data-browser-scroll-control-height="16""#));
     assert!(controls_html.contains("data-browser-scroll-control-coalescing=\"queued-target\""));
-    assert!(controls_html.contains("data-browser-scroll-control-flush-delay-ms=\"18\""));
+    assert!(controls_html.contains("data-browser-scroll-control-flush-delay-ms=\"8\""));
     assert!(controls_html.contains(r#"data-browser-scroll-control-state-contract="session from source viewport dimensions max-bytes""#));
     assert!(controls_html.contains(r#"data-browser-scroll-control-preserves="session from source viewport dimensions max-bytes""#));
     assert!(controls_html.contains(r#"data-browser-scroll-control-target="queued-viewport""#));
@@ -3606,10 +3946,20 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"scrollbar-gutter: stable"#));
     assert!(html.contains(r#"main { max-width: none; margin: 0;"#));
     assert!(html.contains(r#".browser-raster-shell { position: relative; width: 100%;"#));
-    assert!(html.contains(
-        r#".browser-raster { display: block; max-width: none; width: auto; height: auto; }"#
-    ));
+    assert!(html.contains(r#"contain: layout paint"#));
+    assert!(html.contains(r#".browser-raster { display: block; max-width: 100%; width: var(--browser-raster-viewport-width, 100%); height: auto; transform: translate3d("#));
+    assert!(html.contains(r#"backface-visibility: hidden"#));
     assert!(html.contains(r#".browser-raster-shell[data-viewport-pending="true"]"#));
+    assert!(html.contains(r#".browser-raster-shell[data-browser-overscan-raster="true"]"#));
+    assert!(html.contains(r#".browser-raster-shell[data-browser-native-raster-scroll="true"]"#));
+    assert!(html.contains(r#"scrollbar-width: none"#));
+    assert!(html.contains(r#".browser-raster-shell[data-browser-optimistic-scroll="true"]"#));
+    assert!(
+        html.contains(
+            r#".browser-raster-shell[data-browser-native-raster-scroll="true"] .browser-raster"#
+        ) && html.contains("const rasterCssCellSize = () =>")
+    );
+    assert!(html.contains(r#"--browser-optimistic-scroll-x"#));
     assert!(html.contains(r#"addEventListener("wheel""#));
     assert!(html.contains(r#"addEventListener("click""#));
     assert!(html.contains(r#"addEventListener("keydown""#));
@@ -3643,9 +3993,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("shell.dataset.settledViewportX = String(numberData(\"viewportX\"))"));
     assert!(html.contains("shell.dataset.settledViewportY = String(numberData(\"viewportY\"))"));
     assert!(html.contains("const markStaleViewportResponse"));
-    assert!(
-        html.contains("const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);")
-    );
+    assert!(html.contains("const queued = currentQueuedViewportTarget();"));
+    assert!(html.contains("normalizePendingScrollDelta(queued);"));
     assert!(html.contains("setPendingViewportTarget(queued);"));
     assert!(html.contains("pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)"));
     assert!(html.contains("shell.dataset.viewportState = \"pending\""));
@@ -3656,6 +4005,20 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Ignored stale visual viewport update; newer scroll is pending."));
     assert!(html.contains("Ignored stale visual viewport error; newer scroll is pending."));
     assert!(html.contains("const viewportPointFromEvent"));
+    assert!(html.contains("const viewportPointFromEvent = (event, options = {}) =>"));
+    assert!(html.contains("commitNativeRasterScrollPosition(options.inputSource || \"pointer\");"));
+    assert!(html.contains("const viewportPointBase = () => canUseNativeRasterScroll()"));
+    assert!(html.contains("const rasterContentPointFromEvent = (event) =>"));
+    assert!(html.contains(
+        "const shellContentX = event.clientX - metrics.shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft;"
+    ));
+    assert!(html.contains(
+        "const shellContentY = event.clientY - metrics.shellRect.top - (shell.clientTop || 0) + shell.scrollTop;"
+    ));
+    assert!(html.contains("const viewportRasterPixelPadding = () =>"));
+    assert!(html.contains("contentX: contentPoint.contentX"));
+    assert!(html.contains("pageX: base.x + domX"));
+    assert!(html.contains("pageY: base.y + domY"));
     assert!(html.contains("const rasterSize = () =>"));
     assert!(html.contains("Number(raster.naturalWidth)"));
     assert!(html.contains(r#"numberData("rasterWidth")"#));
@@ -3667,13 +4030,28 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const clickStatusTargets"));
     assert!(html.contains("const setClickStatus"));
     assert!(html.contains("const viewportPointFromPagePoint"));
+    assert!(html.contains("const viewportPointFromPagePoint = (pagePoint, options = {}) =>"));
+    assert!(html.contains("const domX = pagePoint.pageX - base.x"));
+    assert!(html.contains("const domY = pagePoint.pageY - base.y"));
     assert!(html.contains("const updateClickInputs"));
     assert!(html.contains("const hideClickMarker"));
     assert!(html.contains("const clearClickMarkerPoint"));
     assert!(html.contains("lastClickPagePoint = null"));
     assert!(html.contains("const moveClickMarker"));
-    assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
-    assert!(html.contains("((point.y + 0.5) / size.height) * rasterRect.height"));
+    assert!(html.contains("const viewportClickCell = (point) =>"));
+    assert!(html.contains("const cell = viewportClickCell(point);"));
+    assert!(html.contains("const rasterContentPointForPagePoint = (point) =>"));
+    assert!(html.contains("const markerContentPoint = rasterContentPointForPagePoint(point);"));
+    assert!(
+        html.contains("if (Number.isFinite(point.contentX) && Number.isFinite(point.contentY))")
+    );
+    assert!(!html.contains(
+        "if (canUseNativeRasterScroll() && Number.isFinite(point.contentX) && Number.isFinite(point.contentY))"
+    ));
+    assert!(html.contains("left = markerContentPoint.x;"));
+    assert!(html.contains("top = markerContentPoint.y;"));
+    assert!(html.contains("left = viewportRect.left - shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft + ((point.x + 0.5) / size.width) * viewportRect.width;"));
+    assert!(html.contains("top = viewportRect.top - shellRect.top - (shell.clientTop || 0) + shell.scrollTop + ((point.y + 0.5) / size.height) * viewportRect.height;"));
     assert!(html.contains("const restoreClickMarkerAfterPartial"));
     assert!(html.contains("if (!point) {\n      clearClickMarkerPoint();"));
     assert!(html.contains("clickMarker.hidden = true"));
@@ -3682,7 +4060,11 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const idPrefix = String.fromCharCode(35)"));
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-x")"#));
     assert!(html.contains(r#"document.querySelector(idPrefix + "browser-viewport-click-y")"#));
+    assert!(html.contains("const currentBrowserSessionId = () =>"));
+    assert!(html.contains("const isBrowserSessionUrl = (url) =>"));
     assert!(html.contains("const stampCurrentViewportUrl"));
+    assert!(html.contains(r#"url.searchParams.set("id", sessionId)"#));
+    assert!(html.contains(r#"url.searchParams.set("session", sessionId)"#));
     assert!(html.contains("const syncChromeViewportState = () =>"));
     assert!(html.contains("const browserActionFromLink = (link) =>"));
     assert!(html.contains("const markBrowserActionPending = (link) =>"));
@@ -3694,18 +4076,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(
         html.contains(r#"pageActionGroup.dataset.browserChromePageActionViewportX = currentX"#)
     );
-    assert!(html.contains(
-        r#"pageActionGroup.dataset.browserChromePageActionMaxBytes = shell.dataset.maxBytes || """#
-    ));
+    assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionMaxBytes = maxBytes"#));
     assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionState = "pending""#));
     assert!(html.contains(r#"pageActionGroup.dataset.browserChromePageActionPending = action"#));
     assert!(html.contains(r#"element.dataset.browserAddressRouteState = "viewport-synced""#));
     assert!(html.contains(r#"element.dataset.browserAddressRouteViewportX = currentX"#));
-    assert!(
-        html.contains(
-            r#"element.dataset.browserAddressRouteMaxBytes = shell.dataset.maxBytes || """#
-        )
-    );
+    assert!(html.contains(r#"element.dataset.browserAddressRouteMaxBytes = maxBytes"#));
     assert!(html.contains(r#"element.dataset.browserAddressSubmitRouteState = "viewport-synced""#));
     assert!(html.contains(r#"element.dataset.browserAddressSubmitViewportY = currentY"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromePendingState = "pending""#));
@@ -3729,12 +4105,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY)"#));
-    assert!(html.contains(
-        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
-    ));
-    assert!(html.contains(
-        r#"link.setAttribute(`${statePrefix}-preserved-max-bytes`, shell.dataset.maxBytes || "")"#
-    ));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-source`, source)"#));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-max-bytes`, maxBytes)"#));
     assert!(html.contains(
         r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#
     ));
@@ -3775,6 +4147,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const replaceViewportPartial"));
     assert!(html.contains("const applyViewportPartial"));
     assert!(html.contains("const applyViewportPartial = (html, options = {})"));
+    assert!(html.contains(r#"replaceElementFromPartial(doc, "[data-browser-chrome-status]")"#));
     assert!(html.contains("const replaceViewportPartial = (url, message, options = {})"));
     assert!(html.contains("replaceViewportPartial(url, message, {"));
     assert!(html.contains("samePageOnly: true"));
@@ -3813,6 +4186,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"dx: targetX - numberData("viewportX")"#));
     assert!(html.contains(r#"dy: targetY - numberData("viewportY")"#));
     assert!(html.contains("const viewportWorkPending = () => Boolean("));
+    assert!(html.contains("const optimisticPixelOffsetForTarget = (target) =>"));
+    assert!(html.contains("const clearOptimisticScroll = () =>"));
+    assert!(html.contains("const applyOptimisticScroll = (target) =>"));
+    assert!(html.contains(r#"shell.dataset.browserOptimisticScroll = "true""#));
+    assert!(html.contains(r#"shell.style.setProperty("--browser-optimistic-scroll-x""#));
+    assert!(html.contains(r#"shell.style.removeProperty("--browser-optimistic-scroll-x")"#));
     assert!(html.contains("const cancelPendingScrollTimerForClick = () =>"));
     assert!(html.contains(
         "if (!pendingScrollTimer || partialRequestInFlight || shell.dataset.viewportRequest)"
@@ -3858,12 +4237,12 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("new DOMParser().parseFromString"));
     assert!(html.contains(r#"partialUrl.searchParams.set("partial", "viewport")"#));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-partial""#));
-    assert!(html.contains("const partialRequestTimeoutMs = 2500"));
+    assert!(html.contains("const partialRequestTimeoutMs = 1000"));
     assert!(html.contains("const controller = typeof AbortController"));
     assert!(html.contains("controller.abort()"));
     assert!(html.contains("fetch(partialUrl.toString(), fetchOptions)"));
     assert!(html.contains(r#""X-Requested-With": "browser-viewport-scroll""#));
-    assert!(html.contains("const partialRequestTimeoutMs = 2500"));
+    assert!(html.contains("const partialRequestTimeoutMs = 1000"));
     assert!(html.contains("typeof AbortController === \"function\""));
     assert!(html.contains("fetchOptions.signal = controller.signal"));
     assert!(html.contains("window.setTimeout(() => controller.abort(), partialRequestTimeoutMs)"));
@@ -3886,6 +4265,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("const syncViewportHistory"));
     assert!(html.contains("window.history.replaceState(null"));
     assert!(html.contains(r#"currentUrl.searchParams.set("action", "current")"#));
+    assert!(html.contains("const sessionId = shell.dataset.browserShellSession"));
+    assert!(html.contains(r#"currentUrl.searchParams.set("id", sessionId)"#));
     assert!(
         html.contains(
             r#"currentUrl.searchParams.set("width", String(numberData("viewportWidth")))"#
@@ -3921,9 +4302,21 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     );
     assert!(html.contains(r#"link.dataset.browserChromeScrollHref = url.toString()"#));
     assert!(html.contains(r#"link.dataset.browserChromeScrollPreservedViewportX = currentX"#));
-    assert!(html.contains(
-        r##"link.dataset.browserChromeScrollPreservedMaxBytes = shell.dataset.maxBytes || """##
-    ));
+    assert!(html.contains(r#"link.dataset.browserChromeScrollPreservedMaxBytes = maxBytes"#));
+    assert!(html.contains("const syncBrowserSessionLink = (link) =>"));
+    assert!(html.contains(r#"document.querySelectorAll("a[href]")"#));
+    assert!(html.contains("syncBrowserSessionLink(link);"));
+    assert!(html.contains(r#"attribute.name.endsWith("-session")"#));
+    assert!(html.contains(r#"attribute.name.endsWith("-href")"#));
+    assert!(html.contains(r#"[data-browser-chrome-scroll-feedback]"#));
+    assert!(
+        html.contains(r#"[data-browser-chrome-action-feedback][data-browser-action-feedback-placement=\"chrome\"]"#)
+    );
+    assert!(html.contains(r#"feedback.setAttribute("title", message)"#));
+    assert!(html.contains(r#"chip.dataset.browserShellSession = sessionId"#));
+    assert!(html.contains(r#"chip.textContent = `x ${currentX}/${maxX} · y ${currentY}/${maxY}`"#));
+    assert!(html.contains(r#"feedback.dataset.browserActionFeedbackViewportY = currentY"#));
+    assert!(html.contains(r#"control.dataset.browserChromeScrollCurrentY = currentY"#));
     assert!(html.contains(
         r#"[data-browser-viewport-controls] a[href], [data-browser-chrome-scroll-actions] a[href]"#
     ));
@@ -3945,6 +4338,75 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(pending.x)"#));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetY = String(pending.y)"#));
+    assert!(html.contains("applyOptimisticScroll(pending);"));
+    assert!(html.contains("applyOptimisticScroll(scroll);"));
+    assert!(html.contains("applyOptimisticScroll(queued);"));
+    assert!(html.contains("const canUseNativeRasterScroll = () =>"));
+    assert!(html.contains("const nativeRasterScrollEnabled = () =>"));
+    assert!(html.contains("const nativeRasterImageReady = () =>"));
+    assert!(html.contains("let nativeRasterScrollTimeout = null;"));
+    assert!(html.contains("let nativeRasterScrollMonitorFrame = null;"));
+    assert!(html.contains("let nativeRasterLastObservedOffset = null;"));
+    assert!(html.contains("const nativeRasterCurrentPixelOffset = () =>"));
+    assert!(html.contains("const flushNativeRasterScrollCommit = () =>"));
+    assert!(html.contains("nativeRasterScrollTimeout = setTimeout(() =>"));
+    assert!(html.contains("const nativeRasterScrollTargetChanged = () =>"));
+    assert!(
+        html.contains(
+            "const maybeCommitNativeRasterScroll = (inputSource = \"native-monitor\") =>"
+        )
+    );
+    assert!(html.contains("const nativeRasterScrollMonitorMs = 80;"));
+    assert!(html.contains(
+        "setInterval(() => maybeCommitNativeRasterScroll(\"native-monitor\"), nativeRasterScrollMonitorMs);"
+    ));
+    assert!(
+        html.contains(
+            "const observeNativeRasterScrollOffset = (inputSource = \"native-frame\") =>"
+        )
+    );
+    assert!(html.contains("shell.dataset.browserNativeRasterScrollState = \"native-observed\";"));
+    assert!(html.contains("const runNativeRasterFrameMonitor = () =>"));
+    assert!(html.contains("observeNativeRasterScrollOffset(\"native-frame\");"));
+    assert!(html.contains(
+        "nativeRasterScrollMonitorFrame = browserAnimationFrame(runNativeRasterFrameMonitor);"
+    ));
+    assert!(html.contains("let nativeRasterProgrammaticOffset = null;"));
+    assert!(html.contains("nativeRasterProgrammaticOffset = { x: offset.x, y: offset.y };"));
+    assert!(html.contains("nativeRasterLastObservedOffset = { x: offset.x, y: offset.y };"));
+    assert!(html.contains("const isProgrammaticOffset = nativeRasterProgrammaticOffset"));
+    assert!(html.contains("clearNativeRasterProgrammaticScroll();"));
+    assert!(html.contains(
+        "const handleNativeRasterScrollEvent = (inputSource = nativeRasterScrollInputSource) =>"
+    ));
+    assert!(html.contains("const eventPointInsideViewportShell = (event) =>"));
+    assert!(html.contains("const scheduleNativeRasterWheelCommit = () =>"));
+    assert!(html.contains(r#"document.addEventListener("scroll", (event) =>"#));
+    assert!(html.contains(r#"document.addEventListener("wheel", (event) =>"#));
+    assert!(html.contains("setTimeout(() => observeNativeRasterScrollOffset(\"wheel\"), 0);"));
+    assert!(html.contains("abortPartialViewportRequest();"));
+    assert!(
+        html.contains("const syncLocalScrollCommitState = (scroll, inputSource, options = {}) =>")
+    );
+    assert!(html.contains("const shouldDeferLocalScrollHeavySync = (inputSource) =>"));
+    assert!(html.contains("const scheduleLocalScrollHeavySync = (scroll, inputSource) =>"));
+    assert!(html.contains("let localScrollBookkeepingTimeout = null;"));
+    assert!(html.contains("localScrollBookkeepingFrame = browserAnimationFrame(flush);"));
+    assert!(html.contains("localScrollBookkeepingTimeout = setTimeout(flush, 16);"));
+    assert!(html.contains("shell.dataset.browserScrollImmediateSync = \"true\";"));
+    assert!(html.contains(
+        "syncLocalScrollCommitState(target, inputSource, { deferHeavySync: Boolean(options.deferHeavySync) });"
+    ));
+    assert!(html.contains("syncLocalScrollCommitState(scroll, inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });"));
+    assert!(html.contains("syncNativeRasterScrollPosition();"));
+    assert!(html.contains("installNativeRasterLoadSync();"));
+    assert!(html.contains(r#"shell.addEventListener("scroll""#));
+    assert!(html.contains(
+        "syncNativeRasterScrollPosition();\n  installNativeRasterLoadSync();\n  syncViewportHistory();"
+    ));
+    assert!(html.contains(r#"shell.dataset.browserWheelScrollMode = "native-overscan""#));
+    assert!(html.contains(r#"scheduleNativeRasterScrollCommit("wheel");"#));
+    assert!(html.contains("handleNativeRasterScrollEvent(nativeRasterScrollInputSource);"));
     assert!(html.contains(r#"queueViewportScroll(dx, dy, "wheel")"#));
     assert!(html.contains(r#"data-browser-drag-scroll-mode="pointer-pan""#));
     assert!(html.contains(r#"data-browser-drag-scroll-owner="viewport""#));
@@ -3961,10 +4423,72 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("suppressNextClickAfterDrag"));
     assert!(html.contains(r#"queueViewportScroll(scrollDelta.dx, scrollDelta.dy, "controls")"#));
     assert!(html.contains(r#"queueViewportScroll(delta.dx, delta.dy, "keyboard")"#));
-    assert!(html.contains("const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 18, 0, 120);"));
+    assert!(html.contains("const setViewportFeedbackDeferred = (message) =>"));
+    assert!(html.contains("clearDeferredViewportFeedback();"));
+    assert!(html.contains(r#"setTimeout(() => {"#));
+    assert!(html.contains("if (!options.skipTargetSync)"));
+    assert!(html.contains(r#"deferFeedback: inputSource === "wheel" || inputSource === "drag""#));
+    assert!(html.contains("skipTargetSync: true"));
+    assert!(html.contains("let backgroundViewportRefreshInputSource = \"background\""));
+    assert!(html.contains("let lastInteractiveScrollAt = 0;"));
+    assert!(html.contains("const isInteractiveScrollInput = (inputSource) => inputSource === \"wheel\" || inputSource === \"drag\";"));
+    assert!(html.contains("const interactiveScrollRefreshIdleMs = 160;"));
+    assert!(
+        html.contains("const backgroundViewportRefreshDelayMs = (inputSource, nearRasterEdge) =>")
+    );
+    assert!(html.contains("const viewportPartialRasterDecodeTimeoutMs = 80;"));
+    assert!(html.contains("const backgroundViewportPartialRasterDecodeTimeoutMs = 320;"));
+    assert!(html.contains("const predecodeViewportPartialRaster = (html, options = {}) =>"));
+    assert!(html.contains("const viewportPartialRasterReadyForSwap = () =>"));
+    assert!(html.contains(
+        r#"const image = typeof Image === "function" ? new Image() : document.createElement("img");"#
+    ));
+    assert!(html.contains(r#"shell.dataset.browserViewportPartialRasterDecode = "unavailable";"#));
+    assert!(html.contains(r#"shell.dataset.browserViewportPartialRasterDecode = "parse-error";"#));
+    assert!(html.contains(
+        "const rasterDecodeState = shell.dataset.browserViewportPartialRasterDecode || \"\";"
+    ));
+    assert!(html.contains(r#"const currentRaster = shell.querySelector(".browser-raster");"#));
+    assert!(html.contains(r#"const nextRaster = nextShell.querySelector(".browser-raster");"#));
+    assert!(html.contains("if (currentRaster && !nextRaster) {"));
+    assert!(html.contains(r#"shell.dataset.browserViewportPartialPreservedRaster = "true";"#));
+    assert!(html.contains(
+        r#"shell.dataset.browserViewportPartialRasterDecode = "missing-raster-preserved";"#
+    ));
+    assert!(html.contains("shell.dataset.browserViewportPartialRasterDecode = rasterDecodeState;"));
+    assert_eq!(
+        html.matches(".then((html) => predecodeViewportPartialRaster(html)).then((html) =>")
+            .count(),
+        1
+    );
+    assert_eq!(
+        html.matches("predecodeViewportPartialRaster(html, {\n      timeoutMs: backgroundViewportPartialRasterDecodeTimeoutMs\n    })")
+            .count(),
+        1
+    );
+    assert!(
+        html.contains(
+            r#"shell.dataset.browserScrollBackgroundRefresh = "preserved-raster-unready";"#
+        )
+    );
+    assert!(html.contains(
+        "shell.dataset.browserScrollBackgroundRefreshPreservedReason = shell.dataset.browserViewportPartialRasterDecode || \"unknown\";"
+    ));
+    assert!(html.contains("return nearRasterEdge ? 64 : 220;"));
+    assert!(html.contains("return nearRasterEdge ? 32 : 120;"));
+    assert!(html.contains("if (isInteractiveScrollInput(backgroundViewportRefreshInputSource))"));
+    assert!(html.contains("backgroundViewportRefreshInputSource = inputSource;"));
+    assert!(html.contains("lastInteractiveScrollAt = Date.now();"));
+    assert!(html.contains(r#"? "waiting-for-interaction-idle-near-edge""#));
+    assert!(html.contains(r#": "waiting-for-interaction-idle""#));
+    assert!(html.contains("nearRasterEdge && !isInteractiveScrollInput(inputSource)"));
+    assert!(html.contains(r#"? "coalesced-during-interaction""#));
+    assert!(html.contains(r#": "coalesced-while-in-flight""#));
+    assert!(html.contains("const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 8, 0, 120);"));
+    assert!(html.contains(r#"const scrollFlushDelayForInput = (inputSource) => inputSource === "wheel" || inputSource === "drag" ? 0 : scrollFlushDelayMs;"#));
     assert!(html.contains(r#"data-browser-wheel-scroll-mode="coalesced""#));
     assert!(html.contains(r#"data-browser-scroll-coalescing="queued-target""#));
-    assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="18""#));
+    assert!(html.contains(r#"data-browser-scroll-flush-delay-ms="8""#));
     assert!(html.contains(r#"data-browser-scroll-input-sources="wheel keyboard controls drag""#));
     assert!(html.contains(r#"data-browser-shell-interaction-mode="browser""#));
     assert!(html.contains(
@@ -4051,16 +4575,27 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(r#"data-browser-scroll-line-step="2""#));
     assert!(html.contains(r#"data-browser-scroll-page-step-x="20""#));
     assert!(html.contains(r#"data-browser-scroll-page-step-y="8""#));
-    assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayMs)"));
+    assert!(html.contains("setTimeout(flushPendingScroll, scrollFlushDelayForInput(inputSource))"));
     assert!(html.contains("const clearDeferredClick"));
     assert!(html.contains("const clearDeferredClickForScroll = () =>"));
     assert!(html.contains(r#"shell.dataset.scrollClearedDeferredClick = "true""#));
+    assert!(html.contains("setNativeRasterScrollPosition(target);\n    clearClickMarkerPoint(\"Ready for page click.\");\n    setViewportDatasetCoordinates(target);") && html.contains("const cell = rasterCssCellSize();"));
+    assert!(html.contains(
+        "pendingScrollDy = 0;\n    clearClickMarkerPoint(\"Ready for page click.\");\n    setViewportDatasetCoordinates(scroll);"
+    ));
+    assert!(
+        html.contains(
+            "clearClickMarkerPoint(\"Ready for page click.\");\n    clearDeferredClick();"
+        )
+    );
     assert!(html.contains("clearDeferredClickForScroll();"));
     assert!(html.contains("const submitViewportClick"));
+    assert!(html.contains(r#"inputSource: "click""#));
     assert!(html.contains(
         "const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));"
     ));
     assert!(html.contains("const replayDeferredClickAfterPartial"));
+    assert!(html.contains(r#"inputSource: "deferred-click""#));
     assert!(html.contains("submitViewportClick(point, \"Clicking saved\")"));
     assert!(html.contains("Saved click is outside the settled viewport."));
     assert!(html.contains("clearClickMarkerPoint();"));
@@ -4075,7 +4610,7 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Viewport is updating; scroll after it settles."));
     assert!(html.contains(r#"data-browser-viewport-command-strip"#));
     assert!(html.contains("const viewportControls = () => Array.from"));
-    assert!(html.contains("const viewportFeedbackTargets = () => Array.from"));
+    assert!(html.contains("const viewportFeedbackTargets = () => {"));
     assert!(html.contains("const setViewportFeedback"));
     assert!(html.contains("for (const feedback of viewportFeedbackTargets())"));
     assert!(html.contains("feedback.textContent = message"));
@@ -4112,7 +4647,9 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains("Moving visual viewport up..."));
     assert!(html.contains("Moving visual viewport down..."));
     assert!(html.contains("Refreshing visual viewport..."));
+    assert!(html.contains("const scrollTargetBase = () =>"));
     assert!(html.contains("const queuedViewportTarget"));
+    assert!(html.contains("const currentQueuedViewportTarget"));
     assert!(html.contains("const normalizePendingScrollDelta = (target) =>"));
     assert!(html.contains("pendingScrollDx = target.dx"));
     assert!(html.contains("pendingScrollDy = target.dy"));
@@ -4121,6 +4658,8 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     assert!(html.contains(
         "const url = stampCurrentViewportUrl(new URL(shell.dataset.scrollUrl, window.location.href));"
     ));
+    assert!(html.contains("const queuedX = Number(shell.dataset.queuedScrollTargetX)"));
+    assert!(html.contains("const queuedY = Number(shell.dataset.queuedScrollTargetY)"));
     assert!(html.contains("const baseX = Number(shell.dataset.pendingViewportX)"));
     assert!(html.contains("const baseY = Number(shell.dataset.pendingViewportY)"));
     assert!(html.contains(r#"shell.dataset.queuedScrollTargetX = String(queued.x)"#));
@@ -4152,23 +4691,38 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
         params: vec![("partial".to_owned(), "viewport".to_owned())],
     };
     assert!(browser_session_target_wants_viewport_partial(
-        &partial_target
+        &partial_target,
+        Some(&payload)
+    ));
+    let nav_partial_target = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("partial".to_owned(), "viewport".to_owned()),
+            ("source".to_owned(), "about:blank".to_owned()),
+        ],
+    };
+    assert!(!browser_session_target_wants_viewport_partial(
+        &nav_partial_target,
+        Some(&payload)
     ));
     let partial = render_browser_session_viewport_partial(&payload);
     assert!(partial.contains(r#"data-browser-partial-viewport"#));
     assert!(partial.contains(r#"data-browser-partial-raster"#));
+    assert!(partial.contains(r#"data-browser-partial-primary-state"#));
     assert!(partial.contains(r#"data-browser-partial-status"#));
     assert!(partial.contains(r#"data-browser-partial-interactions"#));
     assert!(partial.contains(r#"data-browser-partial-scroll-controls"#));
     assert!(partial.contains(r#"data-browser-partial-command-strip"#));
     assert!(partial.contains(r#"data-viewport-x="8""#));
     assert!(partial.contains(r#"data-viewport-y="4""#));
+    assert!(partial.contains(r#"data-browser-chrome-status"#));
     assert!(partial.contains(r#"data-page-source=""#));
     assert!(partial.contains(r#"data-raster-width=""#));
     assert!(partial.contains(r#"data-raster-height=""#));
     assert!(partial.contains(r#"class="browser-raster-shell""#));
     assert!(partial.contains(r#"data-browser-click-marker"#));
     assert!(partial.contains(r#"data-browser-viewport-status"#));
+    assert!(partial.contains(r#"data-browser-primary-state"#));
     assert!(partial.contains(r#"data-browser-viewport-controls"#));
     assert!(partial.contains(r#"data-browser-viewport-command-strip"#));
     assert!(!partial.contains("<!doctype html>"));
@@ -4624,8 +5178,14 @@ async fn browser_session_registry_scrolls_visual_viewport_horizontally() {
     ));
 }
 
-#[tokio::test]
-async fn browser_session_registry_reports_and_switches_open_sessions() {
+#[test]
+fn browser_session_registry_reports_and_switches_open_sessions() {
+    run_browser_session_async_test_with_stack(
+        browser_session_registry_reports_and_switches_open_sessions_impl,
+    );
+}
+
+async fn browser_session_registry_reports_and_switches_open_sessions_impl() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("one.html");
     let second = dir.path().join("two.html");
@@ -5411,6 +5971,46 @@ async fn browser_session_registry_reports_and_switches_open_sessions() {
     assert!(payload.sessions[0].move_left_url.is_empty());
     assert!(!payload.sessions[0].can_move_right);
     assert!(payload.sessions[0].move_right_url.is_empty());
+}
+
+#[test]
+fn browser_session_primary_tab_strip_compacts_many_tabs() {
+    run_browser_session_async_test_with_stack(
+        browser_session_primary_tab_strip_compacts_many_tabs_impl,
+    );
+}
+
+async fn browser_session_primary_tab_strip_compacts_many_tabs_impl() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = BrowserSessionRegistry::default();
+    let mut payload_and_back_href = None;
+    for index in 1..=9 {
+        let path = dir.path().join(format!("page-{index}.html"));
+        std::fs::write(
+            &path,
+            format!(r#"<!doctype html><title>Page {index}</title><p>tab {index}</p>"#),
+        )
+        .unwrap();
+        let target = RequestTarget {
+            path: "/browser".to_owned(),
+            params: vec![("url".to_owned(), path.display().to_string())],
+        };
+        payload_and_back_href = Some(registry.create_target(&target).await.unwrap());
+    }
+
+    let (payload, back_href) = payload_and_back_href.unwrap();
+    assert_eq!(payload.sessions.len(), 9);
+    let html = render_browser_session_page(&payload, &back_href);
+    let tab_strip_start = html.find(r#"<details class="browser-tab-strip"#).unwrap();
+    let tab_strip_end = html[tab_strip_start..].find("</details>").unwrap() + tab_strip_start;
+    let tab_strip = &html[tab_strip_start..tab_strip_end];
+
+    assert!(tab_strip.contains(r#"data-browser-tab-menu-render="compact""#));
+    assert!(tab_strip.contains(r#"<strong>9 tabs</strong>"#));
+    assert!(tab_strip.contains(">9 · Page 9</strong>"));
+    assert!(tab_strip.contains(">All tabs</strong>"));
+    assert_eq!(tab_strip.matches(r#"class="browser-tab-pill"#).count(), 2);
+    assert!(!tab_strip.contains(">1 · Page 1</strong>"));
 }
 
 #[tokio::test]
@@ -10070,7 +10670,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     let html = render_browser_session_page(&payload, "/search?q=button");
     assert!(html.contains(r#"data-click-url="/browser?"#));
     assert!(html.contains(r#"data-browser-dom-click"#));
-    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
+    assert!(html.contains(r#"data-click-coordinate-space="viewport-cells""#));
     assert!(html.contains(r#"data-browser-viewport-interactions"#));
     assert!(html.contains(
         r#"class="viewport-interaction-row compact" data-browser-viewport-interactions"#
@@ -10115,8 +10715,17 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("Math.floor(relativeY / rect.height * size.height)"));
     assert!(html.contains(r#"url.searchParams.set("x""#));
     assert!(html.contains(r#"url.searchParams.set("y""#));
-    assert!(html.contains(r#"url.searchParams.set("raster_width""#));
-    assert!(html.contains(r#"url.searchParams.set("raster_height""#));
+    assert!(html.contains("const clickCell = viewportClickCell(point);"));
+    assert!(html.contains(r#"const coordinateSpace = "viewport-cells";"#));
+    assert!(html.contains("const clickRasterSize = () =>"));
+    assert!(html.contains("const clickSize = clickRasterSize();"));
+    assert!(html.contains(r#"const clickX = clickCell.x;"#));
+    assert!(html.contains(r#"const clickY = clickCell.y;"#));
+    assert!(html.contains(r#"url.searchParams.set("coordinate_space", coordinateSpace)"#));
+    assert!(html.contains(r#"url.searchParams.set("raster_width", String(clickSize.width))"#));
+    assert!(html.contains(r#"url.searchParams.set("raster_height", String(clickSize.height))"#));
+    assert!(html.contains(r#"url.searchParams.set("dom_x", String(clickCell.x))"#));
+    assert!(html.contains(r#"url.searchParams.set("dom_y", String(clickCell.y))"#));
     assert!(html.contains(r#"data-browser-click-action-state="idle""#));
     assert!(html.contains(r#"data-browser-click-navigation-state="ready""#));
     assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
@@ -10150,9 +10759,7 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
     assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
-    assert!(html.contains(
-        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
-    ));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-source`, source)"#));
     assert!(html.contains(r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#));
     assert!(html.contains(r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
@@ -10182,8 +10789,9 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains(r#"topStatus.removeAttribute("data-browser-chrome-click-miss-state")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "deferred""#));
     assert!(html.contains(r#"shell.dataset.clickNavigationState = "waiting-for-viewport""#));
-    assert!(html.contains("shell.dataset.deferredClickX = String(point.x)"));
-    assert!(html.contains("shell.dataset.deferredClickY = String(point.y)"));
+    assert!(html.contains("const deferredCell = viewportClickCell(point);"));
+    assert!(html.contains("shell.dataset.deferredClickX = String(deferredCell.x)"));
+    assert!(html.contains("shell.dataset.deferredClickY = String(deferredCell.y)"));
     assert!(html.contains("shell.dataset.deferredClickPageX = String(point.pageX)"));
     assert!(html.contains("shell.dataset.deferredClickPageY = String(point.pageY)"));
     assert!(html.contains("Saved ${pointMessage(point)} while viewport updates"));
@@ -10192,8 +10800,12 @@ async fn browser_session_registry_click_selector_defaults_can_navigate() {
     assert!(html.contains("const submitViewportClick"));
     assert!(html.contains("const replayDeferredClickAfterPartial"));
     assert!(html.contains("submitViewportClick(point, \"Clicking saved\")"));
-    assert!(html.contains("shell.dataset.lastClickX = String(point.x)"));
-    assert!(html.contains("shell.dataset.lastClickY = String(point.y)"));
+    assert!(html.contains("const domY = clamp(Math.floor((rawY - padding.y)"));
+    assert!(html.contains("const pageY = clamp(base.y + domY"));
+    assert!(html.contains("shell.dataset.lastClickX = String(clickX)"));
+    assert!(html.contains("shell.dataset.lastClickY = String(clickY)"));
+    assert!(html.contains("shell.dataset.lastClickDomX = String(clickCell.x)"));
+    assert!(html.contains("shell.dataset.lastClickDomY = String(clickCell.y)"));
     assert!(html.contains("shell.dataset.lastClickPageX = String(point.pageX)"));
     assert!(html.contains("shell.dataset.lastClickPageY = String(point.pageY)"));
 
@@ -10280,14 +10892,17 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"data-browser-dom-click"#));
-    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
+    assert!(html.contains(r#"data-click-coordinate-space="viewport-cells""#));
     assert!(html.contains(r#"data-raster-width=""#));
     assert!(html.contains(r#"data-raster-height=""#));
     assert!(html.contains("Number(raster.naturalWidth)"));
     assert!(html.contains("Math.floor(relativeX / rect.width * size.width)"));
-    assert!(html.contains("((point.x + 0.5) / size.width) * rasterRect.width"));
-    assert!(html.contains(r#"url.searchParams.set("raster_width""#));
-    assert!(html.contains(r#"url.searchParams.set("raster_height""#));
+    assert!(html.contains("left = viewportRect.left - shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft + ((point.x + 0.5) / size.width) * viewportRect.width;"));
+    assert!(html.contains(r#"const coordinateSpace = "viewport-cells";"#));
+    assert!(html.contains("const clickSize = clickRasterSize();"));
+    assert!(html.contains(r#"url.searchParams.set("coordinate_space", coordinateSpace)"#));
+    assert!(html.contains(r#"url.searchParams.set("raster_width", String(clickSize.width))"#));
+    assert!(html.contains(r#"url.searchParams.set("raster_height", String(clickSize.height))"#));
     assert!(html.contains(r#"data-browser-click-action-state="idle""#));
     assert!(html.contains(r#"data-browser-click-navigation-state="ready""#));
     assert!(html.contains(r#"data-browser-click-target-context="viewport""#));
@@ -10300,9 +10915,7 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     assert!(html.contains(r#"data-browser-click-miss-state="idle""#));
     assert!(html.contains("const updateHref = (selector, hrefAttr, statePrefix = null) =>"));
     assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX)"#));
-    assert!(html.contains(
-        r#"link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "")"#
-    ));
+    assert!(html.contains(r#"link.setAttribute(`${statePrefix}-preserved-source`, source)"#));
     assert!(html.contains(r#"updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current")"#));
     assert!(html.contains(r#"updateHref("[data-browser-primary-nav-action=\"back\"]", "data-browser-primary-nav-back-href", "data-browser-primary-nav-back")"#));
     assert!(html.contains(r#"shell.dataset.clickActionState = "pending""#));
@@ -10391,9 +11004,9 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
     };
     assert!(link_x > 0);
     let raster = payload.viewport_image.as_ref().unwrap();
-    let raster_width = raster.width;
-    let raster_height = raster.height;
-    let raster_options = BrowserRasterOptions::default();
+    let raster_width = raster.viewport_pixel_width;
+    let raster_height = raster.viewport_pixel_height;
+    let raster_options = browser_session_viewport_raster_options();
     let raster_x = link_x
         .saturating_mul(raster_options.cell_width)
         .saturating_add(raster_options.padding_x);
@@ -10593,7 +11206,7 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
         payload.max_bytes
     )));
     assert!(html.contains(r#"data-browser-click-status aria-live="polite""#));
-    assert!(html.contains(r#"data-click-coordinate-space="raster-pixels""#));
+    assert!(html.contains(r#"data-click-coordinate-space="viewport-cells""#));
     assert!(html.contains(r#"data-browser-controls-tray"#));
     let current_href = browser_session_action_href(&payload.id, "current", &[], &payload);
     let reload_href = browser_session_action_href(&payload.id, "reload", &[], &payload);
@@ -10609,6 +11222,81 @@ async fn browser_session_registry_click_at_link_navigates_from_raster_contract()
         &reload_href,
         None,
     );
+}
+
+#[tokio::test]
+async fn browser_session_registry_click_at_uses_client_dom_cell_when_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first-viewport-click.html");
+    let second = dir.path().join("second-viewport-click.html");
+    std::fs::write(
+        &first,
+        format!(
+            r#"<!doctype html><title>Viewport click</title><span>prefix text before </span><a id="go" href="{}">Go</a><p>start</p>"#,
+            second.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &second,
+        r#"<!doctype html><title>Viewport click target</title><p>arrived by viewport click</p>"#,
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), first.display().to_string()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let (link_x, link_y) = {
+        let sessions = registry.sessions.lock().await;
+        let web_session = sessions.get(&payload.id).unwrap();
+        web_session
+            .session
+            .current()
+            .unwrap()
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                crate::browser::DisplayCommand::Text { x, y, text }
+                | crate::browser::DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains("Go") =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .expect("link text is rendered")
+    };
+
+    let click = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "click-at".to_owned()),
+            ("x".to_owned(), "0".to_owned()),
+            ("y".to_owned(), "0".to_owned()),
+            ("dom_x".to_owned(), link_x.to_string()),
+            ("dom_y".to_owned(), link_y.to_string()),
+            ("coordinate_space".to_owned(), "raster-pixels".to_owned()),
+            ("raster_width".to_owned(), "48".to_owned()),
+            ("raster_height".to_owned(), "14".to_owned()),
+            ("width".to_owned(), "48".to_owned()),
+            ("height".to_owned(), "14".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.apply_target(&click).await.unwrap();
+    assert_eq!(payload.title, "Viewport click target");
+    assert!(payload.viewport.contains("arrived by viewport click"));
+    let feedback = payload.action_feedback.as_deref().unwrap_or_default();
+    assert!(feedback.contains(&format!(
+        "mapped to DOM point x {link_x}, y {link_y} (page {link_x}, {link_y})"
+    )));
 }
 
 #[tokio::test]
@@ -10725,9 +11413,9 @@ async fn browser_session_registry_load_images_current_and_click_preserve_scrolle
     );
 
     let raster = payload.viewport_image.as_ref().unwrap();
-    let raster_width = raster.width;
-    let raster_height = raster.height;
-    let raster_options = BrowserRasterOptions::default();
+    let raster_width = raster.viewport_pixel_width;
+    let raster_height = raster.viewport_pixel_height;
+    let raster_options = browser_session_viewport_raster_options();
     let viewport_click_x = link_x.saturating_sub(payload.viewport_x);
     let viewport_click_y = link_y.saturating_sub(payload.viewport_y);
     let raster_x = viewport_click_x
@@ -10893,7 +11581,7 @@ async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster
     };
     assert!(link_x > 0);
     let raster = payload.viewport_image.as_ref().unwrap();
-    let raster_options = BrowserRasterOptions::default();
+    let raster_options = browser_session_viewport_raster_options();
     let raster_x = link_x
         .saturating_mul(raster_options.cell_width)
         .saturating_add(raster_options.padding_x);
@@ -10908,8 +11596,14 @@ async fn browser_session_registry_click_at_slow_link_becomes_pending_from_raster
             ("action".to_owned(), "click-at".to_owned()),
             ("x".to_owned(), raster_x.to_string()),
             ("y".to_owned(), raster_y.to_string()),
-            ("raster_width".to_owned(), raster.width.to_string()),
-            ("raster_height".to_owned(), raster.height.to_string()),
+            (
+                "raster_width".to_owned(),
+                raster.viewport_pixel_width.to_string(),
+            ),
+            (
+                "raster_height".to_owned(),
+                raster.viewport_pixel_height.to_string(),
+            ),
             ("width".to_owned(), "48".to_owned()),
             ("height".to_owned(), "14".to_owned()),
         ],
@@ -11557,6 +12251,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         viewport_image: None,
         viewport_image_error: None,
         page_text: String::new(),
+        render_diagnostics: empty_render_diagnostics(),
         focused: None,
         anchors: Vec::new(),
         links: Vec::new(),
@@ -11574,6 +12269,7 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         action_feedback: None,
         action_feedback_context: None,
         pending_source: None,
+        visual_viewport_images: false,
         fast_scroll: false,
     };
     let href =
@@ -11638,9 +12334,19 @@ fn browser_session_action_href_preserves_session_and_viewport() {
     ));
 
     payload.viewport_image = Some(BrowserSessionViewportImagePayload {
+        raster_id: 7,
+        png: b"fake".to_vec(),
         data_url: "data:image/png;base64,ZmFrZQ==".to_owned(),
         width: 120,
         height: 80,
+        raster_viewport_x: payload.viewport_x,
+        raster_viewport_y: payload.viewport_y,
+        raster_viewport_width: payload.width,
+        raster_viewport_height: payload.height,
+        viewport_pixel_width: 120,
+        viewport_pixel_height: 80,
+        viewport_offset_x: 0,
+        viewport_offset_y: 0,
     });
     let shell_html = render_browser_session_viewport_image_shell(&payload);
     let scroll_href = browser_session_action_href(&payload.id, "scroll", &[], &payload);
@@ -11653,6 +12359,20 @@ fn browser_session_action_href_preserves_session_and_viewport() {
         r#"data-browser-click-action-url="{}""#,
         html_escape::encode_double_quoted_attribute(&click_href)
     )));
+    assert!(shell_html.contains(r#"data-browser-overscan-raster="false""#));
+    assert!(shell_html.contains(r#"data-browser-raster-viewport-pixel-width="120""#));
+    assert!(shell_html.contains(r#"data-browser-raster-viewport-pixel-height="80""#));
+    assert!(shell_html.contains(r#"data-browser-raster-cell-width="12""#));
+    assert!(shell_html.contains(r#"data-browser-raster-cell-height="18""#));
+    assert!(shell_html.contains(r#"data-browser-raster-padding-x="4""#));
+    assert!(shell_html.contains(r#"data-browser-raster-padding-y="4""#));
+    assert!(shell_html.contains(r#"data-browser-raster-viewport-offset-y="0""#));
+    assert!(shell_html.contains(r#"data-browser-raster-id="7""#));
+    assert!(shell_html.contains(r#"data-browser-raster-src-kind="session-png""#));
+    assert!(shell_html.contains("format=viewport-raster-png"));
+    assert!(shell_html.contains("raster_id=7"));
+    assert!(!shell_html.contains(r#"src="data:image/png;base64,ZmFrZQ==""#));
+    assert!(shell_html.contains(r#"--browser-raster-base-y: -0px"#));
     assert!(shell_html.contains(r#"data-viewport-x="12""#));
     assert!(shell_html.contains(r#"data-viewport-y="7""#));
     assert!(shell_html.contains(r#"data-max-bytes="1048576""#));
@@ -11724,6 +12444,7 @@ fn browser_session_action_state_strips_unsafe_source() {
         viewport_image: None,
         viewport_image_error: None,
         page_text: String::new(),
+        render_diagnostics: empty_render_diagnostics(),
         focused: None,
         anchors: Vec::new(),
         links: Vec::new(),
@@ -11741,6 +12462,7 @@ fn browser_session_action_state_strips_unsafe_source() {
         action_feedback: None,
         action_feedback_context: None,
         pending_source: None,
+        visual_viewport_images: false,
         fast_scroll: false,
     };
 
@@ -11832,12 +12554,23 @@ fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
         history: Vec::new(),
         viewport: String::new(),
         viewport_image: Some(BrowserSessionViewportImagePayload {
+            raster_id: 9,
+            png: b"fake".to_vec(),
             data_url: "data:image/png;base64,ZmFrZQ==".to_owned(),
             width: 1208,
             height: 800,
+            raster_viewport_x: 0,
+            raster_viewport_y: 0,
+            raster_viewport_width: 100,
+            raster_viewport_height: 44,
+            viewport_pixel_width: 1208,
+            viewport_pixel_height: 800,
+            viewport_offset_x: 0,
+            viewport_offset_y: 0,
         }),
         viewport_image_error: None,
         page_text: "retained raster".to_owned(),
+        render_diagnostics: empty_render_diagnostics(),
         focused: None,
         anchors: Vec::new(),
         links: Vec::new(),
@@ -11857,6 +12590,7 @@ fn browser_session_pending_about_blank_with_raster_renders_browser_surface() {
         ),
         action_feedback_context: None,
         pending_source: Some("https://iana.org/".to_owned()),
+        visual_viewport_images: false,
         fast_scroll: false,
     };
 
@@ -12286,9 +13020,9 @@ async fn browser_session_registry_activates_form_action_controls() {
     assert!(topbar_html.contains(
         r#"data-browser-chrome-form-state data-browser-focused-form="0" data-browser-focused-control="0" title="focused text q">focused q</span>"#
     ));
-    assert!(topbar_html.contains(
-        r#"data-browser-chrome-form-feedback title="Focused form 0 control 0.">Focused form 0 control 0.</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-feedback"#));
+    assert!(topbar_html.contains(r#"title="Focused form 0 control 0.""#));
+    assert!(topbar_html.contains(r#">Focused form 0 control 0.</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, false, false, false, true, false);
 
@@ -12310,9 +13044,9 @@ async fn browser_session_registry_activates_form_action_controls() {
     let html = render_browser_session_page(&payload, "");
     let topbar_html =
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
-    assert!(topbar_html.contains(
-        r#"data-browser-chrome-form-feedback title="Set form 0 field q.">Set form 0 field q.</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-feedback"#));
+    assert!(topbar_html.contains(r#"title="Set form 0 field q.""#));
+    assert!(topbar_html.contains(r#">Set form 0 field q.</span>"#));
     assert!(!topbar_html.contains(r#"data-browser-chrome-action-feedback"#));
     assert_chrome_status_flags(topbar_html, false, false, false, true, false);
     let toggle = RequestTarget {
@@ -12360,9 +13094,15 @@ async fn browser_session_registry_activates_form_action_controls() {
     let html = render_browser_session_page(&payload, "");
     let topbar_html =
         &html[html.find(r#"class="browser-topbar""#).unwrap()..html.find("</header>").unwrap()];
-    assert!(topbar_html.contains(
-        r#"data-browser-chrome-form-feedback title="Activated form 0 control 2; no navigation; viewport preserved">Activated form 0 control 2; no navigation; viewport preserved</span>"#
-    ));
+    assert!(topbar_html.contains(r#"data-browser-chrome-form-feedback"#));
+    assert!(
+        topbar_html
+            .contains(r#"title="Activated form 0 control 2; no navigation; viewport preserved""#)
+    );
+    assert!(
+        topbar_html
+            .contains(r#">Activated form 0 control 2; no navigation; viewport preserved</span>"#)
+    );
 
     let fill = RequestTarget {
         path: "/browser".to_owned(),
@@ -12895,6 +13635,7 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("sessionStorage"));
     assert!(html.contains("guardAutoVisualControls"));
     assert!(html.contains("const blockBrowserControls = false"));
+    assert!(html.contains("const preferFirstViewportVisual = false"));
     assert!(html.contains("setAutoVisualControlsBusy(blockBrowserControls)"));
     assert!(html.contains("refreshUrlForCurrentViewport"));
     assert!(html.contains("Visual render is still running. Please wait..."));
@@ -12904,7 +13645,10 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert!(html.contains("sessionStorage.removeItem(stateKey)"));
     assert!(html.contains("AbortController"));
     assert!(html.contains("requestTimeoutMs"));
-    assert!(html.contains("const requestTimeoutMs = 12000"));
+    assert!(html.contains(&format!(
+        "const requestTimeoutMs = backgroundFirstViewportVisual ? {} : 4000",
+        BROWSER_AUTO_VISUAL_BACKGROUND_FIRST_VIEWPORT_TIMEOUT.as_millis()
+    )));
     assert!(html.contains("const failedRetryCooldownMs = 60000"));
     assert!(html.contains(r#"currentState.startsWith("failed:")"#));
     assert!(html.contains("Date.now() - failedAt < failedRetryCooldownMs"));
@@ -12995,14 +13739,14 @@ async fn browser_session_inspector_fetches_and_applies_page_resources() {
     assert_eq!(response.status, 200);
     assert_eq!(response.content_type, "text/csv; charset=utf-8");
     assert!(response.body.starts_with(
-        "action,page_source,total,fetched,cached,failed,skipped,applied,decoded,index,status,kind,url,resolved,source,bytes,content_type,error,session_id,active_source\n"
+        "action,page_source,total,fetched,cached,failed,skipped,applied,decoded,attached,index,status,kind,url,resolved,source,bytes,content_type,error,render_attached,render_attachment_kind,image_visibility_state,session_id,active_source\n"
     ));
     assert_eq!(response.body.lines().count(), 2);
     assert!(response.body.contains("Apply styles,"));
     assert!(
         response
             .body
-            .contains(",1,1,0,0,0,1,,1,fetched,stylesheet,")
+            .contains(",1,1,0,0,0,1,,,1,fetched,stylesheet,")
     );
     assert!(response.body.contains("/app.css"));
     assert!(response.body.contains("text/css"));
@@ -13455,6 +14199,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     assert_eq!(report.skipped, 0);
     assert_eq!(report.applied, Some(1));
     assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.attached, Some(1));
     assert_eq!(report.resources.len(), 2);
     assert!(report.resources.iter().any(|resource| {
         resource.kind == "stylesheet"
@@ -13476,7 +14221,7 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
     let html = render_browser_session_page(&payload, &back_href);
     assert!(!html.contains(r#"data-auto-visual-status"#));
     assert!(html.contains(
-        "Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1"
+        "Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1 attached=1"
     ));
     assert!(html.contains(r#"data-browser-viewport-page-state"#));
     assert!(
@@ -13484,14 +14229,14 @@ async fn browser_session_make_visual_applies_styles_and_loads_images() {
             r#"<span class="viewport-state-chip report">Last action: Make visual</span>"#
         )
     );
-    assert!(html.contains(r#"<span class="viewport-state-chip report">Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1</span>"#));
+    assert!(html.contains(r#"<span class="viewport-state-chip report">Make visual: total=2 fetched=2 cached=0 failed=0 skipped=0 applied=1 decoded=1 attached=1</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip report">applied 1</span>"#));
     assert!(html.contains(r#"<span class="viewport-state-chip report">decoded 1</span>"#));
     assert!(html.contains(
         r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>styles applied: 1</span>"#
     ));
     assert!(html.contains(
-        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images painted: 1/1</span>"#
     ));
     assert!(!html.contains(">Load 1 image</a>"));
     assert!(html.contains("Report JSON"));
@@ -13886,6 +14631,442 @@ async fn browser_session_resources_prioritize_images_inside_capped_listing() {
 }
 
 #[tokio::test]
+async fn browser_session_create_with_auto_visual_loads_first_viewport_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("auto-visual.html");
+    let stylesheet = dir.path().join("app.css");
+    let visible = dir.path().join("visible.svg");
+    let offscreen = dir.path().join("offscreen.svg");
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##;
+    std::fs::write(&stylesheet, ".hero { color: #113355; }").unwrap();
+    std::fs::write(&visible, svg).unwrap();
+    std::fs::write(&offscreen, svg).unwrap();
+    let lines = (0..80)
+        .map(|index| format!("spacer line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><title>Auto Visual</title><link rel="stylesheet" href="app.css"><p class="hero">visual page</p><img src="visible.svg" alt="Visible image"><pre>{lines}</pre><img src="offscreen.svg" alt="Offscreen image">"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("visual".to_owned(), "auto".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+        ],
+    };
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+
+    assert_eq!(payload.title, "Auto Visual");
+    assert_eq!(payload.resource_stylesheet_count, 1);
+    assert_eq!(payload.resource_image_count, 2);
+    let report = payload.resource_report.as_ref().unwrap();
+    assert_eq!(report.action, "Auto visual");
+    assert_eq!(report.applied, Some(1));
+    assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.attached, Some(1));
+    assert_eq!(report.failed, 0);
+    assert!(
+        report
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "stylesheet" && resource.url == "app.css")
+    );
+    assert!(
+        report
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "image" && resource.url == "visible.svg")
+    );
+    assert!(
+        report
+            .resources
+            .iter()
+            .all(|resource| resource.url != "offscreen.svg")
+    );
+    assert!(payload.viewport_image.is_some());
+
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(!html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains(r#"name="visual" value="auto""#));
+    assert!(html.contains("visual=auto"));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>styles applied: 1</span>"#
+    ));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images painted: 1/1</span>"#
+    ));
+
+    let state_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "session-state".to_owned()),
+        ],
+    };
+    let response = browser_session_api_response(&state_export, &payload);
+    assert_eq!(response.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(exported["resource_report"]["action"], "Auto visual");
+    assert_eq!(exported["resource_report"]["applied"], 1);
+    assert_eq!(exported["resource_report"]["decoded"], 1);
+    assert_eq!(exported["resource_report"]["attached"], 1);
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("action=load-images")
+    );
+    assert!(
+        exported["action_urls"]["load_images"]
+            .as_str()
+            .unwrap()
+            .contains("visual=auto")
+    );
+
+    let settle_scrolled_viewport = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "75".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+            ("partial".to_owned(), "viewport".to_owned()),
+        ],
+    };
+    let (payload, _) = registry
+        .apply_target(&settle_scrolled_viewport)
+        .await
+        .unwrap();
+    assert_eq!(payload.viewport_y, payload.max_scroll_y);
+    assert!(payload.viewport_y > 0);
+    let report = payload.resource_report.as_ref().unwrap();
+    assert_eq!(report.action, "Viewport visual");
+    assert_eq!(report.applied, Some(1));
+    assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.attached, Some(1));
+    assert!(
+        report
+            .resources
+            .iter()
+            .any(|resource| resource.kind == "image" && resource.url == "offscreen.svg"),
+        "scrolled visual viewport did not load newly visible image: {:?}",
+        report
+            .resources
+            .iter()
+            .map(|resource| resource.url.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(payload.viewport_image.is_some());
+    let partial_html = render_browser_session_viewport_partial(&payload);
+    assert!(partial_html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>styles applied: 1</span>"#
+    ));
+    assert!(partial_html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images painted: 1/1</span>"#
+    ));
+}
+
+#[tokio::test]
+async fn browser_session_create_with_auto_visual_defers_slow_visual_resources() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (css_requested_tx, css_requested_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let mut css_requested_tx = Some(css_requested_tx);
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let Ok(read) = stream.read(&mut buf).await else {
+                continue;
+            };
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (body, content_type) = if request_line.contains(" /slow.css ") {
+                if let Some(tx) = css_requested_tx.take() {
+                    let _ = tx.send(());
+                }
+                tokio::time::sleep(BROWSER_AUTO_VISUAL_FIRST_RESPONSE_TIMEOUT * 3).await;
+                (".hero { color: #113355; }".to_owned(), "text/css")
+            } else {
+                (
+                    r#"<!doctype html><title>Slow Auto Visual</title><link rel="stylesheet" href="/slow.css"><p class="hero">visual shell</p>"#.to_owned(),
+                    "text/html",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), format!("http://{addr}/doc")),
+            ("visual".to_owned(), "auto".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+        ],
+    };
+    let started = std::time::Instant::now();
+    let (payload, back_href) = registry.create_target(&create).await.unwrap();
+
+    css_requested_rx.await.unwrap();
+    assert!(
+        started.elapsed() < BROWSER_AUTO_VISUAL_FIRST_RESPONSE_TIMEOUT * 2,
+        "slow auto visual should return a usable shell promptly"
+    );
+    assert_eq!(payload.title, "Slow Auto Visual");
+    assert!(payload.resource_report.is_none());
+    assert_eq!(payload.resource_stylesheet_count, 1);
+    assert!(payload.viewport_image.is_some());
+    {
+        let sessions = registry.sessions.lock().await;
+        assert!(
+            sessions
+                .get(&payload.id)
+                .is_some_and(|session| session.visual_viewport_images),
+            "deferred auto visual sessions should keep viewport image refresh enabled"
+        );
+    }
+    assert_eq!(
+        payload.action_feedback.as_deref(),
+        Some("Visual loading deferred; first visual pass exceeded 100ms.")
+    );
+    let html = render_browser_session_page(&payload, &back_href);
+    assert!(html.contains(r#"data-auto-visual-status"#));
+    assert!(html.contains(r#"auto-visual-status" hidden data-auto-visual-status"#));
+    assert!(html.contains("Loading visual resources"));
+    assert!(html.contains("const preferFirstViewportVisual = true"));
+    assert!(html.contains(
+        "const backgroundFirstViewportVisual = preferFirstViewportVisual && !blockBrowserControls;"
+    ));
+    assert!(html.contains("status.hidden = backgroundFirstViewportVisual && !options.show;"));
+    assert!(html.contains("const syncNativeRasterScroll = (shell) =>"));
+    assert!(html.contains("syncNativeRasterScroll(shell);"));
+    assert!(html.contains(r#"currentRaster.addEventListener("load", () => syncNativeRasterScroll(shell), { once: true })"#));
+    assert!(html.contains(r#"replacePartialFragment(doc, "[data-browser-primary-state]")"#));
+    assert!(html.contains(r#"replacePartialFragment(doc, "[data-browser-chrome-status]")"#));
+    assert!(html.contains(r#"setStatus(error && error.message ? error.message : "Visual render failed", { show: true });"#));
+    assert!(html.contains("const firstViewportVisualUrl = "));
+    assert!(html.contains("partial=viewport"));
+    assert!(html.contains("if (preferFirstViewportVisual && firstViewportVisualUrl)"));
+    assert!(html.contains("partialApplied = applyViewportPartial(html)"));
+    assert!(html.contains("const firstViewportVisualStillPending = (html) =>"));
+    assert!(html.contains(r#"html.includes("images waiting")"#));
+    assert!(html.contains("for (const delayMs of [180, 320])"));
+    assert!(html.contains("firstViewportPending = firstViewportVisualStillPending(html)"));
+    assert!(html.contains("Visual render is still warming. Use Tools to retry."));
+    assert!(html.contains("Loading first viewport..."));
+    server.abort();
+}
+
+#[tokio::test]
+async fn browser_session_in_flight_clone_without_partial_keeps_completed_visual_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("in-flight-merge.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>In Flight Merge</title><p>merge state</p>"#,
+    )
+    .unwrap();
+
+    fn report(
+        action: &str,
+        decoded: Option<usize>,
+        attached: Option<usize>,
+    ) -> BrowserSessionResourceReportPayload {
+        BrowserSessionResourceReportPayload {
+            action: action.to_owned(),
+            page_source: "file:///in-flight-merge.html".to_owned(),
+            total: 1,
+            fetched: 0,
+            cached: 1,
+            failed: 0,
+            skipped: 0,
+            applied: Some(1),
+            decoded,
+            attached,
+            resources: Vec::new(),
+        }
+    }
+
+    fn cache(raster_id: u64) -> BrowserSessionViewportImagePayload {
+        BrowserSessionViewportImagePayload {
+            raster_id,
+            png: vec![raster_id as u8],
+            data_url: format!("data:image/png;base64,{raster_id}"),
+            width: 1,
+            height: 1,
+            raster_viewport_x: 0,
+            raster_viewport_y: 0,
+            raster_viewport_width: 1,
+            raster_viewport_height: 1,
+            viewport_pixel_width: 1,
+            viewport_pixel_height: 1,
+            viewport_offset_x: 0,
+            viewport_offset_y: 0,
+        }
+    }
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![("url".to_owned(), page.display().to_string())],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let session_id = payload.id.clone();
+    let base_session = {
+        let sessions = registry.sessions.lock().await;
+        sessions.get(&session_id).unwrap().clone()
+    };
+
+    let mut stale_clone = base_session.clone();
+    stale_clone.resource_report = Some(report("Apply styles", None, None));
+    stale_clone.action_feedback = Some("stale stylesheet feedback".to_owned());
+    stale_clone.viewport_image_cache = Some(cache(11));
+    stale_clone.in_flight_viewport_updated = false;
+
+    let mut completed_session = base_session;
+    completed_session.resource_report = Some(report("Make visual", Some(1), Some(1)));
+    completed_session.action_feedback = Some("fresh visual feedback".to_owned());
+    completed_session.viewport_image_cache = Some(cache(22));
+
+    registry
+        .in_flight_sessions
+        .lock()
+        .await
+        .insert(session_id.clone(), Arc::new(Notify::new()));
+    registry
+        .in_flight_viewports
+        .lock()
+        .await
+        .insert(session_id.clone(), stale_clone);
+
+    let sessions = registry
+        .return_session_after_action(&session_id, completed_session, true)
+        .await;
+    let merged = sessions.get(&session_id).unwrap();
+    assert_eq!(
+        merged.resource_report.as_ref().unwrap().action,
+        "Make visual"
+    );
+    assert_eq!(
+        merged.action_feedback.as_deref(),
+        Some("fresh visual feedback")
+    );
+    assert_eq!(merged.viewport_image_cache.as_ref().unwrap().raster_id, 22);
+    assert!(!merged.in_flight_viewport_updated);
+}
+
+#[tokio::test]
+async fn browser_session_in_flight_partial_scroll_refreshes_visual_viewport_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("in-flight-visual.html");
+    let visible = dir.path().join("visible.svg");
+    let offscreen = dir.path().join("offscreen.svg");
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#000"/></svg>"##;
+    std::fs::write(&visible, svg).unwrap();
+    std::fs::write(&offscreen, svg).unwrap();
+    let lines = (0..80)
+        .map(|index| format!("in-flight spacer line {index:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &page,
+        format!(
+            r#"<!doctype html><title>In Flight Visual</title><img src="visible.svg" alt="Visible image"><pre>{lines}</pre><img src="offscreen.svg" alt="Offscreen image">"#
+        ),
+    )
+    .unwrap();
+
+    let registry = BrowserSessionRegistry::default();
+    let create = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("url".to_owned(), page.display().to_string()),
+            ("visual".to_owned(), "auto".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+        ],
+    };
+    let (payload, _) = registry.create_target(&create).await.unwrap();
+    let session_id = payload.id.clone();
+    let base_session = {
+        let sessions = registry.sessions.lock().await;
+        sessions.get(&session_id).unwrap().clone()
+    };
+    registry
+        .in_flight_sessions
+        .lock()
+        .await
+        .insert(session_id.clone(), Arc::new(Notify::new()));
+    registry
+        .in_flight_viewports
+        .lock()
+        .await
+        .insert(session_id.clone(), base_session.clone());
+
+    let partial_scroll = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), session_id.clone()),
+            ("action".to_owned(), "scroll".to_owned()),
+            ("dy".to_owned(), "75".to_owned()),
+            ("partial".to_owned(), "viewport".to_owned()),
+            ("width".to_owned(), "40".to_owned()),
+            ("height".to_owned(), "10".to_owned()),
+        ],
+    };
+    let (partial_payload, _) = registry.apply_target(&partial_scroll).await.unwrap();
+    assert_eq!(partial_payload.id, session_id);
+    assert_eq!(partial_payload.viewport_y, partial_payload.max_scroll_y);
+    let report = partial_payload.resource_report.as_ref().unwrap();
+    assert_eq!(report.action, "Viewport visual");
+    assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.attached, Some(1));
+    assert!(report.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.url == "offscreen.svg"
+            && resource.render_attached == Some(true)
+            && resource.image_visibility_state.as_deref() == Some("render_attached")
+    }));
+    let partial_html = render_browser_session_viewport_partial(&partial_payload);
+    assert!(partial_html.contains(&format!(r#"data-browser-shell-session="{}""#, session_id)));
+    assert!(partial_html.contains(&format!(r#"id={}"#, session_id)));
+
+    let sessions = registry
+        .return_session_after_action(&session_id, base_session, true)
+        .await;
+    let merged = sessions.get(&session_id).unwrap();
+    assert_eq!(merged.viewport_y, partial_payload.viewport_y);
+    let merged_report = merged.resource_report.as_ref().unwrap();
+    assert_eq!(merged_report.action, "Viewport visual");
+    assert_eq!(merged_report.decoded, Some(1));
+    assert_eq!(merged_report.attached, Some(1));
+}
+
+#[tokio::test]
 async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -13928,10 +15109,61 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(payload.resources[0].kind, "image");
     assert_eq!(payload.resources[0].alt.as_deref(), Some("Tile image"));
     assert!(payload.viewport_image.is_some());
+    let raster_id = payload.viewport_image.as_ref().unwrap().raster_id;
+    let raster_response = registry
+        .cached_viewport_raster_response(&RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "viewport-raster-png".to_owned()),
+                ("raster_id".to_owned(), raster_id.to_string()),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(raster_response.status, 200);
+    assert_eq!(raster_response.content_type, "image/png");
+    assert!(raster_response.body.is_empty());
+    assert!(
+        raster_response
+            .binary_body
+            .as_deref()
+            .is_some_and(|body| body.starts_with(b"\x89PNG\r\n\x1a\n"))
+    );
+    let svg_raster_response = registry
+        .cached_viewport_raster_response(&RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "viewport-raster-svg".to_owned()),
+                ("raster_id".to_owned(), raster_id.to_string()),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(svg_raster_response.status, 200);
+    assert_eq!(
+        svg_raster_response.content_type,
+        "image/svg+xml; charset=utf-8"
+    );
+    assert!(svg_raster_response.body.starts_with(r#"<svg "#));
+    assert!(svg_raster_response.body.contains("data:image/png;base64,"));
+    let stale_raster = registry
+        .cached_viewport_raster_response(&RequestTarget {
+            path: "/api/browser-session".to_owned(),
+            params: vec![
+                ("id".to_owned(), payload.id.clone()),
+                ("format".to_owned(), "viewport-raster-png".to_owned()),
+                ("raster_id".to_owned(), (raster_id + 1).to_string()),
+            ],
+        })
+        .await;
+    assert!(matches!(stale_raster, Err(BrowserRouteError::NotFound(_))));
     assert!(payload.resource_report.is_none());
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"<img class="browser-raster""#));
-    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains("format=viewport-raster-png"));
+    assert!(!html.contains("data:image/png;base64,"));
     assert!(html.contains(">Make visual</a>"));
     assert!(html.contains("action=make-visual"));
     assert!(html.contains(r#"data-browser-make-visual-action"#));
@@ -13947,6 +15179,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert!(html.contains(r#"data-browser-auto-visual-control"#));
     assert!(html.contains("Loading visual resources..."));
     assert!(html.contains("const blockBrowserControls = false"));
+    assert!(html.contains("const preferFirstViewportVisual = false"));
     assert!(html.contains("setAutoVisualControlsBusy(blockBrowserControls)"));
     assert!(html.contains("refreshUrlForCurrentViewport"));
     assert!(!html.contains("Preparing visual render"));
@@ -13994,9 +15227,15 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(report.skipped, 0);
     assert_eq!(report.applied, None);
     assert_eq!(report.decoded, Some(1));
+    assert_eq!(report.attached, Some(1));
     assert_eq!(report.resources.len(), 1);
     assert_eq!(report.resources[0].status, "fetched");
     assert_eq!(report.resources[0].kind, "image");
+    assert_eq!(report.resources[0].render_attached, Some(true));
+    assert_eq!(
+        report.resources[0].image_visibility_state.as_deref(),
+        Some("render_attached")
+    );
     assert_eq!(
         report.resources[0].content_type.as_deref(),
         Some("image/svg+xml")
@@ -14012,15 +15251,19 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
 
     let html = render_browser_session_page(&payload, &back_href);
     assert!(html.contains(r#"<img class="browser-raster""#));
-    assert!(html.contains("data:image/png;base64,"));
+    assert!(html.contains("format=viewport-raster-png"));
+    assert!(!html.contains("data:image/png;base64,"));
     assert!(html.contains(r#"<details class="viewport-text">"#));
     assert!(!html.contains(r#"data-auto-visual-status"#));
-    assert!(html.contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1"));
     assert!(html.contains(
-        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images loaded: 1</span>"#
+        "Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=1 attached=1"
+    ));
+    assert!(html.contains(
+        r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images painted: 1/1</span>"#
     ));
     assert!(!html.contains(">Load 1 image</a>"));
     assert!(html.contains("<th>Source</th>"));
+    assert!(html.contains("<th>Attachment</th>"));
     assert!(html.contains("<th>Content Type</th>"));
     assert!(html.contains("<th>Error</th>"));
     assert!(html.contains(&format!("http://{addr}/tile.svg")));
@@ -14033,12 +15276,12 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     {
         let report = no_decode_payload.resource_report.as_mut().unwrap();
         report.decoded = Some(0);
+        report.attached = Some(0);
     }
     let no_decode_html = render_browser_session_page(&no_decode_payload, &back_href);
-    assert!(
-        no_decode_html
-            .contains("Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=0")
-    );
+    assert!(no_decode_html.contains(
+        "Load images: total=1 fetched=1 cached=0 failed=0 skipped=0 decoded=0 attached=0"
+    ));
     assert!(no_decode_html.contains(
         r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>images not decoded: fetched 1, failed 0, skipped 0</span>"#
     ));
@@ -14072,9 +15315,18 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(exported_report["format"], "browser-resource-report");
     assert_eq!(exported_report["resource_report"]["action"], "Load images");
     assert_eq!(exported_report["resource_report"]["decoded"], 1);
+    assert_eq!(exported_report["resource_report"]["attached"], 1);
     assert_eq!(
         exported_report["resource_report"]["resources"][0]["kind"],
         "image"
+    );
+    assert_eq!(
+        exported_report["resource_report"]["resources"][0]["render_attached"],
+        true
+    );
+    assert_eq!(
+        exported_report["resource_report"]["resources"][0]["image_visibility_state"],
+        "render_attached"
     );
     assert_eq!(
         exported_report["resource_report"]["resources"][0]["content_type"],
@@ -14093,7 +15345,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(response.content_type, "text/csv; charset=utf-8");
     assert_eq!(response.body.lines().count(), 2);
     assert!(response.body.contains("Load images,"));
-    assert!(response.body.contains(",1,1,0,0,0,,1,1,fetched,image,"));
+    assert!(response.body.contains(",1,1,0,0,0,,1,1,1,fetched,image,"));
     assert!(response.body.contains("/tile.svg"));
     assert!(response.body.contains("image/svg+xml"));
 
@@ -14111,6 +15363,7 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
     assert_eq!(exported["resource_report"]["total"], 1);
     assert_eq!(exported["resource_report"]["fetched"], 1);
     assert_eq!(exported["resource_report"]["decoded"], 1);
+    assert_eq!(exported["resource_report"]["attached"], 1);
     assert!(exported["resource_report"]["applied"].is_null());
     assert_eq!(exported["resource_report"]["resources"], 1);
     assert_eq!(
@@ -14125,6 +15378,10 @@ async fn browser_session_inspector_loads_images_and_exports_decode_report() {
         "fetched"
     );
     assert_eq!(exported["resource_report"]["fetches"][0]["kind"], "image");
+    assert_eq!(
+        exported["resource_report"]["fetches"][0]["render_attached"],
+        true
+    );
     assert!(
         exported["resource_report"]["fetches"][0]["resolved"]
             .as_str()
@@ -14220,6 +15477,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
     assert!(html.contains("State CSV"));
     assert!(html.contains("Viewport Text"));
     assert!(html.contains("Page Text"));
+    assert!(html.contains("Render Diagnostics"));
     assert!(html.contains("/api/browser-session?"));
     assert!(html.contains("format=session-state"));
     assert!(html.contains("format=session-state-csv"));
@@ -14280,6 +15538,7 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         ("resources_csv", "resources-csv"),
         ("resource_report_json", "resource-report-json"),
         ("resource_report_csv", "resource-report-csv"),
+        ("render_diagnostics_json", "render-diagnostics-json"),
         ("find_json", "find-json"),
         ("find_csv", "find-csv"),
         ("tab_search_json", "tab-search-json"),
@@ -14292,6 +15551,19 @@ async fn browser_session_inspector_reports_and_clears_page_state() {
         assert!(href.contains(&format!("id={}", payload.id)));
         assert!(href.contains(&format!("format={format}")));
     }
+    let diagnostics_export = RequestTarget {
+        path: "/api/browser-session".to_owned(),
+        params: vec![
+            ("id".to_owned(), payload.id.clone()),
+            ("format".to_owned(), "render-diagnostics-json".to_owned()),
+        ],
+    };
+    let diagnostics_response = browser_session_api_response(&diagnostics_export, &payload);
+    assert_eq!(diagnostics_response.status, 200);
+    let diagnostics: serde_json::Value = serde_json::from_str(&diagnostics_response.body).unwrap();
+    assert_eq!(diagnostics["source"], payload.source);
+    assert_eq!(diagnostics["viewport"]["width"], payload.width);
+    assert!(diagnostics["fill_coverage_bps"].is_number());
     assert!(exported["action_urls"]["back"].is_null());
     assert!(exported["action_urls"]["forward"].is_null());
     assert!(
@@ -14994,7 +16266,7 @@ async fn browser_session_page_renders_form_controls() {
         html_escape::encode_double_quoted_attribute(&payload.source)
     )));
     assert!(topbar_html.contains(r#"data-browser-location-strip"#));
-    assert!(topbar_html.contains("<strong>Form</strong>"));
+    assert!(topbar_html.contains("<h1>Form</h1>"));
     assert!(topbar_html.contains(&format!(
         r#"<div class="meta" data-browser-current-location title="{}">"#,
         html_escape::encode_double_quoted_attribute(&payload.source)
@@ -15231,9 +16503,7 @@ async fn browser_session_page_renders_form_controls() {
     assert!(html.contains(r#"a[data-browser-form-submit-link]"#));
     assert!(html.contains(r#"link.dataset.browserFormSubmitHref = url.toString()"#));
     assert!(html.contains(r#"link.dataset.browserFormSubmitPreservedViewportX = currentX"#));
-    assert!(html.contains(
-        r##"link.dataset.browserFormSubmitPreservedMaxBytes = shell.dataset.maxBytes || """##
-    ));
+    assert!(html.contains(r#"link.dataset.browserFormSubmitPreservedMaxBytes = maxBytes"#));
     assert!(html.contains(r#"document.addEventListener("submit", (event) =>"#));
     assert!(html.contains(r#"topStatus.dataset.browserChromeFormPendingState = "pending""#));
     assert!(html.contains(r#"form.dataset.browserFormPendingState = "pending""#));
@@ -15459,7 +16729,7 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(!html.contains(r#"data-browser-pending-load="true""#));
     assert!(!html.contains("Continue loading"));
     assert!(!html.contains("about:blank"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
     assert!(html.contains(
         r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#
     ));
@@ -15539,6 +16809,30 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(html.contains("viewport_x=3"));
     assert!(html.contains("viewport_y=5"));
     assert!(html.contains("max_bytes=1048576"));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf).await.unwrap();
+        tokio::time::sleep(BROWSER_CREATE_TARGET_TIMEOUT * 3).await;
+    });
+    let slow_url = format!("http://{addr}/slow");
+    let open = RequestTarget {
+        path: "/browser".to_owned(),
+        params: vec![
+            ("id".to_owned(), retained_payload.id.clone()),
+            ("action".to_owned(), "open".to_owned()),
+            ("url".to_owned(), slow_url.clone()),
+        ],
+    };
+    let (slow_payload, slow_back_href) = registry.apply_target(&open).await.unwrap();
+    let html = render_browser_session_page(&slow_payload, &slow_back_href);
+    assert!(html.contains(r#"data-browser-retained-pending-raster"#));
+    assert!(!html.contains(r#"class="browser-raster-shell" data-browser-pending-viewport="true""#));
+    server.abort();
 }
 
 #[tokio::test]
@@ -15560,7 +16854,7 @@ async fn browser_page_displays_original_data_source_when_materialized_page_is_un
     assert_eq!(payload.title, expected_title);
     assert_eq!(payload.source, data_url);
     assert_eq!(payload.pending_source, None);
-    assert!(!payload.title.contains("brutal-browser-data-url"));
+    assert!(!payload.title.contains("esoteric-browser-data-url"));
     let current_tab = payload
         .sessions
         .iter()
@@ -15576,7 +16870,7 @@ async fn browser_page_displays_original_data_source_when_materialized_page_is_un
         html_escape::encode_text(&expected_title)
     )));
     assert!(html.contains("data:text/html"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
     assert!(html.contains(r#"data-browser-primary-raster"#));
     assert!(html.contains("Browser view ready:"));
     assert!(html.contains(
@@ -15649,7 +16943,7 @@ async fn browser_page_preserves_data_source_display_and_visual_actions_for_mater
         html_escape::encode_text(&browser_session_feedback_excerpt(&data_url)).into_owned();
     assert!(html.contains(&data_url_excerpt));
     assert!(html.contains("data:text/html"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),
@@ -15750,7 +17044,9 @@ async fn browser_page_returns_pending_session_when_initial_render_times_out() {
     assert!(html.contains(r#"data-browser-pending-load-retry"#));
     assert!(html.contains(r#"data-browser-pending-auto-retry"#));
     assert!(html.contains(r#"sessionStorage.getItem(stateKey) === "tried""#));
-    assert!(html.contains(r#"window.setTimeout(() => window.location.replace(retryUrl), 900)"#));
+    assert!(
+        html.contains(r#"requestAnimationFrame || ((callback) => window.setTimeout(callback, 0))"#)
+    );
     assert!(html.contains("Still opening; retrying once in this tab..."));
     assert!(html.contains("Still opening; use Continue loading to retry in this tab."));
     assert!(html.contains(r#"data-browser-controls-summary"#));
@@ -16025,6 +17321,8 @@ async fn browser_page_recovers_stale_session_when_source_is_present() {
     assert_eq!(payload.viewport_x, 0);
     assert_eq!(payload.viewport_y, 12);
     assert_eq!(payload.max_bytes, 2097152);
+    assert!(payload.visual_viewport_images);
+    assert!(payload.viewport_image.is_some());
     assert!(payload.viewport.contains("Recovered page"));
     let feedback = payload.action_feedback.as_deref().unwrap_or_default();
     assert!(feedback.contains("Recovered expired browser session"));
@@ -16034,6 +17332,8 @@ async fn browser_page_recovers_stale_session_when_source_is_present() {
     assert!(html.contains(r#"class="browser-chrome-row" data-browser-chrome"#));
     assert!(html.contains(r#"data-browser-primary-surface"#));
     assert!(html.contains(r#"data-browser-viewport-scroll"#));
+    assert!(html.contains(r#"name="visual" value="auto""#));
+    assert!(html.contains("visual=auto"));
     assert!(html.contains(r#"data-click-url="/browser?id=s1&amp;action=click-at"#));
     assert!(html.contains("Recovered expired browser session"));
     assert!(!html.contains("Browser session unavailable"));

@@ -152,36 +152,37 @@ struct BackgroundIndexConfig {
 
 impl BackgroundIndexer {
     pub fn from_env(index_dir: PathBuf, local: LocalSearchProvider) -> Option<Self> {
-        if env_flag_disabled("BRUTAL_BACKGROUND_CRAWL") {
+        if env_flag_disabled("ESOTERIC_BACKGROUND_CRAWL") {
             return None;
         }
 
-        let top_n = env_usize("BRUTAL_BACKGROUND_CRAWL_TOP_N").unwrap_or(DEFAULT_BACKGROUND_TOP_N);
+        let top_n =
+            env_usize("ESOTERIC_BACKGROUND_CRAWL_TOP_N").unwrap_or(DEFAULT_BACKGROUND_TOP_N);
         if top_n == 0 {
             return None;
         }
 
-        let max_pages = env_usize("BRUTAL_BACKGROUND_CRAWL_MAX_PAGES").unwrap_or(top_n);
+        let max_pages = env_usize("ESOTERIC_BACKGROUND_CRAWL_MAX_PAGES").unwrap_or(top_n);
         let config = BackgroundIndexConfig {
             index_dir,
             top_n,
             max_pages: max_pages.max(1),
-            max_depth: env_usize("BRUTAL_BACKGROUND_CRAWL_MAX_DEPTH")
+            max_depth: env_usize("ESOTERIC_BACKGROUND_CRAWL_MAX_DEPTH")
                 .unwrap_or(DEFAULT_BACKGROUND_MAX_DEPTH),
-            concurrency: env_usize("BRUTAL_BACKGROUND_CRAWL_CONCURRENCY")
+            concurrency: env_usize("ESOTERIC_BACKGROUND_CRAWL_CONCURRENCY")
                 .unwrap_or(DEFAULT_BACKGROUND_CONCURRENCY)
                 .max(1),
-            max_bytes: env_usize("BRUTAL_BACKGROUND_CRAWL_MAX_BYTES")
+            max_bytes: env_usize("ESOTERIC_BACKGROUND_CRAWL_MAX_BYTES")
                 .unwrap_or(DEFAULT_BACKGROUND_MAX_BYTES),
-            ignore_robots: env_flag_enabled("BRUTAL_BACKGROUND_CRAWL_IGNORE_ROBOTS"),
-            max_fetching_per_host: env_usize("BRUTAL_BACKGROUND_CRAWL_MAX_FETCHING_PER_HOST")
+            ignore_robots: env_flag_enabled("ESOTERIC_BACKGROUND_CRAWL_IGNORE_ROBOTS"),
+            max_fetching_per_host: env_usize("ESOTERIC_BACKGROUND_CRAWL_MAX_FETCHING_PER_HOST")
                 .unwrap_or(DEFAULT_BACKGROUND_MAX_FETCHING_PER_HOST)
                 .max(1),
         };
-        let queue_capacity = env_usize("BRUTAL_BACKGROUND_CRAWL_QUEUE")
+        let queue_capacity = env_usize("ESOTERIC_BACKGROUND_CRAWL_QUEUE")
             .unwrap_or(DEFAULT_BACKGROUND_QUEUE_CAPACITY)
             .max(1);
-        let dedupe_secs = env_u64("BRUTAL_BACKGROUND_CRAWL_DEDUPE_SECS")
+        let dedupe_secs = env_u64("ESOTERIC_BACKGROUND_CRAWL_DEDUPE_SECS")
             .unwrap_or(DEFAULT_BACKGROUND_DEDUPE_SECS);
         Some(Self::start(local, config, queue_capacity, dedupe_secs))
     }

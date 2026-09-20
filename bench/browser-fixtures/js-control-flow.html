@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head><title>JS Control Flow Fixture</title></head>
+  <body>
+    <p id="sum">0</p>
+    <ul><li class="x">one</li><li class="x">two</li><li>three</li></ul>
+    <p id="fn">pending</p>
+    <script>
+      let total = 0;
+      for (let i = 1; i <= 4; i++) { total += i; }
+      document.getElementById("sum").textContent = total;
+      for (const item of document.querySelectorAll("li.x")) { item.textContent = "done"; }
+      function label(el, value) { if (el.classList.contains("missing")) { el.textContent = "wrong"; } else { el.textContent = value; } }
+      label(document.getElementById("fn"), "labeled");
+    </script>
+  </body>
+</html>

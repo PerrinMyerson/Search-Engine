@@ -1,6 +1,6 @@
-# Brutal Browser Engine Strategy
+# Esoteric Internet Engine Strategy
 
-This repository is now browser-first. Brutal Browser is the product and engine
+This repository is now browser-first. Esoteric Internet is the product and engine
 direction: an independent Rust-native browser engine and shell designed for
 performance, safety, inspectability, and automation. Blackium Starium✴ remains
 important, but it is a fast text/index/extraction mode inside that broader
@@ -22,7 +22,7 @@ global Chrome competitor.
 - Every "better than Chromium" claim must name the page class, correctness
   gates, hardware, OS, Rust build profile, Chromium version, command, and
   artifacts.
-- Claims are scoped. We do not ask whether Brutal Browser is better than Chrome
+- Claims are scoped. We do not ask whether Esoteric Internet is better than Chrome
   globally. We ask whether it is better for a named page class under named gates.
 - No random tiny feature accumulation. Each feature must move a subsystem toward
   a staged browser milestone.
@@ -69,7 +69,7 @@ but the JS strategy must be decided before Stage 2.
 
 Initial narrow claim shape:
 
-> Brutal Browser renders the document-page corpus with equivalent visible text,
+> Esoteric Internet renders the document-page corpus with equivalent visible text,
 > no failed renders, lower p95 render time, and lower peak memory than Chromium
 > on the recorded hardware/software configuration.
 
@@ -194,10 +194,10 @@ The next implementation milestone should be Stage 1 Document Browser M1:
    artifact, scrollable viewport, page dimensions, dirty pixel regions, and
    deterministic pixel baselines, consumed through a reusable `BrowserApp`
    state boundary plus the scripted/profile-aware and interactive/stdin
-   `brutal-browser app` command with find/find-next state, visible viewport
+   `esoteric-browser app` command with find/find-next state, visible viewport
    output, deterministic browser-window PNG output with simple chrome, narrow
    window-coordinate click routing, a small JSON history/bookmark profile, and
-   a feature-gated native CPU-backed `brutal-browser window` shell with narrow
+   a feature-gated native CPU-backed `esoteric-browser window` shell with narrow
    location entry, text-control input routing, resize-aware viewport updates
    before product browser chrome work.
 3. Define and check in a small document-page corpus manifest with local fixtures
@@ -236,7 +236,7 @@ Do not use these phrases without a completed audit:
 When a narrow speed claim is ready, write it like this:
 
 ```text
-On <hardware/OS>, with <Rust build> and Chromium <version>, Brutal Browser
+On <hardware/OS>, with <Rust build> and Chromium <version>, Esoteric Internet
 renders <page class/corpus hash> with <correctness gates> passing, <failure
 count> failures, and <metric> better than Chromium by <amount>, using
 <reproducible command/report path>.

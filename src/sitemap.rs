@@ -276,7 +276,7 @@ fn build_client() -> Result<reqwest::Client> {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("brutal-search/0.1 sitemap-loader"),
+        HeaderValue::from_static("esoteric-search/0.1 sitemap-loader"),
     );
 
     Ok(reqwest::Client::builder()
