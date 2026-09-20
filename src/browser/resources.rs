@@ -1,26 +1,29 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use futures::{StreamExt, stream};
 use reqwest::StatusCode;
 use reqwest::header::{
     CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, LOCATION, SET_COOKIE, USER_AGENT,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use url::Url;
 
 use super::images::{
     ImageDecodeDiagnostic, background_image_sizes_attr, background_width_template_render_source,
     image_decode_diagnostic, image_mime_type_supported, image_render_source, image_sizes_attr,
     is_lazy_image_placeholder_src, lazy_width_template_render_source,
-    media_query_matches_current_screen, selected_supported_srcset_candidate,
-    selected_supported_srcset_candidate_for_type, srcset_candidate_clearly_unsupported,
-    srcset_candidate_urls, srcset_has_width_descriptor, supported_srcset_candidate_urls,
-    supported_srcset_candidate_urls_for_type,
+    media_query_matches_current_screen, selected_supported_high_resolution_srcset_candidate,
+    selected_supported_srcset_candidate, selected_supported_srcset_candidate_for_type,
+    srcset_candidate_clearly_unsupported, srcset_candidate_urls, srcset_has_width_descriptor,
+    supported_srcset_candidate_urls, supported_srcset_candidate_urls_for_type,
 };
-use super::{BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
+use super::{BrowserCookie, BrowserCookieJar, Dom, ElementData, NodeKind, resolve_browser_href};
 
 const DEFAULT_RESOURCE_CACHE_MAX_ENTRIES: usize = 256;
 const DEFAULT_RESOURCE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
@@ -30,6 +33,8 @@ const DATA_URL_SOURCE_METADATA_MAX_CHARS: usize = 80;
 const DATA_URL_REPORT_LABEL_MAX_CHARS: usize = 120;
 const REPORT_PAGE_SOURCE_MAX_CHARS: usize = 16 * 1024;
 const REPORT_ERROR_MAX_CHARS: usize = 2 * 1024;
+pub(super) const DEFAULT_RESOURCE_FETCH_CONCURRENCY: usize = 16;
+pub(super) const DEFAULT_RESOURCE_FETCH_PER_HOST_CONCURRENCY: usize = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserResource {
@@ -245,6 +250,15 @@ struct BrowserResourceFetchArgs {
     request_timeout_ms: u128,
     cache_pressure: BrowserResourceCachePressure,
     cache_outcome: Option<String>,
+}
+
+struct BrowserConcurrentResourceFetch {
+    index: usize,
+    fetch: BrowserResourceFetch,
+    cache_url: Option<String>,
+    cache_entry: Option<BrowserCachedResource>,
+    cookie_before: Vec<BrowserCookie>,
+    cookie_after: Vec<BrowserCookie>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -727,6 +741,7 @@ pub(super) async fn load_target_with_cookie_jar_report(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn fetch_resource_with_cache(
     resource: BrowserResource,
     max_resource_bytes: usize,
@@ -874,6 +889,315 @@ pub(super) async fn fetch_resource_with_cache(
                 cache_pressure: cache.pressure(),
                 cache_outcome: Some("miss_failed".to_owned()),
             },
+            None,
+        ),
+    }
+}
+
+pub(super) async fn fetch_resources_with_cache(
+    resources: Vec<BrowserResource>,
+    max_resource_bytes: usize,
+    cookie_jar: &mut BrowserCookieJar,
+    cache: &mut BrowserResourceCache,
+) -> Vec<BrowserResourceFetch> {
+    fetch_resources_with_cache_concurrency(
+        resources,
+        max_resource_bytes,
+        DEFAULT_RESOURCE_FETCH_CONCURRENCY,
+        DEFAULT_RESOURCE_FETCH_PER_HOST_CONCURRENCY,
+        cookie_jar,
+        cache,
+    )
+    .await
+}
+
+pub(super) async fn fetch_resources_with_cache_concurrency(
+    resources: Vec<BrowserResource>,
+    max_resource_bytes: usize,
+    concurrency: usize,
+    per_host_concurrency: usize,
+    cookie_jar: &mut BrowserCookieJar,
+    cache: &mut BrowserResourceCache,
+) -> Vec<BrowserResourceFetch> {
+    if resources.is_empty() {
+        return Vec::new();
+    }
+
+    let total = resources.len();
+    let mut completed = HashMap::new();
+    let mut duplicate_misses = HashMap::new();
+    let mut planned_misses = HashMap::new();
+    let mut host_limiters = HashMap::<String, Arc<Semaphore>>::new();
+    let mut misses = Vec::new();
+    for (index, resource) in resources.into_iter().enumerate() {
+        if let Some(fetch) = fetch_cached_resource(resource.clone(), cache) {
+            completed.insert(
+                index,
+                BrowserConcurrentResourceFetch {
+                    index,
+                    fetch,
+                    cache_url: None,
+                    cache_entry: None,
+                    cookie_before: Vec::new(),
+                    cookie_after: Vec::new(),
+                },
+            );
+        } else if let Some(leader_index) = planned_misses.get(&resource.resolved).copied() {
+            duplicate_misses.insert(index, (leader_index, resource));
+        } else {
+            planned_misses.insert(resource.resolved.clone(), index);
+            let host_limiter = resource_fetch_host_key(&resource.resolved).map(|host| {
+                host_limiters
+                    .entry(host)
+                    .or_insert_with(|| Arc::new(Semaphore::new(per_host_concurrency.max(1))))
+                    .clone()
+            });
+            misses.push((index, resource, cookie_jar.snapshot(), host_limiter));
+        }
+    }
+
+    let limit = concurrency.max(1);
+    let fetched = stream::iter(misses.into_iter().map(
+        |(index, resource, cookie_before, host_limiter)| async move {
+            let _host_permit = match host_limiter {
+                Some(limiter) => limiter.acquire_owned().await.ok(),
+                None => None,
+            };
+            let mut local_cookie_jar = BrowserCookieJar::from_cookies(cookie_before.clone());
+            let (fetch, cache_entry) =
+                fetch_uncached_resource(resource, max_resource_bytes, &mut local_cookie_jar).await;
+            BrowserConcurrentResourceFetch {
+                index,
+                fetch,
+                cache_url: cache_entry.as_ref().map(|(url, _)| url.clone()),
+                cache_entry: cache_entry.map(|(_, entry)| entry),
+                cookie_before,
+                cookie_after: local_cookie_jar.snapshot(),
+            }
+        },
+    ))
+    .buffer_unordered(limit)
+    .collect::<Vec<_>>()
+    .await;
+    for result in fetched {
+        completed.insert(result.index, result);
+    }
+
+    let mut fetches = Vec::with_capacity(completed.len());
+    let mut leader_fetches = HashMap::new();
+    for index in 0..total {
+        if let Some(mut result) = completed.remove(&index) {
+            if !result.cookie_before.is_empty() || !result.cookie_after.is_empty() {
+                cookie_jar.merge_snapshot_delta(&result.cookie_before, &result.cookie_after);
+            }
+            if let (Some(cache_url), Some(cache_entry)) =
+                (result.cache_url.take(), result.cache_entry.take())
+            {
+                let cache_outcome = cache.insert(cache_url, cache_entry);
+                result.fetch.set_cache_pressure(cache.pressure());
+                result.fetch.set_cache_outcome(cache_outcome);
+            } else {
+                result.fetch.set_cache_pressure(cache.pressure());
+            }
+            leader_fetches.insert(index, result.fetch.clone());
+            fetches.push(result.fetch);
+        } else if let Some((leader_index, resource)) = duplicate_misses.remove(&index) {
+            let fetch = fetch_cached_resource(resource.clone(), cache).unwrap_or_else(|| {
+                let mut fetch = leader_fetches
+                    .get(&leader_index)
+                    .expect("duplicate resource leader must be processed first")
+                    .clone();
+                fetch.resource = resource;
+                fetch.set_cache_pressure(cache.pressure());
+                fetch
+            });
+            fetches.push(fetch);
+        } else {
+            debug_assert!(
+                false,
+                "resource fetch plan missing result for index {index}"
+            );
+        }
+    }
+    fetches
+}
+
+fn resource_fetch_host_key(target: &str) -> Option<String> {
+    let url = Url::parse(target).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(format!(
+        "{}://{}",
+        url.scheme(),
+        url.host_str()?.to_ascii_lowercase()
+    ))
+}
+
+fn fetch_cached_resource(
+    resource: BrowserResource,
+    cache: &mut BrowserResourceCache,
+) -> Option<BrowserResourceFetch> {
+    if !cache.entries.contains_key(&resource.resolved) {
+        return None;
+    }
+    cache.touch(&resource.resolved);
+    let cached = cache
+        .entries
+        .get(&resource.resolved)
+        .expect("cache entry must exist after touch");
+    Some(BrowserResourceFetch::from_args(
+        BrowserResourceFetchArgs {
+            resource,
+            status: "cached".to_owned(),
+            source: Some(cached.source.clone()),
+            bytes: cached.bytes.len(),
+            content_type: cached.content_type.clone(),
+            error: None,
+            error_kind: None,
+            elapsed_ms: 0,
+            request_timeout_ms: 0,
+            cache_pressure: cache.pressure(),
+            cache_outcome: Some("hit".to_owned()),
+        },
+        Some(cached.bytes.as_slice()),
+    ))
+}
+
+async fn fetch_uncached_resource(
+    resource: BrowserResource,
+    max_resource_bytes: usize,
+    cookie_jar: &mut BrowserCookieJar,
+) -> (
+    BrowserResourceFetch,
+    Option<(String, BrowserCachedResource)>,
+) {
+    let started = Instant::now();
+    let request_timeout_ms = request_timeout_ms_for_target(&resource.resolved, false);
+    if resource.resolved.starts_with("data:") {
+        return match load_data_url_resource(&resource.resolved, max_resource_bytes) {
+            Ok((source, bytes, content_type)) => {
+                let byte_len = bytes.len();
+                let fetch = BrowserResourceFetch::from_args(
+                    BrowserResourceFetchArgs {
+                        resource: resource.clone(),
+                        status: "cached".to_owned(),
+                        source: Some(source.clone()),
+                        bytes: byte_len,
+                        content_type: Some(content_type.clone()),
+                        error: None,
+                        error_kind: None,
+                        elapsed_ms: started.elapsed().as_millis(),
+                        request_timeout_ms: 0,
+                        cache_pressure: BrowserResourceCachePressure::default(),
+                        cache_outcome: None,
+                    },
+                    Some(bytes.as_slice()),
+                );
+                (
+                    fetch,
+                    Some((
+                        resource.resolved,
+                        BrowserCachedResource {
+                            source,
+                            bytes,
+                            content_type: Some(content_type),
+                        },
+                    )),
+                )
+            }
+            Err(error) => (
+                BrowserResourceFetch::from_args(
+                    BrowserResourceFetchArgs {
+                        resource,
+                        status: "failed".to_owned(),
+                        source: None,
+                        bytes: 0,
+                        content_type: None,
+                        error: Some(error.to_string()),
+                        error_kind: Some(classify_load_error(&error)),
+                        elapsed_ms: started.elapsed().as_millis(),
+                        request_timeout_ms: 0,
+                        cache_pressure: BrowserResourceCachePressure::default(),
+                        cache_outcome: Some("miss_failed".to_owned()),
+                    },
+                    None,
+                ),
+                None,
+            ),
+        };
+    }
+
+    if unsupported_resource_target(&resource.resolved) {
+        return (
+            BrowserResourceFetch::from_args(
+                BrowserResourceFetchArgs {
+                    resource,
+                    status: "skipped".to_owned(),
+                    source: None,
+                    bytes: 0,
+                    content_type: None,
+                    error: Some("unsupported resource scheme".to_owned()),
+                    error_kind: Some("unsupported_scheme".to_owned()),
+                    elapsed_ms: started.elapsed().as_millis(),
+                    request_timeout_ms: 0,
+                    cache_pressure: BrowserResourceCachePressure::default(),
+                    cache_outcome: Some("skipped".to_owned()),
+                },
+                None,
+            ),
+            None,
+        );
+    }
+
+    match load_resource_target(&resource.resolved, max_resource_bytes, cookie_jar).await {
+        Ok((source, bytes, content_type)) => {
+            let byte_len = bytes.len();
+            let fetch = BrowserResourceFetch::from_args(
+                BrowserResourceFetchArgs {
+                    resource: resource.clone(),
+                    status: "fetched".to_owned(),
+                    source: Some(source.clone()),
+                    bytes: byte_len,
+                    content_type: content_type.clone(),
+                    error: None,
+                    error_kind: None,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    request_timeout_ms,
+                    cache_pressure: BrowserResourceCachePressure::default(),
+                    cache_outcome: None,
+                },
+                Some(bytes.as_slice()),
+            );
+            (
+                fetch,
+                Some((
+                    resource.resolved,
+                    BrowserCachedResource {
+                        source,
+                        bytes,
+                        content_type,
+                    },
+                )),
+            )
+        }
+        Err(error) => (
+            BrowserResourceFetch::from_args(
+                BrowserResourceFetchArgs {
+                    resource,
+                    status: "failed".to_owned(),
+                    source: None,
+                    bytes: 0,
+                    content_type: None,
+                    error: Some(error.to_string()),
+                    error_kind: Some(classify_load_error(&error)),
+                    elapsed_ms: started.elapsed().as_millis(),
+                    request_timeout_ms,
+                    cache_pressure: BrowserResourceCachePressure::default(),
+                    cache_outcome: Some("miss_failed".to_owned()),
+                },
+                None,
+            ),
             None,
         ),
     }
@@ -1261,16 +1585,9 @@ async fn load_http_bytes(
     require_html: bool,
     post_form_body: Option<String>,
 ) -> Result<(String, Vec<u8>, Option<String>)> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("brutal-browser/0.1 static-engine"),
-    );
-    let client = reqwest::Client::builder()
-        .default_headers(headers)
-        .timeout(http_load_timeout(require_html))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let client = browser_http_client();
+    let timeout = http_load_timeout(require_html);
+    let byte_cap_label = if require_html { "document" } else { "resource" };
     let mut current_url = Url::parse(target).with_context(|| format!("parse URL {target}"))?;
     let mut method = if let Some(body) = post_form_body {
         BrowserHttpMethod::Post(body)
@@ -1285,7 +1602,8 @@ async fn load_http_bytes(
                 .post(current_url.clone())
                 .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(body.clone()),
-        };
+        }
+        .timeout(timeout);
         if let Some(cookie_header) = cookie_jar
             .as_deref()
             .and_then(|cookie_jar| cookie_jar.cookie_header(current_url.as_str()))
@@ -1347,14 +1665,8 @@ async fn load_http_bytes(
                     .as_deref()
                     .is_some_and(is_browser_renderable_content_type)
             {
-                let bytes = response.bytes().await?;
-                ensure!(
-                    bytes.len() <= max_bytes,
-                    "document exceeds byte cap: {} > {}",
-                    bytes.len(),
-                    max_bytes
-                );
-                return Ok((final_url, bytes.to_vec(), content_type));
+                let bytes = read_http_body_capped(response, max_bytes, byte_cap_label).await?;
+                return Ok((final_url, bytes, content_type));
             }
             ensure!(status.is_success(), "load {target} failed with {status}");
         }
@@ -1364,17 +1676,60 @@ async fn load_http_bytes(
                 "unsupported content type for browser render: {content_type}"
             );
         }
-        let bytes = response.bytes().await?;
-        ensure!(
-            bytes.len() <= max_bytes,
-            "document exceeds byte cap: {} > {}",
-            bytes.len(),
-            max_bytes
-        );
-        return Ok((final_url, bytes.to_vec(), content_type));
+        let bytes = read_http_body_capped(response, max_bytes, byte_cap_label).await?;
+        return Ok((final_url, bytes, content_type));
     }
 
     unreachable!("redirect loop must return or fail at the configured limit")
+}
+
+fn browser_http_client() -> &'static reqwest::Client {
+    static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    HTTP_CLIENT.get_or_init(|| {
+        let mut headers = HeaderMap::new();
+        // Browser-lineage UA with our engine token appended (the same convention
+        // Chrome/Edge/Brave follow); bot-gating servers otherwise serve consent
+        // shells and simplified markup instead of the page Chrome sees.
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 BrutalBrowser/0.1",
+            ),
+        );
+        headers.insert(
+            reqwest::header::ACCEPT,
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            ),
+        );
+        headers.insert(
+            reqwest::header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build browser HTTP client")
+    })
+}
+
+async fn read_http_body_capped(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            body.len().saturating_add(chunk.len()) <= max_bytes,
+            "{label} exceeds byte cap: {} > {}",
+            body.len().saturating_add(chunk.len()),
+            max_bytes
+        );
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn is_browser_renderable_content_type(content_type: &str) -> bool {
@@ -1725,13 +2080,34 @@ fn push_img_primary_resource(
         return;
     };
     let selected = image_render_source(dom, node_id, element, viewport_width_css_px);
-    if selected.as_deref().is_some_and(|selected| selected != src) {
+    if parent_element_tag_is(dom, node_id, "picture")
+        && selected.as_deref().is_some_and(|selected| selected != src)
+    {
         return;
     }
-    if is_lazy_image_placeholder_src(src) {
+    if selected.as_deref().is_some_and(|selected| selected != src)
+        && image_srcset_prefers_selected_candidate(element)
+    {
+        return;
+    }
+    if is_lazy_image_placeholder_src(src) && element_has_image_alias_source(element) {
         return;
     }
     push_resource(resources, source, element, "image", &element.tag, src);
+}
+
+fn element_has_image_alias_source(element: &ElementData) -> bool {
+    IMAGE_SRC_ALIAS_ATTRS.iter().any(|attr_name| {
+        element
+            .attrs
+            .get(*attr_name)
+            .is_some_and(|value| !value.trim().is_empty())
+    }) || IMAGE_SRCSET_ALIAS_ATTRS.iter().any(|attr_name| {
+        element
+            .attrs
+            .get(*attr_name)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 fn push_srcset_resources(
@@ -1758,17 +2134,40 @@ fn push_image_srcset_resources(
     let Some(srcset) = element.srcset.as_deref() else {
         return;
     };
-    let sizes = image_sizes_attr(element).map(str::to_owned);
+    let sizes = image_srcset_resource_sizes_attr(element);
+    let data_urls = srcset_candidate_urls(srcset)
+        .into_iter()
+        .filter(|url| resource_url_is_data_url(url))
+        .filter(|url| !srcset_candidate_clearly_unsupported(url))
+        .collect::<Vec<_>>();
     if (sizes.is_some() || !srcset_has_width_descriptor(srcset))
         && let Some(url) =
             selected_supported_srcset_candidate(srcset, sizes.as_deref(), viewport_width_css_px)
     {
         push_resource(resources, source, element, kind, &element.tag, &url);
+        for data_url in data_urls {
+            if data_url != url {
+                push_resource(resources, source, element, kind, &element.tag, &data_url);
+            }
+        }
         return;
     }
     for url in supported_srcset_candidate_urls(srcset) {
         push_resource(resources, source, element, kind, &element.tag, &url);
     }
+}
+
+fn image_srcset_prefers_selected_candidate(element: &ElementData) -> bool {
+    let Some(srcset) = element.srcset.as_deref() else {
+        return false;
+    };
+    image_sizes_attr(element).is_some() || !srcset_has_width_descriptor(srcset)
+}
+
+fn resource_url_is_data_url(url: &str) -> bool {
+    url.trim()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
 }
 
 fn push_picture_source_image_resources(
@@ -1943,17 +2342,36 @@ fn selected_picture_source_srcset_candidate(
     {
         return Some(url);
     }
-    let width = fallback
+    if let Some(width) = fallback
         .attrs
         .get("width")
-        .and_then(|width| parse_image_resource_dimension_attr(width))?;
-    let fallback_size = format!("{width}px");
+        .and_then(|width| parse_image_resource_dimension_attr(width))
+    {
+        let fallback_size = format!("{width}px");
+        if let Some(url) = selected_supported_srcset_candidate_for_type(
+            srcset,
+            Some(fallback_size.as_str()),
+            usize::MAX,
+            element.type_hint.as_deref(),
+        ) {
+            return Some(url);
+        }
+    }
+
     selected_supported_srcset_candidate_for_type(
         srcset,
-        Some(fallback_size.as_str()),
-        usize::MAX,
+        None,
+        viewport_width_css_px,
         element.type_hint.as_deref(),
     )
+    .or_else(|| {
+        selected_supported_srcset_candidate_for_type(
+            srcset,
+            None,
+            usize::MAX,
+            element.type_hint.as_deref(),
+        )
+    })
 }
 
 fn picture_source_fallback_img(dom: &Dom, node_id: usize) -> Option<&ElementData> {
@@ -2007,6 +2425,18 @@ fn image_resource_sizes_attr(element: &ElementData) -> Option<String> {
     Some(format!("{width}px"))
 }
 
+fn image_srcset_resource_sizes_attr(element: &ElementData) -> Option<String> {
+    let sizes = image_sizes_attr(element)?;
+    if sizes.trim().eq_ignore_ascii_case("auto") {
+        let width = element
+            .attrs
+            .get("width")
+            .and_then(|width| parse_image_resource_dimension_attr(width))?;
+        return Some(format!("{width}px"));
+    }
+    Some(sizes.to_owned())
+}
+
 fn source_sizes_requires_viewport(sizes: &str) -> bool {
     let sizes = sizes.to_ascii_lowercase();
     sizes.trim() == "auto"
@@ -2044,18 +2474,22 @@ fn push_image_alias_resources(
         let Some(srcset) = element.attrs.get(*attr_name).map(String::as_str) else {
             continue;
         };
-        let sizes = image_sizes_attr(element).map(str::to_owned).or_else(|| {
+        let sizes = image_srcset_resource_sizes_attr(element).or_else(|| {
             element
                 .attrs
                 .get("width")
                 .and_then(|width| parse_image_resource_dimension_attr(width))
                 .map(|width| format!("{width}px"))
         });
-        let selected = selected_supported_srcset_candidate(
-            srcset,
-            sizes.as_deref().or_else(|| image_sizes_attr(element)),
-            viewport_width_css_px,
-        )
+        let selected = if image_srcset_alias_attr_prefers_high_resolution(attr_name) {
+            selected_supported_high_resolution_srcset_candidate(
+                srcset,
+                sizes.as_deref(),
+                viewport_width_css_px,
+            )
+        } else {
+            selected_supported_srcset_candidate(srcset, sizes.as_deref(), viewport_width_css_px)
+        }
         .into_iter();
         for url in selected {
             push_resource(
@@ -2073,6 +2507,13 @@ fn push_image_alias_resources(
     if let Some(url) = selected_image_alias_url(element) {
         push_resource(resources, source, element, "image", &element.tag, url);
     }
+}
+
+fn image_srcset_alias_attr_prefers_high_resolution(attr_name: &str) -> bool {
+    matches!(
+        attr_name,
+        "data-image-srcset" | "data-image-src-set" | "data-imagesrcset"
+    )
 }
 
 fn selected_image_alias_url(element: &ElementData) -> Option<&str> {
@@ -2373,16 +2814,8 @@ fn selected_background_alias_url(element: &ElementData) -> Option<&str> {
     candidates
         .iter()
         .copied()
-        .find(|url| {
-            !is_lazy_image_placeholder_src(url)
-                && !background_image_candidate_clearly_unsupported(url)
-        })
-        .or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .find(|url| !background_image_candidate_clearly_unsupported(url))
-        })
+        .find(|url| !is_lazy_image_placeholder_src(url))
+        .or_else(|| candidates.iter().copied().next())
 }
 
 fn selected_background_image_url_from_attr_layer(value: &str) -> Option<&str> {
@@ -3451,6 +3884,159 @@ mod tests {
         assert_eq!(fetch.cache_outcome.as_deref(), Some("stored"));
         assert_eq!(fetch.diagnostic.as_deref(), Some("resource_fetch_cached"));
         assert_eq!(fetch.cache_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_resource_fetches_keep_report_order_and_merge_cookies_stably() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut accepted = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (request_head, _) = read_http_request(&mut stream).await;
+                accepted.push((request_head, stream));
+            }
+            let first_path = accepted[0]
+                .0
+                .split_ascii_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_owned();
+            let second_path = accepted[1]
+                .0
+                .split_ascii_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_owned();
+            assert_eq!(
+                [first_path.as_str(), second_path.as_str()]
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>(),
+                ["/a.css", "/b.css"]
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+            );
+
+            for (request_head, mut stream) in accepted {
+                if request_head.starts_with("GET /b.css ") {
+                    let body = ".b { color: blue; }";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nSet-Cookie: sid=fast; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    let body = ".a { color: red; }";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nSet-Cookie: sid=slow; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                }
+            }
+        });
+
+        let mut cache = BrowserResourceCache::with_limits(8, 4096);
+        let mut jar = BrowserCookieJar::default();
+        let fetches = tokio::time::timeout(
+            Duration::from_secs(2),
+            fetch_resources_with_cache_concurrency(
+                vec![
+                    test_resource(&format!("http://{addr}/a.css")),
+                    test_resource(&format!("http://{addr}/b.css")),
+                ],
+                1024,
+                2,
+                6,
+                &mut jar,
+                &mut cache,
+            ),
+        )
+        .await
+        .expect("concurrent resource fetch should not serialize behind /a.css");
+        server.await.unwrap();
+
+        assert_eq!(fetches.len(), 2);
+        assert!(fetches[0].resource.resolved.ends_with("/a.css"));
+        assert!(fetches[1].resource.resolved.ends_with("/b.css"));
+        assert_eq!(fetches[0].status, "fetched");
+        assert_eq!(fetches[1].status, "fetched");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(
+            jar.cookie_header(&format!("http://{addr}/")),
+            Some("sid=fast".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_resource_fetches_enforce_per_host_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let server_active = active.clone();
+        let server_max_active = max_active.clone();
+        let server = tokio::spawn(async move {
+            let mut tasks = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let active = server_active.clone();
+                let max_active = server_max_active.clone();
+                tasks.push(tokio::spawn(async move {
+                    let (request_head, _) = read_http_request(&mut stream).await;
+                    let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now_active, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    let path = request_head
+                        .split_ascii_whitespace()
+                        .nth(1)
+                        .unwrap()
+                        .to_owned();
+                    let body = format!("/* {path} */");
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    path
+                }));
+            }
+            let mut paths = Vec::new();
+            for task in tasks {
+                paths.push(task.await.unwrap());
+            }
+            paths
+        });
+
+        let mut cache = BrowserResourceCache::with_limits(8, 4096);
+        let mut jar = BrowserCookieJar::default();
+        let resources = (0..4)
+            .map(|index| test_resource(&format!("http://{addr}/{index}.css")))
+            .collect::<Vec<_>>();
+        let fetches =
+            fetch_resources_with_cache_concurrency(resources, 1024, 4, 2, &mut jar, &mut cache)
+                .await;
+        let server_paths = server.await.unwrap();
+
+        assert_eq!(fetches.len(), 4);
+        for (index, fetch) in fetches.iter().enumerate() {
+            assert!(fetch.resource.resolved.ends_with(&format!("/{index}.css")));
+            assert_eq!(fetch.status, "fetched");
+        }
+        assert_eq!(cache.len(), 4);
+        assert_eq!(server_paths.len(), 4);
+        assert!(
+            max_active.load(Ordering::SeqCst) <= 2,
+            "same-host fetches should obey the per-host concurrency limit"
+        );
     }
 
     #[test]

@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Grid Areas Shell Fixture</title>
+    <style>
+      .shell {
+        display: grid;
+        grid-template-columns: 14rem minmax(0, 1fr);
+        grid-template-areas: "notice notice" "toc article";
+      }
+      .n { grid-area: notice; }
+      .t { grid-area: toc; }
+      .a { grid-area: article; }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <main class="a"><p>Article column text</p></main>
+      <nav class="t"><p>Sidebar contents</p></nav>
+      <div class="n">Notice banner</div>
+    </div>
+  </body>
+</html>

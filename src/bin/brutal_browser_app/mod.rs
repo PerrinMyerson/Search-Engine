@@ -90,6 +90,8 @@ pub(crate) async fn run_browser_app_cli(args: BrowserAppCli) -> Result<()> {
         render: BrowserRenderOptions {
             width: args.width,
             max_bytes: args.max_bytes,
+            css_cell_width_px: args.cell_width,
+            css_cell_height_px: args.cell_height,
         },
         viewport_width: args.viewport_width.unwrap_or(args.width),
         viewport_height: args.viewport_height,

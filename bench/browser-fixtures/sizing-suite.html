@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Sizing Suite Fixture</title>
+    <style>
+      .big { transform: scale(2); }
+      .theme { --w: 80px; }
+      .custom { --w: 200px; }
+      .box { width: var(--w); background: rgb(220,220,220); }
+    </style>
+  </head>
+  <body>
+    <img class="big" src="mem://scaled.png" width="80" height="40" alt="">
+    <div class="box">Var box</div>
+  </body>
+</html>

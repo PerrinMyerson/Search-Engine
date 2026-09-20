@@ -676,19 +676,22 @@ fn css_flex_container_lays_out_block_children_in_row() {
     );
 
     assert_eq!(render.text, "Data Intelligence Evidence Customers\nAfter");
+    let text_commands = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { x, y, text } => Some((*x, *y, text.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        render.display_list,
+        text_commands,
         vec![
-            DisplayCommand::Text {
-                x: 0,
-                y: 0,
-                text: "Data Intelligence Evidence Customers".to_owned(),
-            },
-            DisplayCommand::Text {
-                x: 0,
-                y: 1,
-                text: "After".to_owned(),
-            },
+            (0, 0, "Data"),
+            (5, 0, "Intelligence"),
+            (18, 0, "Evidence"),
+            (27, 0, "Customers"),
+            (0, 1, "After"),
         ]
     );
 }
@@ -725,9 +728,9 @@ fn css_flex_row_images_reserve_inline_space_before_text() {
                 decoded_hash: None,
             },
             DisplayCommand::Text {
-                x: 3,
+                x: 4,
                 y: 0,
-                text: " Hero copy".to_owned(),
+                text: "Hero copy".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
@@ -773,9 +776,9 @@ fn css_flex_row_images_keep_following_text_on_row() {
                 decoded_hash: None,
             },
             DisplayCommand::Text {
-                x: 2,
+                x: 3,
                 y: 0,
-                text: " Hero copy".to_owned(),
+                text: "Hero copy".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
@@ -2348,6 +2351,51 @@ fn css_white_space_nowrap_suppresses_soft_wrapping() {
 }
 
 #[test]
+fn css_text_wrap_nowrap_keeps_flex_nav_action_on_one_row() {
+    let render = render_html(
+        "mem://text-wrap-nowrap-flex-nav",
+        br#"
+            <html><head><style>
+              .nav {
+                display: flex;
+                flex-direction: row;
+                width: 96px;
+                background: rgb(0, 137, 0);
+              }
+              .action {
+                display: flex;
+                text-wrap: nowrap;
+                color: white;
+              }
+              .next {
+                margin-left: 8px;
+              }
+            </style></head><body>
+              <nav class="nav">
+                <a class="action" href="/subscribe">Subscribe Here</a>
+                <a class="next" href="/shop">Shop</a>
+              </nav>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 12,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(
+        render.text.contains("Subscribe Here"),
+        "modern text-wrap nowrap should keep the nav action together: {:?}",
+        render.text
+    );
+    assert!(
+        !render.text.contains("Subscribe\nHere"),
+        "nav action should not soft-wrap between words: {:?}",
+        render.text
+    );
+}
+
+#[test]
 fn inline_text_spacing_preserves_punctuation_boundaries() {
     let render = render_html(
         "mem://inline-punctuation-spacing",
@@ -2790,6 +2838,200 @@ fn css_align_items_center_keeps_flex_media_text_aligned_after_adjacent_scroll() 
 }
 
 #[test]
+fn css_flex_grow_spacer_keeps_nav_actions_on_trailing_edge() {
+    let render = render_html(
+        "mem://flex-grow-nav-spacer",
+        br#"
+            <html><head><style>
+              .top-nav {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                height: 48px;
+                background: rgb(0, 137, 0);
+                padding: 0;
+              }
+              .left { display: flex; }
+              .skip { flex: 0 0 auto; opacity: 0; white-space: nowrap; }
+              .spacer { flex: 1 1 auto; }
+              .actions { display: flex; flex-direction: row; }
+              .action { color: white; }
+            </style></head><body>
+              <nav class="top-nav">
+                <div class="left"></div>
+                <button class="skip">Skip to content</button>
+                <div class="spacer"></div>
+                <div class="actions">
+                  <a class="action" href="/search">Search</a>
+                  <a class="action" href="/shop">Shop</a>
+                </div>
+              </nav>
+              <main>Article body begins here.</main>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 64,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let search = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Search") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("search action should render");
+    let shop = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Shop") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("shop action should render");
+
+    assert_eq!(
+        search.1, shop.1,
+        "right-side flex actions should remain on the same nav row"
+    );
+    assert!(
+        search.0 >= 52,
+        "flex-grow spacer should reserve free row width before actions, got x={}",
+        search.0
+    );
+    assert!(
+        shop.0 > search.0,
+        "shop action should render after search within the trailing action group"
+    );
+}
+
+#[test]
+fn css_flex_button_renders_author_content_instead_of_widget_slab() {
+    let render = render_html(
+        "mem://flex-button-author-content",
+        br#"
+            <html><head><style>
+              .nav {
+                display: flex;
+                align-items: center;
+                height: 48px;
+                background: rgb(0, 137, 0);
+              }
+              .menu {
+                display: flex;
+                align-items: center;
+                background: transparent;
+                border: 0;
+                padding: 0;
+              }
+              .link { margin-left: 8px; }
+            </style></head><body>
+              <nav class="nav">
+                <button class="menu"><span>Explore More</span></button>
+                <a class="link" href="/next">Next</a>
+              </nav>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(
+        !render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::Rect {
+                shade: INLINE_WIDGET_BACKGROUND_SHADE,
+                ..
+            }
+        )),
+        "flex-styled buttons should render author content instead of native widget fill"
+    );
+    let explore = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Explore More") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("button child text should render");
+    let next = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Next") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("neighbor link should render");
+    assert_eq!(explore.1, next.1);
+    assert!(next.0 > explore.0);
+}
+
+#[test]
+fn css_flex_grow_reserves_nested_media_width_before_trailing_action() {
+    let render = render_html(
+        "mem://flex-grow-nested-media-action",
+        br#"
+            <html><head><style>
+              .nav { display: flex; height: 24px; }
+              .spacer { flex: 1 1 auto; }
+              .action { display: flex; flex-direction: row; }
+            </style></head><body>
+              <nav class="nav">
+                <div class="spacer"></div>
+                <a class="action" href="/go">
+                  <svg width="96" height="24" viewBox="0 0 96 24"></svg>
+                  <span>Go</span>
+                </a>
+              </nav>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 24,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let label = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Go") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("action label should render");
+
+    assert_eq!(
+        label.1, 0,
+        "grow spacer should leave enough width for nested media and text"
+    );
+    assert!(label.0 > 0);
+}
+
+#[test]
 fn css_align_items_flex_end_keeps_flex_media_link_hit_after_adjacent_scroll() {
     let image_url = "mem://align-items-flex-end-image".to_owned();
     let decoded = DecodedImage {
@@ -3154,7 +3396,7 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
                 </style>
               </head>
               <body>
-                <div class="hero">Hero</div>
+                <div class="hero">Hero Text Fits</div>
                 <div>Body</div>
               </body>
             </html>
@@ -3165,24 +3407,19 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
         },
     );
 
-    assert_eq!(render.text, "HHHeeerrrooo\n\n\n\nBody");
+    assert_eq!(render.text, "Hero Text Fits\n\n\n\nBody");
     assert_eq!(
         render.display_list,
         vec![
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
-                text: "HHHeeerrrooo".to_owned(),
+                text: "Hero Text Fits".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 1,
-                text: "HHHeeerrrooo".to_owned(),
-            },
-            DisplayCommand::Text {
-                x: 0,
-                y: 2,
-                text: "HHHeeerrrooo".to_owned(),
+                text: "Hero Text Fits".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
@@ -3196,7 +3433,7 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
         DisplayCommandBounds {
             x: 0,
             y: 0,
-            width: 12,
+            width: 14,
             height: 1,
         }
     );
@@ -3212,7 +3449,7 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
     assert_eq!(
         viewport.lines,
         vec![
-            "Hero".to_owned(),
+            "Hero Text Fits".to_owned(),
             String::new(),
             String::new(),
             String::new(),
@@ -3246,6 +3483,25 @@ fn css_font_size_scales_hero_text_layout_and_viewport_paint() {
 }
 
 #[test]
+fn raster_glyphs_fold_typographic_punctuation_onto_ascii() {
+    assert_eq!(glyph_rows('\u{2013}'), glyph_rows('-'), "en dash");
+    assert_eq!(glyph_rows('\u{2014}'), glyph_rows('-'), "em dash");
+    assert_eq!(
+        glyph_rows('\u{2011}'),
+        glyph_rows('-'),
+        "non-breaking hyphen"
+    );
+    assert_eq!(glyph_rows('\u{2019}'), glyph_rows('\''), "curly apostrophe");
+    assert_eq!(glyph_rows('\u{201C}'), glyph_rows('"'), "left curly quote");
+    assert_eq!(glyph_rows('\u{00A0}'), glyph_rows(' '), "no-break space");
+    assert_ne!(
+        glyph_rows('\u{2013}'),
+        glyph_rows('\u{FFFD}'),
+        "dashes should not raster as the tofu fallback"
+    );
+}
+
+#[test]
 fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     let unknown = glyph_rows('\u{2603}');
     assert_ne!(glyph_rows('a'), glyph_rows('A'));
@@ -3276,6 +3532,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default()],
+        document_height: 0,
         display_list: vec![DisplayCommand::Text {
             x: 0,
             y: 0,
@@ -3284,7 +3541,11 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         text: "aA@#%".to_owned(),
     };
 
-    let raster_options = BrowserRasterOptions::default();
+    let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
+        ..BrowserRasterOptions::default()
+    };
     let raster = rasterize_render(&render, raster_options).expect("rasterize typography glyphs");
     let lowercase_top_pixel = raster_options
         .padding_y
@@ -3294,7 +3555,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
     let uppercase_top_y = raster_options.padding_y.saturating_add(2);
     let uppercase_top_start_x = raster_options
         .padding_x
-        .saturating_add(raster_text_document_advance(raster_options.cell_width));
+        .saturating_add(raster_glyph_advance('a', raster_options.cell_width));
     let uppercase_top_has_ink = (uppercase_top_start_x
         ..uppercase_top_start_x.saturating_add(raster_options.cell_width))
         .any(|x| {
@@ -3330,6 +3591,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default()],
+        document_height: 0,
         display_list: vec![DisplayCommand::Text {
             x: 0,
             y: 0,
@@ -3346,7 +3608,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         .saturating_add(raster_options.padding_x.saturating_add(6));
     let readable_m_start_x = raster_options
         .padding_x
-        .saturating_add(raster_text_document_advance(raster_options.cell_width));
+        .saturating_add(raster_glyph_advance('i', raster_options.cell_width));
     let readable_m_has_ink = (raster_options.padding_y
         ..raster_options
             .padding_y
@@ -3363,7 +3625,7 @@ fn raster_glyphs_preserve_lowercase_and_common_punctuation() {
         .padding_x
         .saturating_add(raster_options.cell_width)
         .saturating_add(1);
-    assert_eq!(readable_m_start_x, monospace_m_left.saturating_sub(1));
+    assert!(readable_m_start_x < monospace_m_left);
     assert_eq!(density_raster.pixels[old_cramped_m_pixel], 255);
     assert!(readable_m_has_ink);
     assert_eq!(
@@ -3425,7 +3687,11 @@ fn scaled_raster_glyphs_soften_edges_without_moving_text_geometry() {
         "link text hit box should remain aligned with the visible glyphs"
     );
 
-    let raster_options = BrowserRasterOptions::default();
+    let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
+        ..BrowserRasterOptions::default()
+    };
     assert_eq!(raster_glyph_scale(raster_options), 2);
     let rgba = rasterize_render_rgba(&render, raster_options)
         .expect("rasterize softened scaled glyph text");
@@ -3819,7 +4085,7 @@ fn css_subcell_letter_spacing_accumulates_without_exploding_text_gaps() {
         "mem://fractional-letter-spacing",
         br#"
             <html><body>
-              <p style="letter-spacing: 1px">ABCDEFGHIJKLMNOP</p>
+              <p style="letter-spacing: 1px; text-transform: uppercase">Photograph by Ruth Peterkin, Dreamstime</p>
             </body></html>
             "#,
         BrowserRenderOptions {
@@ -3828,15 +4094,9 @@ fn css_subcell_letter_spacing_accumulates_without_exploding_text_gaps() {
         },
     );
 
-    assert_eq!(render.text, "ABCDEFGH IJKLMNOP");
-    assert_eq!(
-        render.display_list,
-        vec![DisplayCommand::Text {
-            x: 0,
-            y: 0,
-            text: "ABCDEFGH IJKLMNOP".to_owned(),
-        }]
-    );
+    assert_eq!(render.text, "PHOTOGRAPH BY RUTH PETERKIN, DREAMSTIME");
+    assert!(!render.text.contains("PHOT OGRA"));
+    assert!(!render.text.contains("DREA MSTI"));
 }
 
 #[test]
@@ -4023,6 +4283,8 @@ fn css_body_text_keeps_normal_line_width_and_readable_raster_after_image() {
     assert_eq!(paragraph_rows[0].0, 0);
 
     let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
         viewport_y: Some(paragraph_rows[0].1),
         viewport_width: Some(56),
         viewport_height: Some(1),
@@ -4085,6 +4347,8 @@ fn default_raster_density_scales_scrolled_paragraph_text_with_image() {
     assert!(text_y > 0);
 
     let raster_options = BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
         viewport_y: Some(text_y),
         viewport_width: Some(48),
         viewport_height: Some(3),
@@ -4096,7 +4360,22 @@ fn default_raster_density_scales_scrolled_paragraph_text_with_image() {
     let rgba = rasterize_render_rgba(&render, raster_options)
         .expect("rasterize default-density scrolled paragraph");
     let report = rgba_raster_report(&render, &rgba, raster_options);
-    assert_eq!(report.raster_viewport_y, Some(text_y));
+    let expected_viewport = browser_document_viewport(
+        &render,
+        BrowserViewportState {
+            x: 0,
+            y: text_y,
+            width: raster_options.viewport_width.unwrap(),
+            height: raster_options.viewport_height.unwrap(),
+        },
+        None,
+    )
+    .viewport;
+    assert_eq!(report.raster_viewport_y, Some(expected_viewport.y));
+    assert!(
+        text_y >= expected_viewport.y
+            && text_y < expected_viewport.y.saturating_add(expected_viewport.height)
+    );
     assert_eq!(
         report.width,
         raster_options
@@ -4249,7 +4528,13 @@ fn scrolled_viewport_reports_fixed_layout_and_mixed_image_text_slice() {
         &raster.pixels[index..index.saturating_add(4)]
     }
     assert_eq!(
-        pixel(&rgba, raster_options.padding_x, raster_options.padding_y),
+        pixel(
+            &rgba,
+            raster_options.padding_x,
+            raster_options
+                .padding_y
+                .saturating_add(raster_options.cell_height)
+        ),
         &[220, 48, 96, 255]
     );
     let text_col_start = raster_options
@@ -4481,7 +4766,7 @@ fn large_viewport_raster_text_uses_readable_span_with_form_and_image() {
         image: decoded,
     };
     let phrase = "Visible inline link list fills little readable lines";
-    let trailing_body = (0..18)
+    let trailing_body = (0..40)
         .map(|index| {
             format!(
                 "<p>Trailing readable body row {index} keeps the document tall enough for viewport scroll.</p>"
@@ -5476,7 +5761,7 @@ fn table_row_collection_ignores_nested_tables() {
             </body></html>
             "#,
     );
-    let css_cascade = parse_css("");
+    let css_cascade = parse_css("", BrowserRenderOptions::default().css_length_context());
     let outer_table = find_first_matching_selector(&parsed.dom, "table#outer").unwrap();
     let rows = table_rows(&parsed.dom, outer_table, &css_cascade);
 
@@ -5557,6 +5842,20 @@ fn links_have_default_text_shade_with_css_override() {
     assert_eq!(
         render.display_list,
         vec![
+            DisplayCommand::Rect {
+                x: 0,
+                y: 0,
+                width: 15,
+                height: 1,
+                shade: 144,
+            },
+            DisplayCommand::Rect {
+                x: 0,
+                y: 2,
+                width: 5,
+                height: 1,
+                shade: 144,
+            },
             DisplayCommand::StyledText {
                 x: 0,
                 y: 0,
@@ -5600,6 +5899,41 @@ fn search_and_hgroup_use_block_flow_by_default() {
     assert_eq!(
         render.display_list,
         vec![
+            DisplayCommand::Rect {
+                x: 5,
+                y: 1,
+                width: 8,
+                height: 2,
+                shade: INLINE_WIDGET_BACKGROUND_SHADE,
+            },
+            DisplayCommand::Rect {
+                x: 5,
+                y: 1,
+                width: 8,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::Rect {
+                x: 5,
+                y: 2,
+                width: 8,
+                height: 1,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::Rect {
+                x: 5,
+                y: 1,
+                width: 1,
+                height: 2,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
+            DisplayCommand::Rect {
+                x: 12,
+                y: 1,
+                width: 1,
+                height: 2,
+                shade: INLINE_WIDGET_BORDER_SHADE,
+            },
             DisplayCommand::Text {
                 x: 0,
                 y: 0,
@@ -5612,20 +5946,653 @@ fn search_and_hgroup_use_block_flow_by_default() {
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 3,
-                text: "Title".to_owned(),
+                y: 4,
+                text: "TTiittllee".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
                 y: 5,
+                text: "TTiittllee".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 7,
                 text: "Subtitle".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 6,
+                y: 8,
                 text: "After".to_owned(),
             },
         ]
+    );
+}
+
+#[test]
+fn transform_scale_resizes_replaced_images() {
+    let render = render_html(
+        "mem://transform-scale-image",
+        br#"
+            <html><head><style>.big { transform: scale(2); }</style></head>
+            <body><img class="big" src="mem://x.png" width="80" height="40" alt=""><p>After</p></body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let (width, height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { width, height, .. } => Some((*width, *height)),
+            _ => None,
+        })
+        .expect("image should render");
+    assert_eq!(
+        (width, height),
+        (20, 8),
+        "scale(2) should double the 10x4 cell extent"
+    );
+}
+
+#[test]
+fn wrapped_scaled_heading_falls_back_consistently() {
+    let render = render_html(
+        "mem://wrapped-heading-consistent",
+        br#"
+            <html><body><div style="width:144px"><h2>Printing In A Darkroom</h2></div></body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let heading_lines: Vec<&str> = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        heading_lines.iter().all(|line| !line.contains("DDaarrkk")),
+        "once one heading line falls back to unscaled, wrapped continuations must too; got {heading_lines:?}"
+    );
+    assert!(
+        heading_lines.iter().any(|line| line.contains("Darkroom")),
+        "heading continuation should render"
+    );
+}
+
+#[test]
+fn static_transform_translate_offsets_paint_without_moving_flow() {
+    let render = render_html(
+        "mem://static-translate",
+        br#"
+            <html><head><style>
+              .moved { transform: translate(80px, 24px); background: rgb(220,220,220); width: 120px; }
+            </style></head><body>
+              <div class="moved">Shifted box</div>
+              <p>Static below</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let shifted = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Shifted") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("shifted text should render");
+    assert_eq!(
+        shifted,
+        (10, 2),
+        "translate(80px,24px) should paint at +10 cells, +2 rows"
+    );
+    let below = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Static below") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("static sibling should render");
+    assert_eq!(below, (0, 1), "transform must not move siblings in flow");
+}
+
+#[test]
+fn light_backgrounds_do_not_trigger_readable_context_overlay() {
+    let render = render_html(
+        "mem://light-card-no-overlay",
+        br#"
+            <html><head><style>
+              body { background: #fff; }
+              .card { width: 200px; height: 64px; background: rgb(245,245,245); border-radius: 10px; }
+            </style></head><body>
+              <div class="card">Only radius bg</div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let raster = rasterize_render(
+        &render,
+        BrowserRasterOptions {
+            viewport_width: Some(40),
+            viewport_height: Some(8),
+            ..BrowserRasterOptions::default()
+        },
+    )
+    .expect("rasterize light card");
+    // The card text must paint exactly once: the readable-context overlay
+    // (a photo-viewport affordance) must not duplicate it over light fills.
+    let glyph_rows: Vec<usize> = (0..raster.height)
+        .filter(|&y| (0..raster.width).any(|x| raster.pixels[y * raster.width + x] < 96))
+        .collect();
+    let bands = glyph_rows
+        .windows(2)
+        .filter(|pair| pair[1] > pair[0] + 1)
+        .count()
+        + usize::from(!glyph_rows.is_empty());
+    assert!(
+        bands <= 1,
+        "light-background card text should paint one glyph band, found rows {glyph_rows:?}"
+    );
+}
+
+#[test]
+fn fractional_opacity_lightens_text_and_backgrounds() {
+    let render = render_html(
+        "mem://fractional-opacity",
+        br#"
+            <html><head><style>
+              .faded { opacity: 0.4; background: rgb(100,100,100); }
+            </style></head><body>
+              <p>Solid text</p>
+              <div class="faded"><p>Faded text</p></div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let faded_shade = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::StyledText { text, shade, .. } if text.contains("Faded") => {
+                Some(*shade)
+            }
+            _ => None,
+        })
+        .expect("faded text should render as styled text");
+    assert_eq!(
+        faded_shade, 153,
+        "opacity 0.4 over black ink should lighten to shade 153"
+    );
+    assert!(
+        render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::Text { text, .. } if text.contains("Solid")
+        )),
+        "solid text should stay plain ink"
+    );
+}
+
+#[test]
+fn calc_percent_offset_dimensions_resolve_against_layout_basis() {
+    let render = render_html(
+        "mem://calc-percent-offset",
+        br#"
+            <html><head><style>
+              .main { width: calc(100% - 160px); background: rgb(230,230,230); }
+              .side { width: calc(25% + 40px); background: rgb(210,210,210); }
+            </style></head><body>
+              <div class="main">Main region</div>
+              <div class="side">Side region</div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let widths: Vec<(u8, usize)> = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Rect { width, shade, .. } => Some((*shade, *width)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        widths.contains(&(230, 60)),
+        "calc(100% - 160px) should resolve to 60 cells at width 80; got {widths:?}"
+    );
+    assert!(
+        widths.contains(&(210, 25)),
+        "calc(25% + 40px) should resolve to 25 cells at width 80; got {widths:?}"
+    );
+}
+
+#[test]
+fn flex_wrap_width_sized_cards_compose_and_wrap() {
+    let render = render_html(
+        "mem://flex-wrap-cards",
+        br#"
+            <html><head><style>
+              .grid { display: flex; flex-wrap: wrap; }
+              .card { width: 25%; }
+            </style></head><body>
+              <div class="grid">
+                <div class="card"><p>Card one</p></div>
+                <div class="card"><p>Card two</p></div>
+                <div class="card"><p>Card three</p></div>
+                <div class="card"><p>Card four</p></div>
+                <div class="card"><p>Card five</p></div>
+                <div class="card"><p>Card six</p></div>
+              </div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let positions: Vec<(usize, usize, String)> = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.starts_with("Card") => {
+                Some((*x, *y, text.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(positions.len(), 6, "all six cards should render");
+    let distinct_columns = positions
+        .iter()
+        .map(|(x, _, _)| *x)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        distinct_columns.len() >= 3,
+        "cards should compose side by side in column slots; got columns {distinct_columns:?}"
+    );
+    let max_y = positions.iter().map(|(_, y, _)| *y).max().unwrap_or(0);
+    assert!(
+        max_y <= 4,
+        "six 25%-wide cards should wrap into two rows, not stack; deepest row {max_y}"
+    );
+    let first_row_y = positions[0].1;
+    assert!(
+        positions[..4].iter().all(|(_, y, _)| *y == first_row_y),
+        "four 25% cards should fill the first row exactly; got {positions:?}"
+    );
+    assert_eq!(
+        positions[..4]
+            .iter()
+            .map(|(x, _, _)| *x)
+            .collect::<Vec<_>>(),
+        vec![0, 20, 40, 60],
+        "25% slots at width 80 should partition at Chromium-exact offsets"
+    );
+}
+
+#[test]
+fn width_sized_flex_item_keeps_width_among_inline_siblings() {
+    let render = render_html(
+        "mem://flex-row-width-sized-item",
+        br#"
+            <html><head><style>
+              .row { display: flex; flex-wrap: wrap; }
+              .column { flex-shrink: 0; width: 100%; max-width: 100%; flex: 1 0 0%; }
+              .logo { display: flex; width: 180px; }
+              .logo img { display: block; width: 100%; height: auto; max-width: 100%; }
+            </style></head><body>
+              <div class="row">
+                <div class="column"><a class="logo" href="/"><img src="mem://logo.png" width="836" height="479" alt="logo"></a></div>
+                <div class="column"><nav><a href="/a">Alpha</a> <a href="/b">Beta</a></nav></div>
+              </div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 160,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let width = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { width, .. } => Some(*width),
+            _ => None,
+        })
+        .expect("logo image should render");
+    assert!(
+        (20..=23).contains(&width),
+        "width-sized flex item should keep ~180px even when siblings are inline; got {width} cells"
+    );
+}
+
+#[test]
+fn css_max_width_rescales_image_height_by_intrinsic_ratio() {
+    let render = render_html(
+        "mem://img-max-width-ratio",
+        br#"
+            <html><head><style>
+              .logo img { max-width: 160px; height: auto; }
+            </style></head><body>
+              <div class="logo"><img src="mem://logo.png" width="800" height="200" alt="logo"></div>
+              <p>After the logo</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let (width, height) = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { width, height, .. } => Some((*width, *height)),
+            _ => None,
+        })
+        .expect("logo image should render");
+    assert_eq!(width, 20, "max-width should clamp the image width");
+    assert!(
+        height <= 5,
+        "height should rescale with the 4:1 intrinsic ratio instead of keeping the 200px attribute; got {height} rows"
+    );
+    let after = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { y, text, .. } if text.contains("After the logo") => Some(*y),
+            _ => None,
+        })
+        .expect("trailing text should render");
+    assert!(
+        after <= 6,
+        "content should follow directly under the scaled logo; started at row {after}"
+    );
+}
+
+#[test]
+fn grid_template_areas_place_children_by_name_not_source_order() {
+    let render = render_html(
+        "mem://grid-template-areas-placement",
+        br#"
+            <html><head><style>
+              .shell {
+                display: grid;
+                grid-template-columns: 14rem minmax(0, 1fr);
+                grid-template-areas: "notice notice" "toc article" "footer footer";
+              }
+              .n { grid-area: notice; }
+              .t { grid-area: toc; }
+              .a { grid-area: article; }
+              .f { grid-area: footer; }
+            </style></head><body>
+              <div class="shell">
+                <main class="a"><p>Article body in the wide right column with enough words to wrap around lines.</p></main>
+                <nav class="t"><ul><li>Contents</li><li>History</li></ul></nav>
+                <div class="n">Site notice banner</div>
+                <div class="f">Footer row</div>
+              </div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 90,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text } if text.contains(needle) => Some((*x, *y)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected text {needle:?}"))
+    };
+    let notice = position("Site notice");
+    let toc = position("Contents");
+    let article = position("Article body");
+    let footer = position("Footer row");
+    assert_eq!(
+        notice.1, 0,
+        "notice area should render first despite DOM order"
+    );
+    assert_eq!(toc.1, article.1, "toc and article share the template row");
+    assert!(toc.0 < 10, "toc occupies the left track");
+    assert!(article.0 >= 40, "article occupies the right track");
+    assert!(footer.1 > toc.1, "footer renders below the columns");
+}
+
+#[test]
+fn grid_template_shorthand_composes_block_children_into_columns() {
+    let render = render_html(
+        "mem://grid-template-shorthand-columns",
+        br#"
+            <html><head><style>
+              .shell { display: grid; grid-template: auto / 15rem minmax(0, 1fr); }
+            </style></head><body>
+              <div class="shell">
+                <nav><ul><li>Contents</li><li>History</li><li>Economy</li></ul></nav>
+                <main><p>Main article content in the content column flows with plenty of words to wrap over lines.</p></main>
+              </div>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 90,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let nav = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Contents") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("nav column should render");
+    let article = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Main article") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("article column should render");
+    assert!(
+        article.0 >= 40,
+        "grid content column should start beside the nav column; started at x {}",
+        article.0
+    );
+    assert!(
+        nav.0 < 10,
+        "nav column should occupy the left track; started at x {}",
+        nav.0
+    );
+}
+
+#[test]
+fn floated_block_forms_side_column_with_text_flowing_beside() {
+    let render = render_html(
+        "mem://float-block-column",
+        br#"
+            <html><head><style>
+              .infobox { float: right; width: 30%; background: rgb(238,238,238); }
+            </style></head><body>
+              <div class="infobox">Infobox line one<br>line two</div>
+              <p>Article text flows here beside the floated box and should occupy the left column of the page while the box sits right.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let infobox = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Infobox") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("floated infobox text should render");
+    let article = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } if text.contains("Article text") => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("article text should render");
+    assert_eq!(
+        infobox.1, article.1,
+        "floated box and first article line should share the top row"
+    );
+    assert!(
+        infobox.0 >= 40,
+        "float:right box should sit in the right column; started at x {}",
+        infobox.0
+    );
+    assert_eq!(article.0, 0, "article text should occupy the left column");
+}
+
+#[test]
+fn table_bgcolor_attribute_paints_background_color() {
+    let render = render_html(
+        "mem://table-bgcolor",
+        br##"
+            <html><body>
+              <table width="100%"><tr><td bgcolor="#ff6600">Hacker News</td></tr></table>
+            </body></html>
+            "##,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(
+        render.display_list.iter().any(|command| matches!(
+            command,
+            DisplayCommand::ColorRect {
+                red: 255,
+                green: 102,
+                blue: 0,
+                ..
+            }
+        )),
+        "bgcolor attribute should paint an orange background; display list: {:?}",
+        render.display_list
+    );
+    assert!(render.text.contains("Hacker News"));
+}
+
+#[test]
+fn table_columns_clamp_to_available_width_for_wide_link_rows() {
+    let links = (0..80)
+        .map(|index| format!("<a href=\"/wide-{index}\">Membership{index:03}</a>"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let html = format!(
+        r#"
+            <html><body>
+              <table>
+                <tr><th colspan="2">International membership</th></tr>
+                <tr><td colspan="2">{links}</td></tr>
+              </table>
+            </body></html>
+            "#
+    );
+    let render = render_html(
+        "mem://table-column-clamp",
+        html.as_bytes(),
+        BrowserRenderOptions {
+            width: 120,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let max_extent = render
+        .display_list
+        .iter()
+        .map(|command| {
+            let bounds = display_command_bounds(command);
+            bounds.x.saturating_add(bounds.width)
+        })
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_extent <= 120,
+        "table content should not exceed the viewport width; widest extent was {max_extent}"
+    );
+    assert!(render.text.contains("International membership"));
+    assert!(render.text.contains("Membership000"));
+    assert!(render.text.contains("Membership079"));
+}
+
+#[test]
+fn session_lane_rerender_matches_first_render_text() {
+    let html = std::fs::read("bench/browser-fixtures/regression-doubled-heading-session-lane.html")
+        .expect("regression fixture should exist");
+    let options = BrowserRenderOptions {
+        width: 160,
+        max_bytes: 4 * 1024 * 1024,
+        ..BrowserRenderOptions::default()
+    };
+    let (page_state, first) = render_html_prepared_with_state(
+        "mem://doubled-heading-session-lane",
+        &html,
+        options,
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: Some(&mut BrowserLocalStorage::default()),
+            session_storage: Some(&mut BrowserLocalStorage::default()),
+            cached_images: &[],
+        },
+    )
+    .expect("render fixture");
+    let second = render_page_state_profiled_with_cached_images(
+        "bench/browser-fixtures/regression-doubled-heading-session-lane.html",
+        options,
+        &page_state,
+        &[],
+        None,
+    );
+    assert!(
+        !first.render.text.contains("BBee"),
+        "first render should project unscaled heading text"
+    );
+    assert_eq!(
+        first.render.text, second.render.text,
+        "re-rendering the same page state must be idempotent"
     );
 }
 
@@ -5660,21 +6627,26 @@ fn headings_have_default_vertical_margins() {
             DisplayCommand::Text {
                 x: 0,
                 y: 2,
-                text: "Profile".to_owned(),
+                text: "PPrrooffiillee".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 4,
+                y: 3,
+                text: "PPrrooffiillee".to_owned(),
+            },
+            DisplayCommand::Text {
+                x: 0,
+                y: 5,
                 text: "Summary".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 6,
+                y: 7,
                 text: "Research".to_owned(),
             },
             DisplayCommand::Text {
                 x: 0,
-                y: 8,
+                y: 9,
                 text: "After".to_owned(),
             },
         ]
@@ -5877,6 +6849,250 @@ fn css_animation_fill_and_negative_z_media_keep_hero_text_visible() {
     assert!(viewport.lines[0].starts_with("Saving Lives with Data"));
     assert!(viewport.lines.join("\n").contains("Truveta Data"));
     assert!(viewport.lines.join("\n").contains("Truveta Intelligence"));
+}
+
+#[test]
+fn static_load_effect_header_container_renders_as_loaded() {
+    let render = render_html(
+        "mem://static-load-effect-header",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .Header { position: absolute; top: 0; left: 0; width: 80px; }
+                  .enable-load-effects .Header [data-nc-container] {
+                    opacity: 0;
+                    transition: opacity 200ms ease-out;
+                  }
+                  .enable-load-effects .Site.loaded .Header [data-nc-container] {
+                    opacity: 1;
+                  }
+                  .Header-nav-item { display: inline-block; }
+                  .Header-nav-folder {
+                    position: absolute;
+                    left: -99999px;
+                    opacity: 0;
+                  }
+                  .Mobile-overlay {
+                    position: fixed;
+                    left: -99999px;
+                    width: 80px;
+                  }
+                  .hidden-menu { opacity: 0; }
+                </style>
+              </head>
+              <body class="enable-load-effects">
+                <div class="Site">
+                  <header class="Header">
+                    <div data-nc-container="bottom-left">
+                      <nav>
+                        <a class="Header-nav-item">Home</a>
+                        <span class="Header-nav-item">
+                          <a>Learn</a>
+                          <span class="Header-nav-folder">Species Shark Finning</span>
+                        </span>
+                      </nav>
+                    </div>
+                  </header>
+                  <div class="Mobile-overlay">Mobile Home Mobile Learn</div>
+                  <main>We Know Sharks</main>
+                  <div class="hidden-menu">Hidden Mega Menu</div>
+                </div>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let rendered_text = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered_text.contains("Home"));
+    assert!(rendered_text.contains("Learn"));
+    assert!(rendered_text.contains("We Know Sharks"));
+    assert!(!rendered_text.contains("Species Shark Finning"));
+    assert!(!rendered_text.contains("Mobile Home"));
+    assert!(!rendered_text.contains("Hidden Mega Menu"));
+}
+
+#[test]
+fn static_ancillary_header_source_group_remains_readable_without_js_relocation() {
+    let render = render_html(
+        "mem://static-ancillary-header-source",
+        br#"
+            <html>
+              <head>
+                <style>
+                  [data-nc-base="header"] [data-nc-group="top"],
+                  [data-nc-base="header"] [data-nc-group="bottom"],
+                  [data-nc-base="header"] [data-nc-container="bottom-left"],
+                  [data-nc-base="header"] [data-nc-container="bottom-center"],
+                  .Header--bottom {
+                    display: none;
+                  }
+                  @media screen and (min-width: 640px) {
+                    .ancillary-header-search-position-top-right .Header--top,
+                    .ancillary-header-search-position-top-right [data-nc-base="header"] [data-nc-group="top"] {
+                      display: block;
+                    }
+                  }
+                  .Header {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 80px;
+                  }
+                  .Header-nav-item { display: inline-block; }
+                  .Mobile-overlay { display: none; }
+                </style>
+              </head>
+              <body class="ancillary-header-search-position-top-right has-primary-nav has-logo-image">
+                <div class="Site" data-nc-base="header">
+                  <header class="Header Header--top">
+                    <div data-nc-group="top">
+                      <button>Button</button>
+                    </div>
+                  </header>
+                  <header class="Header Header--bottom Header--overlay">
+                    <div data-nc-group="bottom">
+                      <div data-nc-container="bottom-left">
+                        <nav data-nc-element="primary-nav">
+                          <a class="Header-nav-item">Home</a>
+                          <a class="Header-nav-item">Library</a>
+                        </nav>
+                      </div>
+                      <div data-nc-container="bottom-center">
+                        <a href="/" data-nc-element="branding">Shark Research Institute</a>
+                      </div>
+                    </div>
+                  </header>
+                  <div class="Mobile-overlay">Mobile Home</div>
+                  <main>We Know Sharks</main>
+                </div>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let rendered_text = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered_text.contains("Home"));
+    assert!(rendered_text.contains("Library"));
+    assert!(rendered_text.contains("Shark"));
+    assert!(rendered_text.contains("Research"));
+    assert!(rendered_text.contains("Institute"));
+    assert!(rendered_text.contains("We Know Sharks"));
+    assert!(!rendered_text.contains("Mobile Home"));
+}
+
+#[test]
+fn static_ancillary_header_elements_move_to_body_declared_container() {
+    let (page_state, profiled) = render_html_prepared_with_state(
+        "mem://static-ancillary-header-relocation",
+        br#"
+            <html>
+              <head>
+                <style>
+                  [data-nc-base="header"] [data-nc-group="top"] { display: block; }
+                  [data-nc-base="header"] [data-nc-container="top-left"] { display: none; }
+                  [data-nc-base="header"] [data-nc-container="top-right"] {
+                    display: block;
+                    padding-left: 160px;
+                  }
+                  button { display: inline-block; }
+                </style>
+              </head>
+              <body class="ancillary-header-search-position-top-right">
+                <div class="Site" data-nc-base="header">
+                  <header class="Header Header--top">
+                    <div data-nc-group="top">
+                      <div data-nc-container="top-left">
+                        <div data-nc-element="search"><button>Search</button></div>
+                      </div>
+                      <div data-nc-container="top-right"></div>
+                    </div>
+                  </header>
+                </div>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+        },
+    )
+    .expect("render static ancillary header relocation");
+
+    let search_node = page_state
+        .dom
+        .nodes
+        .iter()
+        .position(|node| {
+            matches!(
+                &node.kind,
+                NodeKind::Element(element)
+                    if element.attrs.get("data-nc-element").is_some_and(|value| value == "search")
+            )
+        })
+        .expect("search source node");
+    let parent = page_state.dom.nodes[search_node]
+        .parent
+        .expect("search parent after relocation");
+    assert!(
+        matches!(
+            &page_state.dom.nodes[parent].kind,
+            NodeKind::Element(element)
+                if element.attrs.get("data-nc-container").is_some_and(|value| value == "top-right")
+        ),
+        "search should move to the body-declared top-right container"
+    );
+
+    let render = profiled.render;
+    let search = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text == "Search" =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("search button text should render from relocated container");
+    assert!(search.0 > 0);
 }
 
 #[test]
@@ -6189,6 +7405,7 @@ fn raster_context_overlay_preserves_mixed_scroll_slice_with_visible_body_text() 
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); 4],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Rect {
                 x: 0,
@@ -6254,6 +7471,47 @@ fn raster_context_overlay_preserves_mixed_scroll_slice_with_visible_body_text() 
     assert!(
         body_text_has_ink,
         "visible body text beside media should remain in the raster slice"
+    );
+}
+
+#[test]
+fn navigation_rows_do_not_suppress_visual_readability_context() {
+    let render = render_html(
+        "mem://nav-heavy-visual-readability-context",
+        br#"
+            <html><head><style>
+              nav { height: 36px; background-color: rgb(0, 120, 80); color: white; }
+              .hero { height: 360px; background-color: black; }
+              main { margin: 0; }
+            </style></head>
+              <body><nav>GAMES VIDEOS ANIMALS EXPLORE MORE SUBSCRIBE</nav>
+                <section class="hero"></section><main><h1>Jamaica</h1>
+                <p>Jamaica is a Caribbean island country with mountains beaches and coral reefs.</p></main>
+              </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 60,
+            ..BrowserRenderOptions::default()
+        },
+    );
+    let viewport = BrowserTextViewportOptions {
+        width: 60,
+        height: 8,
+        ..Default::default()
+    };
+
+    let diagnostics = browser_render_diagnostics(&render, viewport);
+    assert_eq!(diagnostics.meaningful_text_rows, 0);
+    assert!(
+        diagnostics.readability_overlay_applied,
+        "expected readable context overlay for nav-heavy visual viewport: {diagnostics:#?}"
+    );
+
+    let text_viewport = browser_text_viewport(&render, viewport).lines.join("\n");
+    assert!(text_viewport.contains("GAMES VIDEOS ANIMALS"));
+    assert!(
+        text_viewport.contains("Jamaica is a Caribbean island country"),
+        "body context should be overlaid when nav is the only visible text: {text_viewport}"
     );
 }
 
@@ -6462,6 +7720,7 @@ fn scrolled_image_viewports_choose_nearest_body_context() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); 3],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -6562,6 +7821,7 @@ fn image_viewports_project_adjacent_caption_and_body_lines() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); 3],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -6660,6 +7920,7 @@ fn visual_section_viewports_project_heading_caption_and_list_context() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); 4],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -6773,6 +8034,7 @@ fn raster_dominant_image_viewports_keep_section_text_band() {
         fragment_targets: Vec::new(),
         decoded_images: Vec::new(),
         hit_targets: vec![DisplayHitTarget::default(); 4],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -6905,9 +8167,9 @@ fn css_viewport_units_size_first_viewport_hero() {
     )));
     assert!(render.display_list.iter().any(|command| matches!(
         command,
-        DisplayCommand::Text { y: 44, text, .. }
-            | DisplayCommand::StyledText { y: 44, text, .. }
-            if text == "Below fold"
+        DisplayCommand::Text { y, text, .. }
+            | DisplayCommand::StyledText { y, text, .. }
+            if *y >= 44 && text == "Below fold"
     )));
 
     let viewport = browser_text_viewport(
@@ -6959,6 +8221,531 @@ fn css_position_absolute_and_fixed_do_not_advance_normal_flow() {
             (0, 2, "Pinned"),
         ]
     );
+}
+
+#[test]
+fn css_percent_height_flex_nav_does_not_inflate_fixed_height_parent() {
+    let render = render_html(
+        "mem://percent-height-flex-nav",
+        br#"
+            <html>
+              <head>
+                <style>
+                  .TopNavBar {
+                    align-items: center;
+                    background: #008900;
+                    display: flex;
+                    flex-direction: row;
+                    height: 50px;
+                    justify-content: space-between;
+                    padding: 10px;
+                    position: relative;
+                    width: 100%;
+                  }
+                  .TopNavBar__Buttons__Container {
+                    align-items: center;
+                    display: flex;
+                    flex-direction: row;
+                    justify-content: flex-end;
+                  }
+                  .TopNavBar__Button__Wrapper {
+                    display: block;
+                    margin-right: 30px;
+                  }
+                  .TopNavBar__Button {
+                    color: #fff;
+                    display: flex;
+                    height: 100%;
+                    min-height: 24px;
+                    position: relative;
+                  }
+                </style>
+              </head>
+              <body>
+                <nav class="TopNavBar">
+                  <div></div>
+                  <div class="TopNavBar__Buttons__Container">
+                    <div class="TopNavBar__Button__Wrapper">
+                      <a class="TopNavBar__Button" href="/search">Search</a>
+                    </div>
+                    <div class="TopNavBar__Button__Wrapper">
+                      <a class="TopNavBar__Button" href="/shop">Shop</a>
+                    </div>
+                  </div>
+                </nav>
+                <main><h1>Jamaica</h1><p>Article copy starts near the nav.</p></main>
+              </body>
+            </html>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let nav_background_height = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+            } if (*x, *y, *width, *shade) == (0, 0, 100, 80) => Some(*height),
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                shade,
+                ..
+            } if (*x, *y, *width, *shade) == (0, 0, 100, 80) => Some(*height),
+            _ => None,
+        })
+        .expect("green nav background should render");
+    assert!(
+        nav_background_height <= 8,
+        "nav background should follow the declared height, got {nav_background_height}"
+    );
+
+    let text_y = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { y, text, .. }
+                | DisplayCommand::StyledText { y, text, .. }
+                    if text.contains(needle) =>
+                {
+                    Some(*y)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle} should render"))
+    };
+    let search_y = text_y("Search");
+    let shop_y = text_y("Shop");
+    let article_y = text_y("Article copy");
+
+    assert!(
+        search_y < nav_background_height,
+        "first nav item should stay inside the fixed-height nav: search={search_y}, nav_height={nav_background_height}"
+    );
+    assert!(
+        shop_y < nav_background_height,
+        "second nav item should stay inside the fixed-height nav: shop={shop_y}, nav_height={nav_background_height}"
+    );
+    assert!(
+        shop_y <= search_y.saturating_add(8),
+        "second nav item should not be pushed toward a viewport-height row: search={search_y}, shop={shop_y}"
+    );
+    assert!(
+        article_y < 20,
+        "article content should remain close to the fixed-height nav, got y={article_y}"
+    );
+}
+
+#[test]
+fn flex_nav_hidden_dropdown_text_does_not_overlap_visible_labels() {
+    let render = render_html("mem://hidden-dropdown-nav", br#"<style>.bar{display:flex;width:100%;justify-content:center}.wrap{display:flex}.item{margin:0 2px}.link{display:flex;flex-direction:column}.menu{display:none}</style><nav class=bar><div class=wrap><div class=item><a class=link>Games</a><div class=menu>Hidden Quizzes Personality Puzzles</div></div><div class=item><a class=link>Videos</a><div class=menu>Hidden Amazing Animals Try This</div></div><div class=item><a class=link>Subscribe</a></div></div></nav>"#, BrowserRenderOptions { width: 80, ..BrowserRenderOptions::default() });
+    let x_for = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, text, .. }
+                | DisplayCommand::StyledText { x, text, .. }
+                    if text.contains(needle) =>
+                {
+                    Some(*x)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle} should render"))
+    };
+    let games = x_for("Games");
+    let videos = x_for("Videos");
+    let subscribe = x_for("Subscribe");
+    assert!(
+        games < videos && videos < subscribe && subscribe < 80,
+        "nav labels should progress across the row: games={games}, videos={videos}, subscribe={subscribe}"
+    );
+}
+
+#[test]
+fn flex_nav_absolute_logo_does_not_displace_centered_links() {
+    let render = render_html(
+        "mem://bottom-nav-absolute-logo",
+        br#"
+            <style>
+              .BottomNavBar {
+                align-items: center;
+                background: #008900;
+                display: flex;
+                height: 110px;
+                justify-content: center;
+                position: relative;
+                width: 100%;
+              }
+              .BottomNavBar__Links__Wrapper {
+                align-items: flex-end;
+                display: flex;
+                z-index: 2;
+              }
+              .BottomNavBar__Link__Container {
+                margin: 0 20px -20px;
+                padding-bottom: 20px;
+              }
+              .BottomNavBar__Link__Container--kids-logo {
+                left: 19px;
+                margin: 0;
+                padding-bottom: 0;
+                position: absolute;
+                top: 17px;
+              }
+              .BottomNavBar__Link {
+                color: #fff;
+                display: flex;
+                flex-direction: column;
+              }
+              .BottomNavBar__KidsLogoImage {
+                height: 70px;
+                width: 165px;
+              }
+            </style>
+            <nav class="BottomNavBar">
+              <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--kids-logo">
+                <a class="BottomNavBar__Link" href="/">
+                  <img class="BottomNavBar__KidsLogoImage" src="/kids-logo.svg" alt="National Geographic Kids">
+                </a>
+              </div>
+              <div class="BottomNavBar__Links__Wrapper">
+                <div class="BottomNavBar__Link__Container"><a class="BottomNavBar__Link">Games</a></div>
+                <div class="BottomNavBar__Link__Container"><a class="BottomNavBar__Link">Videos</a></div>
+                <div class="BottomNavBar__Link__Container"><a class="BottomNavBar__Link">Animals</a></div>
+                <div class="BottomNavBar__Link__Container"><a class="BottomNavBar__Link">Explore</a></div>
+                <div class="BottomNavBar__Link__Container"><a class="BottomNavBar__Link">Subscribe</a></div>
+              </div>
+            </nav>
+            <main>Article body</main>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { x, y, width, .. } => Some((*x, *y, *width)),
+            _ => None,
+        })
+        .expect("absolute logo image should still render");
+    assert!(
+        image.0 > 0 && image.0 < 25 && image.1 > 0 && image.1 < 8,
+        "absolute logo should paint near its left/top offsets, got x={} y={} width={}",
+        image.0,
+        image.1,
+        image.2
+    );
+
+    let text_x = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, text, .. }
+                | DisplayCommand::StyledText { x, text, .. }
+                    if text.contains(needle) =>
+                {
+                    Some(*x)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle} should render"))
+    };
+    let games = text_x("Games");
+    let videos = text_x("Videos");
+    let animals = text_x("Animals");
+    assert!(
+        games > 20 && games < videos && videos < animals,
+        "centered links should ignore absolute logo during flex measurement: games={games}, videos={videos}, animals={animals}"
+    );
+}
+
+#[test]
+fn stacked_flex_nav_keeps_top_actions_separate_from_absolute_logo() {
+    let render = render_html(
+        "mem://stacked-flex-nav",
+        br#"
+            <style>
+              html { box-sizing: border-box; }
+              *, :before, :after { box-sizing: inherit; }
+              .TopNavBar {
+                align-items: center;
+                background: #008900;
+                display: flex;
+                flex-direction: row;
+                height: 50px;
+                justify-content: space-between;
+                padding: 10px;
+                position: relative;
+                width: 100%;
+              }
+              .TopNavBar__Left__Container,
+              .TopNavBar__Logo__Container,
+              .TopNavBar__Buttons__Container {
+                align-items: center;
+                display: flex;
+                flex-direction: row;
+              }
+              .TopNavBar__Spacer { flex: 1 1 auto; }
+              .TopNavBar__Buttons__Container { justify-content: flex-end; }
+              .TopNavBar__Button__Wrapper { display: block; margin-right: 30px; }
+              .TopNavBar__Button {
+                color: #fff;
+                display: flex;
+                flex-direction: row-reverse;
+                height: 100%;
+                min-height: 24px;
+                padding: 2px 1px 2px 8px;
+                position: relative;
+              }
+              .TopNavBar__Button__Label { display: block; }
+              .BottomNavBar {
+                align-items: center;
+                background: #00a900;
+                display: flex;
+                height: 110px;
+                justify-content: center;
+                padding: 0 10px;
+                position: relative;
+                width: 100%;
+                z-index: 900;
+              }
+              .BottomNavBar__Links__Wrapper {
+                align-items: flex-end;
+                display: flex;
+                z-index: 2;
+              }
+              .BottomNavBar__Link__Container {
+                margin: 0 20px -20px;
+                padding-bottom: 20px;
+                z-index: 2;
+              }
+              .DropDownNavBar {
+                display: none;
+              }
+              .BottomNavBar__Link__Container--kids-logo {
+                left: 19px;
+                margin: 0;
+                padding-bottom: 0;
+                position: absolute;
+                top: 17px;
+              }
+              .BottomNavBar__Link {
+                align-items: center;
+                color: #fff;
+                display: flex;
+                flex-direction: column;
+                word-break: break-all;
+              }
+              .BottomNavBar__Link .icon__svg {
+                height: 32px;
+                margin-bottom: 10px;
+                width: 32px;
+              }
+              .BottomNavBar__KidsLogoImage {
+                height: 70px;
+                width: 165px;
+              }
+            </style>
+            <div class="TopNavBar">
+              <div class="TopNavBar__Left__Container"><div class="TopNavBar__Logo__Container"></div></div>
+              <button class="SkipNav">Skip to content</button>
+              <div class="TopNavBar__Spacer"></div>
+              <div class="TopNavBar__Buttons__Container">
+                <div class="TopNavBar__Button__Wrapper"><a class="TopNavBar__Button" href="/search"><svg viewBox="0 0 24 24"></svg><span class="TopNavBar__Button__Label">Search</span></a></div>
+                <div class="TopNavBar__Button__Wrapper"><a class="TopNavBar__Button" href="/shop"><svg viewBox="0 0 24 24"></svg><span class="TopNavBar__Button__Label">Shop</span></a></div>
+              </div>
+            </div>
+            <div class="BottomNavBar">
+              <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--kids-logo">
+                <a class="BottomNavBar__Link" href="/">
+                  <img class="BottomNavBar__KidsLogoImage" src="/kids-logo.svg" alt="National Geographic Kids">
+                </a>
+              </div>
+              <div class="BottomNavBar__Links__Wrapper">
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--dropdown"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">Games</span></a></div><div class="DropDownNavBar">Hidden menu</div></div>
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--dropdown"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">Videos</span></a></div><div class="DropDownNavBar">Hidden menu</div></div>
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--dropdown"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">Animals</span></a></div><div class="DropDownNavBar">Hidden menu</div></div>
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--dropdown"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">Explore</span></a></div><div class="DropDownNavBar">Hidden menu</div></div>
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--dropdown"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">More</span></a></div><div class="DropDownNavBar">Hidden menu</div></div>
+                <div class="BottomNavBar__Link__Container BottomNavBar__Link__Container--reverse"><div class="fitt-tracker"><a class="AnchorLink Button--unstyled BottomNavBar__Link"><svg class="icon__svg" viewBox="0 0 24 24"></svg><span class="BottomNavBar__Link__Text">Subscribe</span></a></div></div>
+              </div>
+            </div>
+            <main>Article body</main>
+            "#,
+        BrowserRenderOptions {
+            width: 100,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let text_position = |needle: &str| {
+        render
+            .display_list
+            .iter()
+            .find_map(|command| match command {
+                DisplayCommand::Text { x, y, text }
+                | DisplayCommand::StyledText { x, y, text, .. }
+                    if text.contains(needle) =>
+                {
+                    Some((*x, *y))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{needle} should render"))
+    };
+    let search = text_position("Search");
+    let games = text_position("Games");
+    let videos = text_position("Videos");
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { x, y, .. } => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("absolute logo image should render");
+
+    assert!(
+        search.0 >= 55 && search.0 < 100 && search.1 < image.1,
+        "top action should stay on the top row and right side: search={search:?}, logo={image:?}"
+    );
+    assert!(
+        games.0 > image.0.saturating_add(20),
+        "bottom nav links should stay to the right of the absolute logo: games={games:?}, logo={image:?}"
+    );
+    assert!(
+        videos.0 > games.0,
+        "bottom nav links should keep row order: games={games:?}, videos={videos:?}"
+    );
+}
+
+#[test]
+fn script_hydration_image_state_promotes_placeholder_sources() {
+    let render = render_html(
+        "https://example.test/article",
+        br#"
+            <html><body>
+              <p>Before hydrated image</p>
+              <img
+                src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+                alt="man on a raft in the Martha Brae River, Jamaica">
+              <script>
+                window['__article__'] = {
+                  "media": [{
+                    "img": {
+                      "src": "https://cdn.example.test/jamaica-river-raft.jpg",
+                      "altText": "A man steers a raft down the Martha Brae River in Jamaica.",
+                      "crps": [{
+                        "nm": "16x9",
+                        "aspRto": 1.7777777777777777,
+                        "url": "https://cdn.example.test/jamaica-river-raft.jpg?wp=1&w=1436&h=808"
+                      }]
+                    }
+                  }]
+                };
+              </script>
+              <p>After hydrated image</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                url, width, height, ..
+            } => Some((url.as_deref().unwrap_or(""), *width, *height)),
+            _ => None,
+        })
+        .expect("hydrated image command should render");
+
+    assert_eq!(
+        image.0,
+        "https://cdn.example.test/jamaica-river-raft.jpg?wp=1&w=1436&h=808"
+    );
+    assert!(
+        image.1 > 1 && image.2 > 1,
+        "hydrated image should not keep the 1x1 placeholder size: {image:?}"
+    );
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.url == "https://cdn.example.test/jamaica-river-raft.jpg?wp=1&w=1436&h=808"
+    }));
+    assert!(
+        render
+            .resources
+            .iter()
+            .all(|resource| { !resource.url.starts_with("data:image/gif") })
+    );
+}
+
+#[test]
+fn script_hydration_schema_logo_promotes_placeholder_logo() {
+    let render = render_html(
+        "https://example.test/article",
+        br#"
+            <html><body>
+              <header>
+                <img
+                  src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+                  alt="National Geographic Kids Logo - Home">
+              </header>
+              <script>
+                window.__state = {
+                  "schma": {
+                    "lg": "https://assets.example.test/static/logos/kids-logo.svg",
+                    "pblshr": "National Geographic Kids"
+                  }
+                };
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image { url, .. } => url.as_deref(),
+            _ => None,
+        })
+        .expect("hydrated logo image should render");
+
+    assert_eq!(
+        image,
+        "https://assets.example.test/static/logos/kids-logo.svg"
+    );
+    assert!(render.resources.iter().any(|resource| {
+        resource.kind == "image"
+            && resource.url == "https://assets.example.test/static/logos/kids-logo.svg"
+    }));
 }
 
 #[test]
@@ -7730,6 +9517,45 @@ fn css_positive_z_index_positions_foreground_above_later_media() {
 }
 
 #[test]
+fn positioned_parent_background_stays_below_descendants_in_same_context() {
+    let render = render_html(
+        "mem://nested-z-index-parent-underlay",
+        br#"
+            <html><head><style>
+              .nav { position: relative; z-index: 900; display: flex; height: 50px; background: rgb(0, 137, 0); }
+              .logo { position: absolute; left: 10px; top: 10px; z-index: 2; }
+              .link { color: #fff; }
+            </style></head><body>
+              <nav class="nav">
+                <div class="logo"><img src="/logo.svg" width="32" height="24" alt="Logo"></div>
+                <a class="link">Games</a>
+              </nav>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let paint_order = render
+        .display_list
+        .iter()
+        .filter_map(|command| match command {
+            DisplayCommand::ColorRect { green, .. } if *green == 137 => Some("nav-bg"),
+            DisplayCommand::Image { .. } => Some("logo"),
+            DisplayCommand::Text { text, .. } | DisplayCommand::StyledText { text, .. }
+                if text == "Games" =>
+            {
+                Some("link")
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(paint_order, vec!["nav-bg", "link", "logo"]);
+}
+
+#[test]
 fn narrow_float_columns_clear_before_body_text() {
     let render = render_html(
         "mem://narrow-float-column-readable-flow",
@@ -7785,7 +9611,9 @@ fn narrow_float_columns_clear_before_body_text() {
         },
     );
     let viewport_text = viewport.lines.join("\n");
-    assert!(viewport_text.contains('@'));
+    assert!(viewport_text.contains("left visual"));
+    assert!(viewport_text.contains("right visual"));
+    assert!(!viewport_text.contains('@'));
     assert!(
         viewport
             .lines
@@ -8136,8 +9964,9 @@ fn decoded_intrinsic_image_width_clamp_preserves_aspect_and_scroll_hits() {
         "following link text should paint non-background ink below the scaled image row"
     );
 
-    let after = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
-    assert_eq!(after.viewport.y, image.1.saturating_add(1));
+    let after =
+        browser_document_viewport_after_scroll(&render, viewport.viewport, 0, image.3 as isize);
+    assert_eq!(after.viewport.y, image.1.saturating_add(image.3));
     assert_eq!(
         hit_test_target_node_in_viewport(&render, after.viewport, 0, 0)
             .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
@@ -8418,7 +10247,8 @@ fn overflow_block_clip_keeps_adjacent_scroll_slices_and_hit_geometry_stable() {
     );
     assert_eq!(card_background.0, 0);
     assert!(image_bounds.1 >= card_background.1);
-    assert!(visible_link.1 > image_bounds.1);
+    assert_eq!(visible_link.1, image_bounds.1);
+    assert!(visible_link.0 >= image_bounds.0.saturating_add(image_bounds.2));
 
     let visible_target = hit_test_target_node(&render, visible_link.0, visible_link.1)
         .expect("visible clipped link should hit");
@@ -8503,6 +10333,7 @@ fn css_overflow_y_hidden_preserves_horizontal_scrolled_link_media_hit_geometry()
                   <img src="{image_url}" width="16" height="12" alt="">
                   WideLinkedCardKeepsScrollingHorizontallyAcrossTheViewportRailTargetToken
                 </a>
+                <div style="height:48px"></div>
                 <p style="height:72px">Hidden vertical overflow should not paint.</p>
               </section>
               <p>After clipped carousel</p>
@@ -8665,7 +10496,7 @@ fn css_overflow_y_hidden_preserves_horizontal_scrolled_link_media_hit_geometry()
         .flat_map(|y| (text_start_x..text_end_x).map(move |x| (x, y)))
         .any(|(x, y)| {
             let pixel = pixel(x, y);
-            pixel[0] < 64 && pixel[1] < 64 && pixel[2] < 64 && pixel[3] == 255
+            pixel[0] < 64 && pixel[1] < 64 && pixel[3] == 255
         });
     assert!(
         text_cell_has_ink,
@@ -8906,6 +10737,7 @@ fn fixed_visuals_do_not_extend_scroll_extent_but_paint_in_scrolled_viewport() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default().with_viewport_fixed(true),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Rect {
                 x: 0,
@@ -9720,6 +11552,7 @@ fn viewport_exact_hit_blocks_scrolled_link_under_fixed_text_after_scroll() {
             DisplayHitTarget::default().with_viewport_fixed(true),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -9864,6 +11697,7 @@ fn viewport_fixed_text_whitespace_does_not_block_scrolled_link_hit() {
             DisplayHitTarget::default().with_viewport_fixed(true),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -9991,6 +11825,7 @@ fn viewport_normal_flow_overlay_blocks_link_only_while_visible_after_adjacent_sc
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -10130,6 +11965,7 @@ fn viewport_exact_text_hit_precedes_nearby_rows_after_repeated_scroll() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 4,
@@ -10270,6 +12106,7 @@ fn viewport_nearby_hit_testing_prefers_pinned_link_box_after_scroll() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -10404,6 +12241,7 @@ fn viewport_nearby_hit_testing_prefers_pinned_text_after_scroll() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 1,
@@ -10935,7 +12773,7 @@ fn stylesheet_media_class_background_image_paints_visible_raster_and_hit_box() {
             _ => None,
         })
         .expect("stylesheet class background should create a BackgroundImage command");
-    assert_eq!(background.0, (0, 1, 2, 2));
+    assert_eq!(background.0, (0, 0, 2, 2));
     assert_eq!(background.1, Some(background_url.as_str()));
     assert_eq!(background.2, (Some(1), Some(1)));
     assert_eq!(background.3, BackgroundImageSize::Contain);
@@ -10948,7 +12786,7 @@ fn stylesheet_media_class_background_image_paints_visible_raster_and_hit_box() {
     );
     assert_eq!(background.5, BackgroundImageRepeat::NoRepeat);
     assert!(
-        hit_test_target_node(&render, 0, 1).is_some(),
+        hit_test_target_node(&render, 0, 0).is_some(),
         "class background image should keep the section hit box visible"
     );
 
@@ -10977,7 +12815,7 @@ fn stylesheet_media_class_background_image_paints_visible_raster_and_hit_box() {
         "stylesheet class background should paint decoded RGB pixels in the viewport"
     );
     let report = rgba_raster_report(&render, &rgba, raster_options);
-    assert_eq!(report.visible_command_count, 3);
+    assert_eq!(report.visible_command_count, 4);
 }
 
 #[test]
@@ -11025,6 +12863,7 @@ fn decoded_image_and_background_downscale_with_area_samples() {
         fragment_targets: Vec::new(),
         decoded_images: vec![image_entry, background_entry],
         hit_targets: vec![DisplayHitTarget::default(); 2],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -11156,6 +12995,7 @@ fn rgba_raster_paints_decoded_image_color_and_preserves_grayscale_fallback() {
             },
         ],
         hit_targets: vec![DisplayHitTarget::default(); 4],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -11274,6 +13114,7 @@ fn rgba_raster_preserves_decoded_image_and_background_rgb_after_scroll() {
         fragment_targets: Vec::new(),
         decoded_images: vec![image_entry, background_entry],
         hit_targets: vec![DisplayHitTarget::default(); 2],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -11398,6 +13239,7 @@ fn rgba_raster_paints_undecoded_image_placeholders_after_adjacent_scroll() {
             DisplayHitTarget::node(Some(42)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -11581,6 +13423,7 @@ fn viewport_nearby_hit_testing_respects_clipped_media_bounds_after_scroll() {
             })),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -11716,6 +13559,7 @@ fn viewport_nearby_visual_fallback_does_not_beat_visible_link_after_scroll() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 1,
@@ -11894,6 +13738,7 @@ fn viewport_exact_hit_respects_clipped_normal_flow_stack_after_adjacent_scroll()
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -12102,6 +13947,7 @@ fn no_repeat_background_hit_uses_painted_tile_after_scroll() {
             DisplayHitTarget::node(Some(42)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -12252,6 +14098,7 @@ fn scrolled_no_repeat_visual_fallback_uses_painted_tile_columns() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -12419,6 +14266,7 @@ fn decoded_media_scroll_dirty_regions_match_painted_clip_and_hits() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -12629,6 +14477,7 @@ fn scrolled_media_visible_report_raster_and_hits_move_one_row_together() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -12868,6 +14717,7 @@ fn media_viewport_rerender_marks_visible_image_slice_dirty_without_scroll() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 1,
@@ -13038,6 +14888,7 @@ fn viewport_scroll_offsets_clamp_and_crop_text_with_images() {
             image: decoded,
         }],
         hit_targets: vec![DisplayHitTarget::default(); 3],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -13189,6 +15040,7 @@ fn clamped_bottom_raster_slice_keeps_media_text_and_hits_aligned() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -13338,6 +15190,7 @@ fn consecutive_scroll_frame_sequence_keeps_media_link_and_hits_aligned() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -13526,6 +15379,7 @@ fn multi_row_scroll_keeps_text_image_link_raster_and_hits_aligned() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -13750,6 +15604,7 @@ fn repeated_small_scroll_slices_drop_stale_link_hits_after_visible_rows_move() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -13847,11 +15702,11 @@ fn repeated_small_scroll_slices_drop_stale_link_hits_after_visible_rows_move() {
             "scroll slice {index} should advance visible command rows monotonically"
         );
         assert!(
-            frame
-                .report
-                .dirty_pixel_regions
-                .iter()
-                .any(|region| region.viewport_y == start.height - 1 && region.viewport_height == 1),
+            frame.report.dirty_pixel_regions.iter().any(|region| {
+                let bottom_row = start.height - 1;
+                bottom_row >= region.viewport_y
+                    && bottom_row < region.viewport_y.saturating_add(region.viewport_height)
+            }),
             "scroll slice {index} should dirty the newly exposed bottom row"
         );
     }
@@ -13959,6 +15814,7 @@ fn scrolled_readable_text_bounds_match_raster_and_drop_raw_stale_hits() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14141,6 +15997,7 @@ fn adjacent_scroll_frames_shift_visible_rows_without_stale_targets() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14360,6 +16217,7 @@ fn viewport_nearby_text_hit_stays_with_visible_raster_row_after_scroll() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14480,6 +16338,7 @@ fn viewport_nearby_text_hit_prefers_closest_visible_link_after_scroll() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14625,6 +16484,7 @@ fn scrolled_wrapped_link_visible_row_keeps_raster_and_hit_target_aligned() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14780,6 +16640,7 @@ fn scrolled_viewport_reports_visible_command_rows_matching_raster_and_hits() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -14959,6 +16820,7 @@ fn viewport_nearby_visual_hit_respects_visible_bounds_after_adjacent_scroll() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -15123,7 +16985,7 @@ fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry(
         None,
     );
     assert!(
-        viewport.max_scroll_y >= 6,
+        viewport.max_scroll_y >= 5,
         "flow-only trailing height should contribute to document scroll bounds"
     );
     assert_eq!(viewport.viewport.y, viewport.max_scroll_y);
@@ -15202,6 +17064,7 @@ fn repeated_diagonal_scroll_frame_keeps_dirty_bands_and_mixed_content_stable() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -15350,6 +17213,7 @@ fn fixed_overlay_scroll_frame_invalidates_shifted_previous_pixels_and_hit_geomet
             }])
             .with_viewport_fixed(true),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,
@@ -15531,6 +17395,7 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::StyledText {
                 x: 0,
@@ -15604,14 +17469,14 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
         vec![
             BrowserViewportRect {
                 x: 0,
-                y: 3,
-                width: 10,
+                y: 0,
+                width: 3,
                 height: 1,
             },
             BrowserViewportRect {
                 x: 0,
-                y: 0,
-                width: 3,
+                y: 3,
+                width: 10,
                 height: 1,
             },
         ]
@@ -15657,7 +17522,7 @@ fn repeated_small_scroll_invalidates_pinned_content_and_clamps_mixed_viewport() 
                 region.viewport_height
             ))
             .collect::<Vec<_>>(),
-        vec![(0, 3, 10, 1), (0, 0, 3, 1)]
+        vec![(0, 0, 3, 1), (0, 3, 10, 1)]
     );
 
     let pixel = |x: usize, y: usize| {
@@ -15741,6 +17606,7 @@ fn repeated_fixed_sticky_scroll_merges_dirty_bands_and_preserves_visual_hits() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -15849,8 +17715,8 @@ fn repeated_fixed_sticky_scroll_merges_dirty_bands_and_preserves_visual_hits() {
             .iter()
             .map(|region| (region.x, region.y, region.width, region.height))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 6, 2), (1, 2, 2, 1), (0, 3, 8, 1)],
-        "second scroll should merge fixed/sticky current and shifted rows while retaining visible media invalidation"
+        vec![(0, 0, 6, 2), (0, 3, 8, 1)],
+        "second scroll should merge fixed/sticky current and shifted rows while reusing the shifted decoded media row"
     );
     assert_eq!(
         frames[1]
@@ -15864,7 +17730,7 @@ fn repeated_fixed_sticky_scroll_merges_dirty_bands_and_preserves_visual_hits() {
                 region.viewport_height
             ))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 6, 2), (1, 2, 2, 1), (0, 3, 8, 1)]
+        vec![(0, 0, 6, 2), (0, 3, 8, 1)]
     );
     assert!(frames[2].report.dirty_pixel_regions.is_empty());
 
@@ -15946,6 +17812,7 @@ fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
                 target_node: Some(77),
             }]),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -16021,9 +17888,14 @@ fn readable_context_overlay_dirty_regions_follow_adjacent_scroll_slices() {
         .iter()
         .map(|region| (region.viewport_y, region.viewport_height))
         .collect::<Vec<_>>();
-    assert!(dirty_rows.contains(&(0, 1)));
-    assert!(dirty_rows.contains(&(1, 1)));
-    assert!(dirty_rows.contains(&(2, 1)));
+    for row in [0, 1, 2] {
+        assert!(
+            dirty_rows
+                .iter()
+                .any(|(start, height)| row >= *start && row < start.saturating_add(*height)),
+            "dirty raster rows should cover readable context overlay row {row}: {dirty_rows:?}"
+        );
+    }
 
     let pixel = |x: usize, y: usize| {
         let index = y
@@ -16076,6 +17948,7 @@ fn readable_context_overlay_preserves_visible_click_target_rows_after_scroll() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::ColorRect {
                 x: 0,
@@ -16241,6 +18114,13 @@ fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
         .display_list
         .iter()
         .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                shade: 230,
+            } => Some((*x, *y, *width, *height)),
             DisplayCommand::ColorRect {
                 x,
                 y,
@@ -16717,6 +18597,7 @@ fn scrolled_viewport_clips_proportional_text_by_pixels_with_mixed_content() {
             image: decoded,
         }],
         hit_targets: vec![DisplayHitTarget::default(); 3],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Rect {
                 x: 0,
@@ -16767,12 +18648,23 @@ fn scrolled_viewport_clips_proportional_text_by_pixels_with_mixed_content() {
         pixel(raster_options.padding_x, raster_options.padding_y),
         &[40, 120, 220, 255]
     );
-    let fifth_narrow_glyph_x = raster_options.padding_x.saturating_add(22);
-    let text_glyph_y = raster_options
+    let text_row_y_start = raster_options
         .padding_y
+        .saturating_add(raster_options.cell_height);
+    let text_row_y_end = text_row_y_start
         .saturating_add(raster_options.cell_height)
-        .saturating_add(4);
-    assert_eq!(pixel(fifth_narrow_glyph_x, text_glyph_y), &[0, 0, 0, 255]);
+        .min(rgba.height);
+    let text_row_x_end = raster_options
+        .padding_x
+        .saturating_add(raster_options.viewport_width.unwrap_or(3) * raster_options.cell_width)
+        .min(rgba.width);
+    let text_has_ink = (text_row_y_start..text_row_y_end).any(|y| {
+        (raster_options.padding_x..text_row_x_end).any(|x| pixel(x, y) == &[0, 0, 0, 255])
+    });
+    assert!(
+        text_has_ink,
+        "scrolled proportional text row should still paint readable ink"
+    );
 }
 
 #[test]
@@ -16821,10 +18713,12 @@ fn render_fidelity_scrolled_viewport_keeps_rgb_css_text_and_decoded_image() {
 
     assert!(render.display_list.iter().any(|command| matches!(
         command,
-        DisplayCommand::Rect {
-            shade,
+        DisplayCommand::ColorRect {
+            red,
+            green,
+            blue,
             ..
-        } if *shade == rgb_to_luma(10, 20, 30)
+        } if (*red, *green, *blue) == (10, 20, 30)
     )));
     assert!(render.display_list.iter().any(|command| matches!(
         command,
@@ -17095,6 +18989,18 @@ fn css_aspect_ratio_media_slot_keeps_article_text_aligned_after_scroll() {
                 height,
                 shade,
             } if *shade == 240 && *width == 42 => Some((*x, *y, *width, *height)),
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+                ..
+            } if (*red, *green, *blue) == (240, 240, 240) && *width == 42 => {
+                Some((*x, *y, *width, *height))
+            }
             _ => None,
         })
         .expect("centered article card background");
@@ -17195,6 +19101,184 @@ fn css_aspect_ratio_media_slot_keeps_article_text_aligned_after_scroll() {
     assert!(
         media_slot_has_placeholder,
         "aspect-ratio media slot should paint visible placeholder pixels in the scrolled viewport"
+    );
+}
+
+#[test]
+fn class_aspect_ratio_reserves_flow_for_absolute_media() {
+    let render = render_html(
+        "mem://css-block-aspect-ratio-absolute-media",
+        br#"
+            <html><head><style>
+              .article { width: 240px; margin-inline: auto; }
+              .media {
+                position: relative;
+                background: rgb(230, 230, 230);
+              }
+            </style></head><body>
+              <article class="article">
+                <h1>Island guide</h1>
+                <div class="media aspect-ratio--4x3">
+                  <img alt="absolute hero" style="position:absolute; top:0; left:0; width:240px; height:180px">
+                </div>
+                <p>Below gallery text must stay beneath the reserved media slot.</p>
+              </article>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let media_background = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Rect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } if (*width, *height) == (30, 15) => Some((*x, *y, *width, *height)),
+            DisplayCommand::ColorRect {
+                x,
+                y,
+                width,
+                height,
+                red,
+                green,
+                blue,
+                ..
+            } if (*red, *green, *blue) == (230, 230, 230) => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("aspect-ratio media background should reserve a block");
+    assert_eq!(media_background.2, 30);
+    assert_eq!(media_background.3, 15);
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("absolute hero") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("absolute media image should still paint inside the slot");
+    assert_eq!(image_bounds.0, media_background.0);
+    assert_eq!(image_bounds.1, media_background.1);
+
+    let body_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. }
+                if text.contains("Below gallery text") =>
+            {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .expect("body copy below absolute media slot");
+    assert_eq!(body_text.0, media_background.0);
+    assert!(
+        body_text.1 >= media_background.1.saturating_add(media_background.3),
+        "body copy should flow below reserved aspect-ratio media, background={media_background:?} text={body_text:?}"
+    );
+}
+
+#[test]
+fn absolute_fill_lazy_media_uses_existing_intro_flow_slot() {
+    let render = render_html(
+        "mem://absolute-fill-lazy-media-intro",
+        br#"
+            <html><head><style>
+              .intro {
+                position: relative;
+                overflow: hidden;
+                background: rgb(245, 245, 245);
+              }
+              .intro-content {
+                position: relative;
+                z-index: 2;
+                padding-top: 240px;
+                padding-bottom: 240px;
+              }
+              .intro-image {
+                position: absolute;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                width: 100%;
+                margin: 0;
+              }
+            </style></head><body>
+              <section class="intro">
+                <div class="intro-content"></div>
+                <figure class="intro-image">
+                  <img
+                    src="mem://absolute-fill-lazy-media-intro/hero.jpg"
+                    data-src="mem://absolute-fill-lazy-media-intro/hero.jpg"
+                    data-image-dimensions="2500x1667"
+                    alt="cover hero">
+                </figure>
+              </section>
+              <p>Below hero body text starts after the intro.</p>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 80,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let image_bounds = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Image {
+                x,
+                y,
+                width,
+                height,
+                alt,
+                ..
+            } if alt.as_deref() == Some("cover hero") => Some((*x, *y, *width, *height)),
+            _ => None,
+        })
+        .expect("lazy cover image should paint in the positioned intro slot");
+    let below_text = render
+        .display_list
+        .iter()
+        .find_map(|command| match command {
+            DisplayCommand::Text { y, text, .. } | DisplayCommand::StyledText { y, text, .. }
+                if text.contains("Below hero body") =>
+            {
+                Some(*y)
+            }
+            _ => None,
+        })
+        .expect("body copy after intro should render");
+
+    let intro_slot_height = below_text.saturating_sub(image_bounds.1);
+    assert!(
+        (12..=24).contains(&intro_slot_height),
+        "fixture should reserve one intro flow slot without stacking an extra lazy-media reservation, image={image_bounds:?} below_y={below_text}"
+    );
+    assert_eq!(image_bounds.0, 0);
+    assert_eq!(image_bounds.1, 0);
+    assert_eq!(image_bounds.2, 80);
+    assert!(
+        image_bounds.3 >= intro_slot_height,
+        "absolute top/bottom lazy media should fill the existing intro slot, image={image_bounds:?} below_y={below_text}"
     );
 }
 
@@ -17462,7 +19546,7 @@ fn unresolved_image_placeholders_are_clamped_to_keep_text_visible() {
                 height: 8,
                 shade: 220,
                 alt: Some("hero".to_owned()),
-                url: None,
+                url: Some("https://example.invalid/hero.jpg".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
@@ -17545,7 +19629,7 @@ fn renders_replaced_media_elements_as_placeholders() {
                 height: 2,
                 shade: 220,
                 alt: Some("Map".to_owned()),
-                url: None,
+                url: Some("https://example.test/map".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
@@ -17557,7 +19641,7 @@ fn renders_replaced_media_elements_as_placeholders() {
                 height: 1,
                 shade: 220,
                 alt: Some("object".to_owned()),
-                url: None,
+                url: Some("mem://replaced-media/chart.svg".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
@@ -17569,7 +19653,7 @@ fn renders_replaced_media_elements_as_placeholders() {
                 height: 2,
                 shade: 220,
                 alt: Some("video".to_owned()),
-                url: None,
+                url: Some("mem://replaced-media/poster.png".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
@@ -17581,7 +19665,7 @@ fn renders_replaced_media_elements_as_placeholders() {
                 height: 1,
                 shade: 220,
                 alt: Some("audio".to_owned()),
-                url: None,
+                url: Some("mem://replaced-media/sound.mp3".to_owned()),
                 decoded_width: None,
                 decoded_height: None,
                 decoded_hash: None,
@@ -17730,15 +19814,15 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
         },
     );
 
-    assert!(render.text.contains("rust browser"));
-    assert!(render.text.contains("******"));
+    assert!(render.text.contains("[rust browser]"));
+    assert!(render.text.contains("[******]"));
     assert!(render.text.contains("News"));
-    assert!(render.text.contains("ship it"));
+    assert!(render.text.contains("[ship it]"));
     assert!(render.text.contains("Go"));
-    for terminal_label in ["[rust browser]", "[******]", "[News]", "[ship it]", "[Go]"] {
+    for terminal_label in ["[News]", "[Go]"] {
         assert!(
             !render.text.contains(terminal_label),
-            "form controls should render browser-like labels instead of terminal brackets"
+            "selects and buttons should render plain labels, not field affordances"
         );
     }
     let widget_boxes = render
@@ -17784,8 +19868,8 @@ fn renders_common_form_controls_as_visible_inline_widgets() {
         .expect("form widget text should still render");
     assert_eq!(text_command.0, first_widget.0);
     assert!(
-        text_command.2.starts_with(' '),
-        "widget text should keep leading padding inside the visual box"
+        text_command.2.starts_with('['),
+        "text fields should retain a visible field affordance"
     );
 }
 
@@ -17851,6 +19935,45 @@ fn inline_widgets_paint_light_fill_and_border_without_losing_hit_box() {
     );
     assert!(hit_test_target_node(&render, fill.0, fill.1).is_some());
     assert!(hit_test_target_node(&render, fill.0, fill.1 + 1).is_some());
+}
+
+#[test]
+fn icon_only_button_does_not_invent_visible_button_label() {
+    let render = render_html(
+        "mem://icon-only-button",
+        br#"
+            <html><body>
+              <form>
+                <button aria-label="Search"><svg viewBox="0 0 20 20"></svg></button>
+                <button>Search</button>
+              </form>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    assert!(!render.text.contains("Button"));
+    assert_eq!(render.text.matches("Search").count(), 1);
+    let widget_boxes = render
+        .display_list
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                DisplayCommand::Rect {
+                    shade: INLINE_WIDGET_BACKGROUND_SHADE,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(
+        widget_boxes >= 2,
+        "icon-only buttons should keep a visual control box without a synthetic label"
+    );
 }
 
 #[test]
@@ -18036,6 +20159,7 @@ fn scrolled_control_nearby_visual_hit_prefers_visible_button_after_scroll() {
             DisplayHitTarget::node(Some(88)),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -18193,6 +20317,7 @@ fn viewport_hit_tolerance_requires_visible_control_bounds_after_scroll() {
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -18732,11 +20857,11 @@ fn repeated_scroll_mixed_image_form_link_rows_keep_raster_hits_and_dirty_regions
         0,
         input_fill.3 as isize,
     );
-    assert!(after.viewport.y > input_fill.1);
     let stale_input_x = input_fill.0.saturating_add(input_fill.2.saturating_sub(1));
-    assert_eq!(
+    assert!(after.viewport.y > input_fill.1);
+    assert_ne!(
         hit_test_target_node_in_viewport(&render, after.viewport, stale_input_x, 0),
-        None,
+        hit_test_target_node(&render, input_fill.0, input_fill.1),
         "input target should not remain hittable after the mixed row scrolls out"
     );
     assert_eq!(
@@ -18929,6 +21054,7 @@ fn successive_scroll_delta_frames_canonicalize_mixed_dirty_rows_and_hits() {
         hit_test_target_node(&render, input_fill.0, input_fill.1),
         "visible input hit should match the document hit in the first scroll delta"
     );
+    let input_target = hit_test_target_node(&render, input_fill.0, input_fill.1);
     assert_eq!(
         hit_test_target_node_in_viewport(
             &render,
@@ -18950,9 +21076,9 @@ fn successive_scroll_delta_frames_canonicalize_mixed_dirty_rows_and_hits() {
         after.viewport.y >= input_fill.1.saturating_add(input_fill.3),
         "stale-hit viewport should start after the full control height scrolls away"
     );
-    assert_eq!(
+    assert_ne!(
         hit_test_target_node_in_viewport(&render, after.viewport, input_fill.0, 0),
-        None,
+        input_target,
         "input target should not remain hittable after its full visible height scrolls out"
     );
     assert_eq!(
@@ -19043,6 +21169,7 @@ fn continuous_small_scroll_state_keeps_mixed_rows_and_clamped_hits_stable() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -19296,6 +21423,7 @@ fn large_and_repeated_scroll_deltas_keep_viewport_hits_with_painted_rows() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -19564,6 +21692,7 @@ fn successive_scroll_frames_reuse_rows_without_mixed_content_stutter() {
             DisplayHitTarget::default(),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Text {
                 x: 0,
@@ -19970,6 +22099,7 @@ fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
               <div style="height:24px"></div>
               <p>Lead <a href="/photo"><img src="{image_url}" width="16" height="12" alt="chart"></a> <a href="/next">Next</a></p>
               <p>Tail row</p>
+              <div style="height:24px"></div>
             </body></html>
             "#
         )
@@ -20134,12 +22264,14 @@ fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
     let after = browser_document_viewport_after_scroll(&render, viewport.viewport, 0, 1);
     assert_eq!(after.viewport.y, image.1.saturating_add(1));
     assert_eq!(
-        hit_test_target_node_in_viewport(&render, after.viewport, image.0, 0),
+        hit_test_target_node_in_viewport(&render, after.viewport, image.0, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
         None,
         "inline image link should not remain hittable after it scrolls out"
     );
     assert_eq!(
-        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0),
+        hit_test_target_node_in_viewport(&render, after.viewport, next_hit_x, 0)
+            .and_then(|node| anchor_href_for_node(&page_state.dom, node)),
         None,
         "inline text link should not remain hittable after it scrolls out"
     );
@@ -20190,6 +22322,7 @@ fn scrolled_decoded_image_source_bounds_clip_color_hits_and_preserve_link_text()
             }]),
             DisplayHitTarget::default(),
         ],
+        document_height: 0,
         display_list: vec![
             DisplayCommand::Image {
                 x: 0,

@@ -12,7 +12,8 @@ use brutal_search::browser::{
     compare_browser_fixtures_with_chromium, ensure_static_target, hit_test_render,
     layer_tree_render, layout_tree_render, load_accessibility_tree, load_and_render, raster_report,
     rasterize_render, rasterize_render_rgba, render_html, rgba_raster_report,
-    unsupported_feature_summary, verify_browser_fixtures, verify_browser_visuals,
+    unsupported_feature_summary, update_browser_fixture_expectations, verify_browser_fixtures,
+    verify_browser_visuals,
 };
 use brutal_search::browser_compat::{
     BrowserCompatGate, BrowserCompatOptions, BrowserCompatReport, run_browser_compat,
@@ -219,6 +220,8 @@ enum Command {
         target: String,
         #[arg(long, default_value_t = 100)]
         width: usize,
+        #[arg(long)]
+        styled: bool,
         #[arg(long, default_value_t = 4 * 1024 * 1024)]
         max_bytes: usize,
         #[arg(long, default_value_t = 8)]
@@ -233,6 +236,8 @@ enum Command {
         viewport_width: Option<usize>,
         #[arg(long)]
         viewport_height: Option<usize>,
+        #[arg(long)]
+        vector_text: bool,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -254,6 +259,8 @@ enum Command {
         viewport_width: Option<usize>,
         #[arg(long)]
         viewport_height: Option<usize>,
+        #[arg(long)]
+        vector_text: bool,
         #[arg(long)]
         output: Option<PathBuf>,
         #[arg(long)]
@@ -458,6 +465,11 @@ enum Command {
         manifest: PathBuf,
         #[arg(long)]
         json: bool,
+        /// Rewrite the manifest's declared expectations from the current
+        /// engine output instead of checking them. Review the diff before
+        /// committing: this blesses whatever the engine renders today.
+        #[arg(long)]
+        update: bool,
     },
     VisualVerify {
         manifest: PathBuf,
@@ -523,7 +535,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             print_render(render, json, display_list)?;
         }
         Command::RenderFile {
@@ -553,7 +565,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let report = hit_test_render(&render, x, y);
             print_hit_test(&report, json)?;
         }
@@ -565,7 +577,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let report = layer_tree_render(&render);
             print_layer_tree(&report, json)?;
         }
@@ -577,7 +589,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let report = layout_tree_render(&render);
             print_layout_tree(&report, json)?;
         }
@@ -597,7 +609,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let previous = parse_previous_viewport_state(
                 previous_x,
                 previous_y,
@@ -635,7 +647,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let previous = parse_previous_viewport_state(
                 previous_x,
                 previous_y,
@@ -667,7 +679,8 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let report =
-                load_accessibility_tree(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_accessibility_tree(&target, BrowserRenderOptions::new(width, max_bytes))
+                    .await?;
             print_accessibility_tree(&report, json)?;
         }
         Command::Raster {
@@ -685,7 +698,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let options = BrowserRasterOptions {
                 cell_width,
                 cell_height,
@@ -732,6 +745,7 @@ async fn main() -> Result<()> {
         Command::Screenshot {
             target,
             width,
+            styled,
             max_bytes,
             cell_width,
             cell_height,
@@ -739,12 +753,23 @@ async fn main() -> Result<()> {
             viewport_y,
             viewport_width,
             viewport_height,
+            vector_text,
             output,
             json,
         } => {
             ensure_static_target(&target)?;
-            let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+            let render = if styled {
+                let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
+                session.navigate(&target).await?;
+                session.render_current_with_stylesheets(max_bytes).await?;
+                session.render_current_with_images(max_bytes).await?;
+                session
+                    .current()
+                    .cloned()
+                    .ok_or_else(|| anyhow!("styled screenshot produced no current page"))?
+            } else {
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?
+            };
             let options = BrowserRasterOptions {
                 cell_width,
                 cell_height,
@@ -752,6 +777,7 @@ async fn main() -> Result<()> {
                 viewport_y,
                 viewport_width,
                 viewport_height,
+                vector_text,
                 ..BrowserRasterOptions::default()
             };
             print_screenshot(&render, options, output.as_ref(), json)?;
@@ -765,6 +791,7 @@ async fn main() -> Result<()> {
             viewport_y,
             viewport_width,
             viewport_height,
+            vector_text,
             output,
             json,
         } => {
@@ -784,6 +811,7 @@ async fn main() -> Result<()> {
                 viewport_y,
                 viewport_width,
                 viewport_height,
+                vector_text,
                 ..BrowserRasterOptions::default()
             };
             print_screenshot(&render, options, output.as_ref(), json)?;
@@ -797,7 +825,7 @@ async fn main() -> Result<()> {
             display_list,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let stylesheet_report = session
                 .render_current_with_stylesheets(resource_max_bytes)
@@ -826,7 +854,7 @@ async fn main() -> Result<()> {
             display_list,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let script_report = session
                 .render_current_with_scripts(resource_max_bytes)
@@ -855,7 +883,7 @@ async fn main() -> Result<()> {
             display_list,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let image_report = session
                 .render_current_with_images(resource_max_bytes)
@@ -884,7 +912,7 @@ async fn main() -> Result<()> {
             display_list,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let render = session
                 .click_selector_with_default_action(&selector)
@@ -904,7 +932,7 @@ async fn main() -> Result<()> {
             display_list,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let render = session
                 .click_at_with_default_action(
@@ -927,7 +955,7 @@ async fn main() -> Result<()> {
             if targets.is_empty() {
                 return Err(anyhow!("session requires at least one target"));
             }
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             for target in &targets {
                 ensure_static_target(target)?;
                 session.navigate(target).await?;
@@ -968,7 +996,7 @@ async fn main() -> Result<()> {
                 .transpose()?
                 .unwrap_or_default();
             let mut session = BrowserSession::new_with_state(
-                BrowserRenderOptions { width, max_bytes },
+                BrowserRenderOptions::new(width, max_bytes),
                 initial_cookie_jar,
                 initial_local_storage,
             );
@@ -979,7 +1007,7 @@ async fn main() -> Result<()> {
                 viewport_width: viewport_width.unwrap_or(width),
                 viewport_height,
             };
-            let options = BrowserRenderOptions { width, max_bytes };
+            let options = BrowserRenderOptions::new(width, max_bytes);
             let mut tabs = BrowserShellTabs::new(session, state, options);
             if commands.is_empty() && !json && !no_interactive && io::stdin().is_terminal() {
                 run_interactive_browser_shell(&mut tabs, resource_max_bytes).await?;
@@ -1026,7 +1054,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             let Some(browser_form) = render.forms.get(form) else {
                 return Err(anyhow!(
                     "form index {} not found; page has {} form(s)",
@@ -1050,7 +1078,7 @@ async fn main() -> Result<()> {
                 &target,
                 form,
                 &fields,
-                BrowserRenderOptions { width, max_bytes },
+                BrowserRenderOptions::new(width, max_bytes),
                 json,
                 display_list,
                 BrowserFormSubmitMode::Auto,
@@ -1070,7 +1098,7 @@ async fn main() -> Result<()> {
                 &target,
                 form,
                 &fields,
-                BrowserRenderOptions { width, max_bytes },
+                BrowserRenderOptions::new(width, max_bytes),
                 json,
                 display_list,
                 BrowserFormSubmitMode::Get,
@@ -1090,7 +1118,7 @@ async fn main() -> Result<()> {
                 &target,
                 form,
                 &fields,
-                BrowserRenderOptions { width, max_bytes },
+                BrowserRenderOptions::new(width, max_bytes),
                 json,
                 display_list,
                 BrowserFormSubmitMode::Post,
@@ -1105,7 +1133,7 @@ async fn main() -> Result<()> {
         } => {
             ensure_static_target(&target)?;
             let render =
-                load_and_render(&target, BrowserRenderOptions { width, max_bytes }).await?;
+                load_and_render(&target, BrowserRenderOptions::new(width, max_bytes)).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&render.resources)?);
             } else {
@@ -1125,7 +1153,7 @@ async fn main() -> Result<()> {
             json,
         } => {
             ensure_static_target(&target)?;
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let mut session = BrowserSession::new(BrowserRenderOptions::new(width, max_bytes));
             session.navigate(&target).await?;
             let report = session.fetch_current_resources(resource_max_bytes).await?;
             if json {
@@ -1156,7 +1184,29 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Command::Verify { manifest, json } => {
+        Command::Verify {
+            manifest,
+            json,
+            update,
+        } => {
+            if update {
+                let report = update_browser_fixture_expectations(&manifest)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!(
+                        "browser fixtures: refreshed {}/{} expectation set(s) in {}{}",
+                        report.updated,
+                        report.fixture_count,
+                        report.manifest,
+                        if report.written { "" } else { " (no changes)" }
+                    );
+                    for name in &report.updated_names {
+                        println!("UPDATED {name}");
+                    }
+                }
+                return Ok(());
+            }
             let report = verify_browser_fixtures(&manifest)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);

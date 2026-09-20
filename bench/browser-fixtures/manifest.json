@@ -7,11 +7,13 @@
       "expected_title": "Static Text Fixture",
       "expected_text": "Static Text Fixture\nVisible words render plainly.\nNext page",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Static Text Fixture"},
-        {"command": "text", "x": 0, "y": 1, "text": "Visible words render plainly."},
-        {"command": "text", "x": 0, "y": 2, "text": "Next page"}
+        {"command": "rect", "x": 0, "y": 5, "width": 9, "height": 1, "shade": 144},
+        {"command": "text", "x": 0, "y": 1, "text": "SSttaattiicc TTeexxtt FFiixxttuurree"},
+        {"command": "text", "x": 0, "y": 2, "text": "SSttaattiicc TTeexxtt FFiixxttuurree"},
+        {"command": "text", "x": 0, "y": 4, "text": "Visible words render plainly."},
+        {"command": "styled_text", "x": 0, "y": 5, "text": "Next page", "shade": 28}
       ],
-      "expected_raster_hash": "5a219054fa1d27895b9c1fe0b64833223f1c6947bd964aee92d21512fde270fd"
+      "expected_raster_hash": "c6d752db7b39fea82ecbb1f926a0314f87dc2f79329e98420351fdc91dbe35ad"
     },
     {
       "name": "inline JavaScript DOM text mutation",
@@ -20,10 +22,11 @@
       "expected_title": "Inline JS Fixture",
       "expected_text": "Hydrated from inline script\nStatic sibling",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Hydrated from inline script"},
-        {"command": "text", "x": 0, "y": 1, "text": "Static sibling"}
+        {"command": "text", "x": 0, "y": 1, "text": "HHyyddrraatteedd ffrroomm iinnlliinnee ssccrriipptt"},
+        {"command": "text", "x": 0, "y": 2, "text": "HHyyddrraatteedd ffrroomm iinnlliinnee ssccrriipptt"},
+        {"command": "text", "x": 0, "y": 4, "text": "Static sibling"}
       ],
-      "expected_raster_hash": "28bce0dc79dfced9027b36fe684414fb61b0dd601c81f97fc595aa232b77461f"
+      "expected_raster_hash": "de2d902de7ae4927c4b55ece6bd345097d543b88bef8b134b98c816ffb068934"
     },
     {
       "name": "inline JavaScript create and append",
@@ -32,10 +35,11 @@
       "expected_title": "Runtime Create",
       "expected_text": "Created heading\nCreated paragraph",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Created heading"},
-        {"command": "text", "x": 0, "y": 1, "text": "Created paragraph"}
+        {"command": "text", "x": 0, "y": 1, "text": "CCrreeaatteedd hheeaaddiinngg"},
+        {"command": "text", "x": 0, "y": 2, "text": "CCrreeaatteedd hheeaaddiinngg"},
+        {"command": "text", "x": 0, "y": 4, "text": "Created paragraph"}
       ],
-      "expected_raster_hash": "52b47ee9665de41a140e0e8c04c6c9323bd2209d95bd62b47aa17f30beb9b258"
+      "expected_raster_hash": "0163b26df4ff0b143d7caedf72cf209025afb66809d4f9130fa838da3f529227"
     },
     {
       "name": "DOM tree mutation methods",
@@ -49,7 +53,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "- Tail"},
         {"command": "text", "x": 0, "y": 3, "text": "3"}
       ],
-      "expected_raster_hash": "ee2c6e4488044ca6030e32c877221e121131543cb4f5bdf196ba2e8a8ab1be0d"
+      "expected_raster_hash": "54a54fcaf621c64af069f15b6d77e2948339be4628974bfcce352e1295e4f0d1"
     },
     {
       "name": "ordered and unordered list marker layout",
@@ -65,7 +69,7 @@
         {"command": "text", "x": 0, "y": 4, "text": "1. Second"},
         {"command": "text", "x": 0, "y": 5, "text": "- Plain bullet"}
       ],
-      "expected_raster_hash": "ed845cbc32e8bec3fc4e785fa5d978610756487a4a3c66f4f5d7c3089e736529"
+      "expected_raster_hash": "de4be98afa8bf2901bc4c5e825930721348161fafa595dc3e094c1c1636c51fb"
     },
     {
       "name": "typed ordered and unordered list marker layout",
@@ -83,7 +87,7 @@
         {"command": "text", "x": 0, "y": 6, "text": "* Square item"},
         {"command": "text", "x": 0, "y": 7, "text": "- Disc item"}
       ],
-      "expected_raster_hash": "a81439ef3b64c9ba538be36a36e9f893579ddfd0bc4cb0e47493963a4ce6e1aa"
+      "expected_raster_hash": "45803992d99358f0c38344f557dcff283707fa8442fd0eeaffc567ffe4dee82f"
     },
     {
       "name": "nested list indentation layout",
@@ -97,7 +101,7 @@
         {"command": "text", "x": 4, "y": 2, "text": "2. Grandchild"},
         {"command": "text", "x": 0, "y": 3, "text": "- Sibling"}
       ],
-      "expected_raster_hash": "59fa135a781746d0cc3fffb9b63a85f59cfc0eb68c8a47cecf5168a7380887be"
+      "expected_raster_hash": "89c7b826ceae18dd06df23a9bf47ab13c963afd45468750ab72349420c7bdb60"
     },
     {
       "name": "mixed ordered unordered list marker depth",
@@ -111,7 +115,7 @@
         {"command": "text", "x": 4, "y": 2, "text": "1. Ordered grandchild"},
         {"command": "text", "x": 6, "y": 3, "text": "* Deep unordered"}
       ],
-      "expected_raster_hash": "8e6c88a4498d9528431091db1cf3c2cbe879a32dd9f09c0fd9b3fdb5d27da2a9"
+      "expected_raster_hash": "3390bcfd24960213f8167280bf31d28bd5e6fc3a1cf916f0529a55023ee49cee"
     },
     {
       "name": "text align display-list offsets",
@@ -125,7 +129,7 @@
         {"command": "text", "x": 17, "y": 2, "text": "End"},
         {"command": "text", "x": 5, "y": 3, "text": "Child text"}
       ],
-      "expected_raster_hash": "6bbd50fde6b63125e5617ae787f812ba943495ab17454bc708718b7c428ba617"
+      "expected_raster_hash": "f27b8ccd390386cce87584303e40cec7abd42c9e069dcf558d2b5612a2de468e"
     },
     {
       "name": "preformatted text layout",
@@ -140,7 +144,7 @@
         {"command": "text", "x": 0, "y": 4, "text": "A  B"},
         {"command": "text", "x": 0, "y": 5, "text": "C"}
       ],
-      "expected_raster_hash": "d8790a1c4346601e33da9cf4fab7ce603060efe2ced5c14fc46e426c31d7cd92"
+      "expected_raster_hash": "ee94e1ee9788a47548b8e2e8814b279185bdcc3970253d5700ee05b0d410010a"
     },
     {
       "name": "simple table row layout",
@@ -153,7 +157,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Parser  running"},
         {"command": "text", "x": 0, "y": 2, "text": "Layout  next"}
       ],
-      "expected_raster_hash": "8d5988deb53ab381f29ec1f452db3f6e9ad2f9c3a2ac56f3ee22278262eae679"
+      "expected_raster_hash": "2a62a97db50030e782936360a835190babbd93bb8795d6947a9b39072ff300c5"
     },
     {
       "name": "prose indentation layout",
@@ -166,18 +170,59 @@
         {"command": "text", "x": 0, "y": 1, "text": "Engine"},
         {"command": "text", "x": 4, "y": 2, "text": "Rust layout pipeline"}
       ],
-      "expected_raster_hash": "ba5503942fffd498d1909b253e78e04a78d8fa2ba761319b98f9f4d41baaf19c"
+      "expected_raster_hash": "83c28c3cc30272e1b6ec088cffd146155d794d71ff0090e325e066780c230a21"
     },
     {
       "name": "inline form control layout",
       "path": "form-control-layout.html",
       "width": 120,
       "expected_title": "Form Control Layout Fixture",
-      "expected_text": "[rust browser] [x] ( ) [******] [News] [ship it] [Go]",
+      "expected_text": "[rust browser]   x       [******]   News   [ship it]   Go",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "[rust browser] [x] ( ) [******] [News] [ship it] [Go]"}
+        {"command": "rect", "x": 0, "y": 0, "width": 16, "height": 2, "shade": 250},
+        {"command": "rect", "x": 0, "y": 0, "width": 16, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 1, "width": 16, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 15, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 17, "y": 0, "width": 3, "height": 2, "shade": 250},
+        {"command": "rect", "x": 17, "y": 0, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 17, "y": 1, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 17, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 19, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 21, "y": 0, "width": 3, "height": 2, "shade": 250},
+        {"command": "rect", "x": 21, "y": 0, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 21, "y": 1, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 21, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 23, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 25, "y": 0, "width": 10, "height": 2, "shade": 250},
+        {"command": "rect", "x": 25, "y": 0, "width": 10, "height": 1, "shade": 176},
+        {"command": "rect", "x": 25, "y": 1, "width": 10, "height": 1, "shade": 176},
+        {"command": "rect", "x": 25, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 34, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 36, "y": 0, "width": 6, "height": 2, "shade": 250},
+        {"command": "rect", "x": 36, "y": 0, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 36, "y": 1, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 36, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 41, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 43, "y": 0, "width": 11, "height": 2, "shade": 250},
+        {"command": "rect", "x": 43, "y": 0, "width": 11, "height": 1, "shade": 176},
+        {"command": "rect", "x": 43, "y": 1, "width": 11, "height": 1, "shade": 176},
+        {"command": "rect", "x": 43, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 53, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 55, "y": 0, "width": 4, "height": 2, "shade": 250},
+        {"command": "rect", "x": 55, "y": 0, "width": 4, "height": 1, "shade": 176},
+        {"command": "rect", "x": 55, "y": 1, "width": 4, "height": 1, "shade": 176},
+        {"command": "rect", "x": 55, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 58, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "text", "x": 0, "y": 0, "text": "[rust browser]"},
+        {"command": "text", "x": 16, "y": 0, "text": " x"},
+        {"command": "text", "x": 20, "y": 0, "text": "  "},
+        {"command": "text", "x": 24, "y": 0, "text": " [******]"},
+        {"command": "text", "x": 35, "y": 0, "text": " News"},
+        {"command": "text", "x": 42, "y": 0, "text": " [ship it]"},
+        {"command": "text", "x": 54, "y": 0, "text": " Go"}
       ],
-      "expected_raster_hash": "e37712a9b9f4c0d94b802fdf569ea6298c764bc5c63f4cb5c4a6a95847f084fa"
+      "expected_raster_hash": "440720d8158cded9bc72443e4ffb677a7d0416d6ed310abbcf8b16b8b21cca07"
     },
     {
       "name": "DOM node traversal properties",
@@ -191,7 +236,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "Gamma three"},
         {"command": "text", "x": 0, "y": 3, "text": "3 3 Beta two Alpha one second 1"}
       ],
-      "expected_raster_hash": "e86f52cd66346adcebdfcabe4ebadde32f0d71e075babd6b918012b37ee832e3"
+      "expected_raster_hash": "5d7a44b6f122d846c536c05303fc74bf0f584cd63f3908e37f8d7b87fb89ebc6"
     },
     {
       "name": "DOM insertion convenience methods",
@@ -208,7 +253,7 @@
         {"command": "text", "x": 0, "y": 5, "text": "Extra"},
         {"command": "text", "x": 0, "y": 6, "text": "Children reset"}
       ],
-      "expected_raster_hash": "37eeda8fd4c6da231cd36fc195665873db3f8613996c3816c87a3aa35e496ecd"
+      "expected_raster_hash": "a1e246e9baf993885314f9f30fe1a88d65487d3172edb2ee4dfc919953d2e132"
     },
     {
       "name": "DocumentFragment insertion",
@@ -221,7 +266,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Second"},
         {"command": "text", "x": 0, "y": 2, "text": "0 11 2 P"}
       ],
-      "expected_raster_hash": "63a7d8540f9d5f92c52d5367d0d3d36411c9b73350c61293840a70cb5fcf992a"
+      "expected_raster_hash": "09012ffa08ecb5f3621b232b3f88b3f8bb64282b48c41a17b2544cb986032097"
     },
     {
       "name": "Selector element methods",
@@ -233,7 +278,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Before"},
         {"command": "text", "x": 0, "y": 1, "text": "true false MAIN result"}
       ],
-      "expected_raster_hash": "5bc4c6f3f8f4277aee72d6198dd0ffdc8a0b854d7879e21ab6d5454959536708"
+      "expected_raster_hash": "3b5c2cbed638b1b151ca83537d283993bdae279c61971ae8a704e3462665e082"
     },
     {
       "name": "innerHTML DOM mutation",
@@ -246,30 +291,48 @@
         {"command": "text", "x": 0, "y": 1, "text": "Tail"},
         {"command": "text", "x": 0, "y": 2, "text": "2 true root HEAD <section data-kind=\"card\"><p class=\"title\">Hello</p></section><p class=\"tail\">Tail</p>"}
       ],
-      "expected_raster_hash": "bf0cb0ceade111142fc4229557bb348a5242547f594325883ec719d0e1f19c95"
+      "expected_raster_hash": "45c684ca5a8808869dc2cf3ea6899026c9a9cac9f501e97531f0db127e3de6a1"
     },
     {
       "name": "form control DOM properties",
       "path": "form-control-properties.html",
       "width": 80,
       "expected_title": "Form Control Properties Fixture",
-      "expected_text": "[rust browser] [x] Go\npost /find query rust browser search true false submit",
+      "expected_text": "[rust browser]   x   Go\npost file:///find query rust browser search true false submit",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "[rust browser] [x] Go"},
-        {"command": "text", "x": 0, "y": 1, "text": "post /find query rust browser search true false submit"}
+        {"command": "rect", "x": 0, "y": 0, "width": 16, "height": 2, "shade": 250},
+        {"command": "rect", "x": 0, "y": 0, "width": 16, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 1, "width": 16, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 15, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 17, "y": 0, "width": 3, "height": 2, "shade": 250},
+        {"command": "rect", "x": 17, "y": 0, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 17, "y": 1, "width": 3, "height": 1, "shade": 176},
+        {"command": "rect", "x": 17, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 19, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 21, "y": 0, "width": 4, "height": 2, "shade": 250},
+        {"command": "rect", "x": 21, "y": 0, "width": 4, "height": 1, "shade": 176},
+        {"command": "rect", "x": 21, "y": 1, "width": 4, "height": 1, "shade": 176},
+        {"command": "rect", "x": 21, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 24, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "text", "x": 0, "y": 0, "text": "[rust browser]"},
+        {"command": "text", "x": 16, "y": 0, "text": " x"},
+        {"command": "text", "x": 20, "y": 0, "text": " Go"},
+        {"command": "text", "x": 0, "y": 2, "text": "post file:///find query rust browser search true false submit"}
       ],
-      "expected_raster_hash": "d69b7b274daa071d86c5798c192c118ac0885052d2aa820307af255b88f16d06"
+      "expected_raster_hash": "6276f5a8118fa72809bb71960efc0b83ac6dd6ea9e4866fac13a4cb16e1748cf"
     },
     {
       "name": "location readback DOM properties",
       "path": "location-readback.html",
+      "source": "file:///fixtures/location-readback.html",
       "width": 180,
       "expected_title": "Location Readback Fixture",
-      "expected_text": "bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html",
+      "expected_text": "file:///fixtures/location-readback.html file:///fixtures/location-readback.html /fixtures/location-readback.html",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html bench/browser-fixtures/location-readback.html"}
+        {"command": "text", "x": 0, "y": 0, "text": "file:///fixtures/location-readback.html file:///fixtures/location-readback.html /fixtures/location-readback.html"}
       ],
-      "expected_raster_hash": "2ff45215413ed8ea96ed799e4975ef07a903cddf66bafe62034421bef9f67599"
+      "expected_raster_hash": "605e7de15fd01f1ef39b71272f72f90bd9070e9b9a5814e0524e48c6d0d339a0"
     },
     {
       "name": "setAttribute DOM mutation",
@@ -278,9 +341,10 @@
       "expected_title": "Set Attribute Fixture",
       "expected_text": "Runtime Attribute Link",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Runtime Attribute Link"}
+        {"command": "rect", "x": 0, "y": 0, "width": 22, "height": 1, "shade": 144},
+        {"command": "styled_text", "x": 0, "y": 0, "text": "Runtime Attribute Link", "shade": 28}
       ],
-      "expected_raster_hash": "9dad7e7d031c4ceb869fc9fe217175f9bae4814acc1c5c5e7842b7c562ed6997"
+      "expected_raster_hash": "03ca9a12d3de6eb5a41c1f7d80c8c94b93e2106666512af63222a2026537a9c6"
     },
     {
       "name": "getAttribute string binding mutation",
@@ -289,9 +353,10 @@
       "expected_title": "Get Attribute Fixture",
       "expected_text": "initial.html primary primary",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "initial.html primary primary"}
+        {"command": "rect", "x": 0, "y": 0, "width": 28, "height": 1, "shade": 144},
+        {"command": "styled_text", "x": 0, "y": 0, "text": "initial.html primary primary", "shade": 28}
       ],
-      "expected_raster_hash": "7d22aec16ac1da4ebe9c5f3f665661c6c37c1d523a353b78173427bee74561a1"
+      "expected_raster_hash": "492a612bef199725ce5c7a44cd6688be28b3b35021520272c0aa5bd7a4b00bab"
     },
     {
       "name": "style property DOM mutation",
@@ -304,7 +369,7 @@
         {"command": "styled_text", "x": 0, "y": 0, "text": "Runtime styled", "shade": 128},
         {"command": "text", "x": 0, "y": 1, "text": "rgb(128, 128, 128)"}
       ],
-      "expected_raster_hash": "d4deaa4a6a656409c0e3d8966e3b24bf0a94a068bf00d1702a60c8450d16cd3b"
+      "expected_raster_hash": "ed81df1804e1b1075353753dc85e302a825e43852a72a7719278e5e944b9facf"
     },
     {
       "name": "classList DOM mutation",
@@ -317,7 +382,7 @@
         {"command": "styled_text", "x": 0, "y": 0, "text": "Class list visible", "shade": 128},
         {"command": "text", "x": 0, "y": 1, "text": "true 3"}
       ],
-      "expected_raster_hash": "58933fd87ff08a5f4b4a7f5deb7b2bc016ddf317b43aab7b84455fd78ab4cd69"
+      "expected_raster_hash": "95e942187b5b1b17ae5d5580111221e1e77e7bb9d004ee45f14b4c56cac3297a"
     },
     {
       "name": "DOM query collections",
@@ -332,7 +397,7 @@
         {"command": "text", "x": 0, "y": 3, "text": "Beta"},
         {"command": "text", "x": 0, "y": 4, "text": "2 2 Second"}
       ],
-      "expected_raster_hash": "8e75f7ba835c64b3f593bbb92f49a2c03d1f7ee9ed4c72b4fcef82f7aaadd48c"
+      "expected_raster_hash": "38e64e180561ea66a9ae0e9998b56d058c7a1b2378539af116ca11dea3e85616"
     },
     {
       "name": "localStorage DOM mutation",
@@ -341,10 +406,11 @@
       "expected_title": "Local Storage Fixture",
       "expected_text": "Stored locally\n2",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Stored locally"},
-        {"command": "text", "x": 0, "y": 1, "text": "2"}
+        {"command": "text", "x": 0, "y": 1, "text": "SSttoorreedd llooccaallllyy"},
+        {"command": "text", "x": 0, "y": 2, "text": "SSttoorreedd llooccaallllyy"},
+        {"command": "text", "x": 0, "y": 4, "text": "2"}
       ],
-      "expected_raster_hash": "241cdf4d6b364b7bf5db52e8edd8b0f483ac1ae08b23f1d83df56a2fe43c2a50"
+      "expected_raster_hash": "e07077bd9e48a2350f4c74ddf5c9caab69ade17476e56d876028bba25ecc5d99"
     },
     {
       "name": "sessionStorage DOM mutation",
@@ -353,10 +419,11 @@
       "expected_title": "Session Storage Fixture",
       "expected_text": "Stored for session\n2",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Stored for session"},
-        {"command": "text", "x": 0, "y": 1, "text": "2"}
+        {"command": "text", "x": 0, "y": 1, "text": "SSttoorreedd ffoorr sseessssiioonn"},
+        {"command": "text", "x": 0, "y": 2, "text": "SSttoorreedd ffoorr sseessssiioonn"},
+        {"command": "text", "x": 0, "y": 4, "text": "2"}
       ],
-      "expected_raster_hash": "7aaf88ad432b9f40417dbb1889606f963e28c10e5bbd2bd651f97062d7045b34"
+      "expected_raster_hash": "655826638e69f142eb3e2bfc99addcfc1a317e0bd14c862d13a16403bb714899"
     },
     {
       "name": "timer task queue mutation",
@@ -365,10 +432,11 @@
       "expected_title": "Timer Task Fixture",
       "expected_text": "Timer fired\nstart sync timer",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Timer fired"},
-        {"command": "text", "x": 0, "y": 1, "text": "start sync timer"}
+        {"command": "text", "x": 0, "y": 1, "text": "TTiimmeerr ffiirreedd"},
+        {"command": "text", "x": 0, "y": 2, "text": "TTiimmeerr ffiirreedd"},
+        {"command": "text", "x": 0, "y": 4, "text": "start sync timer"}
       ],
-      "expected_raster_hash": "ccb299458739f565ccd41ca06f40db3e5f68d81112cf3f524588f89926b4d8d1"
+      "expected_raster_hash": "894b894653ab59b1fd14bf5e090026210417023162dd0622635c73b8df6105f6"
     },
     {
       "name": "document and window lifecycle events",
@@ -377,10 +445,11 @@
       "expected_title": "Lifecycle Events Fixture",
       "expected_text": "DOM ready\nstart script dom load timer",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "DOM ready"},
-        {"command": "text", "x": 0, "y": 1, "text": "start script dom load timer"}
+        {"command": "text", "x": 0, "y": 1, "text": "DDOOMM rreeaaddyy"},
+        {"command": "text", "x": 0, "y": 2, "text": "DDOOMM rreeaaddyy"},
+        {"command": "text", "x": 0, "y": 4, "text": "start script dom load timer"}
       ],
-      "expected_raster_hash": "71e9483d9dcee41d17fd5476d5a2c90ef0164df2ca023f49e8e0de56b1056abc"
+      "expected_raster_hash": "f0debb4116c2a842b5ff85e50bb2c94088607dcff842d4a6a9b1e4663bb02356"
     },
     {
       "name": "external JavaScript create and append",
@@ -390,10 +459,11 @@
       "expected_title": "External Script Fixture",
       "expected_text": "External script heading\nExternal script paragraph",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "External script heading"},
-        {"command": "text", "x": 0, "y": 1, "text": "External script paragraph"}
+        {"command": "text", "x": 0, "y": 1, "text": "EExxtteerrnnaall ssccrriipptt hheeaaddiinngg"},
+        {"command": "text", "x": 0, "y": 2, "text": "EExxtteerrnnaall ssccrriipptt hheeaaddiinngg"},
+        {"command": "text", "x": 0, "y": 4, "text": "External script paragraph"}
       ],
-      "expected_raster_hash": "c18214f2d79617668c6aaa2ab8e1876d70413224d2850b2ad58eaf932e954901"
+      "expected_raster_hash": "4d648ab8ba2473d7ee01cc0e944651f853ce98da0f39e7ede60068df65172a73"
     },
     {
       "name": "inline onclick event mutation",
@@ -403,10 +473,15 @@
       "expected_title": "Click Fixture",
       "expected_text": "Done\nClicked by handler",
       "expected_display_list": [
+        {"command": "rect", "x": 0, "y": 0, "width": 6, "height": 2, "shade": 250},
+        {"command": "rect", "x": 0, "y": 0, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 1, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 5, "y": 0, "width": 1, "height": 2, "shade": 176},
         {"command": "text", "x": 0, "y": 0, "text": "Done"},
-        {"command": "text", "x": 0, "y": 1, "text": "Clicked by handler"}
+        {"command": "text", "x": 0, "y": 2, "text": "Clicked by handler"}
       ],
-      "expected_raster_hash": "4ac6176f0d15b58d2460906c56c8f6f59a8d779f5a090a207439be81c2fa4278"
+      "expected_raster_hash": "67dca52e69812e7b18b4f4a991d7712822c8ad54beb6363e718f5a3bf45af1f5"
     },
     {
       "name": "addEventListener click mutation",
@@ -416,10 +491,15 @@
       "expected_title": "Listener Fixture",
       "expected_text": "Listened\nClicked by listener",
       "expected_display_list": [
+        {"command": "rect", "x": 0, "y": 0, "width": 10, "height": 2, "shade": 250},
+        {"command": "rect", "x": 0, "y": 0, "width": 10, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 1, "width": 10, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 9, "y": 0, "width": 1, "height": 2, "shade": 176},
         {"command": "text", "x": 0, "y": 0, "text": "Listened"},
-        {"command": "text", "x": 0, "y": 1, "text": "Clicked by listener"}
+        {"command": "text", "x": 0, "y": 2, "text": "Clicked by listener"}
       ],
-      "expected_raster_hash": "54680d0c9c6ca5ae7eecd950b2cc25ce489269944a7815986a5d57d2345e8749"
+      "expected_raster_hash": "1280dd598e41a27535d821f1f582cc42e8bae9fa057f3943468315e1fefc8c9f"
     },
     {
       "name": "compound CSS selector display",
@@ -428,12 +508,13 @@
       "expected_title": "Compound CSS Fixture",
       "expected_text": "Compound CSS Visible\nKept by compound selector\nVisible nav link\nVisible descendant sibling",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Compound CSS Visible"},
-        {"command": "text", "x": 0, "y": 1, "text": "Kept by compound selector"},
-        {"command": "text", "x": 0, "y": 2, "text": "Visible nav link"},
-        {"command": "text", "x": 0, "y": 3, "text": "Visible descendant sibling"}
+        {"command": "text", "x": 0, "y": 1, "text": "CCoommppoouunndd CCSSSS VViissiibbllee"},
+        {"command": "text", "x": 0, "y": 2, "text": "CCoommppoouunndd CCSSSS VViissiibbllee"},
+        {"command": "text", "x": 0, "y": 4, "text": "Kept by compound selector"},
+        {"command": "text", "x": 0, "y": 5, "text": "Visible nav link"},
+        {"command": "text", "x": 0, "y": 6, "text": "Visible descendant sibling"}
       ],
-      "expected_raster_hash": "8e60a8be89b6e069524518ba3b5a16465ca0de94c7b03b8b1aa2f9c2479c95b5"
+      "expected_raster_hash": "7ff4463a4f416696beaf174699fcdceffc545d4a4b46b9f25cd1035be9863a40"
     },
     {
       "name": "attribute CSS selector display",
@@ -442,10 +523,11 @@
       "expected_title": "Attribute CSS Fixture",
       "expected_text": "Attribute CSS Visible\nVisible open state",
       "expected_display_list": [
-        {"command": "text", "x": 0, "y": 0, "text": "Attribute CSS Visible"},
-        {"command": "text", "x": 0, "y": 1, "text": "Visible open state"}
+        {"command": "text", "x": 0, "y": 1, "text": "AAttttrriibbuuttee CCSSSS VViissiibbllee"},
+        {"command": "text", "x": 0, "y": 2, "text": "AAttttrriibbuuttee CCSSSS VViissiibbllee"},
+        {"command": "text", "x": 0, "y": 4, "text": "Visible open state"}
       ],
-      "expected_raster_hash": "c95e760780c64c44227cdcf7b85ce4c9dd373571dbea9d4def8cec9287276809"
+      "expected_raster_hash": "7d44a4b87d0804c8f5638df73621f9e74181acc4c273f664d170a6dd3964a204"
     },
     {
       "name": "complex selector query and click",
@@ -455,11 +537,16 @@
       "expected_title": "Complex Selector Fixture",
       "expected_text": "Done\nFound by query selector\nClicked",
       "expected_display_list": [
+        {"command": "rect", "x": 0, "y": 0, "width": 6, "height": 2, "shade": 250},
+        {"command": "rect", "x": 0, "y": 0, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 1, "width": 6, "height": 1, "shade": 176},
+        {"command": "rect", "x": 0, "y": 0, "width": 1, "height": 2, "shade": 176},
+        {"command": "rect", "x": 5, "y": 0, "width": 1, "height": 2, "shade": 176},
         {"command": "text", "x": 0, "y": 0, "text": "Done"},
-        {"command": "text", "x": 0, "y": 1, "text": "Found by query selector"},
-        {"command": "text", "x": 0, "y": 2, "text": "Clicked"}
+        {"command": "text", "x": 0, "y": 2, "text": "Found by query selector"},
+        {"command": "text", "x": 0, "y": 3, "text": "Clicked"}
       ],
-      "expected_raster_hash": "7e7ad67fd3a9438e08c4989f2e6d6b4b9944f2b247426bd889507c3318ae1024"
+      "expected_raster_hash": "e969bfa7af547431867112a31fee93849c15c422119cf051f8098cae63d27f3f"
     },
     {
       "name": "rect paint command",
@@ -472,7 +559,7 @@
         {"command": "rect", "x": 0, "y": 1, "width": 40, "height": 1, "shade": 96},
         {"command": "text", "x": 0, "y": 2, "text": "Below rule"}
       ],
-      "expected_raster_hash": "006ba751090ee4f8077b067d7c5b2d83e865ab2e18d35623748e098f4850cbe0"
+      "expected_raster_hash": "23a91ffce7ca7db3748be4cde4e415df7b45e31c70063c29e9d194e293193946"
     },
     {
       "name": "viewport raster culling",
@@ -491,7 +578,7 @@
       "raster_viewport_height": 2,
       "expected_visible_command_count": 2,
       "expected_culled_command_count": 3,
-      "expected_raster_hash": "7875d5aa49a34c3fc9f7b6239e871011b31c4b0193bc04999b44b83fc534d2dc"
+      "expected_raster_hash": "0fd9daf501ea4d5ac3a5aa31c808449deee49303ad89a0fd133e32dc29f176ae"
     },
     {
       "name": "background paint command",
@@ -509,7 +596,7 @@
         {"x": 30, "y": 0, "expected": {"kind": "rect", "shade": 208}},
         {"x": 40, "y": 0, "expected": null}
       ],
-      "expected_raster_hash": "14594532705fa108c3200ddebe69690a85e7df81716c2e2c2a8c181a23e8a36c"
+      "expected_raster_hash": "ecbb4fc6f3e5e7dbe11fdf903ff5a0ce39d0681461a3d1d3914e600fd73df877"
     },
     {
       "name": "border paint command",
@@ -531,7 +618,7 @@
         {"x": 0, "y": 1, "expected": {"kind": "rect", "shade": 64}},
         {"x": 39, "y": 2, "expected": {"kind": "rect", "shade": 64}}
       ],
-      "expected_raster_hash": "20d698717af5a3dfa60138b5eb8c1ef9e1f0b84714f1845a1117f6245885f1b9"
+      "expected_raster_hash": "1fa151145c9561333f5a205b8be9c4d0b430b694fee4bed7d738e5e9638c3e20"
     },
     {
       "name": "padding layout command",
@@ -543,7 +630,7 @@
         {"command": "rect", "x": 0, "y": 0, "width": 40, "height": 3, "shade": 208},
         {"command": "text", "x": 2, "y": 1, "text": "Padded text"}
       ],
-      "expected_raster_hash": "d9ceefe86b74b2e59cf572e2c270f9132246ee1d49164fe7192eb55cb2a88f14"
+      "expected_raster_hash": "aa7dc2055fc197218e7dac6d3f0fe6f6c75ccf5d1901fc23991664e8010c820f"
     },
     {
       "name": "margin layout command",
@@ -557,7 +644,7 @@
         {"command": "text", "x": 2, "y": 2, "text": "Margin text"},
         {"command": "text", "x": 0, "y": 4, "text": "After"}
       ],
-      "expected_raster_hash": "c0215e4a252b4d8374f965da0e871bb9b146385270ef79f0bb86a07515655132"
+      "expected_raster_hash": "7a60ba879b0f697d01eda289cd7f027275739b9cf286702d00d0065b338de273"
     },
     {
       "name": "block size layout command",
@@ -570,7 +657,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Width constrained"},
         {"command": "text", "x": 0, "y": 1, "text": "box"}
       ],
-      "expected_raster_hash": "f948b4b0a398c2a73f11ceb2822ae57b0fbb0d7f4a897556b3c4ded307d84f7b"
+      "expected_raster_hash": "c84975fa0fbf5f66e826a4fc4aab55493a86ba02ad27a03aa1e2d48e2477d3cb"
     },
     {
       "name": "max-width auto-margin layout command",
@@ -584,7 +671,7 @@
         {"command": "text", "x": 10, "y": 1, "text": "column wraps words"},
         {"command": "text", "x": 10, "y": 2, "text": "cleanly"}
       ],
-      "expected_raster_hash": "03826db91487b23091e86118a306880e8097ba25a15c88235fd733e4e2575b35"
+      "expected_raster_hash": "d73878d54d164d30bcbaa7eb430b70207b60fafe95a49e8cfbbe004668d4c85b"
     },
     {
       "name": "text color paint command",
@@ -595,7 +682,7 @@
       "expected_display_list": [
         {"command": "styled_text", "x": 0, "y": 0, "text": "Muted text", "shade": 128}
       ],
-      "expected_raster_hash": "4499eb0c2782e96f3d3029f7d476fbae9a603e7711c840c478e18ee47aac443a"
+      "expected_raster_hash": "97156e81e77afc42d72cac3cc625ddba5523ec26a7740a2f5af3583d5d05e081"
     },
     {
       "name": "image placeholder paint command",
@@ -605,7 +692,7 @@
       "expected_text": "Before image\nAfter image",
       "expected_display_list": [
         {"command": "text", "x": 0, "y": 0, "text": "Before image"},
-        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Hero art"},
+        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Hero art", "url": "bench/browser-fixtures/hero.png"},
         {"command": "text", "x": 0, "y": 3, "text": "After image"}
       ],
       "expected_hit_tests": [
@@ -616,7 +703,7 @@
         {"id": 0, "parent": null, "kind": "root", "reason": "document-root", "x": 0, "y": 0, "width": 40, "height": 4, "paint_order": 0, "command_indices": [0, 2]},
         {"id": 1, "parent": 0, "kind": "image", "reason": "image-replaced-element", "x": 0, "y": 1, "width": 10, "height": 2, "paint_order": 1, "command_indices": [1]}
       ],
-      "expected_raster_hash": "bda76c1a50338bedea2d5bab7a1a856aaa18af8432a3ca8d713ecee56b4de8bd"
+      "expected_raster_hash": "d2cb442521bac5352155324b24639f4935f118d17de39d9a0548dddaeb9a0acb"
     },
     {
       "name": "svg image decode paint command",
@@ -629,7 +716,7 @@
         {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "SVG tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
         {"command": "text", "x": 0, "y": 3, "text": "After svg"}
       ],
-      "expected_raster_hash": "c5008fa5213d2f1b0b3d8c351f0b6c5faf1ef5f503a44d9b7419b383a1e693d2"
+      "expected_raster_hash": "1e47083963471c902c01a36916c9d4079190eaa4f0e8bb9923548b69d9c407a6"
     },
     {
       "name": "responsive image selection paint command",
@@ -642,7 +729,7 @@
         {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Responsive tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
         {"command": "text", "x": 0, "y": 3, "text": "After responsive"}
       ],
-      "expected_raster_hash": "98e878ba7473ade89d67a90fb32c8cd05dedac86cc313ca5ea5c82b526773e2a"
+      "expected_raster_hash": "53a52c6293c9442ae00fb7cb97a69e5d5d10fc0f63b4292a6576c368002c1bc7"
     },
     {
       "name": "data URI PNG decode paint command",
@@ -650,7 +737,7 @@
       "width": 40,
       "expected_title": "PNG Data Fixture",
       "expected_text": "Before png data\nAfter png data",
-      "expected_raster_hash": "3e98dd784a6955a85de51dcb731de0799982f63780a379d42152b3198cf0f92d"
+      "expected_raster_hash": "910a297f971a8a10e06027b8a9c4f3ad314d1a604bd0a4b05c51c6385e2689ad"
     }
   ]
 }

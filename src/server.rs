@@ -117,7 +117,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<ServerState>) -> Re
         response.status,
         response.reason,
         response.content_type,
-        response.body.as_bytes(),
+        response.body_bytes(),
     )
     .await?;
     Ok(())
@@ -578,6 +578,15 @@ struct HttpResponse {
     reason: &'static str,
     content_type: &'static str,
     body: String,
+    binary_body: Option<Vec<u8>>,
+}
+
+impl HttpResponse {
+    fn body_bytes(&self) -> &[u8] {
+        self.binary_body
+            .as_deref()
+            .unwrap_or_else(|| self.body.as_bytes())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -627,6 +636,7 @@ fn json_response<T: Serialize>(status: u16, reason: &'static str, value: &T) -> 
             reason,
             content_type: "application/json; charset=utf-8",
             body,
+            binary_body: None,
         },
         Err(error) => text_response(500, "Internal Server Error", &error.to_string()),
     }
@@ -638,6 +648,7 @@ fn html_response(body: String) -> HttpResponse {
         reason: "OK",
         content_type: "text/html; charset=utf-8",
         body,
+        binary_body: None,
     }
 }
 
@@ -647,6 +658,7 @@ fn text_response(status: u16, reason: &'static str, body: &str) -> HttpResponse 
         reason,
         content_type: "text/plain; charset=utf-8",
         body: body.to_owned(),
+        binary_body: None,
     }
 }
 
@@ -774,6 +786,7 @@ fn browser_render_url(target_url: &str) -> String {
 fn browser_render_url_with_return(target_url: &str, return_href: Option<&str>) -> String {
     let mut query = form_urlencoded::Serializer::new(String::new());
     query.append_pair("url", target_url);
+    query.append_pair("visual", "auto");
     if let Some(return_href) = return_href {
         query.append_pair("from", return_href);
     }
@@ -2580,7 +2593,7 @@ mod tests {
 
         assert_eq!(
             result.render_url.as_deref(),
-            Some("/browser?url=https%3A%2F%2Fexample.com%2Fcats")
+            Some("/browser?url=https%3A%2F%2Fexample.com%2Fcats&visual=auto")
         );
         assert_eq!(result.doc_id, Some(37));
     }
@@ -2611,6 +2624,7 @@ mod tests {
             target.param("url").as_deref(),
             Some("https://example.com/cat")
         );
+        assert_eq!(target.param("visual").as_deref(), Some("auto"));
         assert_eq!(target.param("from").as_deref(), Some("/search?q=cat"));
     }
 
@@ -2671,7 +2685,7 @@ mod tests {
 
         assert_eq!(
             result.render_url.as_deref(),
-            Some("/browser?url=https%3A%2F%2Fexample.com%2Fcat")
+            Some("/browser?url=https%3A%2F%2Fexample.com%2Fcat&visual=auto")
         );
         assert_eq!(result.source, "brave cache");
     }

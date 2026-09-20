@@ -1,3 +1,16 @@
+use super::{
+    HttpResponse, RequestTarget, ServerState, html_response, json_response,
+    sanitized_search_return_href, text_response,
+};
+use crate::browser::{
+    BROWSER_ABOUT_BLANK_TARGET, BrowserCookie, BrowserFocusedControl, BrowserForm,
+    BrowserImageRenderReport, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender,
+    BrowserRenderDiagnosticsReport, BrowserRenderOptions, BrowserResource, BrowserResourceFetch,
+    BrowserResourceFetchReport, BrowserScriptRenderReport, BrowserSession,
+    BrowserStylesheetRenderReport, BrowserTextViewportOptions, BrowserViewportState,
+    browser_render_diagnostics, browser_text_viewport, rasterize_render_rgba,
+};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -5,25 +18,34 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, MutexGuard, Notify};
 use tokio::time::timeout;
 use url::{Url, form_urlencoded};
-
-use crate::browser::{
-    BROWSER_ABOUT_BLANK_TARGET, BrowserCookie, BrowserFocusedControl, BrowserForm,
-    BrowserImageRenderReport, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender,
-    BrowserRenderOptions, BrowserResource, BrowserResourceFetch, BrowserResourceFetchReport,
-    BrowserScriptRenderReport, BrowserSession, BrowserStylesheetRenderReport,
-    BrowserTextViewportOptions, BrowserViewportState, browser_text_viewport, rasterize_render_rgba,
+mod api_exports;
+#[cfg(test)]
+mod api_exports_tests;
+mod auto_visual;
+#[cfg(test)]
+mod auto_visual_tests;
+mod session_lifecycle;
+mod visual_status;
+use auto_visual::{
+    BROWSER_AUTO_VISUAL_BACKGROUND_FIRST_VIEWPORT_TIMEOUT,
+    apply_browser_pending_open_success_visual_state,
+    apply_browser_session_auto_visual_for_first_response, browser_target_auto_visual,
+    refresh_browser_session_visual_viewport_images,
 };
-
-use super::{
-    HttpResponse, RequestTarget, ServerState, html_response, json_response,
-    sanitized_search_return_href, text_response,
+#[cfg(test)]
+use auto_visual::{
+    BROWSER_AUTO_VISUAL_FIRST_IMAGE_TIMEOUT, BROWSER_AUTO_VISUAL_FIRST_RESPONSE_TIMEOUT,
+    BROWSER_VISUAL_VIEWPORT_CURRENT_REFRESH_TIMEOUT, BROWSER_VISUAL_VIEWPORT_REFRESH_TIMEOUT,
+    browser_visual_viewport_refresh_timeout,
 };
-
+use session_lifecycle::{
+    browser_action_clones_in_flight_viewport, browser_action_marks_session_in_flight,
+    browser_pending_current_should_retry,
+};
+use visual_status::render_browser_session_visual_flow_status;
 const DEFAULT_BROWSER_WIDTH: usize = 100;
 const DEFAULT_BROWSER_HEIGHT: usize = 44;
 const DEFAULT_BROWSER_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -34,10 +56,24 @@ const DEFAULT_BULK_BACKGROUND_LINKS: usize = 16;
 const MAX_BULK_BACKGROUND_LINKS: usize = 80;
 const MAX_BROWSER_SESSION_RESOURCES: usize = 120;
 const BROWSER_PROFILE_ENV: &str = "BRUTAL_BROWSER_PROFILE";
-#[cfg(not(test))]
-const BROWSER_CREATE_TARGET_TIMEOUT: Duration = Duration::from_secs(8);
-#[cfg(test)]
-const BROWSER_CREATE_TARGET_TIMEOUT: Duration = Duration::from_millis(100);
+static NEXT_DATA_URL_MATERIALIZATION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_VIEWPORT_RASTER_ID: AtomicU64 = AtomicU64::new(1);
+const BROWSER_CREATE_TARGET_TIMEOUT: Duration =
+    Duration::from_millis(if cfg!(test) { 100 } else { 750 });
+const BROWSER_PENDING_OPEN_TIMEOUT: Duration =
+    Duration::from_millis(if cfg!(test) { 300 } else { 900 });
+const BROWSER_VISUAL_OPEN_TIMEOUT: Duration =
+    Duration::from_millis(if cfg!(test) { 220 } else { 600 });
+fn browser_create_target_timeout(auto_visual: bool) -> Duration {
+    [BROWSER_CREATE_TARGET_TIMEOUT, BROWSER_VISUAL_OPEN_TIMEOUT][auto_visual as usize]
+}
+fn browser_session_open_timeout(web_session: &BrowserWebSession, target_url: &str) -> Duration {
+    if web_session.pending_source.as_deref() == Some(target_url) {
+        BROWSER_PENDING_OPEN_TIMEOUT
+    } else {
+        browser_create_target_timeout(web_session.visual_viewport_images)
+    }
+}
 
 pub(super) struct BrowserSessionRegistry {
     next_id: AtomicU64,
@@ -53,13 +89,11 @@ pub(super) struct BrowserSessionRegistry {
     profile_history: Mutex<Vec<BrowserStoredProfileEntry>>,
     profile_closed_sessions: Mutex<Vec<BrowserStoredClosedSession>>,
 }
-
 impl Default for BrowserSessionRegistry {
     fn default() -> Self {
         Self::new_in_memory()
     }
 }
-
 impl BrowserSessionRegistry {
     fn new_in_memory() -> Self {
         Self {
@@ -77,14 +111,12 @@ impl BrowserSessionRegistry {
             profile_closed_sessions: Mutex::new(Vec::new()),
         }
     }
-
     pub(super) fn from_env() -> Self {
         std::env::var_os(BROWSER_PROFILE_ENV)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
             .map_or_else(Self::new_in_memory, Self::with_profile_path)
     }
-
     fn with_profile_path(path: PathBuf) -> Self {
         let (profile, profile_error) = match load_browser_session_profile(&path) {
             Ok(profile) => (profile, None),
@@ -149,6 +181,10 @@ struct BrowserWebSession {
     find_active_line: Option<usize>,
     tab_search_query: String,
     resource_report: Option<BrowserSessionResourceReportPayload>,
+    viewport_image_cache: Option<BrowserSessionViewportImagePayload>,
+    visual_viewport_images: bool,
+    visual_stylesheets_ready: bool,
+    in_flight_viewport_updated: bool,
     action_feedback: Option<String>,
     action_feedback_context: Option<BrowserActionFeedbackContext>,
     pending_source: Option<String>,
@@ -222,6 +258,8 @@ struct BrowserSessionPayload {
     viewport_image_error: Option<String>,
     #[serde(skip)]
     page_text: String,
+    #[serde(skip)]
+    render_diagnostics: BrowserRenderDiagnosticsReport,
     focused: Option<BrowserFocusedControl>,
     anchors: Vec<BrowserSessionAnchorPayload>,
     links: Vec<BrowserSessionLinkPayload>,
@@ -240,14 +278,25 @@ struct BrowserSessionPayload {
     #[serde(skip)]
     action_feedback_context: Option<BrowserActionFeedbackContext>,
     pending_source: Option<String>,
+    visual_viewport_images: bool,
     fast_scroll: bool,
 }
 
 #[derive(Debug, Clone)]
 struct BrowserSessionViewportImagePayload {
+    raster_id: u64,
+    png: Vec<u8>,
     data_url: String,
     width: usize,
     height: usize,
+    raster_viewport_x: usize,
+    raster_viewport_y: usize,
+    raster_viewport_width: usize,
+    raster_viewport_height: usize,
+    viewport_pixel_width: usize,
+    viewport_pixel_height: usize,
+    viewport_offset_x: usize,
+    viewport_offset_y: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -541,6 +590,7 @@ struct BrowserSessionResourceReportPayload {
     skipped: usize,
     applied: Option<usize>,
     decoded: Option<usize>,
+    attached: Option<usize>,
     resources: Vec<BrowserSessionResourceFetchPayload>,
 }
 
@@ -571,6 +621,9 @@ struct BrowserSessionResourceFetchPayload {
     bytes: usize,
     content_type: Option<String>,
     error: Option<String>,
+    render_attached: Option<bool>,
+    render_attachment_kind: Option<String>,
+    image_visibility_state: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -760,6 +813,7 @@ struct BrowserSessionStateExportResourceReport<'a> {
     skipped: usize,
     applied: Option<usize>,
     decoded: Option<usize>,
+    attached: Option<usize>,
     resources: usize,
     fetches: &'a [BrowserSessionResourceFetchPayload],
     csv_url: String,
@@ -826,6 +880,7 @@ struct BrowserSessionStateExportUrls {
     resources_csv: String,
     resource_report_json: String,
     resource_report_csv: String,
+    render_diagnostics_json: String,
     find_json: String,
     find_csv: String,
     tab_search_json: String,
@@ -963,6 +1018,9 @@ enum BrowserSessionAction {
         y: usize,
         raster_width: Option<usize>,
         raster_height: Option<usize>,
+        dom_x: Option<usize>,
+        dom_y: Option<usize>,
+        coordinate_space: BrowserClickCoordinateSpace,
     },
     FocusSelector(String),
     FocusControl {
@@ -1106,6 +1164,13 @@ enum BrowserSessionAction {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserClickCoordinateSpace {
+    PageCells,
+    ViewportCells,
+    RasterPixels,
+}
+
 #[derive(Debug)]
 enum BrowserRouteError {
     BadRequest(String),
@@ -1146,8 +1211,8 @@ impl BrowserRouteError {
 
 pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) -> HttpResponse {
     match browser_session_for_target(target, state).await {
-        Ok((payload, back_href)) => {
-            html_response(if browser_session_target_wants_viewport_partial(target) {
+        Ok((payload, back_href)) => html_response(
+            if browser_session_target_wants_viewport_partial(target, Some(&payload)) {
                 render_browser_session_viewport_partial(&payload)
             } else {
                 render_browser_session_page_with_diagnostics(
@@ -1155,16 +1220,24 @@ pub(super) async fn browser_page(target: &RequestTarget, state: &ServerState) ->
                     &back_href,
                     browser_session_target_wants_diagnostics(target),
                 )
-            })
-        }
+            },
+        ),
         Err(error) => error.browser_response(target),
     }
 }
 
-fn browser_session_target_wants_viewport_partial(target: &RequestTarget) -> bool {
+fn browser_session_target_wants_viewport_partial(
+    target: &RequestTarget,
+    payload: Option<&BrowserSessionPayload>,
+) -> bool {
     target
         .param("partial")
         .is_some_and(|value| value.eq_ignore_ascii_case("viewport"))
+        && payload.map_or(true, |payload| {
+            target
+                .param("source")
+                .map_or(true, |source| source == payload.source)
+        })
 }
 
 fn browser_session_target_wants_diagnostics(target: &RequestTarget) -> bool {
@@ -1285,6 +1358,7 @@ a:hover {{ text-decoration: underline; }}
             retry_control = retry_control,
             message = html_escape::encode_text(message),
         ),
+        binary_body: None,
     }
 }
 
@@ -1334,9 +1408,58 @@ pub(super) async fn api_browser_session(
     target: &RequestTarget,
     state: &ServerState,
 ) -> HttpResponse {
-    match browser_session_for_target(target, state).await {
-        Ok((payload, _)) => browser_session_api_response(target, &payload),
+    if browser_session_target_wants_cached_viewport_raster(target) {
+        return match state
+            .browser_sessions
+            .cached_viewport_raster_response(target)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => error.response(),
+        };
+    }
+    match api_exports::api_target(&state.browser_sessions, target).await {
+        Ok(payload) => browser_session_api_response(target, &payload),
         Err(error) => error.response(),
+    }
+}
+
+fn browser_session_target_wants_cached_viewport_raster(target: &RequestTarget) -> bool {
+    target.param("format").is_some_and(|format| {
+        matches!(
+            format.trim().to_ascii_lowercase().as_str(),
+            "viewport-raster-png"
+                | "viewport_raster_png"
+                | "raster-png"
+                | "raster_png"
+                | "viewport-raster-svg"
+                | "viewport_raster_svg"
+                | "raster-svg"
+                | "raster_svg"
+        )
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserSessionCachedRasterFormat {
+    Png,
+    Svg,
+}
+
+fn browser_session_target_cached_raster_format(
+    target: &RequestTarget,
+) -> BrowserSessionCachedRasterFormat {
+    match target
+        .param("format")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "viewport-raster-svg" | "viewport_raster_svg" | "raster-svg" | "raster_svg" => {
+            BrowserSessionCachedRasterFormat::Svg
+        }
+        _ => BrowserSessionCachedRasterFormat::Png,
     }
 }
 
@@ -1379,6 +1502,19 @@ fn browser_session_api_response(
         | "resource_report_csv"
         | "resources-report-csv"
         | "resources_report_csv" => browser_session_resource_report_csv_response(payload),
+        "render-diagnostics-json" | "render_diagnostics_json" => {
+            json_response(200, "OK", &payload.render_diagnostics)
+        }
+        "viewport-raster-png" | "viewport_raster_png" | "raster-png" | "raster_png" => payload
+            .viewport_image
+            .as_ref()
+            .map(browser_session_viewport_raster_png_response)
+            .unwrap_or_else(|| text_response(404, "Not Found", "browser session has no raster")),
+        "viewport-raster-svg" | "viewport_raster_svg" | "raster-svg" | "raster_svg" => payload
+            .viewport_image
+            .as_ref()
+            .map(browser_session_viewport_raster_svg_response)
+            .unwrap_or_else(|| text_response(404, "Not Found", "browser session has no raster")),
         "find-json" | "find_json" => browser_session_find_json_response(payload),
         "find-csv" | "find_csv" => browser_session_find_csv_response(payload),
         "tab-search-json" | "tab_search_json" | "tabs-search-json" | "tabs_search_json" => {
@@ -1474,6 +1610,14 @@ fn browser_action_can_apply_after_fresh_create(action: &BrowserSessionAction) ->
     )
 }
 
+fn browser_recovered_source_target_prefers_auto_visual(target: &RequestTarget) -> bool {
+    browser_target_auto_visual(target)
+        || (target.path == "/browser"
+            && target.param("source").is_some()
+            && target.param("url").is_none()
+            && target.param("target").is_none())
+}
+
 fn browser_target_allows_xy_viewport_alias(target: &RequestTarget) -> bool {
     browser_action(target)
         .as_ref()
@@ -1495,6 +1639,54 @@ impl BrowserSessionRegistry {
         } else {
             self.create_target(target).await
         }
+    }
+
+    async fn cached_viewport_raster_response(
+        &self,
+        target: &RequestTarget,
+    ) -> Result<HttpResponse, BrowserRouteError> {
+        let id = target.param("id").unwrap_or_default();
+        if id.trim().is_empty() {
+            return Err(BrowserRouteError::BadRequest(
+                "missing browser session id".to_owned(),
+            ));
+        }
+        let requested_raster_id = browser_session_target_raster_id(target);
+        let image = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(&id)
+                .and_then(|session| session.viewport_image_cache.clone())
+        };
+        let image = match image {
+            Some(image) => Some(image),
+            None => {
+                let sessions = self.in_flight_viewports.lock().await;
+                sessions
+                    .get(&id)
+                    .and_then(|session| session.viewport_image_cache.clone())
+            }
+        }
+        .ok_or_else(|| {
+            BrowserRouteError::NotFound(format!("browser session {id} has no raster"))
+        })?;
+
+        if let Some(requested_raster_id) = requested_raster_id
+            && image.raster_id != requested_raster_id
+        {
+            return Err(BrowserRouteError::NotFound(format!(
+                "browser session {id} raster {requested_raster_id} is no longer current"
+            )));
+        }
+
+        Ok(match browser_session_target_cached_raster_format(target) {
+            BrowserSessionCachedRasterFormat::Png => {
+                browser_session_viewport_raster_png_response(&image)
+            }
+            BrowserSessionCachedRasterFormat::Svg => {
+                browser_session_viewport_raster_svg_response(&image)
+            }
+        })
     }
 
     async fn create_target(
@@ -1521,19 +1713,22 @@ impl BrowserSessionRegistry {
         );
         let navigation_target = browser_session_navigation_target(&target_url, max_bytes)?;
         let back_href = sanitized_search_return_href(target.param("from").as_deref());
+        let auto_visual = browser_target_auto_visual(target);
         let allow_xy_viewport_alias = browser_target_allows_xy_viewport_alias(target);
         let has_explicit_viewport_y = target.param("viewport_y").is_some()
             || (allow_xy_viewport_alias && target.param("y").is_some());
-        let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+        let raster_options = browser_session_viewport_raster_options();
+        let mut session = BrowserSession::new(BrowserRenderOptions {
+            width,
+            max_bytes,
+            css_cell_width_px: raster_options.cell_width,
+            css_cell_height_px: raster_options.cell_height,
+        });
         let mut pending_source = None;
         let display_source = navigation_target.display_source;
         let mut action_feedback = None;
-        match timeout(
-            BROWSER_CREATE_TARGET_TIMEOUT,
-            session.navigate(&navigation_target.target),
-        )
-        .await
-        {
+        let create_timeout = browser_create_target_timeout(auto_visual);
+        match timeout(create_timeout, session.navigate(&navigation_target.target)).await {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 session
@@ -1564,7 +1759,7 @@ impl BrowserSessionRegistry {
                 action_feedback = Some(format!(
                     "Still opening {}; initial render exceeded {}ms.",
                     browser_session_feedback_excerpt(&target_url),
-                    BROWSER_CREATE_TARGET_TIMEOUT.as_millis()
+                    create_timeout.as_millis()
                 ));
             }
         }
@@ -1595,6 +1790,10 @@ impl BrowserSessionRegistry {
             find_active_line: None,
             tab_search_query: String::new(),
             resource_report: None,
+            viewport_image_cache: None,
+            visual_viewport_images: auto_visual,
+            visual_stylesheets_ready: false,
+            in_flight_viewport_updated: false,
             action_feedback,
             action_feedback_context: None,
             pending_source,
@@ -1604,6 +1803,9 @@ impl BrowserSessionRegistry {
         };
         if !has_explicit_viewport_y {
             reset_viewport_to_fragment(&mut web_session);
+        }
+        if auto_visual && web_session.pending_source.is_none() {
+            apply_browser_session_auto_visual_for_first_response(&mut web_session).await?;
         }
         let mut payload = browser_session_payload(&id, &mut web_session)?;
         let back_href = web_session.back_href.clone();
@@ -1634,6 +1836,9 @@ impl BrowserSessionRegistry {
             .or_else(|| target.param("target"))
             .or_else(|| target.param("source"))
             .unwrap_or_default();
+        if target_url.trim().is_empty() {
+            return Ok(None);
+        }
         let Some(target_url) = checked_browser_address_url(&target_url).ok() else {
             return Ok(None);
         };
@@ -1643,6 +1848,11 @@ impl BrowserSessionRegistry {
             .filter(|(key, _)| !matches!(key.as_str(), "id" | "url" | "target" | "source"))
             .cloned()
             .collect::<Vec<_>>();
+        if browser_recovered_source_target_prefers_auto_visual(target)
+            && !params.iter().any(|(key, _)| key == "visual")
+        {
+            params.push(("visual".to_owned(), "auto".to_owned()));
+        }
         params.insert(0, ("url".to_owned(), target_url));
         let recovered = RequestTarget {
             path: target.path.clone(),
@@ -1665,12 +1875,17 @@ impl BrowserSessionRegistry {
         &self,
         id: &str,
         mark_in_flight: bool,
+        clone_in_flight_viewport: bool,
     ) -> Result<BrowserWebSession, BrowserRouteError> {
         loop {
             let mut in_flight_sessions = self.in_flight_sessions.lock().await;
             let mut sessions = self.sessions.lock().await;
             if let Some(web_session) = sessions.remove(id) {
-                let in_flight_viewport = mark_in_flight.then(|| web_session.clone());
+                let in_flight_viewport = clone_in_flight_viewport.then(|| {
+                    let mut in_flight_viewport = web_session.clone();
+                    in_flight_viewport.in_flight_viewport_updated = false;
+                    in_flight_viewport
+                });
                 if mark_in_flight {
                     in_flight_sessions.insert(id.to_owned(), Arc::new(Notify::new()));
                 }
@@ -1705,16 +1920,32 @@ impl BrowserSessionRegistry {
         if notify_in_flight_waiters {
             let in_flight_viewport = self.in_flight_viewports.lock().await.remove(id);
             if let Some(in_flight_viewport) = in_flight_viewport {
-                web_session.width = in_flight_viewport.width;
-                web_session.height = in_flight_viewport.height;
-                web_session.max_bytes = in_flight_viewport.max_bytes;
-                web_session.viewport_x = in_flight_viewport.viewport_x;
-                web_session.viewport_y = in_flight_viewport.viewport_y;
-                web_session.back_href = in_flight_viewport.back_href;
-                if in_flight_viewport.action_feedback.is_some() {
-                    web_session.action_feedback = in_flight_viewport.action_feedback;
+                if in_flight_viewport.in_flight_viewport_updated {
+                    web_session.width = in_flight_viewport.width;
+                    web_session.height = in_flight_viewport.height;
+                    web_session.max_bytes = in_flight_viewport.max_bytes;
+                    web_session.viewport_x = in_flight_viewport.viewport_x;
+                    web_session.viewport_y = in_flight_viewport.viewport_y;
+                    web_session.back_href = in_flight_viewport.back_href;
+                    web_session.visual_viewport_images = in_flight_viewport.visual_viewport_images;
+                    web_session.visual_stylesheets_ready =
+                        in_flight_viewport.visual_stylesheets_ready;
+                    if in_flight_viewport.viewport_image_cache.is_some() {
+                        web_session.viewport_image_cache = in_flight_viewport.viewport_image_cache;
+                    }
+                    if in_flight_viewport.resource_report.is_some() {
+                        web_session.resource_report = in_flight_viewport.resource_report;
+                    }
+                    if in_flight_viewport.action_feedback.is_some() {
+                        web_session.action_feedback = in_flight_viewport.action_feedback;
+                    }
+                    if in_flight_viewport.action_feedback_context.is_some() {
+                        web_session.action_feedback_context =
+                            in_flight_viewport.action_feedback_context;
+                    }
                 }
             }
+            web_session.in_flight_viewport_updated = false;
             let mut in_flight_sessions = self.in_flight_sessions.lock().await;
             let mut sessions = self.sessions.lock().await;
             sessions.insert(id.to_owned(), web_session);
@@ -1737,7 +1968,7 @@ impl BrowserSessionRegistry {
         id: &str,
         action: &BrowserSessionAction,
     ) -> Result<Option<(BrowserSessionPayload, String)>, BrowserRouteError> {
-        if !browser_session_target_wants_viewport_partial(target)
+        if !browser_session_target_wants_viewport_partial(target, None)
             || !browser_action_can_apply_in_flight_viewport_partial(action)
         {
             return Ok(None);
@@ -1771,6 +2002,8 @@ impl BrowserSessionRegistry {
             &web_session,
         ));
         apply_browser_action(action.clone(), &mut web_session).await?;
+        refresh_browser_session_visual_viewport_images(action, &mut web_session).await?;
+        web_session.in_flight_viewport_updated = true;
         let back_href = web_session.back_href.clone();
         let mut payload = browser_session_payload(id, &mut web_session)?;
         let mut sessions_view = {
@@ -1821,7 +2054,13 @@ impl BrowserSessionRegistry {
         let active_index = profile_tabs.iter().position(|tab| tab.active).unwrap_or(0);
         let mut restored_sessions = Vec::new();
         for tab in &profile_tabs {
-            let mut session = BrowserSession::new(BrowserRenderOptions { width, max_bytes });
+            let raster_options = browser_session_viewport_raster_options();
+            let mut session = BrowserSession::new(BrowserRenderOptions {
+                width,
+                max_bytes,
+                css_cell_width_px: raster_options.cell_width,
+                css_cell_height_px: raster_options.cell_height,
+            });
             session.navigate(&tab.source).await.map_err(|error| {
                 BrowserRouteError::Upstream(format!(
                     "browser profile tab restore failed for {}: {error:#}",
@@ -1845,6 +2084,10 @@ impl BrowserSessionRegistry {
                 find_active_line: None,
                 tab_search_query: String::new(),
                 resource_report: None,
+                viewport_image_cache: None,
+                visual_viewport_images: false,
+                visual_stylesheets_ready: false,
+                in_flight_viewport_updated: false,
                 action_feedback: None,
                 action_feedback_context: None,
                 pending_source: None,
@@ -1912,6 +2155,7 @@ impl BrowserSessionRegistry {
         let should_record_profile_visit = browser_action_records_profile_visit(&action);
         let should_record_profile_tabs = browser_action_records_profile_tabs(&action);
         let notifies_in_flight_waiters = browser_action_marks_session_in_flight(&action);
+        let clones_in_flight_viewport = browser_action_clones_in_flight_viewport(&action);
         let current_viewport_jump_requested = matches!(action, BrowserSessionAction::Current)
             && browser_session_target_has_viewport_position(target);
 
@@ -1923,7 +2167,7 @@ impl BrowserSessionRegistry {
         }
 
         let mut web_session = match self
-            .take_session_for_action(&id, notifies_in_flight_waiters)
+            .take_session_for_action(&id, notifies_in_flight_waiters, clones_in_flight_viewport)
             .await
         {
             Ok(web_session) => web_session,
@@ -2418,6 +2662,12 @@ impl BrowserSessionRegistry {
                 .await;
         }
 
+        let action_for_visual_refresh = action.clone();
+        let current_retried_pending_open = matches!(action, BrowserSessionAction::Current)
+            && web_session
+                .pending_source
+                .as_deref()
+                .is_some_and(browser_pending_current_should_retry);
         let result = match action {
             BrowserSessionAction::AddBookmark => self
                 .add_current_bookmark(&web_session)
@@ -2486,11 +2736,28 @@ impl BrowserSessionRegistry {
                     Err(error) => Err(error),
                 }
             }
-            action => apply_browser_action(action, &mut web_session)
-                .await
-                .and_then(|_| {
-                    browser_session_payload_with_options(&id, &mut web_session, payload_options)
-                }),
+            action => match apply_browser_action(action, &mut web_session).await {
+                Ok(()) => {
+                    if current_retried_pending_open {
+                        browser_session_payload_with_options(&id, &mut web_session, payload_options)
+                    } else {
+                        match refresh_browser_session_visual_viewport_images(
+                            &action_for_visual_refresh,
+                            &mut web_session,
+                        )
+                        .await
+                        {
+                            Ok(()) => browser_session_payload_with_options(
+                                &id,
+                                &mut web_session,
+                                payload_options,
+                            ),
+                            Err(error) => Err(error),
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            },
         };
         let mut payload = match result {
             Ok(payload) => payload,
@@ -6351,6 +6618,14 @@ async fn apply_browser_action(
 
     match action {
         BrowserSessionAction::Current => {
+            if let Some(target_url) = web_session
+                .pending_source
+                .clone()
+                .filter(|source| browser_pending_current_should_retry(source))
+            {
+                apply_browser_open_with_pending_shell(web_session, &target_url).await?;
+                return Ok(());
+            }
             normalize_browser_session_viewport(web_session);
             set_browser_viewport_settled_feedback(web_session);
         }
@@ -6573,11 +6848,23 @@ async fn apply_browser_action(
             y,
             raster_width,
             raster_height,
+            dom_x,
+            dom_y,
+            coordinate_space,
         } => {
             let before = current_session_interaction_snapshot(web_session);
             let raster_click = raster_width.zip(raster_height);
-            let raster_options = BrowserRasterOptions::default();
-            let (click_x, click_y) = if let Some((raster_width, raster_height)) = raster_click {
+            let raster_options = browser_session_viewport_raster_options();
+            let raster_pixel_click = (coordinate_space
+                == BrowserClickCoordinateSpace::RasterPixels)
+                .then_some(raster_click)
+                .flatten();
+            let (click_x, click_y) = if let (Some(dom_x), Some(dom_y)) = (dom_x, dom_y) {
+                (
+                    dom_x.min(web_session.width.saturating_sub(1)),
+                    dom_y.min(web_session.height.saturating_sub(1)),
+                )
+            } else if let Some((raster_width, raster_height)) = raster_pixel_click {
                 (
                     scale_browser_raster_click_coordinate(
                         x,
@@ -6605,23 +6892,29 @@ async fn apply_browser_action(
                 width: web_session.width,
                 height: web_session.height,
             };
-            let click_navigation_target = if raster_click.is_some() {
-                web_session
+            let click_navigation_target = match coordinate_space {
+                BrowserClickCoordinateSpace::PageCells => {
+                    web_session.session.link_target_at(page_x, page_y)
+                }
+                BrowserClickCoordinateSpace::ViewportCells
+                | BrowserClickCoordinateSpace::RasterPixels => web_session
                     .session
-                    .link_target_at_viewport(viewport, click_x, click_y)
-            } else {
-                web_session.session.link_target_at(page_x, page_y)
+                    .link_target_at_viewport(viewport, click_x, click_y),
             };
-            let click_result = if raster_click.is_some() {
-                web_session
-                    .session
-                    .click_viewport_at_with_default_action(viewport, click_x, click_y)
-                    .await
-            } else {
-                web_session
-                    .session
-                    .click_at_with_default_action(page_x, page_y)
-                    .await
+            let click_result = match coordinate_space {
+                BrowserClickCoordinateSpace::PageCells => {
+                    web_session
+                        .session
+                        .click_at_with_default_action(page_x, page_y)
+                        .await
+                }
+                BrowserClickCoordinateSpace::ViewportCells
+                | BrowserClickCoordinateSpace::RasterPixels => {
+                    web_session
+                        .session
+                        .click_viewport_at_with_default_action(viewport, click_x, click_y)
+                        .await
+                }
             };
             if let Err(error) = click_result {
                 if let Some(target_url) = click_navigation_target.as_deref()
@@ -6636,7 +6929,7 @@ async fn apply_browser_action(
                             click_y,
                             page_x,
                             page_y,
-                            raster_click,
+                            raster_pixel_click,
                         ),
                         target_url,
                         &error.to_string(),
@@ -6652,7 +6945,7 @@ async fn apply_browser_action(
                         click_y,
                         page_x,
                         page_y,
-                        raster_click,
+                        raster_pixel_click,
                     ),
                     format!(
                         "No click target at {}",
@@ -6663,7 +6956,7 @@ async fn apply_browser_action(
                             click_y,
                             page_x,
                             page_y,
-                            raster_click,
+                            raster_pixel_click,
                         )
                     ),
                     &error.to_string(),
@@ -6686,7 +6979,7 @@ async fn apply_browser_action(
                     click_y,
                     page_x,
                     page_y,
-                    raster_click,
+                    raster_pixel_click,
                 ),
                 before,
             );
@@ -6867,6 +7160,9 @@ async fn apply_browser_action(
                         "browser visual stylesheet render failed: {error:#}"
                     ))
                 })?;
+            let stylesheet_payload =
+                browser_session_resource_report_from_stylesheets(stylesheet_report);
+            web_session.visual_stylesheets_ready = true;
             let image_report = web_session
                 .session
                 .render_current_with_images(web_session.max_bytes)
@@ -6877,9 +7173,10 @@ async fn apply_browser_action(
                     ))
                 })?;
             web_session.resource_report = Some(browser_session_resource_report_from_make_visual(
-                browser_session_resource_report_from_stylesheets(stylesheet_report),
+                stylesheet_payload,
                 browser_session_resource_report_from_images(image_report),
             ));
+            web_session.visual_viewport_images = true;
             normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::ApplyStylesheets => {
@@ -6894,6 +7191,7 @@ async fn apply_browser_action(
                 })?;
             web_session.resource_report =
                 Some(browser_session_resource_report_from_stylesheets(report));
+            web_session.visual_stylesheets_ready = true;
             normalize_browser_session_viewport(web_session);
         }
         BrowserSessionAction::RunScripts => {
@@ -6917,6 +7215,7 @@ async fn apply_browser_action(
                     BrowserRouteError::Upstream(format!("browser image render failed: {error:#}"))
                 })?;
             web_session.resource_report = Some(browser_session_resource_report_from_images(report));
+            web_session.visual_viewport_images = true;
             normalize_browser_session_viewport(web_session);
             web_session.action_feedback = Some(format!(
                 "Loaded images; viewport settled at x {}, y {}.",
@@ -7695,6 +7994,9 @@ fn browser_action(target: &RequestTarget) -> Result<BrowserSessionAction, Browse
             y: browser_action_index(target, "y", "y coordinate")?,
             raster_width: parse_optional_usize_param(target, "raster_width", 1, usize::MAX),
             raster_height: parse_optional_usize_param(target, "raster_height", 1, usize::MAX),
+            dom_x: parse_optional_usize_param(target, "dom_x", 0, usize::MAX),
+            dom_y: parse_optional_usize_param(target, "dom_y", 0, usize::MAX),
+            coordinate_space: browser_click_coordinate_space(target)?,
         }),
         "focus-selector" | "focus_selector" | "focus" => {
             let selector = target.param("selector").unwrap_or_default();
@@ -8338,6 +8640,36 @@ fn browser_action_index(
         .map_err(|_| BrowserRouteError::BadRequest(format!("invalid {label}")))
 }
 
+fn browser_click_coordinate_space(
+    target: &RequestTarget,
+) -> Result<BrowserClickCoordinateSpace, BrowserRouteError> {
+    let Some(value) = target
+        .param("coordinate_space")
+        .or_else(|| target.param("coordinates"))
+        .or_else(|| target.param("click_coordinate_space"))
+    else {
+        return Ok(
+            if target.param("raster_width").is_some() || target.param("raster_height").is_some() {
+                BrowserClickCoordinateSpace::RasterPixels
+            } else {
+                BrowserClickCoordinateSpace::PageCells
+            },
+        );
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "page-cells" | "page_cells" | "page" => Ok(BrowserClickCoordinateSpace::PageCells),
+        "viewport-cells" | "viewport_cells" | "viewport" | "cells" => {
+            Ok(BrowserClickCoordinateSpace::ViewportCells)
+        }
+        "raster-pixels" | "raster_pixels" | "raster" | "pixels" => {
+            Ok(BrowserClickCoordinateSpace::RasterPixels)
+        }
+        _ => Err(BrowserRouteError::BadRequest(
+            "invalid click coordinate space".to_owned(),
+        )),
+    }
+}
+
 fn browser_action_url(target: &RequestTarget) -> Result<String, BrowserRouteError> {
     let url = target.param("url").unwrap_or_default();
     if url.trim().is_empty() {
@@ -8380,9 +8712,10 @@ fn browser_session_navigation_target(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
+    let sequence = NEXT_DATA_URL_MATERIALIZATION_ID.fetch_add(1, AtomicOrdering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "brutal-browser-data-url-{}-{now}.{extension}",
-        std::process::id()
+        "brutal-browser-data-url-{}-{now}-{sequence}.{extension}",
+        std::process::id(),
     ));
     fs::write(&path, bytes).map_err(|error| {
         BrowserRouteError::Upstream(format!("browser data URL materialization failed: {error}"))
@@ -8709,17 +9042,6 @@ fn browser_session_payload_options_for_action(
     _action: &BrowserSessionAction,
 ) -> BrowserSessionPayloadOptions {
     BrowserSessionPayloadOptions::default()
-}
-
-fn browser_action_marks_session_in_flight(action: &BrowserSessionAction) -> bool {
-    matches!(
-        action,
-        BrowserSessionAction::FetchResources
-            | BrowserSessionAction::MakeVisual
-            | BrowserSessionAction::ApplyStylesheets
-            | BrowserSessionAction::RunScripts
-            | BrowserSessionAction::LoadImages
-    )
 }
 
 fn browser_action_can_apply_in_flight_viewport_partial(action: &BrowserSessionAction) -> bool {
@@ -9119,8 +9441,9 @@ async fn apply_browser_open_with_pending_shell(
     target_url: &str,
 ) -> Result<(), BrowserRouteError> {
     let navigation_target = browser_session_navigation_target(target_url, web_session.max_bytes)?;
+    let open_timeout = browser_session_open_timeout(web_session, target_url);
     match timeout(
-        BROWSER_CREATE_TARGET_TIMEOUT,
+        open_timeout,
         web_session.session.navigate(&navigation_target.target),
     )
     .await
@@ -9130,10 +9453,7 @@ async fn apply_browser_open_with_pending_shell(
             clear_browser_find_active_line(web_session);
             web_session.pending_source = None;
             web_session.display_source = navigation_target.display_source;
-            web_session.action_feedback = Some(format!(
-                "Opened {}.",
-                browser_session_feedback_excerpt(target_url)
-            ));
+            apply_browser_pending_open_success_visual_state(web_session, target_url).await?;
         }
         Ok(Err(error)) => {
             set_browser_pending_open_feedback(
@@ -9154,7 +9474,7 @@ async fn apply_browser_open_with_pending_shell(
                 format!(
                     "Still opening {}; retry stayed in this tab after {}ms.",
                     browser_session_feedback_excerpt(target_url),
-                    BROWSER_CREATE_TARGET_TIMEOUT.as_millis()
+                    open_timeout.as_millis()
                 ),
             )
             .await?;
@@ -9168,11 +9488,14 @@ async fn set_browser_pending_open_feedback(
     target_url: &str,
     feedback: String,
 ) -> Result<(), BrowserRouteError> {
-    let already_showing_pending_shell = current_session_source(web_session)
-        .as_deref()
-        .is_some_and(|source| source == BROWSER_ABOUT_BLANK_TARGET)
+    let current_source = current_session_source(web_session);
+    let already_showing_pending_shell = current_source.as_deref()
+        == Some(BROWSER_ABOUT_BLANK_TARGET)
         && web_session.pending_source.as_deref() == Some(target_url);
-    if !already_showing_pending_shell {
+    let can_retain_current_page = current_source
+        .as_deref()
+        .is_some_and(|source| source != BROWSER_ABOUT_BLANK_TARGET);
+    if !already_showing_pending_shell && !can_retain_current_page {
         web_session
             .session
             .navigate(BROWSER_ABOUT_BLANK_TARGET)
@@ -9204,6 +9527,7 @@ fn browser_session_resource_report_from_fetch(
         skipped: report.skipped,
         applied: None,
         decoded: None,
+        attached: None,
         resources: report
             .resources
             .into_iter()
@@ -9230,8 +9554,18 @@ fn browser_session_resource_report_from_make_visual(
         skipped: stylesheets.skipped + images.skipped,
         applied: Some(applied),
         decoded: Some(decoded),
+        attached: images.attached,
         resources,
     }
+}
+
+fn browser_session_resource_report_from_auto_visual(
+    stylesheets: BrowserSessionResourceReportPayload,
+    images: BrowserSessionResourceReportPayload,
+) -> BrowserSessionResourceReportPayload {
+    let mut report = browser_session_resource_report_from_make_visual(stylesheets, images);
+    report.action = "Auto visual".to_owned();
+    report
 }
 
 fn browser_session_resource_report_from_stylesheets(
@@ -9248,6 +9582,7 @@ fn browser_session_resource_report_from_stylesheets(
         skipped,
         applied: Some(report.applied),
         decoded: None,
+        attached: None,
         resources: report
             .fetches
             .into_iter()
@@ -9270,6 +9605,7 @@ fn browser_session_resource_report_from_scripts(
         skipped,
         applied: Some(report.applied),
         decoded: None,
+        attached: None,
         resources: report
             .fetches
             .into_iter()
@@ -9282,6 +9618,7 @@ fn browser_session_resource_report_from_images(
     report: BrowserImageRenderReport,
 ) -> BrowserSessionResourceReportPayload {
     let (fetched, cached, failed, skipped) = browser_session_fetch_counts(&report.fetches);
+    let attached = browser_session_attached_image_count(&report.fetches);
     BrowserSessionResourceReportPayload {
         action: "Load images".to_owned(),
         page_source: report.page_source,
@@ -9292,6 +9629,7 @@ fn browser_session_resource_report_from_images(
         skipped,
         applied: None,
         decoded: Some(report.decoded),
+        attached: Some(attached),
         resources: report
             .fetches
             .into_iter()
@@ -9322,6 +9660,13 @@ fn browser_session_fetch_counts(
     (fetched, cached, failed, skipped)
 }
 
+fn browser_session_attached_image_count(resources: &[BrowserResourceFetch]) -> usize {
+    resources
+        .iter()
+        .filter(|resource| resource.render_attached == Some(true))
+        .count()
+}
+
 fn browser_session_resource_fetch_payload(
     fetch: BrowserResourceFetch,
 ) -> BrowserSessionResourceFetchPayload {
@@ -9334,6 +9679,9 @@ fn browser_session_resource_fetch_payload(
         bytes: fetch.bytes,
         content_type: fetch.content_type,
         error: fetch.error,
+        render_attached: fetch.render_attached,
+        render_attachment_kind: fetch.render_attachment_kind,
+        image_visibility_state: fetch.image_visibility_state,
     }
 }
 
@@ -9377,20 +9725,34 @@ fn browser_session_payload_with_options(
                 height: web_session.height,
             },
         );
-        let (viewport_image, viewport_image_error) = if options.render_viewport_image {
-            match browser_session_viewport_image(
-                render,
-                viewport.x,
-                viewport.y,
-                viewport.width,
-                viewport.height,
-            ) {
-                Ok(image) => (Some(image), None),
-                Err(error) => (None, Some(error)),
-            }
-        } else {
-            (None, None)
-        };
+        let render_diagnostics = browser_render_diagnostics(
+            render,
+            BrowserTextViewportOptions {
+                x: viewport.x,
+                y: viewport.y,
+                width: viewport.width,
+                height: viewport.height,
+            },
+        );
+        let fallback_pending_shell = web_session.pending_source.is_some()
+            && render.source.as_str() == BROWSER_ABOUT_BLANK_TARGET;
+        let (viewport_image, viewport_image_error) =
+            if options.render_viewport_image && !fallback_pending_shell {
+                match browser_session_viewport_image(
+                    render,
+                    viewport.x,
+                    viewport.y,
+                    viewport.width,
+                    viewport.height,
+                    viewport.document_width,
+                    viewport.document_height,
+                ) {
+                    Ok(image) => (Some(image), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else {
+                (None, None)
+            };
         let history = web_session.session.snapshot();
         let find_matches = browser_find_matches(&render.text, &web_session.find_query);
         let find_current = browser_find_active_match(&find_matches, web_session.find_active_line)
@@ -9799,6 +10161,7 @@ fn browser_session_payload_with_options(
             viewport_image,
             viewport_image_error,
             page_text: render.text.clone(),
+            render_diagnostics,
             focused: web_session.session.focused_control(),
             anchors,
             links,
@@ -9816,14 +10179,24 @@ fn browser_session_payload_with_options(
             action_feedback: web_session.action_feedback.clone(),
             action_feedback_context: web_session.action_feedback_context.clone(),
             pending_source: web_session.pending_source.clone(),
+            visual_viewport_images: web_session.visual_viewport_images,
             fast_scroll: options.fast_scroll,
         };
         if let Some(pending_source) = web_session.pending_source.as_ref() {
-            payload.title = format!(
-                "Loading {}",
-                browser_session_feedback_excerpt(pending_source)
-            );
-            payload.source = pending_source.clone();
+            let pending_matches_rendered = pending_source == current_render_source
+                || display_source == Some(pending_source.as_str());
+            if pending_matches_rendered {
+                if let Some(display_source) = display_source {
+                    payload.title = browser_session_display_title(render, Some(display_source));
+                    payload.source = display_source.to_owned();
+                }
+            } else {
+                payload.title = format!(
+                    "Loading {}",
+                    browser_session_feedback_excerpt(pending_source)
+                );
+                payload.source = pending_source.clone();
+            }
             payload.viewport_x = web_session.viewport_x;
             payload.viewport_y = web_session.viewport_y;
         } else if let Some(display_source) = web_session.display_source.as_ref() {
@@ -9832,6 +10205,9 @@ fn browser_session_payload_with_options(
         }
         payload
     };
+    if options.render_viewport_image {
+        web_session.viewport_image_cache = payload.viewport_image.clone();
+    }
     web_session.viewport_x = payload.viewport_x;
     web_session.viewport_y = payload.viewport_y;
     Ok(payload)
@@ -9883,24 +10259,214 @@ fn browser_session_viewport_image(
     y: usize,
     width: usize,
     height: usize,
+    document_width: usize,
+    document_height: usize,
 ) -> Result<BrowserSessionViewportImagePayload, String> {
+    let (raster_x, raster_y, raster_width, raster_height) =
+        browser_session_overscan_viewport(x, y, width, height, document_width, document_height);
+    let raster_options = browser_session_viewport_raster_options();
+    let viewport_pixel_width = width
+        .max(1)
+        .saturating_mul(raster_options.cell_width)
+        .saturating_add(raster_options.padding_x.saturating_mul(2));
+    let viewport_pixel_height = height
+        .max(1)
+        .saturating_mul(raster_options.cell_height)
+        .saturating_add(raster_options.padding_y.saturating_mul(2));
+    let viewport_offset_x = x.saturating_sub(raster_x) * raster_options.cell_width;
+    let viewport_offset_y = y.saturating_sub(raster_y) * raster_options.cell_height;
     let raster = rasterize_render_rgba(
         render,
         BrowserRasterOptions {
-            viewport_x: Some(x),
-            viewport_y: Some(y),
-            viewport_width: Some(width.max(1)),
-            viewport_height: Some(height.max(1)),
-            ..BrowserRasterOptions::default()
+            viewport_x: Some(raster_x),
+            viewport_y: Some(raster_y),
+            viewport_width: Some(raster_width.max(1)),
+            viewport_height: Some(raster_height.max(1)),
+            ..raster_options
         },
     )
     .map_err(|error| error.to_string())?;
     let png = raster.encode_png().map_err(|error| error.to_string())?;
     Ok(BrowserSessionViewportImagePayload {
+        raster_id: NEXT_VIEWPORT_RASTER_ID.fetch_add(1, AtomicOrdering::Relaxed),
+        png: png.clone(),
         data_url: format!("data:image/png;base64,{}", browser_base64_encode(&png)),
         width: raster.width,
         height: raster.height,
+        raster_viewport_x: raster_x,
+        raster_viewport_y: raster_y,
+        raster_viewport_width: raster_width,
+        raster_viewport_height: raster_height,
+        viewport_pixel_width,
+        viewport_pixel_height,
+        viewport_offset_x,
+        viewport_offset_y,
     })
+}
+
+fn browser_session_target_raster_id(target: &RequestTarget) -> Option<u64> {
+    target
+        .param("raster_id")
+        .or_else(|| target.param("raster"))
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn browser_session_viewport_raster_svg_response(
+    image: &BrowserSessionViewportImagePayload,
+) -> HttpResponse {
+    let width = image.width.max(1);
+    let height = image.height.max(1);
+    let src = html_escape::encode_double_quoted_attribute(&image.data_url);
+    HttpResponse {
+        status: 200,
+        reason: "OK",
+        content_type: "image/svg+xml; charset=utf-8",
+        body: format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><image href="{src}" width="{width}" height="{height}" preserveAspectRatio="none"/></svg>"#
+        ),
+        binary_body: None,
+    }
+}
+
+fn browser_session_viewport_raster_png_response(
+    image: &BrowserSessionViewportImagePayload,
+) -> HttpResponse {
+    HttpResponse {
+        status: 200,
+        reason: "OK",
+        content_type: "image/png",
+        body: String::new(),
+        binary_body: Some(image.png.clone()),
+    }
+}
+
+fn browser_session_viewport_raster_href(
+    payload: &BrowserSessionPayload,
+    image: &BrowserSessionViewportImagePayload,
+) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("id", &payload.id);
+    query.append_pair("format", "viewport-raster-png");
+    query.append_pair("raster_id", &image.raster_id.to_string());
+    query.append_pair("from", &payload.back_href);
+    query.append_pair("width", &payload.width.to_string());
+    query.append_pair("height", &payload.height.to_string());
+    query.append_pair("viewport_x", &payload.viewport_x.to_string());
+    query.append_pair("viewport_y", &payload.viewport_y.to_string());
+    query.append_pair("max_bytes", &payload.max_bytes.to_string());
+    format!("/api/browser-session?{}", query.finish())
+}
+
+fn browser_session_viewport_raster_options() -> BrowserRasterOptions {
+    BrowserRasterOptions {
+        cell_width: 12,
+        cell_height: 18,
+        vector_text: browser_session_vector_text_enabled(),
+        ..BrowserRasterOptions::default()
+    }
+}
+
+/// Hosted sessions render vector glyphs when BRUTAL_VECTOR_TEXT is set
+/// (opt-in: system-font availability varies by machine, and the default
+/// bitmap glyphs keep raster tests deterministic).
+fn browser_session_vector_text_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("BRUTAL_VECTOR_TEXT").is_ok_and(|value| {
+            !value.trim().is_empty() && value.trim() != "0" && !value.eq_ignore_ascii_case("false")
+        })
+    })
+}
+
+const BROWSER_SESSION_HORIZONTAL_OVERSCAN_VIEWPORTS: usize = 0;
+const BROWSER_SESSION_VERTICAL_OVERSCAN_VIEWPORTS: usize = 2;
+const BROWSER_SESSION_VERTICAL_OVERSCAN_MAX_ROWS: usize = 132;
+
+fn browser_session_overscan_viewport(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    document_width: usize,
+    document_height: usize,
+) -> (usize, usize, usize, usize) {
+    let viewport_width = width.max(1);
+    let viewport_height = height.max(1);
+    let doc_width = document_width.max(viewport_width);
+    let doc_height = document_height.max(viewport_height);
+    let (left, right) = browser_session_overscan_axis(
+        x,
+        viewport_width,
+        doc_width,
+        BROWSER_SESSION_HORIZONTAL_OVERSCAN_VIEWPORTS,
+    );
+    let raster_x = x
+        .min(doc_width.saturating_sub(viewport_width))
+        .saturating_sub(left);
+    let raster_width = viewport_width
+        .saturating_add(left)
+        .saturating_add(right)
+        .min(doc_width.saturating_sub(raster_x).max(1));
+    let (above, below) = browser_session_overscan_axis_bounded(
+        y,
+        viewport_height,
+        doc_height,
+        BROWSER_SESSION_VERTICAL_OVERSCAN_VIEWPORTS,
+        Some(BROWSER_SESSION_VERTICAL_OVERSCAN_MAX_ROWS),
+    );
+    let raster_y = y.saturating_sub(above);
+    let raster_height = viewport_height
+        .saturating_add(above)
+        .saturating_add(below)
+        .min(doc_height.saturating_sub(raster_y).max(1));
+    (
+        raster_x,
+        raster_y,
+        raster_width.max(1),
+        raster_height.max(1),
+    )
+}
+
+fn browser_session_overscan_axis(
+    offset: usize,
+    viewport_size: usize,
+    document_size: usize,
+    overscan_viewports: usize,
+) -> (usize, usize) {
+    browser_session_overscan_axis_bounded(
+        offset,
+        viewport_size,
+        document_size,
+        overscan_viewports,
+        None,
+    )
+}
+
+fn browser_session_overscan_axis_bounded(
+    offset: usize,
+    viewport_size: usize,
+    document_size: usize,
+    overscan_viewports: usize,
+    max_extra: Option<usize>,
+) -> (usize, usize) {
+    let viewport_size = viewport_size.max(1);
+    let document_size = document_size.max(viewport_size);
+    let before_space = offset.min(document_size.saturating_sub(viewport_size));
+    let after_space = document_size.saturating_sub(offset.saturating_add(viewport_size));
+    let mut total_budget = viewport_size
+        .saturating_mul(overscan_viewports)
+        .saturating_mul(2);
+    if let Some(max_extra) = max_extra {
+        total_budget = total_budget.min(max_extra);
+    }
+    let ideal_before = total_budget / 2;
+    let before = ideal_before.min(before_space);
+    let after_budget = total_budget.saturating_sub(before);
+    let after = after_budget.min(after_space);
+    let unused_after_budget = after_budget.saturating_sub(after);
+    let before =
+        before.saturating_add(unused_after_budget.min(before_space.saturating_sub(before)));
+    (before, after)
 }
 
 fn browser_base64_encode(bytes: &[u8]) -> String {
@@ -10016,6 +10582,7 @@ fn render_browser_session_page_with_diagnostics(
     let viewport_status = render_browser_session_viewport_status(payload);
     let viewport_scroll_controls = render_browser_session_viewport_scroll_controls(payload);
     let primary_page_state = render_browser_session_primary_page_state(payload);
+    let browser_chrome_status_bar = render_browser_session_chrome_status_bar(payload, back_href);
     let pending_primary_page_state = browser_session_pending_without_ready_viewport(payload)
         .then_some(primary_page_state.as_str());
     let settled_primary_page_state = (!browser_session_pending_without_ready_viewport(payload))
@@ -10114,7 +10681,7 @@ fn render_browser_session_page_with_diagnostics(
     let can_scroll_up = payload.viewport_y > 0;
     let can_scroll_down = payload.viewport_y < payload.max_scroll_y;
     let chrome_scroll_actions = format!(
-        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="18" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-action-state="idle" data-browser-chrome-scroll-input-source="idle" data-browser-chrome-scroll-current-x="{x}" data-browser-chrome-scroll-current-y="{y}" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-scroll-clamped-x="{x}" data-browser-chrome-scroll-clamped-y="{y}" data-browser-chrome-scroll-repeat-policy="preserve-session-clamp-viewport" data-browser-chrome-scroll-render-state="preserve-image-or-text" data-browser-chrome-scroll-edge-state="idle" data-browser-chrome-scroll-edge="none" data-browser-chrome-scroll-feedback-mode="compact" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
+        r#"<div class="browser-chrome-scroll-actions" data-browser-chrome-primary-action-group="scroll" aria-label="Page scroll actions" data-browser-chrome-scroll-actions data-browser-chrome-scroll-session="{id}" data-browser-chrome-scroll-from="{back_href}" data-browser-chrome-scroll-source="{source_attr}" data-browser-chrome-scroll-x="{x}" data-browser-chrome-scroll-y="{y}" data-browser-chrome-scroll-width="{width}" data-browser-chrome-scroll-height="{height}" data-browser-chrome-scroll-max-bytes="{max_bytes}" data-browser-chrome-scroll-coalescing="queued-target" data-browser-chrome-scroll-flush-delay-ms="8" data-browser-chrome-scroll-pending-state="idle" data-browser-chrome-scroll-action-state="idle" data-browser-chrome-scroll-input-source="idle" data-browser-chrome-scroll-current-x="{x}" data-browser-chrome-scroll-current-y="{y}" data-browser-chrome-scroll-target-x="{x}" data-browser-chrome-scroll-target-y="{y}" data-browser-chrome-scroll-clamped-x="{x}" data-browser-chrome-scroll-clamped-y="{y}" data-browser-chrome-scroll-repeat-policy="preserve-session-clamp-viewport" data-browser-chrome-scroll-render-state="preserve-image-or-text" data-browser-chrome-scroll-edge-state="idle" data-browser-chrome-scroll-edge="none" data-browser-chrome-scroll-feedback-mode="compact" data-browser-chrome-max-scroll-x="{max_x}" data-browser-chrome-max-scroll-y="{max_y}" data-browser-chrome-can-scroll-up="{can_scroll_up}" data-browser-chrome-can-scroll-down="{can_scroll_down}">{top}{page_up}{page_down}{bottom}</div>"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
         back_href = html_escape::encode_double_quoted_attribute(back_href),
         source_attr = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -10467,7 +11034,7 @@ h2 {{ margin: 24px 0 10px; font-size: 16px; letter-spacing: 0; }}
 .browser-tab-pill strong {{ font-size: 13px; font-weight: 800; }}
 .browser-tab-pill span {{ color: inherit; opacity: 0.72; font-size: 11px; font-weight: 600; }}
 .browser-location-strip {{ display: flex; min-width: 0; align-items: baseline; gap: 8px; margin-top: -1px; color: #5d636b; font-size: 10px; font-weight: 800; overflow: hidden; white-space: nowrap; }}
-.browser-location-strip strong {{ flex: 0 1 auto; min-width: 0; color: #20242a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.browser-location-strip h1 {{ flex: 0 1 auto; min-width: 0; margin: 0; color: #20242a; font-size: inherit; font-weight: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-location-strip .meta {{ flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 .browser-page-summary {{ margin: 4px 0 8px; color: #3a3f45; }}
 .browser-page-summary > summary {{ cursor: pointer; color: #5d636b; font-size: 12px; font-weight: 800; }}
@@ -10584,12 +11151,17 @@ pre mark {{ background: #ffe08a; color: inherit; border-radius: 2px; padding: 0 
 .resource-quick-actions[data-visual-pending="true"] .primary-action {{ opacity: 0.72; }}
 .resource-quick-actions[data-resource-pending="true"] a[href^="/browser"], .browser-inspector section[data-resource-pending="true"] a[href^="/browser"] {{ cursor: wait; opacity: 0.72; }}
 .resource-action-status, .resource-visual-status {{ min-height: 28px; display: inline-flex; align-items: center; color: #5d636b; font-size: 12px; font-weight: 700; }}
-.browser-raster-shell {{ position: relative; width: 100%; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; }}
+.browser-raster-shell {{ position: relative; width: 100%; background: #fff; border: 1px solid #dfe2e6; border-radius: 6px; margin: 12px 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; scrollbar-gutter: stable; cursor: crosshair; contain: layout paint; }}
 .browser-raster-shell:focus {{ outline: 2px solid #2457d6; outline-offset: 2px; }}
 .browser-raster-shell[data-viewport-pending="true"] {{ cursor: wait; }}
+.browser-raster-shell[data-browser-overscan-raster="true"] {{ overflow: hidden; height: var(--browser-raster-viewport-height, auto); }}
+.browser-raster-shell[data-browser-native-raster-scroll="true"] {{ overflow: auto; scrollbar-width: none; scrollbar-gutter: auto; }}
+.browser-raster-shell[data-browser-native-raster-scroll="true"]::-webkit-scrollbar {{ display: none; }}
+.browser-raster-shell[data-browser-optimistic-scroll="true"] {{ overflow: hidden; }}
 .browser-raster-shell[data-browser-pending-viewport="true"] {{ cursor: wait; }}
-.browser-raster {{ display: block; max-width: none; width: auto; height: auto; }}
-.browser-click-marker {{ position: absolute; z-index: 2; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid #2457d6; border-radius: 999px; background: rgba(36, 87, 214, 0.12); box-shadow: 0 0 0 2px rgba(255,255,255,0.88); pointer-events: none; }}
+.browser-raster {{ display: block; max-width: 100%; width: var(--browser-raster-viewport-width, 100%); height: auto; transform: translate3d(calc(var(--browser-raster-base-x, 0px) + var(--browser-optimistic-scroll-x, 0px)), calc(var(--browser-raster-base-y, 0px) + var(--browser-optimistic-scroll-y, 0px)), 0); will-change: transform; backface-visibility: hidden; }}
+.browser-raster-shell[data-browser-native-raster-scroll="true"] .browser-raster {{ transform: translate3d(var(--browser-optimistic-scroll-x, 0px), var(--browser-optimistic-scroll-y, 0px), 0); }}
+.browser-click-marker {{ position: absolute; z-index: 2; box-sizing: border-box; width: 16px; height: 16px; transform: translate(-50%, -50%); border: 2px solid #2457d6; border-radius: 999px; background: rgba(36, 87, 214, 0.12); box-shadow: 0 0 0 2px rgba(255,255,255,0.88); pointer-events: none; }}
 .browser-click-marker::after {{ content: ""; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 999px; background: #2457d6; }}
 .browser-raster-placeholder {{ min-height: 96px; display: grid; align-content: center; gap: 6px; padding: 14px; background: #f6f8fb; color: #3a3f45; font-size: 13px; cursor: default; }}
 .browser-raster-placeholder strong {{ color: #20242a; }}
@@ -10681,9 +11253,9 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
 <input data-browser-address type="text" inputmode="url" data-browser-address-focus-owner="address" data-browser-address-keyboard-owner="text-entry" data-browser-address-route-state="idle" data-browser-address-session="{id}" data-browser-address-source="{source_attr}" data-browser-address-viewport-x="{viewport_x}" data-browser-address-viewport-y="{viewport_y}" data-browser-address-width="{width}" data-browser-address-height="{height}" data-browser-address-max-bytes="{max_bytes}" autocapitalize="none" spellcheck="false" name="url" value="{source_attr}" title="{source_attr}" aria-label="Address">
 <button type="submit" name="action" value="open" data-browser-address-submit="open" data-browser-form-submit="open" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Go</button><button class="browser-new-tab" type="submit" name="action" value="open-new-session" data-browser-address-submit="open-new-session" data-browser-form-submit="open-new-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">New tab</button><button class="browser-background-tab" type="submit" name="action" value="open-background-session" data-browser-address-submit="open-background-session" data-browser-form-submit="open-background-session" data-browser-form-submit-pending-state="idle" data-browser-address-submit-route-state="idle" data-browser-address-submit-session="{id}" data-browser-address-submit-from="{back_href}" data-browser-address-submit-source="{source_attr}" data-browser-address-submit-viewport-x="{viewport_x}" data-browser-address-submit-viewport-y="{viewport_y}" data-browser-address-submit-width="{width}" data-browser-address-submit-height="{height}" data-browser-address-submit-max-bytes="{max_bytes}">Background</button>
 </form>
-<div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{browser_chrome_status_attrs} data-browser-resource-actions data-browser-auto-visual-control>{browser_chrome_status}<a class="browser-chrome-tool" href="{tools_href}" data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools" title="Open secondary browser tools">Tools</a></div>
+	{browser_chrome_status_bar}
 </div>
-<div class="browser-location-strip" data-browser-location-strip data-browser-location-placement="under-address" data-browser-location-density="compact" data-browser-location-role="current-url" data-browser-location-route-state="stable" data-browser-location-preserves="session from source viewport dimensions max-bytes" data-browser-location-session="{id}" data-browser-location-from="{back_href}" data-browser-location-source="{source_attr}" data-browser-location-viewport-x="{viewport_x}" data-browser-location-viewport-y="{viewport_y}" data-browser-location-width="{width}" data-browser-location-height="{height}" data-browser-location-max-bytes="{max_bytes}"><strong>{heading}</strong><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
+<div class="browser-location-strip" data-browser-location-strip data-browser-location-placement="under-address" data-browser-location-density="compact" data-browser-location-role="current-url" data-browser-location-route-state="stable" data-browser-location-preserves="session from source viewport dimensions max-bytes" data-browser-location-session="{id}" data-browser-location-from="{back_href}" data-browser-location-source="{source_attr}" data-browser-location-viewport-x="{viewport_x}" data-browser-location-viewport-y="{viewport_y}" data-browser-location-width="{width}" data-browser-location-height="{height}" data-browser-location-max-bytes="{max_bytes}"><h1>{heading}</h1><div class="meta" data-browser-current-location title="{source_attr}">{source}</div></div>
 {primary_tab_strip}
 </header>
 {auto_visual_bootstrap}
@@ -10719,7 +11291,11 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         history_len = payload.history_len,
         can_back = payload.can_back,
         can_forward = payload.can_forward,
-        address_source_input = browser_session_source_hidden_input(&payload.source),
+        address_source_input = format!(
+            "{}{}",
+            browser_session_visual_hidden_input(payload),
+            browser_session_source_hidden_input(&payload.source)
+        ),
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         controls_scrollable = payload.max_scroll_x > 0 || payload.max_scroll_y > 0,
@@ -10733,9 +11309,7 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         settled_primary_page_state = settled_primary_page_state.unwrap_or_default(),
         auto_visual_bootstrap = auto_visual_bootstrap,
         pending_load_retry = pending_load_retry,
-        browser_chrome_status = render_browser_session_chrome_status(payload, back_href),
-        browser_chrome_status_attrs = browser_session_chrome_status_attrs(payload, back_href),
-        tools_href = html_escape::encode_double_quoted_attribute("#browser-controls-tray"),
+        browser_chrome_status_bar = browser_chrome_status_bar,
         viewport_command_strip = viewport_command_strip,
         resource_quick_actions = resource_quick_actions,
         viewport_image = viewport_image,
@@ -10747,24 +11321,36 @@ li > div {{ grid-column: 2; color: #5d636b; font-size: 12px; overflow-wrap: anyw
         diagnostics_section = diagnostics_section,
     )
 }
-
 fn render_browser_session_viewport_partial(payload: &BrowserSessionPayload) -> String {
     format!(
-        r#"<div data-browser-partial-viewport data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}"><div data-browser-partial-raster>{raster}</div><div data-browser-partial-status>{status}</div><div data-browser-partial-interactions>{interactions}</div><div data-browser-partial-scroll-controls>{scroll_controls}</div><div data-browser-partial-command-strip>{command_strip}</div></div>"#,
+        r#"<div data-browser-partial-viewport data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}"><div data-browser-partial-raster>{raster}</div><div data-browser-partial-primary-state>{primary_state}</div><div data-browser-partial-status>{status}</div><div data-browser-partial-interactions>{interactions}</div><div data-browser-partial-scroll-controls>{scroll_controls}</div><div data-browser-partial-command-strip>{command_strip}</div>{chrome_status}</div>"#,
         viewport_x = payload.viewport_x,
         viewport_y = payload.viewport_y,
         max_scroll_x = payload.max_scroll_x,
         max_scroll_y = payload.max_scroll_y,
         raster = render_browser_session_viewport_image_shell(payload),
+        primary_state = render_browser_session_primary_page_state(payload),
         status = render_browser_session_viewport_status(payload),
         interactions = render_browser_session_viewport_interaction_controls(payload),
         scroll_controls = render_browser_session_viewport_scroll_controls(payload),
         command_strip = render_browser_session_viewport_command_strip(payload),
+        chrome_status = render_browser_session_chrome_status_bar(payload, &payload.back_href),
+    )
+}
+fn render_browser_session_chrome_status_bar(
+    payload: &BrowserSessionPayload,
+    back_href: &str,
+) -> String {
+    format!(
+        r##"<div class="browser-chrome-status" data-browser-chrome-status data-browser-chrome-toolbar-group role="toolbar" aria-label="Browser status and tools"{attrs} data-browser-resource-actions data-browser-auto-visual-control>{status}<a class="browser-chrome-tool" href="#browser-controls-tray" data-browser-chrome-tools-link data-browser-chrome-tools-role="secondary" data-browser-chrome-tools-preserves="session from source viewport dimensions max-bytes" aria-label="Open secondary browser tools" title="Open secondary browser tools">Tools</a></div>"##,
+        attrs = browser_session_chrome_status_attrs(payload, back_href),
+        status = render_browser_session_chrome_status(payload, back_href)
     )
 }
 
 fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload) -> String {
-    if payload.resource_report.is_some() {
+    let auto_visual_deferred = browser_session_auto_visual_deferred(payload);
+    if payload.resource_report.is_some() && !auto_visual_deferred {
         return String::new();
     }
 
@@ -10777,88 +11363,163 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }
 
     let make_visual = action_urls.make_visual.unwrap_or_default();
-    let apply_stylesheets = action_urls.apply_stylesheets.unwrap_or_default();
+    let styles_already_applied = payload
+        .resource_report
+        .as_ref()
+        .and_then(|report| report.applied)
+        .is_some_and(|applied| applied > 0);
+    let apply_stylesheets = if styles_already_applied {
+        String::new()
+    } else {
+        action_urls.apply_stylesheets.unwrap_or_default()
+    };
     let load_images = action_urls.load_images.unwrap_or_default();
     let refresh_url = browser_session_action_href(&payload.id, "current", &[], payload);
+    let first_viewport_visual_url = browser_session_action_href(
+        &payload.id,
+        "current",
+        &[("partial", "viewport".to_owned())],
+        payload,
+    );
     let block_browser_controls = !browser_session_has_ready_raster(payload);
+    let prefer_first_viewport_visual = auto_visual_deferred && !block_browser_controls;
     let status_label = if block_browser_controls {
         "Preparing visual render..."
     } else {
         "Loading visual resources..."
     };
+    let status_hidden = if prefer_first_viewport_visual {
+        " hidden"
+    } else {
+        ""
+    };
     let state_key = format!(
         "brutal:auto-visual:{}:{}:{}:{}",
         payload.id, payload.source, payload.viewport_x, payload.viewport_y
     );
+    let background_first_viewport_request_timeout_ms =
+        BROWSER_AUTO_VISUAL_BACKGROUND_FIRST_VIEWPORT_TIMEOUT.as_millis();
 
     format!(
-        r#"<div class="auto-visual-status" data-auto-visual-status>{status_label}</div>
+        r#"<div class="auto-visual-status"{status_hidden} data-auto-visual-status>{status_label}</div>
 <script>
 (() => {{
   const makeVisualUrl = {make_visual};
   const applyStylesheetsUrl = {apply_stylesheets};
   const loadImagesUrl = {load_images};
   const refreshUrl = {refresh_url};
+  const firstViewportVisualUrl = {first_viewport_visual_url};
   const stateKey = {state_key};
   const blockBrowserControls = {block_browser_controls};
+  const preferFirstViewportVisual = {prefer_first_viewport_visual};
+  const backgroundFirstViewportVisual = preferFirstViewportVisual && !blockBrowserControls;
   const runningRefreshDelayMs = 5000;
   const runningStaleAfterMs = 45000;
   const failedRetryCooldownMs = 60000;
-  const requestTimeoutMs = 12000;
-  const timeoutSeconds = Math.round(requestTimeoutMs / 1000);
-  const status = document.querySelector("[data-auto-visual-status]");
-  const setStatus = (message) => {{
-    if (status) {{
-      status.textContent = message;
-    }}
-  }};
+  const requestTimeoutMs = backgroundFirstViewportVisual ? {background_first_viewport_request_timeout_ms} : 4000;
+	  const timeoutSeconds = Math.round(requestTimeoutMs / 1000);
+	  const status = document.querySelector("[data-auto-visual-status]");
+	  const setStatus = (message, options = {{}}) => {{
+	    if (!status) {{ return; }}
+	    status.textContent = message;
+	    status.hidden = backgroundFirstViewportVisual && !options.show;
+	  }};
   const autoVisualControls = () => Array.from(document.querySelectorAll("[data-browser-auto-visual-control]"));
   let autoVisualControlsBlocked = blockBrowserControls;
   const setAutoVisualControlsBusy = (busy) => {{
-    autoVisualControlsBlocked = busy;
-    for (const control of autoVisualControls()) {{
-      if (busy) {{
-        control.dataset.autoVisualPending = "true";
-        control.setAttribute("aria-busy", "true");
-      }} else {{
-        delete control.dataset.autoVisualPending;
-        control.removeAttribute("aria-busy");
-      }}
+	    autoVisualControlsBlocked = busy;
+	    for (const control of autoVisualControls()) {{
+	      if (busy) {{
+	        control.dataset.autoVisualPending = "true"; control.setAttribute("aria-busy", "true");
+	      }} else {{
+	        delete control.dataset.autoVisualPending; control.removeAttribute("aria-busy");
+	      }}
+	    }}
+		  }};
+	  const viewportUrlForCurrentViewport = (baseUrl) => {{
+	    if (!baseUrl) {{
+	      return "";
+	    }}
+	    try {{
+	      const url = new URL(baseUrl, window.location.href);
+	      const shell = document.querySelector("[data-browser-viewport-scroll]");
+	      if (shell) {{
+	        const viewportX = Number(shell.dataset.viewportX);
+	        const viewportY = Number(shell.dataset.viewportY);
+	        if (Number.isFinite(viewportX)) {{ url.searchParams.set("viewport_x", String(viewportX)); }}
+	        if (Number.isFinite(viewportY)) {{ url.searchParams.set("viewport_y", String(viewportY)); }}
+	      }}
+	      return url.toString();
+	    }} catch (_) {{
+	      return baseUrl;
+	    }}
+	  }};
+	  const refreshUrlForCurrentViewport = () => viewportUrlForCurrentViewport(refreshUrl);
+	  const firstViewportVisualUrlForCurrentViewport = () => viewportUrlForCurrentViewport(firstViewportVisualUrl);
+	  const firstViewportVisualStillPending = (html) => !!html && (
+	    html.includes("Visual viewport refresh pending")
+	      || html.includes("images waiting")
+	      || html.includes("images not decoded")
+	  );
+	  const waitForViewportRetry = (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs));
+	  const replacePartialFragment = (doc, selector) => {{
+	    const current = document.querySelector(selector);
+	    const next = doc.querySelector(selector);
+	    if (current && next) {{
+	      current.replaceWith(next);
+	    }}
+	  }};
+	  const copyAttributes = (current, next) => {{
+	    for (const attr of Array.from(current.attributes)) {{ current.removeAttribute(attr.name); }}
+	    for (const attr of Array.from(next.attributes)) {{ current.setAttribute(attr.name, attr.value); }}
+	  }};
+  const syncNativeRasterScroll = (shell) => {{
+    if (!shell || shell.dataset.browserNativeRasterScroll !== "true" || shell.dataset.browserOverscanRaster !== "true") {{
+      return;
     }}
-  }};
-  const refreshUrlForCurrentViewport = () => {{
-    if (!refreshUrl) {{
-      return "";
-    }}
-    try {{
-      const url = new URL(refreshUrl, window.location.href);
-      const shell = document.querySelector("[data-browser-viewport-scroll]");
-      if (shell) {{
-        const viewportX = Number(shell.dataset.viewportX);
-        const viewportY = Number(shell.dataset.viewportY);
-        if (Number.isFinite(viewportX)) {{
-          url.searchParams.set("viewport_x", String(viewportX));
-        }}
-        if (Number.isFinite(viewportY)) {{
-          url.searchParams.set("viewport_y", String(viewportY));
-        }}
-      }}
-      return url.toString();
-    }} catch (_) {{
-      return refreshUrl;
-    }}
-  }};
-  const isBrowserActionLink = (target) => {{
-    if (!target || target.tagName !== "A") {{
-      return true;
-    }}
-    const href = target.getAttribute("href") || "";
-    if (!href) {{
-      return false;
-    }}
-    try {{
-      return new URL(target.href, window.location.href).pathname === "/browser";
-    }} catch (_) {{
+    const offsetX = Number(shell.dataset.browserRasterViewportOffsetX);
+    const offsetY = Number(shell.dataset.browserRasterViewportOffsetY);
+    if (Number.isFinite(offsetX)) {{ shell.scrollLeft = Math.max(0, Math.round(offsetX)); }}
+    if (Number.isFinite(offsetY)) {{ shell.scrollTop = Math.max(0, Math.round(offsetY)); }}
+	  }};
+	  const applyViewportPartial = (html) => {{
+	    if (typeof DOMParser !== "function") {{
+	      return false;
+	    }}
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const shell = document.querySelector("[data-browser-viewport-scroll]");
+    const nextShell = doc.querySelector("[data-browser-viewport-scroll]");
+	    const currentRaster = shell ? shell.querySelector(".browser-raster") : null;
+	    const nextRaster = nextShell ? nextShell.querySelector(".browser-raster") : null;
+	    if (!shell || !nextShell || !currentRaster || !nextRaster) {{
+	      return false;
+	    }}
+    copyAttributes(shell, nextShell);
+    copyAttributes(currentRaster, nextRaster);
+    syncNativeRasterScroll(shell);
+    currentRaster.addEventListener("load", () => syncNativeRasterScroll(shell), {{ once: true }});
+    const scheduleScrollSync = typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame
+      : (callback) => window.setTimeout(callback, 0);
+	    scheduleScrollSync(() => syncNativeRasterScroll(shell));
+	    replacePartialFragment(doc, "[data-browser-primary-state]");
+	    replacePartialFragment(doc, "[data-browser-viewport-status]");
+	    replacePartialFragment(doc, "[data-browser-viewport-interactions]");
+	    replacePartialFragment(doc, "[data-browser-viewport-controls]");
+	    replacePartialFragment(doc, "[data-browser-viewport-command-strip]");
+	    replacePartialFragment(doc, "[data-browser-chrome-status]");
+	    if (window.history && typeof window.history.replaceState === "function" && refreshUrl) {{
+	      window.history.replaceState(null, "", refreshUrlForCurrentViewport());
+	    }}
+    return true;
+	  }};
+	  const isBrowserActionLink = (target) => {{
+	    if (!target || target.tagName !== "A") {{ return true; }}
+	    const href = target.getAttribute("href") || "";
+	    if (!href) {{ return false; }}
+	    try {{
+	      return new URL(target.href, window.location.href).pathname === "/browser";
+	    }} catch (_) {{
       return href.startsWith("/browser");
     }}
   }};
@@ -10890,12 +11551,10 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }});
   }};
   guardAutoVisualControls();
-  const scheduleRefresh = (message, delayMs) => {{
-    setStatus(message);
-    if (refreshUrl) {{
-      window.setTimeout(() => window.location.replace(refreshUrlForCurrentViewport()), delayMs);
-    }}
-  }};
+	  const scheduleRefresh = (message, delayMs) => {{
+	    setStatus(message);
+	    if (refreshUrl) {{ window.setTimeout(() => window.location.replace(refreshUrlForCurrentViewport()), delayMs); }}
+	  }};
   const currentState = sessionStorage.getItem(stateKey) || "";
   if (currentState === "done") {{
     sessionStorage.removeItem(stateKey);
@@ -10914,11 +11573,9 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
     }}
     sessionStorage.removeItem(stateKey);
   }}
-  sessionStorage.setItem(stateKey, `running:${{Date.now()}}`);
-  const request = async (label, url) => {{
-    if (!url) {{
-      return;
-    }}
+	  sessionStorage.setItem(stateKey, `running:${{Date.now()}}`);
+	  const request = async (label, url, readText = false) => {{
+	    if (!url) {{ return; }}
     const startedAt = Date.now();
     const updateProgress = () => {{
       const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
@@ -10934,35 +11591,61 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         credentials: "same-origin",
         signal: controller.signal,
       }});
-      if (!response.ok) {{
-        throw new Error(`${{label}} failed (${{response.status}})`);
-      }}
-    }} catch (error) {{
-      if (error && error.name === "AbortError") {{
-        throw new Error(`${{label}} timed out`);
-      }}
-      throw error;
+	      if (!response.ok) {{ throw new Error(`${{label}} failed (${{response.status}})`); }}
+	      return readText ? await response.text() : "";
+	    }} catch (error) {{
+	      if (error && error.name === "AbortError") {{ throw new Error(`${{label}} timed out`); }}
+	      throw error;
     }} finally {{
       window.clearTimeout(timeout);
       window.clearInterval(progress);
     }}
   }};
-  (async () => {{
-    if (makeVisualUrl) {{
-      await request("Making visual...", makeVisualUrl);
-    }} else {{
-      await request("Applying styles...", applyStylesheetsUrl);
-      await request("Loading images...", loadImagesUrl);
-    }}
-    sessionStorage.setItem(stateKey, "done");
-    if (refreshUrl) {{
+	  (async () => {{
+	    let partialApplied = false;
+	    let firstViewportPending = false;
+	    if (preferFirstViewportVisual && firstViewportVisualUrl) {{
+	      if (applyStylesheetsUrl) {{
+	        await request("Applying styles...", applyStylesheetsUrl);
+	      }}
+	      if (loadImagesUrl) {{
+	        let html = await request("Loading first viewport...", firstViewportVisualUrlForCurrentViewport(), true);
+	        partialApplied = applyViewportPartial(html);
+	        firstViewportPending = firstViewportVisualStillPending(html);
+	        for (const delayMs of [180, 320]) {{
+	          if (!partialApplied || !firstViewportPending) {{
+	            break;
+	          }}
+	          await waitForViewportRetry(delayMs);
+	          html = await request("Loading first viewport...", firstViewportVisualUrlForCurrentViewport(), true);
+	          partialApplied = applyViewportPartial(html) || partialApplied;
+	          firstViewportPending = firstViewportVisualStillPending(html);
+	        }}
+	      }}
+	    }} else if (makeVisualUrl) {{
+	      await request("Making visual...", makeVisualUrl);
+	    }} else {{
+	      await request("Applying styles...", applyStylesheetsUrl);
+	      await request("Loading images...", loadImagesUrl);
+	    }}
+	    if (firstViewportPending) {{
+	      sessionStorage.setItem(stateKey, `failed:${{Date.now()}}`);
+	      setAutoVisualControlsBusy(false);
+	      setStatus("Visual render is still warming. Use Tools to retry.", {{ show: true }});
+	      return;
+	    }}
+	    sessionStorage.setItem(stateKey, "done");
+    if (refreshUrl && !partialApplied) {{
       setStatus("Visual render complete. Opening page...");
       window.location.replace(refreshUrlForCurrentViewport());
+    }} else {{
+      setAutoVisualControlsBusy(false);
+      setStatus("Visual render complete.");
     }}
   }})().catch((error) => {{
     sessionStorage.setItem(stateKey, `failed:${{Date.now()}}`);
     setAutoVisualControlsBusy(false);
-    setStatus(error && error.message ? error.message : "Visual render failed");
+    setStatus(error && error.message ? error.message : "Visual render failed", {{ show: true }});
   }});
 }})();
 </script>"#,
@@ -10970,13 +11653,21 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         apply_stylesheets = browser_json_script_string(&apply_stylesheets),
         load_images = browser_json_script_string(&load_images),
         refresh_url = browser_json_script_string(&refresh_url),
+        first_viewport_visual_url = browser_json_script_string(&first_viewport_visual_url),
         state_key = browser_json_script_string(&state_key),
+        status_hidden = status_hidden,
         status_label = html_escape::encode_text(status_label),
         block_browser_controls = if block_browser_controls {
             "true"
         } else {
             "false"
         },
+        prefer_first_viewport_visual = if prefer_first_viewport_visual {
+            "true"
+        } else {
+            "false"
+        },
+        background_first_viewport_request_timeout_ms = background_first_viewport_request_timeout_ms,
     )
 }
 
@@ -11034,7 +11725,7 @@ fn render_browser_session_pending_load_retry_script(payload: &BrowserSessionPayl
     continueLink.dataset.pendingAutoRetry = "scheduled";
     continueLink.setAttribute("aria-busy", "true");
   }}
-  window.setTimeout(() => window.location.replace(retryUrl), 900);
+  (window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0))).call(window, () => window.location.replace(retryUrl));
 }})();
 </script>"#,
         retry_url = browser_json_script_string(&continue_href),
@@ -11051,6 +11742,13 @@ fn browser_json_script_string(value: &str) -> String {
 
 fn browser_session_has_ready_raster(payload: &BrowserSessionPayload) -> bool {
     payload.viewport_image.is_some()
+}
+
+fn browser_session_auto_visual_deferred(payload: &BrowserSessionPayload) -> bool {
+    payload
+        .action_feedback
+        .as_deref()
+        .is_some_and(|feedback| feedback.starts_with("Visual loading deferred;"))
 }
 
 fn render_browser_session_keyboard_controls_script(reload_href: &str) -> String {
@@ -11157,8 +11855,14 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
         );
     }
     if let Some(image) = &payload.viewport_image {
+        let raster_src = browser_session_viewport_raster_href(payload, image);
+        let overscan_raster = image.raster_viewport_x != payload.viewport_x
+            || image.raster_viewport_y != payload.viewport_y
+            || image.raster_viewport_width != payload.width
+            || image.raster_viewport_height != payload.height;
+        let raster_options = browser_session_viewport_raster_options();
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-shell-interaction-mode="browser" data-browser-shell-session="{id_attr}" data-browser-shell-from="{back_href_attr}" data-browser-shell-source="{source}" data-browser-shell-viewport-x="{viewport_x}" data-browser-shell-viewport-y="{viewport_y}" data-browser-shell-width="{viewport_width}" data-browser-shell-height="{viewport_height}" data-browser-shell-max-bytes="{max_bytes}" data-browser-shell-state-contract="session from source viewport dimensions max-bytes" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-click-coordinate-space="raster-pixels" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-session="{id_attr}" data-browser-scroll-from="{back_href_attr}" data-browser-scroll-source="{source}" data-browser-scroll-viewport-x="{viewport_x}" data-browser-scroll-viewport-y="{viewport_y}" data-browser-scroll-width="{viewport_width}" data-browser-scroll-height="{viewport_height}" data-browser-scroll-max-bytes="{max_bytes}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-session="{id_attr}" data-browser-click-from="{back_href_attr}" data-browser-click-source="{source}" data-browser-click-viewport-x="{viewport_x}" data-browser-click-viewport-y="{viewport_y}" data-browser-click-width="{viewport_width}" data-browser-click-height="{viewport_height}" data-browser-click-max-bytes="{max_bytes}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-browser-click-route-contract="session from source viewport dimensions max-bytes" data-browser-click-miss-feedback="compact" data-browser-click-route-state="ready" data-browser-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-shell-interaction-mode="browser" data-browser-shell-session="{id_attr}" data-browser-shell-from="{back_href_attr}" data-browser-shell-source="{source}" data-browser-shell-viewport-x="{viewport_x}" data-browser-shell-viewport-y="{viewport_y}" data-browser-shell-width="{viewport_width}" data-browser-shell-height="{viewport_height}" data-browser-shell-max-bytes="{max_bytes}" data-browser-shell-state-contract="session from source viewport dimensions max-bytes" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-click-coordinate-space="viewport-cells" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-session="{id_attr}" data-browser-scroll-from="{back_href_attr}" data-browser-scroll-source="{source}" data-browser-scroll-viewport-x="{viewport_x}" data-browser-scroll-viewport-y="{viewport_y}" data-browser-scroll-width="{viewport_width}" data-browser-scroll-height="{viewport_height}" data-browser-scroll-max-bytes="{max_bytes}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-native-raster-scroll="{overscan_raster}" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="8" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-session="{id_attr}" data-browser-click-from="{back_href_attr}" data-browser-click-source="{source}" data-browser-click-viewport-x="{viewport_x}" data-browser-click-viewport-y="{viewport_y}" data-browser-click-width="{viewport_width}" data-browser-click-height="{viewport_height}" data-browser-click-max-bytes="{max_bytes}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-browser-click-route-contract="session from source viewport dimensions max-bytes" data-browser-click-miss-feedback="compact" data-browser-click-route-state="ready" data-browser-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-raster-width="{width}" data-raster-height="{height}" data-browser-overscan-raster="{overscan_raster}" data-browser-raster-viewport-x="{raster_viewport_x}" data-browser-raster-viewport-y="{raster_viewport_y}" data-browser-raster-viewport-width="{raster_viewport_width}" data-browser-raster-viewport-height="{raster_viewport_height}" data-browser-raster-viewport-pixel-width="{viewport_pixel_width}" data-browser-raster-viewport-pixel-height="{viewport_pixel_height}" data-browser-raster-cell-width="{cell_width}" data-browser-raster-cell-height="{cell_height}" data-browser-raster-padding-x="{padding_x}" data-browser-raster-padding-y="{padding_y}" data-browser-raster-viewport-offset-x="{viewport_offset_x}" data-browser-raster-offset-mapping="viewport-cells" data-browser-raster-viewport-offset-y="{viewport_offset_y}" data-browser-raster-id="{raster_id}" data-browser-raster-src="{src}" data-browser-raster-src-kind="session-png" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" style="--browser-raster-base-x: -{viewport_offset_x}px; --browser-raster-base-y: -{viewport_offset_y}px; --browser-raster-viewport-width: {viewport_pixel_width}px; --browser-raster-viewport-height: {viewport_pixel_height}px;" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><img class="browser-raster" src="{src}" width="{width}" height="{height}" alt="Rendered browser viewport; click links and buttons in the image to activate DOM elements"><span class="browser-click-marker" data-browser-click-marker hidden></span></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11174,14 +11878,28 @@ fn render_browser_session_viewport_image_shell(payload: &BrowserSessionPayload) 
             scroll_line_step = scroll_line_step,
             scroll_page_step_x = scroll_page_step_x,
             scroll_page_step_y = scroll_page_step_y,
-            src = html_escape::encode_double_quoted_attribute(&image.data_url),
+            overscan_raster = overscan_raster,
+            raster_viewport_x = image.raster_viewport_x,
+            raster_viewport_y = image.raster_viewport_y,
+            raster_viewport_width = image.raster_viewport_width,
+            raster_viewport_height = image.raster_viewport_height,
+            viewport_pixel_width = image.viewport_pixel_width,
+            viewport_pixel_height = image.viewport_pixel_height,
+            cell_width = raster_options.cell_width,
+            cell_height = raster_options.cell_height,
+            padding_x = raster_options.padding_x,
+            padding_y = raster_options.padding_y,
+            viewport_offset_x = image.viewport_offset_x,
+            viewport_offset_y = image.viewport_offset_y,
+            raster_id = image.raster_id,
+            src = html_escape::encode_double_quoted_attribute(&raster_src),
             width = image.width,
             height = image.height,
         );
     }
     if payload.fast_scroll {
         return format!(
-            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-browser-shell-interaction-mode="browser" data-browser-shell-session="{id_attr}" data-browser-shell-from="{back_href_attr}" data-browser-shell-source="{source}" data-browser-shell-viewport-x="{viewport_x}" data-browser-shell-viewport-y="{viewport_y}" data-browser-shell-width="{viewport_width}" data-browser-shell-height="{viewport_height}" data-browser-shell-max-bytes="{max_bytes}" data-browser-shell-state-contract="session from source viewport dimensions max-bytes" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-session="{id_attr}" data-browser-scroll-from="{back_href_attr}" data-browser-scroll-source="{source}" data-browser-scroll-viewport-x="{viewport_x}" data-browser-scroll-viewport-y="{viewport_y}" data-browser-scroll-width="{viewport_width}" data-browser-scroll-height="{viewport_height}" data-browser-scroll-max-bytes="{max_bytes}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="18" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-session="{id_attr}" data-browser-click-from="{back_href_attr}" data-browser-click-source="{source}" data-browser-click-viewport-x="{viewport_x}" data-browser-click-viewport-y="{viewport_y}" data-browser-click-width="{viewport_width}" data-browser-click-height="{viewport_height}" data-browser-click-max-bytes="{max_bytes}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-browser-click-route-contract="session from source viewport dimensions max-bytes" data-browser-click-miss-feedback="compact" data-browser-click-route-state="ready" data-browser-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
+            r#"<div class="browser-raster-shell" data-browser-viewport-scroll data-browser-dom-click data-browser-fast-scroll data-browser-shell-interaction-mode="browser" data-browser-shell-session="{id_attr}" data-browser-shell-from="{back_href_attr}" data-browser-shell-source="{source}" data-browser-shell-viewport-x="{viewport_x}" data-browser-shell-viewport-y="{viewport_y}" data-browser-shell-width="{viewport_width}" data-browser-shell-height="{viewport_height}" data-browser-shell-max-bytes="{max_bytes}" data-browser-shell-state-contract="session from source viewport dimensions max-bytes" data-browser-shell-preserves="session from source viewport max-bytes" data-browser-shell-navigation-preserves="session source viewport max-bytes" data-browser-shell-click-scroll-separation="defer-click-during-scroll" data-browser-drag-click-suppression="after-drag" data-browser-edge-scroll-state="idle" data-browser-click-miss-state="idle" data-page-source="{source}" data-scroll-url="{scroll_url}" data-browser-scroll-action-url="{scroll_url}" data-browser-scroll-session="{id_attr}" data-browser-scroll-from="{back_href_attr}" data-browser-scroll-source="{source}" data-browser-scroll-viewport-x="{viewport_x}" data-browser-scroll-viewport-y="{viewport_y}" data-browser-scroll-width="{viewport_width}" data-browser-scroll-height="{viewport_height}" data-browser-scroll-max-bytes="{max_bytes}" data-browser-scroll-preserves="session from source viewport max-bytes" data-browser-wheel-scroll-mode="coalesced" data-browser-scroll-coalescing="queued-target" data-browser-scroll-flush-delay-ms="8" data-browser-scroll-input-sources="wheel keyboard controls drag" data-browser-drag-scroll-mode="pointer-pan" data-browser-drag-scroll-owner="viewport" data-browser-drag-scroll-threshold="4" data-browser-scroll-input-source="idle" data-browser-scroll-line-step="{scroll_line_step}" data-browser-scroll-page-step-x="{scroll_page_step_x}" data-browser-scroll-page-step-y="{scroll_page_step_y}" data-click-url="{click_url}" data-browser-click-action-url="{click_url}" data-browser-click-session="{id_attr}" data-browser-click-from="{back_href_attr}" data-browser-click-source="{source}" data-browser-click-viewport-x="{viewport_x}" data-browser-click-viewport-y="{viewport_y}" data-browser-click-width="{viewport_width}" data-browser-click-height="{viewport_height}" data-browser-click-max-bytes="{max_bytes}" data-browser-click-preserves="session from source viewport max-bytes" data-browser-click-action-state="idle" data-browser-click-navigation-state="ready" data-browser-click-target-context="viewport" data-browser-click-feedback-mode="compact" data-browser-click-route-contract="session from source viewport dimensions max-bytes" data-browser-click-miss-feedback="compact" data-browser-click-route-state="ready" data-browser-scroll-continuity-contract="queued-target clamp edge-feedback preserve-session" data-viewport-state="settled" data-viewport-x="{viewport_x}" data-viewport-y="{viewport_y}" data-viewport-width="{viewport_width}" data-viewport-height="{viewport_height}" data-max-bytes="{max_bytes}" data-max-scroll-x="{max_scroll_x}" data-max-scroll-y="{max_scroll_y}" data-settled-viewport-x="{viewport_x}" data-settled-viewport-y="{viewport_y}" tabindex="0" role="region" aria-label="{viewport_accessibility_label}" title="{viewport_accessibility_label}"><div class="browser-raster-placeholder"><strong>Fast text scroll</strong><span>Skipped visual raster generation for this scroll response. Use Refresh viewport or Make page readable to render the visual view.</span></div></div>"#,
             scroll_url = html_escape::encode_double_quoted_attribute(&scroll_url),
             click_url = html_escape::encode_double_quoted_attribute(&click_url),
             source = html_escape::encode_double_quoted_attribute(&payload.source),
@@ -11232,12 +11950,46 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   } catch (_) {}
   let lastClickPagePoint = null;
   const viewportControls = () => Array.from(document.querySelectorAll("[data-browser-viewport-controls], [data-browser-viewport-command-strip], [data-browser-chrome-scroll-actions]"));
-  const viewportFeedbackTargets = () => Array.from(document.querySelectorAll("[data-browser-viewport-feedback]"));
+  const viewportFeedbackTargets = () => {
+    const targets = Array.from(document.querySelectorAll("[data-browser-viewport-feedback], [data-browser-chrome-scroll-feedback]"));
+    if (!document.querySelector("[data-browser-chrome-scroll-feedback]")) {
+      targets.push(...document.querySelectorAll("[data-browser-chrome-action-feedback][data-browser-action-feedback-placement=\"chrome\"]"));
+    }
+    return targets;
+  };
   const clickStatusTargets = () => Array.from(document.querySelectorAll("[data-browser-click-status]"));
-  const setViewportFeedback = (message) => {
+  let deferredViewportFeedbackTimer = null;
+  let deferredViewportFeedbackMessage = "";
+  const applyViewportFeedback = (message) => {
     for (const feedback of viewportFeedbackTargets()) {
       feedback.textContent = message;
+      feedback.setAttribute("title", message);
     }
+  };
+  const clearDeferredViewportFeedback = () => {
+    if (deferredViewportFeedbackTimer) {
+      clearTimeout(deferredViewportFeedbackTimer);
+      deferredViewportFeedbackTimer = null;
+    }
+    deferredViewportFeedbackMessage = "";
+  };
+  const setViewportFeedback = (message) => {
+    clearDeferredViewportFeedback();
+    applyViewportFeedback(message);
+  };
+  const setViewportFeedbackDeferred = (message) => {
+    deferredViewportFeedbackMessage = message;
+    if (deferredViewportFeedbackTimer) {
+      return;
+    }
+    deferredViewportFeedbackTimer = setTimeout(() => {
+      const latest = deferredViewportFeedbackMessage;
+      deferredViewportFeedbackTimer = null;
+      deferredViewportFeedbackMessage = "";
+      if (latest) {
+        applyViewportFeedback(latest);
+      }
+    }, 48);
   };
   const setClickStatus = (message) => {
     for (const status of clickStatusTargets()) {
@@ -11288,12 +12040,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.dataset.browserViewportInputSource = shell.dataset.scrollInputSource || "manual";
     }
   };
-  const setViewportPending = (message, target) => {
+  const setViewportPending = (message, target, options = {}) => {
     shell.dataset.viewportPending = "true";
     shell.dataset.viewportState = "pending";
     shell.removeAttribute("data-viewport-page-error");
     shell.setAttribute("aria-busy", "true");
-    setPendingViewportTarget(target);
+    if (!options.skipTargetSync) {
+      setPendingViewportTarget(target);
+    }
     for (const control of viewportControls()) {
       control.dataset.scrollPending = "true";
       control.setAttribute("aria-busy", "true");
@@ -11304,9 +12058,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       status.setAttribute("aria-busy", "true");
       status.setAttribute("aria-label", message);
     }
-    setViewportFeedback(message);
+    if (options.deferFeedback) {
+      setViewportFeedbackDeferred(message);
+    } else {
+      setViewportFeedback(message);
+    }
   };
   const clearViewportPending = () => {
+    clearDeferredViewportFeedback();
+    clearOptimisticScroll();
     shell.removeAttribute("data-viewport-pending");
     shell.removeAttribute("data-viewport-request");
     shell.removeAttribute("data-viewport-partial-error");
@@ -11390,7 +12150,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   };
   const markStaleViewportResponse = (message) => {
     if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
-      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
+      const queued = currentQueuedViewportTarget();
+      normalizePendingScrollDelta(queued);
       setPendingViewportTarget(queued);
       shell.dataset.viewportState = "pending";
     } else {
@@ -11409,9 +12170,24 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     return Number.isFinite(value) ? value : 0;
   };
   const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-  const rasterSize = () => {
-    const fallbackWidth = Math.max(1, numberData("viewportWidth"));
-    const fallbackHeight = Math.max(1, numberData("viewportHeight"));
+  const browserAnimationFrame = (callback) => typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(callback)
+    : setTimeout(callback, 0);
+  const cancelBrowserAnimationFrame = (handle) => {
+    if (typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(handle);
+    } else {
+      clearTimeout(handle);
+    }
+  };
+	  const rasterSize = () => {
+	    const fallbackWidth = Math.max(1, numberData("viewportWidth"));
+	    const fallbackHeight = Math.max(1, numberData("viewportHeight"));
+	    const viewportPixelWidth = Number(shell.dataset.browserRasterViewportPixelWidth);
+	    const viewportPixelHeight = Number(shell.dataset.browserRasterViewportPixelHeight);
+    if (Number.isFinite(viewportPixelWidth) && viewportPixelWidth > 0 && Number.isFinite(viewportPixelHeight) && viewportPixelHeight > 0) {
+      return { width: Math.round(viewportPixelWidth), height: Math.round(viewportPixelHeight) };
+    }
     if (!raster) {
       return { width: fallbackWidth, height: fallbackHeight };
     }
@@ -11419,14 +12195,604 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const height = Number(raster.naturalHeight) || Number(raster.getAttribute("height")) || numberData("rasterHeight") || fallbackHeight;
     return {
       width: Math.max(1, Math.round(width)),
-      height: Math.max(1, Math.round(height))
+	      height: Math.max(1, Math.round(height))
+	    };
+	  };
+	  const rasterBitmapSize = () => {
+	    const fallbackWidth = Math.max(1, numberData("viewportWidth"));
+	    const fallbackHeight = Math.max(1, numberData("viewportHeight"));
+	    if (!raster) {
+	      return { width: fallbackWidth, height: fallbackHeight };
+	    }
+	    const width = numberData("rasterWidth") || Number(raster.naturalWidth) || Number(raster.getAttribute("width")) || fallbackWidth;
+	    const height = numberData("rasterHeight") || Number(raster.naturalHeight) || Number(raster.getAttribute("height")) || fallbackHeight;
+	    return {
+	      width: Math.max(1, Math.round(width)),
+	      height: Math.max(1, Math.round(height))
+	    };
+	  };
+	  const rasterDisplayMetrics = () => {
+	    if (!raster) {
+	      return null;
+	    }
+	    const shellRect = shell.getBoundingClientRect();
+	    const rasterRect = raster.getBoundingClientRect();
+	    if (!shellRect.width || !shellRect.height || !rasterRect.width || !rasterRect.height) {
+	      return null;
+	    }
+	    const bitmap = rasterBitmapSize();
+	    const contentLeft = rasterRect.left - shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft;
+	    const contentTop = rasterRect.top - shellRect.top - (shell.clientTop || 0) + shell.scrollTop;
+	    return {
+	      shellRect,
+	      rasterRect,
+	      bitmap,
+	      contentLeft,
+	      contentTop,
+	      scaleX: bitmap.width / Math.max(1, rasterRect.width),
+	      scaleY: bitmap.height / Math.max(1, rasterRect.height)
+	    };
+	  };
+	  const rasterCellSize = () => {
+	    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+	    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const explicitCellWidth = Number(shell.dataset.browserRasterCellWidth), explicitCellHeight = Number(shell.dataset.browserRasterCellHeight);
+    if (Number.isFinite(explicitCellWidth) && explicitCellWidth > 0 && Number.isFinite(explicitCellHeight) && explicitCellHeight > 0) return { width: explicitCellWidth, height: explicitCellHeight };
+	    const size = rasterSize();
+    const rasterWidth = Math.max(1, numberData("rasterWidth"));
+    const rasterHeight = Math.max(1, numberData("rasterHeight"));
+    const rasterViewportWidth = Math.max(viewportWidth, numberData("browserRasterViewportWidth"));
+    const rasterViewportHeight = Math.max(viewportHeight, numberData("browserRasterViewportHeight"));
+    const extraWidth = rasterViewportWidth - viewportWidth;
+    const extraHeight = rasterViewportHeight - viewportHeight;
+    const cellWidth = extraWidth > 0
+      ? Math.max(1, (rasterWidth - size.width) / extraWidth)
+      : Math.max(1, size.width / viewportWidth);
+	    const cellHeight = extraHeight > 0
+	      ? Math.max(1, (rasterHeight - size.height) / extraHeight)
+	      : Math.max(1, size.height / viewportHeight);
+	    return { width: cellWidth, height: cellHeight };
+	  };
+	  const rasterCssCellSize = () => { const cell = rasterCellSize(); const metrics = rasterDisplayMetrics(); if (!metrics) return cell; const viewportPixelHeight = Number(shell.dataset.browserRasterViewportPixelHeight); if (Number.isFinite(viewportPixelHeight) && viewportPixelHeight > 0) shell.style.setProperty("--browser-raster-viewport-height", `${Math.max(1, Math.round(viewportPixelHeight / Math.max(metrics.scaleY, 0.0001)))}px`); return { width: cell.width / Math.max(metrics.scaleX, 0.0001), height: cell.height / Math.max(metrics.scaleY, 0.0001) }; };
+	  const clickRasterSize = () => {
+	    const width = Number(shell.dataset.browserRasterViewportPixelWidth);
+	    const height = Number(shell.dataset.browserRasterViewportPixelHeight);
+	    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+	      return { width: Math.round(width), height: Math.round(height) };
+	    }
+	    return rasterSize();
+	  };
+	  const viewportRasterPixelPadding = () => {
+    const explicitPaddingX = Number(shell.dataset.browserRasterPaddingX), explicitPaddingY = Number(shell.dataset.browserRasterPaddingY);
+    if (Number.isFinite(explicitPaddingX) && explicitPaddingX >= 0 && Number.isFinite(explicitPaddingY) && explicitPaddingY >= 0) return { x: explicitPaddingX, y: explicitPaddingY };
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const size = rasterSize();
+    const cell = rasterCellSize();
+    return {
+      x: Math.max(0, Math.round((size.width - viewportWidth * cell.width) / 2)),
+      y: Math.max(0, Math.round((size.height - viewportHeight * cell.height) / 2))
     };
   };
-  const viewportPointFromEvent = (event) => {
+  const rasterBoundedTarget = (target) => {
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const rasterX = numberData("browserRasterViewportX");
+    const rasterY = numberData("browserRasterViewportY");
+    const rasterWidth = Math.max(viewportWidth, numberData("browserRasterViewportWidth"));
+    const rasterHeight = Math.max(viewportHeight, numberData("browserRasterViewportHeight"));
+    const maxX = Math.max(rasterX, rasterX + rasterWidth - viewportWidth);
+    const maxY = Math.max(rasterY, rasterY + rasterHeight - viewportHeight);
+    const x = clamp(target.x, rasterX, maxX);
+    const y = clamp(target.y, rasterY, maxY);
+    return {
+      x,
+      y,
+      clipped: x !== target.x || y !== target.y
+    };
+  };
+  const canCommitViewportScrollLocally = (target) => {
+    if (!raster || !target || shell.dataset.browserOverscanRaster !== "true") {
+      return false;
+    }
+    return !rasterBoundedTarget(target).clipped;
+  };
+  const setViewportDatasetCoordinates = (target) => {
+    const x = String(target.x);
+    const y = String(target.y);
+    shell.dataset.viewportX = x;
+    shell.dataset.viewportY = y;
+    shell.dataset.browserShellViewportX = x;
+    shell.dataset.browserShellViewportY = y;
+    shell.dataset.browserScrollViewportX = x;
+    shell.dataset.browserScrollViewportY = y;
+    shell.dataset.browserClickViewportX = x;
+    shell.dataset.browserClickViewportY = y;
+    shell.dataset.settledViewportX = x;
+    shell.dataset.settledViewportY = y;
+  };
+  let nativeRasterProgrammaticScroll = false;
+  let nativeRasterProgrammaticFrame = null;
+  let nativeRasterProgrammaticOffset = null;
+  let nativeRasterScrollFrame = null;
+  let nativeRasterScrollTimeout = null;
+  let nativeRasterScrollMonitorFrame = null;
+  let nativeRasterLastObservedOffset = null;
+  let nativeRasterScrollInputSource = "native";
+  const nativeRasterScrollEnabled = () => raster && shell.dataset.browserNativeRasterScroll === "true" && shell.dataset.browserOverscanRaster === "true";
+  const nativeRasterImageReady = () => raster && raster.complete && (raster.naturalWidth || Number(raster.getAttribute("width")));
+  const canUseNativeRasterScroll = () => nativeRasterScrollEnabled() && nativeRasterImageReady();
+  const nativeRasterCurrentPixelOffset = () => ({
+    x: Math.round(shell.scrollLeft),
+    y: Math.round(shell.scrollTop)
+  });
+	  const nativeRasterPixelOffsetForTarget = (target) => {
+	    const bounded = rasterBoundedTarget(target);
+	    const cell = rasterCssCellSize();
+    return {
+      x: Math.max(0, Math.round((bounded.x - numberData("browserRasterViewportX")) * cell.width)),
+      y: Math.max(0, Math.round((bounded.y - numberData("browserRasterViewportY")) * cell.height))
+    };
+  };
+  const clearNativeRasterProgrammaticScroll = () => {
+    nativeRasterProgrammaticScroll = false;
+    nativeRasterProgrammaticOffset = null;
+    nativeRasterProgrammaticFrame = null;
+  };
+  const setNativeRasterScrollPosition = (target) => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    const offset = nativeRasterPixelOffsetForTarget(target);
+    nativeRasterProgrammaticScroll = true;
+    nativeRasterProgrammaticOffset = { x: offset.x, y: offset.y };
+    shell.scrollLeft = offset.x;
+    shell.scrollTop = offset.y;
+    nativeRasterLastObservedOffset = { x: offset.x, y: offset.y };
+    shell.dataset.browserRasterViewportOffsetX = String(offset.x);
+    shell.dataset.browserRasterViewportOffsetY = String(offset.y);
+    shell.style.setProperty("--browser-raster-base-x", "0px");
+    shell.style.setProperty("--browser-raster-base-y", "0px");
+    if (nativeRasterProgrammaticFrame) {
+      cancelBrowserAnimationFrame(nativeRasterProgrammaticFrame);
+    }
+    nativeRasterProgrammaticFrame = browserAnimationFrame(clearNativeRasterProgrammaticScroll);
+    return true;
+  };
+  const syncNativeRasterScrollPosition = () => setNativeRasterScrollPosition({
+    x: numberData("viewportX"),
+    y: numberData("viewportY")
+  });
+  const scheduleNativeRasterPositionSync = () => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    browserAnimationFrame(() => {
+      syncNativeRasterScrollPosition();
+      setTimeout(syncNativeRasterScrollPosition, 0);
+    });
+    return true;
+  };
+  const installNativeRasterLoadSync = () => {
+    if (!nativeRasterScrollEnabled()) {
+      return false;
+    }
+    raster.addEventListener("load", scheduleNativeRasterPositionSync, { once: true });
+    if (raster.complete) {
+      scheduleNativeRasterPositionSync();
+    }
+    return true;
+  };
+	  const nativeRasterTargetFromScroll = () => {
+	    const cell = rasterCssCellSize();
+    return rasterBoundedTarget({
+      x: numberData("browserRasterViewportX") + Math.floor(shell.scrollLeft / Math.max(1, cell.width)),
+      y: numberData("browserRasterViewportY") + Math.floor(shell.scrollTop / Math.max(1, cell.height))
+    });
+  };
+  const viewportPointBase = () => canUseNativeRasterScroll()
+    ? nativeRasterTargetFromScroll()
+    : { x: numberData("viewportX"), y: numberData("viewportY") };
+	  const rasterContentPointFromEvent = (event) => {
+	    const metrics = rasterDisplayMetrics();
+	    if (!metrics) {
+	      return null;
+	    }
+	    if (
+	      event.clientX < metrics.shellRect.left
+	      || event.clientX > metrics.shellRect.right
+	      || event.clientY < metrics.shellRect.top
+	      || event.clientY > metrics.shellRect.bottom
+	    ) {
+	      return null;
+	    }
+	    const shellContentX = event.clientX - metrics.shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft;
+	    const shellContentY = event.clientY - metrics.shellRect.top - (shell.clientTop || 0) + shell.scrollTop;
+	    const rasterCssX = shellContentX - metrics.contentLeft;
+	    const rasterCssY = shellContentY - metrics.contentTop;
+	    if (
+	      rasterCssX < 0
+	      || rasterCssY < 0
+	      || rasterCssX > metrics.rasterRect.width
+	      || rasterCssY > metrics.rasterRect.height
+	    ) {
+	      return null;
+	    }
+	    const bitmapX = clamp(Math.floor(rasterCssX * metrics.scaleX), 0, metrics.bitmap.width - 1);
+	    const bitmapY = clamp(Math.floor(rasterCssY * metrics.scaleY), 0, metrics.bitmap.height - 1);
+	    return {
+	      x: bitmapX,
+	      y: bitmapY,
+	      contentX: metrics.contentLeft + (bitmapX / Math.max(metrics.scaleX, 0.0001)),
+	      contentY: metrics.contentTop + (bitmapY / Math.max(metrics.scaleY, 0.0001))
+	    };
+	  };
+  const commitNativeRasterScrollPosition = (inputSource = "native", options = {}) => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    if (nativeRasterScrollFrame) {
+      cancelBrowserAnimationFrame(nativeRasterScrollFrame);
+      nativeRasterScrollFrame = null;
+    }
+    if (nativeRasterScrollTimeout) {
+      clearTimeout(nativeRasterScrollTimeout);
+      nativeRasterScrollTimeout = null;
+    }
+    if (partialRequestInFlight) {
+      viewportRequestSeq += 1;
+      abortPartialViewportRequest();
+      partialRequestController = null;
+      partialRequestInFlight = false;
+    }
+    const target = nativeRasterTargetFromScroll();
+    shell.dataset.browserNativeRasterScrollState = "committed";
+    shell.dataset.browserNativeRasterScrollInputSource = inputSource;
+    shell.dataset.browserScrollLocalCommit = "native-overscan";
+    shell.dataset.browserScrollLocalCommitInputSource = inputSource;
+    shell.dataset.browserScrollLocalCommitTargetX = String(target.x);
+    shell.dataset.browserScrollLocalCommitTargetY = String(target.y);
+    setNativeRasterScrollPosition(target);
+    clearClickMarkerPoint("Ready for page click.");
+    setViewportDatasetCoordinates(target);
+    clearOptimisticScroll();
+    shell.removeAttribute("aria-busy");
+    shell.removeAttribute("data-viewport-pending");
+    shell.removeAttribute("data-viewport-request");
+    shell.dataset.scrollActionState = "local-commit";
+    shell.dataset.viewportState = "settled";
+    syncLocalScrollCommitState(target, inputSource, { deferHeavySync: Boolean(options.deferHeavySync) });
+    deferLocalScrollBookkeeping(target, inputSource);
+    return true;
+  };
+  const nativeRasterScrollTargetChanged = () => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    const target = nativeRasterTargetFromScroll();
+    return target.x !== numberData("viewportX") || target.y !== numberData("viewportY");
+  };
+  const maybeCommitNativeRasterScroll = (inputSource = "native-monitor") => {
+    if (partialRequestInFlight || shell.dataset.viewportRequest || !nativeRasterScrollTargetChanged()) {
+      return false;
+    }
+    return commitNativeRasterScrollPosition(inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });
+  };
+  const observeNativeRasterScrollOffset = (inputSource = "native-frame") => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    const offset = nativeRasterCurrentPixelOffset();
+    const last = nativeRasterLastObservedOffset;
+    const changed = !last
+      || Math.abs(offset.x - last.x) > 1
+      || Math.abs(offset.y - last.y) > 1;
+    if (!changed) {
+      return false;
+    }
+    nativeRasterLastObservedOffset = offset;
+    if (nativeRasterProgrammaticScroll) {
+      const isProgrammaticOffset = nativeRasterProgrammaticOffset
+        && Math.abs(offset.x - nativeRasterProgrammaticOffset.x) <= 1
+        && Math.abs(offset.y - nativeRasterProgrammaticOffset.y) <= 1;
+      if (isProgrammaticOffset) {
+        shell.dataset.browserNativeRasterScrollState = "programmatic";
+        return false;
+      }
+      clearNativeRasterProgrammaticScroll();
+    }
+    shell.dataset.browserNativeRasterScrollState = "native-observed";
+    return commitNativeRasterScrollPosition(inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });
+  };
+  const scheduleNativeRasterScrollCommit = (inputSource = "native") => {
+    nativeRasterScrollInputSource = inputSource;
+    if (nativeRasterScrollFrame || nativeRasterScrollTimeout) {
+      return true;
+    }
+    const flushNativeRasterScrollCommit = () => {
+      if (nativeRasterScrollFrame) {
+        cancelBrowserAnimationFrame(nativeRasterScrollFrame);
+        nativeRasterScrollFrame = null;
+      }
+      if (nativeRasterScrollTimeout) {
+        clearTimeout(nativeRasterScrollTimeout);
+        nativeRasterScrollTimeout = null;
+      }
+      commitNativeRasterScrollPosition(nativeRasterScrollInputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(nativeRasterScrollInputSource) });
+    };
+    nativeRasterScrollFrame = browserAnimationFrame(flushNativeRasterScrollCommit);
+    nativeRasterScrollTimeout = setTimeout(() => {
+      flushNativeRasterScrollCommit();
+    }, 16);
+    return true;
+  };
+  const nativeRasterScrollMonitorMs = 80;
+  setInterval(() => maybeCommitNativeRasterScroll("native-monitor"), nativeRasterScrollMonitorMs);
+  const runNativeRasterFrameMonitor = () => {
+    nativeRasterScrollMonitorFrame = null;
+    observeNativeRasterScrollOffset("native-frame");
+    nativeRasterScrollMonitorFrame = browserAnimationFrame(runNativeRasterFrameMonitor);
+  };
+  nativeRasterScrollMonitorFrame = browserAnimationFrame(runNativeRasterFrameMonitor);
+  const nativeRasterCanScrollDelta = (deltaX, deltaY) => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    const maxLeft = Math.max(0, shell.scrollWidth - shell.clientWidth);
+    const maxTop = Math.max(0, shell.scrollHeight - shell.clientHeight);
+    const canX = deltaX < 0 ? shell.scrollLeft > 0 : deltaX > 0 ? shell.scrollLeft < maxLeft - 1 : false;
+    const canY = deltaY < 0 ? shell.scrollTop > 0 : deltaY > 0 ? shell.scrollTop < maxTop - 1 : false;
+    return canX || canY;
+  };
+  const updateRasterBaseForViewport = (target) => {
+    if (setNativeRasterScrollPosition(target)) {
+      return;
+    }
+	    const rasterX = numberData("browserRasterViewportX");
+	    const rasterY = numberData("browserRasterViewportY");
+	    const cell = rasterCssCellSize();
+    const offsetX = Math.max(0, Math.round((target.x - rasterX) * cell.width));
+    const offsetY = Math.max(0, Math.round((target.y - rasterY) * cell.height));
+    shell.dataset.browserRasterViewportOffsetX = String(offsetX);
+    shell.dataset.browserRasterViewportOffsetY = String(offsetY);
+    shell.style.setProperty("--browser-raster-base-x", `-${offsetX}px`);
+    shell.style.setProperty("--browser-raster-base-y", `-${offsetY}px`);
+  };
+  const updateViewportSummaryForLocalCommit = (target) => {
+    const maxX = Math.max(0, numberData("maxScrollX"));
+    const maxY = Math.max(0, numberData("maxScrollY"));
+    const percent = maxY > 0 ? Math.floor(target.y / maxY * 100) : 0;
+    for (const summary of document.querySelectorAll("[data-browser-scroll-state=\"summary\"]")) {
+      summary.textContent = `Scroll x ${target.x}/${maxX} · y ${target.y}/${maxY} · ${percent}%`;
+      summary.dataset.scrollXState = maxX > 0 ? "horizontal scroll available" : "no horizontal scroll";
+      summary.dataset.scrollYState = maxY > 0 ? "vertical scroll available" : "no vertical scroll";
+    }
+    for (const meter of document.querySelectorAll("[role=\"progressbar\"][aria-label=\"Vertical scroll position\"]")) {
+      meter.setAttribute("aria-valuenow", String(target.y));
+      meter.setAttribute("aria-valuetext", `y ${target.y} of ${maxY}`);
+      const fill = meter.querySelector("span");
+      if (fill) {
+        fill.style.width = `${percent}%`;
+      }
+    }
+    for (const status of document.querySelectorAll("[data-browser-viewport-status]")) {
+      status.dataset.browserViewportTargetX = String(target.x);
+      status.dataset.browserViewportTargetY = String(target.y);
+      status.dataset.browserViewportCurrentX = String(target.x);
+      status.dataset.browserViewportCurrentY = String(target.y);
+    }
+    for (const control of viewportControls()) {
+      control.dataset.scrollX = String(target.x);
+      control.dataset.scrollY = String(target.y);
+      control.dataset.browserScrollControlViewportX = String(target.x);
+      control.dataset.browserScrollControlViewportY = String(target.y);
+    }
+  };
+  const shouldDeferLocalScrollHeavySync = (inputSource) => inputSource === "wheel" || inputSource === "drag" || inputSource === "native" || inputSource === "native-monitor" || inputSource === "native-frame";
+  const runLocalScrollHeavySync = (scroll, inputSource) => { scheduleBackgroundViewportRefresh(scroll, inputSource); syncChromeViewportState(); syncViewportHistory(); };
+  const scheduleLocalScrollHeavySync = (scroll, inputSource) => {
+    localScrollHeavySyncTarget = { scroll: { x: scroll.x, y: scroll.y }, inputSource };
+    if (localScrollHeavySyncTimer) clearTimeout(localScrollHeavySyncTimer);
+    localScrollHeavySyncTimer = setTimeout(() => {
+      const target = localScrollHeavySyncTarget; localScrollHeavySyncTimer = null; localScrollHeavySyncTarget = null;
+      if (!target || !viewportTargetMatchesCurrent(target.scroll)) return;
+      runLocalScrollHeavySync(target.scroll, target.inputSource);
+      shell.dataset.browserScrollDeferredHeavySync = "applied";
+    }, interactiveScrollRefreshIdleMs);
+    shell.dataset.browserScrollDeferredHeavySync = "scheduled";
+  };
+  const syncLocalScrollCommitState = (scroll, inputSource, options = {}) => {
+    updateViewportSummaryForLocalCommit(scroll);
+    if (options.deferHeavySync) scheduleLocalScrollHeavySync(scroll, inputSource);
+    else {
+      if (localScrollHeavySyncTimer) clearTimeout(localScrollHeavySyncTimer);
+      localScrollHeavySyncTimer = null; localScrollHeavySyncTarget = null;
+      runLocalScrollHeavySync(scroll, inputSource);
+      shell.dataset.browserScrollDeferredHeavySync = "not-needed";
+    }
+    shell.dataset.browserScrollImmediateSync = "true";
+    shell.dataset.browserScrollImmediateSyncInputSource = inputSource;
+    shell.dataset.browserScrollImmediateSyncTargetX = String(scroll.x);
+    shell.dataset.browserScrollImmediateSyncTargetY = String(scroll.y);
+    setViewportFeedback(settledViewportMessage());
+  };
+  const runLocalScrollBookkeeping = (scroll, inputSource) => {
+    shell.dataset.browserScrollDeferredFollowup = "true";
+    shell.dataset.browserScrollDeferredFollowupInputSource = inputSource;
+    shell.dataset.browserScrollDeferredFollowupTargetX = String(scroll.x);
+    shell.dataset.browserScrollDeferredFollowupTargetY = String(scroll.y);
+    restoreClickMarkerAfterPartial();
+    replayDeferredClickAfterPartial();
+  };
+  const deferLocalScrollBookkeeping = (scroll, inputSource) => {
+    localScrollBookkeepingTarget = {
+      scroll: { x: scroll.x, y: scroll.y },
+      inputSource
+    };
+    if (localScrollBookkeepingFrame || localScrollBookkeepingTimeout) {
+      return;
+    }
+    const flush = () => {
+      if (localScrollBookkeepingFrame) {
+        cancelBrowserAnimationFrame(localScrollBookkeepingFrame);
+      }
+      if (localScrollBookkeepingTimeout) {
+        clearTimeout(localScrollBookkeepingTimeout);
+      }
+      localScrollBookkeepingFrame = null;
+      localScrollBookkeepingTimeout = null;
+      const target = localScrollBookkeepingTarget;
+      localScrollBookkeepingTarget = null;
+      if (!target) {
+        return;
+      }
+      runLocalScrollBookkeeping(target.scroll, target.inputSource);
+    };
+    localScrollBookkeepingFrame = browserAnimationFrame(flush);
+    localScrollBookkeepingTimeout = setTimeout(flush, 16);
+  };
+  const commitViewportScrollLocally = (scroll, inputSource) => {
+    if (!canCommitViewportScrollLocally(scroll)) {
+      return false;
+    }
+    const hadPendingUi = shell.dataset.viewportPending === "true" || shell.dataset.viewportRequest || partialRequestInFlight || Boolean(pendingScrollTimer);
+    if (pendingScrollTimer) {
+      clearTimeout(pendingScrollTimer);
+      pendingScrollTimer = null;
+    }
+    if (partialRequestInFlight) {
+      viewportRequestSeq += 1;
+      abortPartialViewportRequest();
+      partialRequestController = null;
+      partialRequestInFlight = false;
+    }
+    pendingScrollAfterRequest = false;
+    pendingScrollDx = 0;
+    pendingScrollDy = 0;
+    clearClickMarkerPoint("Ready for page click.");
+    setViewportDatasetCoordinates(scroll);
+    updateRasterBaseForViewport(scroll);
+    shell.dataset.browserScrollLocalCommit = "overscan";
+    shell.dataset.browserScrollLocalCommitInputSource = inputSource;
+    shell.dataset.browserScrollLocalCommitTargetX = String(scroll.x);
+    shell.dataset.browserScrollLocalCommitTargetY = String(scroll.y);
+    if (hadPendingUi) {
+      clearViewportPending();
+    } else {
+      clearOptimisticScroll();
+      shell.removeAttribute("aria-busy");
+      shell.removeAttribute("data-viewport-pending");
+      shell.removeAttribute("data-viewport-request");
+    }
+    shell.dataset.scrollActionState = "local-commit";
+    shell.dataset.viewportState = "settled";
+    shell.dataset.settledViewportX = String(scroll.x);
+    shell.dataset.settledViewportY = String(scroll.y);
+    syncLocalScrollCommitState(scroll, inputSource, { deferHeavySync: shouldDeferLocalScrollHeavySync(inputSource) });
+    deferLocalScrollBookkeeping(scroll, inputSource);
+    return true;
+  };
+  const viewportInteractionRect = () => {
     if (!raster) {
       return null;
     }
-    const rect = raster.getBoundingClientRect();
+    if (shell.dataset.browserOverscanRaster === "true") {
+      return shell.getBoundingClientRect();
+    }
+    return raster.getBoundingClientRect();
+  };
+	  const optimisticPixelOffsetForTarget = (target) => {
+	    const bounded = rasterBoundedTarget(target);
+	    const cell = rasterCssCellSize();
+    const dx = bounded.x - numberData("viewportX");
+    const dy = bounded.y - numberData("viewportY");
+    return {
+      x: -Math.round(dx * cell.width),
+      y: -Math.round(dy * cell.height),
+      dx: target.x - numberData("viewportX"),
+      dy: target.y - numberData("viewportY"),
+      visualDx: dx,
+      visualDy: dy,
+      visualTargetX: bounded.x,
+      visualTargetY: bounded.y,
+      clipped: bounded.clipped
+    };
+  };
+  const clearOptimisticScroll = () => {
+    shell.removeAttribute("data-browser-optimistic-scroll");
+    shell.removeAttribute("data-browser-optimistic-scroll-state");
+    shell.removeAttribute("data-browser-optimistic-target-x");
+    shell.removeAttribute("data-browser-optimistic-target-y");
+    shell.removeAttribute("data-browser-optimistic-visual-target-x");
+    shell.removeAttribute("data-browser-optimistic-visual-target-y");
+    shell.removeAttribute("data-browser-optimistic-dx");
+    shell.removeAttribute("data-browser-optimistic-dy");
+    shell.removeAttribute("data-browser-optimistic-visual-dx");
+    shell.removeAttribute("data-browser-optimistic-visual-dy");
+    shell.removeAttribute("data-browser-optimistic-pixel-x");
+    shell.removeAttribute("data-browser-optimistic-pixel-y");
+    shell.style.removeProperty("--browser-optimistic-scroll-x");
+    shell.style.removeProperty("--browser-optimistic-scroll-y");
+  };
+  const applyOptimisticScroll = (target) => {
+    if (!raster || !target) {
+      return false;
+    }
+    const offset = optimisticPixelOffsetForTarget(target);
+    if (!offset.dx && !offset.dy) {
+      clearOptimisticScroll();
+      return false;
+    }
+    shell.dataset.browserOptimisticScroll = "true";
+    shell.dataset.browserOptimisticScrollState = offset.clipped ? "translated-clipped" : "translated";
+    shell.dataset.browserOptimisticTargetX = String(target.x);
+    shell.dataset.browserOptimisticTargetY = String(target.y);
+    shell.dataset.browserOptimisticVisualTargetX = String(offset.visualTargetX);
+    shell.dataset.browserOptimisticVisualTargetY = String(offset.visualTargetY);
+    shell.dataset.browserOptimisticDx = String(offset.dx);
+    shell.dataset.browserOptimisticDy = String(offset.dy);
+    shell.dataset.browserOptimisticVisualDx = String(offset.visualDx);
+    shell.dataset.browserOptimisticVisualDy = String(offset.visualDy);
+    shell.dataset.browserOptimisticPixelX = String(offset.x);
+    shell.dataset.browserOptimisticPixelY = String(offset.y);
+    shell.style.setProperty("--browser-optimistic-scroll-x", `${offset.x}px`);
+    shell.style.setProperty("--browser-optimistic-scroll-y", `${offset.y}px`);
+    return true;
+  };
+  const viewportPointFromEvent = (event, options = {}) => {
+    if (!raster) {
+      return null;
+    }
+    if (options.commitNativeScroll) {
+      commitNativeRasterScrollPosition(options.inputSource || "pointer");
+    }
+    if (shell.dataset.browserOverscanRaster === "true") {
+      const contentPoint = rasterContentPointFromEvent(event);
+      if (!contentPoint) {
+        return null;
+      }
+      const cell = rasterCellSize();
+      const base = viewportPointBase();
+      const viewportOffsetX = Math.max(0, Math.round((base.x - numberData("browserRasterViewportX")) * cell.width));
+      const viewportOffsetY = Math.max(0, Math.round((base.y - numberData("browserRasterViewportY")) * cell.height));
+      const size = rasterSize();
+      const rawX = clamp(contentPoint.x - viewportOffsetX, 0, size.width - 1);
+      const rawY = clamp(contentPoint.y - viewportOffsetY, 0, size.height - 1);
+      const padding = viewportRasterPixelPadding();
+      const viewportWidth = Math.max(1, numberData("viewportWidth"));
+      const viewportHeight = Math.max(1, numberData("viewportHeight"));
+      const maxPageX = numberData("maxScrollX") + viewportWidth - 1;
+      const maxPageY = numberData("maxScrollY") + viewportHeight - 1;
+      const domX = clamp(Math.floor((rawX - padding.x) / Math.max(1, cell.width)), 0, viewportWidth - 1);
+      const domY = clamp(Math.floor((rawY - padding.y) / Math.max(1, cell.height)), 0, viewportHeight - 1);
+      const pageX = clamp(base.x + domX, 0, maxPageX);
+      const pageY = clamp(base.y + domY, 0, maxPageY);
+	      return { x: rawX, y: rawY, contentX: contentPoint.contentX, contentY: contentPoint.contentY, domX, domY, pageX, pageY };
+	    }
+    const rect = viewportInteractionRect();
+    if (!rect) {
+      return null;
+    }
     if (!rect.width || !rect.height) {
       return null;
     }
@@ -11438,32 +12804,70 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const size = rasterSize();
     const x = clamp(Math.floor(relativeX / rect.width * size.width), 0, size.width - 1);
     const y = clamp(Math.floor(relativeY / rect.height * size.height), 0, size.height - 1);
+    const cell = rasterCellSize();
+    const padding = viewportRasterPixelPadding();
+    const domX = clamp(
+      Math.floor((x - padding.x) / Math.max(1, cell.width)),
+      0,
+      Math.max(1, numberData("viewportWidth")) - 1
+    );
+    const domY = clamp(
+      Math.floor((y - padding.y) / Math.max(1, cell.height)),
+      0,
+      Math.max(1, numberData("viewportHeight")) - 1
+    );
+    const base = viewportPointBase();
     return {
       x,
       y,
-      pageX: numberData("viewportX") + x,
-      pageY: numberData("viewportY") + y
+      domX,
+      domY,
+      pageX: base.x + domX,
+      pageY: base.y + domY
     };
   };
-  const pointMessage = (point) => `DOM point x ${point.x}, y ${point.y} (page ${point.pageX}, ${point.pageY})`;
-  const viewportPointFromPagePoint = (pagePoint) => {
+  const viewportClickCell = (point) => ({
+    x: Number.isFinite(point.domX) ? point.domX : point.x,
+    y: Number.isFinite(point.domY) ? point.domY : point.y
+  });
+  const pointMessage = (point) => {
+    const cell = viewportClickCell(point);
+    return `DOM point x ${cell.x}, y ${cell.y} (page ${point.pageX}, ${point.pageY})`;
+  };
+  const viewportPointFromPagePoint = (pagePoint, options = {}) => {
+    if (options.commitNativeScroll) {
+      commitNativeRasterScrollPosition(options.inputSource || "pointer");
+    }
     const size = rasterSize();
-    const x = pagePoint.pageX - numberData("viewportX");
-    const y = pagePoint.pageY - numberData("viewportY");
-    if (x < 0 || y < 0 || x >= size.width || y >= size.height) {
+    const base = viewportPointBase();
+    const domX = pagePoint.pageX - base.x;
+    const domY = pagePoint.pageY - base.y;
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    if (domX < 0 || domY < 0 || domX >= viewportWidth || domY >= viewportHeight) {
       return null;
     }
-    return { x, y, pageX: pagePoint.pageX, pageY: pagePoint.pageY };
+    const cell = rasterCellSize();
+    const padding = viewportRasterPixelPadding();
+    return {
+      x: clamp(Math.round(padding.x + domX * cell.width), 0, size.width - 1),
+      y: clamp(Math.round(padding.y + domY * cell.height), 0, size.height - 1),
+      domX,
+      domY,
+      pageX: pagePoint.pageX,
+      pageY: pagePoint.pageY
+    };
   };
   const updateClickInputs = (point) => {
     const idPrefix = String.fromCharCode(35);
     const xInput = document.querySelector(idPrefix + "browser-viewport-click-x");
     const yInput = document.querySelector(idPrefix + "browser-viewport-click-y");
+    const cell = viewportClickCell(point);
     if (xInput) {
-      xInput.value = String(point.x);
+      xInput.value = String(cell.x);
     }
     if (yInput) {
-      yInput.value = String(point.y);
+      yInput.value = String(cell.y);
     }
   };
   const hideClickMarker = () => {
@@ -11471,19 +12875,50 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       clickMarker.hidden = true;
     }
   };
-  const clearClickMarkerPoint = () => {
+  const clearClickMarkerPoint = (message = null) => {
     lastClickPagePoint = null;
     hideClickMarker();
+    if (message) {
+      setClickStatus(message);
+    }
   };
+	  const rasterContentPointForPagePoint = (point) => {
+	    const cell = rasterCellSize(), padding = viewportRasterPixelPadding();
+	    const metrics = rasterDisplayMetrics();
+	    const baseX = metrics ? metrics.contentLeft : 0;
+	    const baseY = metrics ? metrics.contentTop : 0;
+	    const scaleX = metrics ? Math.max(metrics.scaleX, 0.0001) : 1;
+	    const scaleY = metrics ? Math.max(metrics.scaleY, 0.0001) : 1;
+	    return {
+	      x: baseX + (padding.x + ((point.pageX - numberData("browserRasterViewportX") + 0.5) * cell.width)) / scaleX,
+	      y: baseY + (padding.y + ((point.pageY - numberData("browserRasterViewportY") + 0.5) * cell.height)) / scaleY
+	    };
+	  };
   const moveClickMarker = (point) => {
     if (!clickMarker || !raster) {
       return;
     }
-    const rasterRect = raster.getBoundingClientRect();
+    const viewportRect = viewportInteractionRect();
+    if (!viewportRect) {
+      return;
+    }
     const shellRect = shell.getBoundingClientRect();
-    const size = rasterSize();
-    const left = rasterRect.left - shellRect.left + ((point.x + 0.5) / size.width) * rasterRect.width;
-    const top = rasterRect.top - shellRect.top + ((point.y + 0.5) / size.height) * rasterRect.height;
+    let left;
+    let top;
+    if (shell.dataset.browserOverscanRaster === "true") {
+      const markerContentPoint = rasterContentPointForPagePoint(point);
+      if (Number.isFinite(point.contentX) && Number.isFinite(point.contentY)) {
+        left = point.contentX;
+        top = point.contentY;
+      } else {
+        left = markerContentPoint.x;
+        top = markerContentPoint.y;
+      }
+    } else {
+      const size = rasterSize();
+      left = viewportRect.left - shellRect.left - (shell.clientLeft || 0) + shell.scrollLeft + ((point.x + 0.5) / size.width) * viewportRect.width;
+      top = viewportRect.top - shellRect.top - (shell.clientTop || 0) + shell.scrollTop + ((point.y + 0.5) / size.height) * viewportRect.height;
+    }
     clickMarker.style.left = `${left}px`;
     clickMarker.style.top = `${top}px`;
     clickMarker.hidden = false;
@@ -11513,9 +12948,19 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (shell.dataset.deferredClickPageX || shell.dataset.deferredClickPageY) {
       shell.dataset.scrollClearedDeferredClick = "true";
     }
+    clearClickMarkerPoint("Ready for page click.");
     clearDeferredClick();
   };
+  const currentBrowserSessionId = () => shell.dataset.browserShellSession || shell.dataset.browserScrollSession || "";
+  const isBrowserSessionUrl = (url) => url.pathname === "/browser" || url.pathname === "/api/browser-session";
   const stampCurrentViewportUrl = (url) => {
+    const sessionId = currentBrowserSessionId();
+    if (sessionId && isBrowserSessionUrl(url) && url.searchParams.has("id")) {
+      url.searchParams.set("id", sessionId);
+    }
+    if (sessionId && isBrowserSessionUrl(url) && url.searchParams.has("session")) {
+      url.searchParams.set("session", sessionId);
+    }
     url.searchParams.set("viewport_x", String(numberData("viewportX")));
     url.searchParams.set("viewport_y", String(numberData("viewportY")));
     url.searchParams.set("width", String(numberData("viewportWidth")));
@@ -11531,27 +12976,35 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   const syncChromeViewportState = () => {
     const currentX = String(numberData("viewportX"));
     const currentY = String(numberData("viewportY"));
+    const maxX = String(numberData("maxScrollX"));
+    const maxY = String(numberData("maxScrollY"));
+    const width = String(numberData("viewportWidth"));
+    const height = String(numberData("viewportHeight"));
+    const sessionId = currentBrowserSessionId();
+    const source = shell.dataset.pageSource || "";
+    const maxBytes = shell.dataset.maxBytes || "";
     const pageActionGroup = document.querySelector("[data-browser-chrome-page-actions]");
     if (pageActionGroup) {
       pageActionGroup.dataset.browserChromePageActionState = "synced";
       pageActionGroup.dataset.browserChromePageActionViewportX = currentX;
       pageActionGroup.dataset.browserChromePageActionViewportY = currentY;
-      pageActionGroup.dataset.browserChromePageActionSource = shell.dataset.pageSource || "";
-      pageActionGroup.dataset.browserChromePageActionMaxBytes = shell.dataset.maxBytes || "";
+      pageActionGroup.dataset.browserChromePageActionSource = source;
+      pageActionGroup.dataset.browserChromePageActionMaxBytes = maxBytes;
     }
     const updateHref = (selector, hrefAttr, statePrefix = null) => {
-      const link = document.querySelector(selector);
-      if (!link || !link.href) {
-        return;
-      }
-      const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
-      link.href = url.toString();
-      link.setAttribute(hrefAttr, url.toString());
-      if (statePrefix) {
-        link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX);
-        link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY);
-        link.setAttribute(`${statePrefix}-preserved-source`, shell.dataset.pageSource || "");
-        link.setAttribute(`${statePrefix}-preserved-max-bytes`, shell.dataset.maxBytes || "");
+      for (const link of document.querySelectorAll(selector)) {
+        if (!link.href) {
+          continue;
+        }
+        const url = stampCurrentViewportUrl(new URL(link.href, window.location.href));
+        link.href = url.toString();
+        link.setAttribute(hrefAttr, url.toString());
+        if (statePrefix) {
+          link.setAttribute(`${statePrefix}-preserved-viewport-x`, currentX);
+          link.setAttribute(`${statePrefix}-preserved-viewport-y`, currentY);
+          link.setAttribute(`${statePrefix}-preserved-source`, source);
+          link.setAttribute(`${statePrefix}-preserved-max-bytes`, maxBytes);
+        }
       }
     };
     updateHref("[data-browser-chrome-current-action]", "data-browser-chrome-current-href", "data-browser-chrome-current");
@@ -11568,8 +13021,8 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       link.dataset.browserFormSubmitHref = url.toString();
       link.dataset.browserFormSubmitPreservedViewportX = currentX;
       link.dataset.browserFormSubmitPreservedViewportY = currentY;
-      link.dataset.browserFormSubmitPreservedSource = shell.dataset.pageSource || "";
-      link.dataset.browserFormSubmitPreservedMaxBytes = shell.dataset.maxBytes || "";
+      link.dataset.browserFormSubmitPreservedSource = source;
+      link.dataset.browserFormSubmitPreservedMaxBytes = maxBytes;
     }
     for (const link of document.querySelectorAll("a[data-browser-chrome-scroll-action]")) {
       if (!link.href) {
@@ -11580,8 +13033,77 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       link.dataset.browserChromeScrollHref = url.toString();
       link.dataset.browserChromeScrollPreservedViewportX = currentX;
       link.dataset.browserChromeScrollPreservedViewportY = currentY;
-      link.dataset.browserChromeScrollPreservedSource = shell.dataset.pageSource || "";
-      link.dataset.browserChromeScrollPreservedMaxBytes = shell.dataset.maxBytes || "";
+      link.dataset.browserChromeScrollPreservedSource = source;
+      link.dataset.browserChromeScrollPreservedMaxBytes = maxBytes;
+    }
+    const syncBrowserSessionLink = (link) => {
+      if (!sessionId || !link.href) {
+        return;
+      }
+      let hrefUrl = null;
+      try {
+        hrefUrl = new URL(link.href, window.location.href);
+      } catch (_) {
+        hrefUrl = null;
+      }
+      if (hrefUrl && isBrowserSessionUrl(hrefUrl) && (hrefUrl.searchParams.has("id") || hrefUrl.searchParams.has("session"))) {
+        link.href = stampCurrentViewportUrl(hrefUrl).toString();
+      }
+      for (const attribute of Array.from(link.attributes)) {
+        if (!attribute.name.startsWith("data-browser")) {
+          continue;
+        }
+        if (attribute.name.endsWith("-session")) {
+          link.setAttribute(attribute.name, sessionId);
+          continue;
+        }
+        if (!attribute.name.endsWith("-href") || !attribute.value) {
+          continue;
+        }
+        try {
+          const url = new URL(attribute.value, window.location.href);
+          if (isBrowserSessionUrl(url) && (url.searchParams.has("id") || url.searchParams.has("session"))) {
+            link.setAttribute(attribute.name, stampCurrentViewportUrl(url).toString());
+          }
+        } catch (_) {}
+      }
+    };
+    for (const link of document.querySelectorAll("a[href]")) {
+      syncBrowserSessionLink(link);
+    }
+    for (const chip of document.querySelectorAll("[data-browser-shell-session]")) {
+      if (sessionId) {
+        chip.dataset.browserShellSession = sessionId;
+      }
+    }
+    for (const chip of document.querySelectorAll("[data-browser-shell-viewport]")) {
+      chip.textContent = `${width}x${height}`;
+      chip.setAttribute("title", `viewport ${width}x${height} at ${currentX},${currentY}`);
+    }
+    for (const chip of document.querySelectorAll("[data-browser-chrome-viewport]")) {
+      chip.textContent = `x ${currentX}/${maxX} · y ${currentY}/${maxY}`;
+      chip.setAttribute("title", `viewport ${width}x${height} at ${currentX},${currentY}`);
+    }
+    for (const feedback of document.querySelectorAll("[data-browser-chrome-scroll-feedback], [data-browser-chrome-action-feedback][data-browser-action-feedback-placement=\"chrome\"]")) {
+      feedback.dataset.browserActionFeedbackViewportX = currentX;
+      feedback.dataset.browserActionFeedbackViewportY = currentY;
+      feedback.dataset.browserActionFeedbackSession = sessionId;
+      feedback.dataset.browserActionFeedbackSource = source;
+      feedback.dataset.browserActionFeedbackMaxBytes = maxBytes;
+    }
+    for (const control of document.querySelectorAll("[data-browser-chrome-scroll-actions]")) {
+      control.dataset.browserChromeScrollX = currentX;
+      control.dataset.browserChromeScrollY = currentY;
+      control.dataset.browserChromeScrollCurrentX = currentX;
+      control.dataset.browserChromeScrollCurrentY = currentY;
+      control.dataset.browserChromeScrollTargetX = currentX;
+      control.dataset.browserChromeScrollTargetY = currentY;
+      control.dataset.browserChromeScrollClampedX = currentX;
+      control.dataset.browserChromeScrollClampedY = currentY;
+      control.dataset.browserChromeMaxScrollX = maxX;
+      control.dataset.browserChromeMaxScrollY = maxY;
+      control.dataset.browserChromeCanScrollUp = String(numberData("viewportY") > 0);
+      control.dataset.browserChromeCanScrollDown = String(numberData("viewportY") < numberData("maxScrollY"));
     }
     for (const element of document.querySelectorAll("[data-browser-address-form], [data-browser-address], [data-browser-address-submit], [data-browser-primary-nav], [data-browser-chrome-status]")) {
       element.dataset.browserAddressViewportX = currentX;
@@ -11594,15 +13116,15 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         element.dataset.browserAddressRouteState = "viewport-synced";
         element.dataset.browserAddressRouteViewportX = currentX;
         element.dataset.browserAddressRouteViewportY = currentY;
-        element.dataset.browserAddressRouteSource = shell.dataset.pageSource || "";
-        element.dataset.browserAddressRouteMaxBytes = shell.dataset.maxBytes || "";
+        element.dataset.browserAddressRouteSource = source;
+        element.dataset.browserAddressRouteMaxBytes = maxBytes;
       }
       if (element.hasAttribute("data-browser-address-submit")) {
         element.dataset.browserAddressSubmitRouteState = "viewport-synced";
         element.dataset.browserAddressSubmitViewportX = currentX;
         element.dataset.browserAddressSubmitViewportY = currentY;
-        element.dataset.browserAddressSubmitSource = shell.dataset.pageSource || "";
-        element.dataset.browserAddressSubmitMaxBytes = shell.dataset.maxBytes || "";
+        element.dataset.browserAddressSubmitSource = source;
+        element.dataset.browserAddressSubmitMaxBytes = maxBytes;
       }
     }
     for (const input of document.querySelectorAll("input[name=\"viewport_x\"]")) {
@@ -11735,25 +13257,38 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   });
   const submitViewportClick = (point, messagePrefix) => {
     const url = stampCurrentViewportUrl(new URL(shell.dataset.clickUrl, window.location.href));
-    const size = rasterSize();
-    url.searchParams.set("x", String(point.x));
-    url.searchParams.set("y", String(point.y));
-    url.searchParams.set("raster_width", String(size.width));
-    url.searchParams.set("raster_height", String(size.height));
+    const clickCell = viewportClickCell(point);
+    const coordinateSpace = "viewport-cells";
+    const clickSize = clickRasterSize();
+    const clickX = clickCell.x;
+    const clickY = clickCell.y;
+    url.searchParams.set("x", String(clickX));
+    url.searchParams.set("y", String(clickY));
+    url.searchParams.set("coordinate_space", coordinateSpace);
+    url.searchParams.set("raster_width", String(clickSize.width));
+    url.searchParams.set("raster_height", String(clickSize.height));
+    url.searchParams.set("dom_x", String(clickCell.x));
+    url.searchParams.set("dom_y", String(clickCell.y));
+    shell.dataset.lastClickRasterX = String(point.x);
+    shell.dataset.lastClickRasterY = String(point.y);
     shell.dataset.clickActionState = "pending";
     shell.dataset.clickNavigationState = "submitting";
     shell.dataset.clickTargetContext = "viewport";
     shell.dataset.clickPreservedViewportX = String(numberData("viewportX"));
     shell.dataset.clickPreservedViewportY = String(numberData("viewportY"));
-    shell.dataset.lastClickX = String(point.x);
-    shell.dataset.lastClickY = String(point.y);
+    shell.dataset.lastClickX = String(clickX);
+    shell.dataset.lastClickY = String(clickY);
+    shell.dataset.lastClickDomX = String(clickCell.x);
+    shell.dataset.lastClickDomY = String(clickCell.y);
     shell.dataset.lastClickPageX = String(point.pageX);
     shell.dataset.lastClickPageY = String(point.pageY);
     const topStatus = chromeStatus();
     if (topStatus) {
       topStatus.dataset.browserChromeClickPendingState = "pending";
-      topStatus.dataset.browserChromeClickPendingX = String(point.x);
-      topStatus.dataset.browserChromeClickPendingY = String(point.y);
+      topStatus.dataset.browserChromeClickPendingX = String(clickX);
+      topStatus.dataset.browserChromeClickPendingY = String(clickY);
+      topStatus.dataset.browserChromeClickPendingDomX = String(clickCell.x);
+      topStatus.dataset.browserChromeClickPendingDomY = String(clickCell.y);
       topStatus.dataset.browserChromeClickPendingPageX = String(point.pageX);
       topStatus.dataset.browserChromeClickPendingPageY = String(point.pageY);
       topStatus.dataset.browserChromeClickPendingViewportX = String(numberData("viewportX"));
@@ -11772,10 +13307,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) {
       return false;
     }
-    const point = viewportPointFromPagePoint({ pageX, pageY });
+    const point = viewportPointFromPagePoint(
+      { pageX, pageY },
+      { commitNativeScroll: true, inputSource: "deferred-click" }
+    );
     clearDeferredClick();
     if (!point) {
-      clearClickMarkerPoint();
+    clearClickMarkerPoint("Ready for page click.");
       setClickStatus("Saved click is outside the settled viewport.");
       setViewportFeedback("Saved click target moved outside the settled viewport; click again.");
       return false;
@@ -11799,16 +13337,39 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     }
     return "Refreshing visual viewport...";
   };
-  const queuedViewportTarget = (dx, dy) => {
+  const scrollTargetBase = () => {
+    const queuedX = Number(shell.dataset.queuedScrollTargetX);
+    const queuedY = Number(shell.dataset.queuedScrollTargetY);
+    if (Number.isFinite(queuedX) && Number.isFinite(queuedY)) {
+      return { x: queuedX, y: queuedY };
+    }
     const baseX = Number(shell.dataset.pendingViewportX);
     const baseY = Number(shell.dataset.pendingViewportY);
-    const x = Number.isFinite(baseX) ? baseX : numberData("viewportX");
-    const y = Number.isFinite(baseY) ? baseY : numberData("viewportY");
+    if (Number.isFinite(baseX) && Number.isFinite(baseY)) {
+      return { x: baseX, y: baseY };
+    }
+    return { x: numberData("viewportX"), y: numberData("viewportY") };
+  };
+  const targetFromScrollBase = (base, dx, dy) => {
     const maxX = Math.max(0, numberData("maxScrollX"));
     const maxY = Math.max(0, numberData("maxScrollY"));
-    const nextX = clamp(x + dx, 0, maxX);
-    const nextY = clamp(y + dy, 0, maxY);
-    return { x: nextX, y: nextY, dx: nextX - x, dy: nextY - y };
+    const nextX = clamp(base.x + dx, 0, maxX);
+    const nextY = clamp(base.y + dy, 0, maxY);
+    return {
+      x: nextX,
+      y: nextY,
+      dx: nextX - numberData("viewportX"),
+      dy: nextY - numberData("viewportY"),
+      stepDx: nextX - base.x,
+      stepDy: nextY - base.y
+    };
+  };
+  const queuedViewportTarget = (dx, dy) => {
+    return targetFromScrollBase(scrollTargetBase(), dx, dy);
+  };
+  const currentQueuedViewportTarget = () => {
+    const base = scrollTargetBase();
+    return targetFromScrollBase(base, 0, 0);
   };
   const normalizePendingScrollDelta = (target) => {
     pendingScrollDx = target.dx;
@@ -11823,6 +13384,73 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     current.replaceWith(next.cloneNode(true));
     return true;
   };
+  const viewportPartialRasterDecodeTimeoutMs = 80;
+  const backgroundViewportPartialRasterDecodeTimeoutMs = 320;
+  const predecodeViewportPartialRaster = (html, options = {}) => {
+    if (typeof DOMParser !== "function" || !document || typeof document.createElement !== "function") {
+      shell.dataset.browserViewportPartialRasterDecode = "unavailable";
+      return Promise.resolve(html);
+    }
+    const requestedRasterDecodeTimeoutMs = Number(options.timeoutMs);
+    const rasterDecodeTimeoutMs = Number.isFinite(requestedRasterDecodeTimeoutMs) && requestedRasterDecodeTimeoutMs > 0
+      ? requestedRasterDecodeTimeoutMs
+      : viewportPartialRasterDecodeTimeoutMs;
+    let rasterSrc = "";
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const nextRaster = doc.querySelector("[data-browser-viewport-scroll] .browser-raster");
+      rasterSrc = nextRaster ? nextRaster.getAttribute("src") || "" : "";
+    } catch (_) {
+      shell.dataset.browserViewportPartialRasterDecode = "parse-error";
+      return Promise.resolve(html);
+    }
+    if (!rasterSrc) {
+      shell.dataset.browserViewportPartialRasterDecode = "skipped";
+      return Promise.resolve(html);
+    }
+    shell.dataset.browserViewportPartialRasterDecode = "pending";
+    return new Promise((resolve) => {
+      let settled = false;
+      let timeout = null;
+      const finish = (state) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        shell.dataset.browserViewportPartialRasterDecode = state;
+        resolve(html);
+      };
+      const decodeLoadedImage = (image) => {
+        if (typeof image.decode === "function") {
+          image.decode().then(
+            () => finish("decoded"),
+            () => finish("loaded")
+          );
+        } else {
+          finish("loaded");
+        }
+      };
+      timeout = setTimeout(() => finish("timeout"), rasterDecodeTimeoutMs);
+      const image = typeof Image === "function" ? new Image() : document.createElement("img");
+      image.onload = () => decodeLoadedImage(image);
+      image.onerror = () => finish("failed");
+      image.src = rasterSrc;
+      if (image.complete) {
+        if (image.naturalWidth || image.naturalHeight) {
+          decodeLoadedImage(image);
+        } else {
+          finish("failed");
+        }
+      }
+    });
+  };
+  const viewportPartialRasterReadyForSwap = () => {
+    const decodeState = shell.dataset.browserViewportPartialRasterDecode || "";
+    return decodeState === "decoded" || decodeState === "loaded" || decodeState === "skipped";
+  };
   const applyViewportPartial = (html, options = {}) => {
     if (typeof DOMParser !== "function") {
       return false;
@@ -11836,8 +13464,19 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     if (options.samePageOnly && shell.dataset.pageSource && nextShell.dataset.pageSource && shell.dataset.pageSource !== nextShell.dataset.pageSource) {
       return false;
     }
+    const currentRaster = shell.querySelector(".browser-raster");
+    const nextRaster = nextShell.querySelector(".browser-raster");
+    if (currentRaster && !nextRaster) {
+      shell.dataset.browserViewportPartialPreservedRaster = "true";
+      shell.dataset.browserViewportPartialPreservedReason = nextShell.dataset.browserFastScroll === ""
+        ? "fast-scroll-raster-missing"
+        : "raster-missing";
+      shell.dataset.browserViewportPartialRasterDecode = "missing-raster-preserved";
+      return false;
+    }
     const keepFocus = document.activeElement === shell;
     const shellTopBefore = shell.getBoundingClientRect().top;
+    const rasterDecodeState = shell.dataset.browserViewportPartialRasterDecode || "";
     for (const attribute of Array.from(shell.attributes)) {
       shell.removeAttribute(attribute.name);
     }
@@ -11845,12 +13484,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.setAttribute(attribute.name, attribute.value);
     }
     shell.innerHTML = nextShell.innerHTML;
+    if (rasterDecodeState) {
+      shell.dataset.browserViewportPartialRasterDecode = rasterDecodeState;
+    }
     raster = shell.querySelector(".browser-raster");
     clickMarker = shell.querySelector("[data-browser-click-marker]");
+    syncNativeRasterScrollPosition();
+    installNativeRasterLoadSync();
     replaceElementFromPartial(doc, "[data-browser-viewport-status]");
     replaceElementFromPartial(doc, "[data-browser-viewport-interactions]");
     replaceElementFromPartial(doc, "[data-browser-viewport-controls]");
     replaceElementFromPartial(doc, "[data-browser-viewport-command-strip]");
+    replaceElementFromPartial(doc, "[data-browser-chrome-status]");
     shell.dataset.viewportPartial = "true";
     clearViewportPending();
     const shellTopAfter = shell.getBoundingClientRect().top;
@@ -11927,12 +13572,234 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     replayDeferredClickAfterPartial();
   };
   const settledViewportMessage = () => `Viewport settled at x ${numberData("viewportX")}, y ${numberData("viewportY")}.`;
+  const currentViewportTarget = () => {
+    return {
+      x: numberData("viewportX"),
+      y: numberData("viewportY")
+    };
+  };
+  const viewportTargetMatchesCurrent = (target) => {
+    return target && target.x === numberData("viewportX") && target.y === numberData("viewportY");
+  };
+  const shouldRefreshRasterForLocalTarget = (target) => {
+    if (!target || shell.dataset.browserOverscanRaster !== "true") {
+      return false;
+    }
+    const bounded = rasterBoundedTarget(target);
+    if (bounded.clipped) {
+      return false;
+    }
+    const viewportWidth = Math.max(1, numberData("viewportWidth"));
+    const viewportHeight = Math.max(1, numberData("viewportHeight"));
+    const rasterX = numberData("browserRasterViewportX");
+    const rasterY = numberData("browserRasterViewportY");
+    const rasterWidth = Math.max(viewportWidth, numberData("browserRasterViewportWidth"));
+    const rasterHeight = Math.max(viewportHeight, numberData("browserRasterViewportHeight"));
+    const lookaheadX = Math.max(1, Math.floor(viewportWidth / 2));
+    const lookaheadY = Math.max(1, Math.floor(viewportHeight));
+    const canScrollHorizontally = numberData("maxScrollX") > 0;
+    const canScrollVertically = numberData("maxScrollY") > 0;
+    const left = Math.max(0, target.x - rasterX);
+    const top = Math.max(0, target.y - rasterY);
+    const right = Math.max(0, rasterX + rasterWidth - (target.x + viewportWidth));
+    const bottom = Math.max(0, rasterY + rasterHeight - (target.y + viewportHeight));
+    const nearHorizontalEdge = canScrollHorizontally && (left <= lookaheadX || right <= lookaheadX);
+    const nearVerticalEdge = canScrollVertically && (top <= lookaheadY || bottom <= lookaheadY);
+    return nearHorizontalEdge || nearVerticalEdge;
+  };
+  const isInteractiveScrollInput = (inputSource) => inputSource === "wheel" || inputSource === "drag";
+  const interactiveScrollRefreshIdleMs = 160;
+  const backgroundViewportRefreshDelayMs = (inputSource, nearRasterEdge) => {
+    if (isInteractiveScrollInput(inputSource)) {
+      return nearRasterEdge ? 64 : 220;
+    }
+    return nearRasterEdge ? 32 : 120;
+  };
+  const buildCurrentViewportPartialUrl = (target) => {
+    const url = stampCurrentViewportUrl(new URL(shell.dataset.scrollUrl || window.location.href, window.location.href));
+    url.searchParams.set("action", "current");
+    url.searchParams.set("viewport_x", String(target.x));
+    url.searchParams.set("viewport_y", String(target.y));
+    url.searchParams.delete("dx");
+    url.searchParams.delete("dy");
+    url.searchParams.set("partial", "viewport");
+    return url;
+  };
+  const abortBackgroundViewportRefresh = () => {
+    if (backgroundViewportRefreshTimer) {
+      clearTimeout(backgroundViewportRefreshTimer);
+      backgroundViewportRefreshTimer = null;
+    }
+    backgroundViewportRefreshTarget = null;
+    backgroundViewportRefreshUnreadyRetries = 0;
+    if (backgroundViewportRefreshController && typeof backgroundViewportRefreshController.abort === "function") {
+      backgroundViewportRefreshSeq += 1;
+      shell.dataset.browserScrollBackgroundRefresh = "aborted";
+      backgroundViewportRefreshController.abort();
+      return true;
+    }
+    return false;
+  };
+  const scheduleBackgroundViewportRefreshTimer = (inputSource, nearRasterEdge) => {
+    if (backgroundViewportRefreshTimer) {
+      clearTimeout(backgroundViewportRefreshTimer);
+    }
+    backgroundViewportRefreshTimer = setTimeout(
+      flushBackgroundViewportRefresh,
+      backgroundViewportRefreshDelayMs(inputSource, nearRasterEdge)
+    );
+  };
+  const scheduleBackgroundViewportRefresh = (target, inputSource = "local") => {
+    if (!target || typeof fetch !== "function" || !window.history || typeof window.history.replaceState !== "function") {
+      return false;
+    }
+    if (partialRequestInFlight || shell.dataset.viewportRequest) {
+      return false;
+    }
+    const targetChanged = !backgroundViewportRefreshTarget
+      || backgroundViewportRefreshTarget.x !== target.x
+      || backgroundViewportRefreshTarget.y !== target.y;
+    if (targetChanged) {
+      backgroundViewportRefreshUnreadyRetries = 0;
+    }
+    backgroundViewportRefreshTarget = { x: target.x, y: target.y };
+    backgroundViewportRefreshInputSource = inputSource;
+    if (isInteractiveScrollInput(inputSource)) {
+      lastInteractiveScrollAt = Date.now();
+    }
+    const nearRasterEdge = shouldRefreshRasterForLocalTarget(target);
+    shell.dataset.browserScrollBackgroundRefresh = nearRasterEdge ? "scheduled-near-edge" : "scheduled";
+    shell.dataset.browserScrollBackgroundRefreshInputSource = inputSource;
+    shell.dataset.browserScrollBackgroundRefreshTargetX = String(target.x);
+    shell.dataset.browserScrollBackgroundRefreshTargetY = String(target.y);
+    if (backgroundViewportRefreshTimer) {
+      if (nearRasterEdge && !isInteractiveScrollInput(inputSource)) {
+        return true;
+      }
+      clearTimeout(backgroundViewportRefreshTimer);
+      backgroundViewportRefreshTimer = null;
+    }
+    if (backgroundViewportRefreshInFlight) {
+      shell.dataset.browserScrollBackgroundRefresh = isInteractiveScrollInput(inputSource)
+        ? "coalesced-during-interaction"
+        : "coalesced-while-in-flight";
+      return true;
+    }
+    scheduleBackgroundViewportRefreshTimer(inputSource, nearRasterEdge);
+    return true;
+  };
+  const flushBackgroundViewportRefresh = () => {
+    backgroundViewportRefreshTimer = null;
+    if (backgroundViewportRefreshInFlight || partialRequestInFlight || shell.dataset.viewportRequest) {
+      if (backgroundViewportRefreshTarget) {
+        backgroundViewportRefreshTimer = setTimeout(flushBackgroundViewportRefresh, 80);
+      }
+      return false;
+    }
+    const target = backgroundViewportRefreshTarget || currentViewportTarget();
+    backgroundViewportRefreshTarget = null;
+    const nearRasterEdge = shouldRefreshRasterForLocalTarget(target);
+    if (isInteractiveScrollInput(backgroundViewportRefreshInputSource)) {
+      const elapsedSinceInteractive = Date.now() - lastInteractiveScrollAt;
+      if (elapsedSinceInteractive < interactiveScrollRefreshIdleMs) {
+        backgroundViewportRefreshTarget = target;
+        backgroundViewportRefreshTimer = setTimeout(
+          flushBackgroundViewportRefresh,
+          interactiveScrollRefreshIdleMs - elapsedSinceInteractive
+        );
+        shell.dataset.browserScrollBackgroundRefresh = nearRasterEdge
+          ? "waiting-for-interaction-idle-near-edge"
+          : "waiting-for-interaction-idle";
+        return false;
+      }
+    }
+    if (!viewportTargetMatchesCurrent(target)) {
+      return scheduleBackgroundViewportRefresh(currentViewportTarget(), "background");
+    }
+    const requestSeq = ++backgroundViewportRefreshSeq;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    backgroundViewportRefreshController = controller;
+    backgroundViewportRefreshInFlight = true;
+    shell.dataset.browserScrollBackgroundRefresh = "in-flight";
+    const fetchOptions = {
+      headers: { "X-Requested-With": "browser-viewport-partial" }
+    };
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+    }
+    fetch(buildCurrentViewportPartialUrl(target).toString(), fetchOptions).then((response) => {
+      if (!response.ok) {
+        throw new Error("background viewport refresh failed");
+      }
+      return response.text();
+    }).then((html) => predecodeViewportPartialRaster(html, {
+      timeoutMs: backgroundViewportPartialRasterDecodeTimeoutMs
+    })).then((html) => {
+      if (requestSeq !== backgroundViewportRefreshSeq) {
+        return;
+      }
+      if (!viewportTargetMatchesCurrent(target)) {
+        scheduleBackgroundViewportRefresh(currentViewportTarget(), "background");
+        return;
+      }
+      if (!viewportPartialRasterReadyForSwap()) {
+        shell.dataset.browserScrollBackgroundRefresh = "preserved-raster-unready";
+        shell.dataset.browserScrollBackgroundRefreshPreservedReason = shell.dataset.browserViewportPartialRasterDecode || "unknown";
+        if (backgroundViewportRefreshUnreadyRetries < backgroundViewportRefreshMaxUnreadyRetries) {
+          backgroundViewportRefreshUnreadyRetries += 1;
+          backgroundViewportRefreshTarget = currentViewportTarget();
+          shell.dataset.browserScrollBackgroundRefreshRetry = String(backgroundViewportRefreshUnreadyRetries);
+        } else {
+          shell.dataset.browserScrollBackgroundRefreshRetry = "exhausted";
+        }
+        return;
+      }
+      if (applyViewportPartial(html, { samePageOnly: true })) {
+        backgroundViewportRefreshUnreadyRetries = 0;
+        shell.dataset.browserScrollBackgroundRefresh = "applied";
+      } else {
+        backgroundViewportRefreshUnreadyRetries = 0;
+        shell.dataset.browserScrollBackgroundRefresh = "ignored";
+      }
+    }).catch(() => {
+      if (requestSeq === backgroundViewportRefreshSeq) {
+        shell.dataset.browserScrollBackgroundRefresh = "failed";
+      }
+    }).then(() => {
+      if (requestSeq !== backgroundViewportRefreshSeq) {
+        if (backgroundViewportRefreshController === controller) {
+          backgroundViewportRefreshController = null;
+          backgroundViewportRefreshInFlight = false;
+        }
+        return;
+      }
+      if (backgroundViewportRefreshController === controller) {
+        backgroundViewportRefreshController = null;
+      }
+      backgroundViewportRefreshInFlight = false;
+      if (backgroundViewportRefreshTarget) {
+        const target = backgroundViewportRefreshTarget;
+        backgroundViewportRefreshTimer = setTimeout(
+          flushBackgroundViewportRefresh,
+          backgroundViewportRefreshDelayMs(
+            backgroundViewportRefreshInputSource,
+            shouldRefreshRasterForLocalTarget(target)
+          )
+        );
+      }
+    });
+    return true;
+  };
   const syncViewportHistory = () => {
     if (!window.history || typeof window.history.replaceState !== "function") {
       return;
     }
     try {
       const currentUrl = new URL(shell.dataset.scrollUrl || window.location.href, window.location.href);
+      const sessionId = shell.dataset.browserShellSession || shell.dataset.browserScrollSession;
+      if (sessionId) {
+        currentUrl.searchParams.set("id", sessionId);
+      }
       currentUrl.searchParams.set("action", "current");
       currentUrl.searchParams.set("viewport_x", String(numberData("viewportX")));
       currentUrl.searchParams.set("viewport_y", String(numberData("viewportY")));
@@ -11951,6 +13818,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     } catch (_) {}
   };
   const replaceViewportPartial = (url, message, options = {}) => {
+    abortBackgroundViewportRefresh();
     setViewportPending(message);
     if (typeof fetch !== "function" || !window.history || typeof window.history.replaceState !== "function") {
       window.location.href = url.toString();
@@ -11961,7 +13829,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const requestSeq = ++viewportRequestSeq;
     partialRequestInFlight = true;
     shell.dataset.viewportRequest = "partial";
-    const partialRequestTimeoutMs = 2500;
+    const partialRequestTimeoutMs = 1000;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     partialRequestController = controller;
     const fetchOptions = {
@@ -11981,8 +13849,11 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
         throw new Error("viewport partial request failed");
       }
       return response.text();
-    }).then((html) => {
+    }).then((html) => predecodeViewportPartialRaster(html)).then((html) => {
       if (requestSeq !== viewportRequestSeq) {
+        if (shell.dataset.browserScrollLocalCommit === "overscan") {
+          return;
+        }
         markStaleViewportResponse("Ignored stale visual viewport update; newer scroll is pending.");
         return;
       }
@@ -11993,6 +13864,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       setViewportFeedback(settledViewportMessage());
     }).catch(() => {
       if (requestSeq !== viewportRequestSeq) {
+        if (shell.dataset.browserScrollLocalCommit === "overscan") {
+          return;
+        }
         markStaleViewportResponse("Ignored stale visual viewport error; newer scroll is pending.");
         return;
       }
@@ -12007,11 +13881,13 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       settleViewportPartialFailure("Visual viewport update failed; current viewport retained. Scroll again to retry.");
     }).then(() => {
       clearPartialTimeout();
+      if (partialRequestController === controller) {
+        partialRequestController = null;
+        partialRequestInFlight = false;
+      }
       if (requestSeq !== viewportRequestSeq) {
         return;
       }
-      partialRequestController = null;
-      partialRequestInFlight = false;
       if (pendingScrollAfterRequest && (pendingScrollDx || pendingScrollDy)) {
         pendingScrollAfterRequest = false;
         pendingScrollTimer = setTimeout(flushPendingScroll, 0);
@@ -12025,11 +13901,26 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
   let viewportRequestSeq = 0;
   let partialRequestInFlight = false;
   let partialRequestController = null;
+  let localScrollBookkeepingFrame = null;
+  let localScrollBookkeepingTimeout = null;
+  let localScrollBookkeepingTarget = null;
+  let localScrollHeavySyncTimer = null;
+  let localScrollHeavySyncTarget = null;
+  let backgroundViewportRefreshSeq = 0;
+  let backgroundViewportRefreshTimer = null;
+  let backgroundViewportRefreshInFlight = false;
+  let backgroundViewportRefreshController = null;
+  let backgroundViewportRefreshTarget = null;
+  let backgroundViewportRefreshInputSource = "background";
+  let backgroundViewportRefreshUnreadyRetries = 0;
+  const backgroundViewportRefreshMaxUnreadyRetries = 2;
+  let lastInteractiveScrollAt = 0;
   let pendingScrollAfterRequest = false;
   let pendingScrollDx = 0;
   let pendingScrollDy = 0;
   let pendingScrollTimer = null;
-  const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 18, 0, 120);
+  const scrollFlushDelayMs = clamp(Number(shell.dataset.browserScrollFlushDelayMs) || 8, 0, 120);
+  const scrollFlushDelayForInput = (inputSource) => inputSource === "wheel" || inputSource === "drag" ? 0 : scrollFlushDelayMs;
   const buildScrollUrl = (dx, dy) => {
     const x = numberData("viewportX");
     const y = numberData("viewportY");
@@ -12141,13 +14032,17 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollTimer = null;
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
-      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
+      const queued = currentQueuedViewportTarget();
+      normalizePendingScrollDelta(queued);
+      applyOptimisticScroll(queued);
+      setPendingViewportTarget(queued);
       shell.dataset.scrollQueuedDuringRequest = "true";
       shell.dataset.queuedScrollTargetX = String(queued.x);
       shell.dataset.queuedScrollTargetY = String(queued.y);
       setViewportPending(
         `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
-        queued
+        queued,
+        { deferFeedback: true, skipTargetSync: true }
       );
       abortPartialViewportRequest();
       return true;
@@ -12159,13 +14054,18 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     pendingScrollDx = 0;
     pendingScrollDy = 0;
     if (!scroll) {
+      clearOptimisticScroll();
       return false;
+    }
+    if (commitViewportScrollLocally(scroll, shell.dataset.scrollInputSource || "manual")) {
+      return true;
     }
     shell.dataset.scrollActionState = "submitting";
     shell.dataset.pendingViewportX = String(scroll.x);
     shell.dataset.pendingViewportY = String(scroll.y);
     shell.dataset.queuedScrollDx = String(scroll.dx);
     shell.dataset.queuedScrollDy = String(scroll.dy);
+    applyOptimisticScroll(scroll);
     setPendingViewportTarget(scroll);
     const submittingTopStatus = chromeStatus();
     if (submittingTopStatus) {
@@ -12180,8 +14080,7 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     replaceViewportPartial(scroll.url, scrollMessage(scroll.dx, scroll.dy));
     return true;
   };
-  const queueViewportScroll = (dx, dy, inputSource = "manual") => {
-    shell.dataset.scrollInputSource = inputSource;
+  const markScrollQueued = (inputSource) => {
     shell.dataset.scrollActionState = "queued";
     shell.dataset.scrollPreservedViewportX = String(numberData("viewportX"));
     shell.dataset.scrollPreservedViewportY = String(numberData("viewportY"));
@@ -12200,13 +14099,31 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       topStatus.dataset.browserChromeScrollPreservedY = String(numberData("viewportY"));
       stampChromeScrollRouteState(topStatus, "queued");
     }
+  };
+  const queueViewportScroll = (dx, dy, inputSource = "manual") => {
+    shell.dataset.scrollInputSource = inputSource;
     clearDeferredClickForScroll();
-    pendingScrollDx += dx;
-    pendingScrollDy += dy;
+    const queued = queuedViewportTarget(dx, dy);
+    normalizePendingScrollDelta(queued);
+    const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
+    if (!pending) {
+      pendingScrollDx = 0;
+      pendingScrollDy = 0;
+      clearOptimisticScroll();
+      if (pendingScrollTimer) {
+        clearTimeout(pendingScrollTimer);
+        pendingScrollTimer = null;
+      }
+      return false;
+    }
+    if (commitViewportScrollLocally(pending, inputSource)) {
+      return true;
+    }
+    markScrollQueued(inputSource);
     if (partialRequestInFlight) {
       pendingScrollAfterRequest = true;
-      const queued = queuedViewportTarget(pendingScrollDx, pendingScrollDy);
-      normalizePendingScrollDelta(queued);
+      applyOptimisticScroll(queued);
+      setPendingViewportTarget(queued);
       shell.dataset.scrollQueuedDuringRequest = "true";
       shell.dataset.queuedScrollDx = String(pendingScrollDx);
       shell.dataset.queuedScrollDy = String(pendingScrollDy);
@@ -12214,20 +14131,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.dataset.queuedScrollTargetY = String(queued.y);
       setViewportPending(
         `Scroll queued; visual viewport target x ${queued.x}, y ${queued.y}...`,
-        queued
+        queued,
+        {
+          deferFeedback: inputSource === "wheel" || inputSource === "drag",
+          skipTargetSync: true
+        }
       );
       abortPartialViewportRequest();
       return true;
-    }
-    const pending = buildScrollUrl(pendingScrollDx, pendingScrollDy);
-    if (!pending) {
-      pendingScrollDx = 0;
-      pendingScrollDy = 0;
-      if (pendingScrollTimer) {
-        clearTimeout(pendingScrollTimer);
-        pendingScrollTimer = null;
-      }
-      return false;
     }
     normalizePendingScrollDelta(pending);
     shell.dataset.pendingViewportX = String(pending.x);
@@ -12236,12 +14147,20 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     shell.dataset.queuedScrollDy = String(pending.dy);
     shell.dataset.queuedScrollTargetX = String(pending.x);
     shell.dataset.queuedScrollTargetY = String(pending.y);
+    applyOptimisticScroll(pending);
     setPendingViewportTarget(pending);
-    setViewportPending(`Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`, pending);
+    setViewportPending(
+      `Scrolling visual viewport to x ${pending.x}, y ${pending.y}...`,
+      pending,
+      {
+        deferFeedback: inputSource === "wheel" || inputSource === "drag",
+        skipTargetSync: true
+      }
+    );
     if (pendingScrollTimer) {
       clearTimeout(pendingScrollTimer);
     }
-    pendingScrollTimer = setTimeout(flushPendingScroll, scrollFlushDelayMs);
+    pendingScrollTimer = setTimeout(flushPendingScroll, scrollFlushDelayForInput(inputSource));
     return true;
   };
   const wheelCells = (delta, deltaMode, viewportSize) => {
@@ -12258,7 +14177,53 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
     const magnitude = clamp(Math.round(Math.abs(units)) || 1, 1, limit);
     return Math.sign(delta) * magnitude;
   };
+  syncNativeRasterScrollPosition();
+  installNativeRasterLoadSync();
+  syncViewportHistory();
+  const handleNativeRasterScrollEvent = (inputSource = nativeRasterScrollInputSource) => {
+    if (!canUseNativeRasterScroll()) {
+      return false;
+    }
+    if (nativeRasterProgrammaticScroll) {
+      const isProgrammaticOffset = nativeRasterProgrammaticOffset
+        && Math.abs(Math.round(shell.scrollLeft) - nativeRasterProgrammaticOffset.x) <= 1
+        && Math.abs(Math.round(shell.scrollTop) - nativeRasterProgrammaticOffset.y) <= 1;
+      if (isProgrammaticOffset) {
+        shell.dataset.browserNativeRasterScrollState = "programmatic";
+        return false;
+      }
+      clearNativeRasterProgrammaticScroll();
+    }
+    shell.dataset.browserNativeRasterScrollState = "native";
+    scheduleNativeRasterScrollCommit(inputSource);
+    return true;
+  };
+  const eventPointInsideViewportShell = (event) => {
+    const rect = shell.getBoundingClientRect();
+    return event.clientX >= rect.left
+      && event.clientX <= rect.right
+      && event.clientY >= rect.top
+      && event.clientY <= rect.bottom;
+  };
+  const scheduleNativeRasterWheelCommit = () => {
+    nativeRasterScrollInputSource = "wheel";
+    shell.dataset.browserWheelScrollMode = "native-overscan";
+    scheduleNativeRasterScrollCommit("wheel");
+    setTimeout(() => observeNativeRasterScrollOffset("wheel"), 0);
+  };
+  shell.addEventListener("scroll", () => {
+    handleNativeRasterScrollEvent(nativeRasterScrollInputSource);
+  }, { passive: true });
+  document.addEventListener("scroll", (event) => {
+    if (event.target === shell) {
+      handleNativeRasterScrollEvent(nativeRasterScrollInputSource);
+    }
+  }, { capture: true, passive: true });
   shell.addEventListener("wheel", (event) => {
+    if (canUseNativeRasterScroll() && nativeRasterCanScrollDelta(event.deltaX, event.deltaY)) {
+      scheduleNativeRasterWheelCommit();
+      return;
+    }
     const dx = wheelCells(event.deltaX, event.deltaMode, numberData("viewportWidth"));
     const dy = wheelCells(event.deltaY, event.deltaMode, numberData("viewportHeight"));
     if (dx || dy) {
@@ -12266,6 +14231,14 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       queueViewportScroll(dx, dy, "wheel");
     }
   }, { passive: false });
+  document.addEventListener("wheel", (event) => {
+    if (event.defaultPrevented || !eventPointInsideViewportShell(event)) {
+      return;
+    }
+    if (canUseNativeRasterScroll() && nativeRasterCanScrollDelta(event.deltaX, event.deltaY)) {
+      scheduleNativeRasterWheelCommit();
+    }
+  }, { capture: true, passive: true });
   let dragScrollStart = null;
   let suppressNextClickAfterDrag = false;
   const dragScrollThreshold = () => clamp(Number(shell.dataset.browserDragScrollThreshold) || 4, 1, 32);
@@ -12356,9 +14329,12 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       return;
     }
     event.preventDefault();
-    const point = viewportPointFromEvent(event);
+    const point = viewportPointFromEvent(event, {
+      commitNativeScroll: true,
+      inputSource: "click"
+    });
     if (!point) {
-      clearClickMarkerPoint();
+    clearClickMarkerPoint("Ready for page click.");
       clearDeferredClick();
       shell.dataset.clickMissClearedDeferred = "true";
       shell.dataset.clickActionState = "missed";
@@ -12412,8 +14388,9 @@ fn render_browser_session_viewport_scroll_script() -> &'static str {
       shell.dataset.clickNavigationState = "waiting-for-viewport";
       const deferredTopStatus = chromeStatus();
       if (deferredTopStatus) { deferredTopStatus.dataset.browserChromeClickRouteState = "waiting-for-viewport"; }
-      shell.dataset.deferredClickX = String(point.x);
-      shell.dataset.deferredClickY = String(point.y);
+      const deferredCell = viewportClickCell(point);
+      shell.dataset.deferredClickX = String(deferredCell.x);
+      shell.dataset.deferredClickY = String(deferredCell.y);
       shell.dataset.deferredClickPageX = String(point.pageX);
       shell.dataset.deferredClickPageY = String(point.pageY);
       setClickStatus(`Saved ${pointMessage(point)} while viewport updates; clicking after it settles.`);
@@ -12599,6 +14576,7 @@ fn browser_session_state_export_payload(
                 skipped: report.skipped,
                 applied: report.applied,
                 decoded: report.decoded,
+                attached: report.attached,
                 resources: report.resources.len(),
                 fetches: &report.resources,
                 csv_url: browser_session_api_href(&payload.id, "resource-report-csv", payload),
@@ -12690,6 +14668,11 @@ fn browser_session_state_export_payload(
             resource_report_csv: browser_session_api_href(
                 &payload.id,
                 "resource-report-csv",
+                payload,
+            ),
+            render_diagnostics_json: browser_session_api_href(
+                &payload.id,
+                "render-diagnostics-json",
                 payload,
             ),
             find_json: browser_session_api_href(&payload.id, "find-json", payload),
@@ -13284,6 +15267,7 @@ fn browser_session_state_csv_response(payload: &BrowserSessionPayload) -> HttpRe
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_state_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13475,6 +15459,7 @@ fn browser_session_tabs_csv_response(payload: &BrowserSessionPayload) -> HttpRes
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_tabs_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13566,6 +15551,7 @@ fn browser_session_tab_search_csv_response(payload: &BrowserSessionPayload) -> H
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_tab_search_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13647,6 +15633,7 @@ fn browser_session_closed_sessions_csv_response(payload: &BrowserSessionPayload)
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_closed_sessions_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13702,6 +15689,7 @@ fn browser_session_bookmarks_csv_response(payload: &BrowserSessionPayload) -> Ht
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_bookmarks_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13754,6 +15742,7 @@ fn browser_session_profile_history_csv_response(payload: &BrowserSessionPayload)
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_profile_history_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13807,6 +15796,7 @@ fn browser_session_anchors_csv_response(payload: &BrowserSessionPayload) -> Http
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_anchors_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13854,6 +15844,7 @@ fn browser_session_links_csv_response(payload: &BrowserSessionPayload) -> HttpRe
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_links_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13900,6 +15891,7 @@ fn browser_session_history_csv_response(payload: &BrowserSessionPayload) -> Http
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_history_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -13955,6 +15947,7 @@ fn browser_session_forms_csv_response(payload: &BrowserSessionPayload) -> HttpRe
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_forms_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -14054,6 +16047,7 @@ fn browser_session_resources_csv_response(payload: &BrowserSessionPayload) -> Ht
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_resources_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -14122,6 +16116,7 @@ fn browser_session_resource_report_csv_response(payload: &BrowserSessionPayload)
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_resource_report_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -14139,6 +16134,7 @@ fn browser_session_resource_report_csv(payload: &BrowserSessionPayload) -> Strin
             "skipped",
             "applied",
             "decoded",
+            "attached",
             "index",
             "status",
             "kind",
@@ -14148,6 +16144,9 @@ fn browser_session_resource_report_csv(payload: &BrowserSessionPayload) -> Strin
             "bytes",
             "content_type",
             "error",
+            "render_attached",
+            "render_attachment_kind",
+            "image_visibility_state",
             "session_id",
             "active_source",
         ],
@@ -14168,12 +16167,22 @@ fn browser_session_resource_report_csv(payload: &BrowserSessionPayload) -> Strin
         .decoded
         .map(|value| value.to_string())
         .unwrap_or_default();
+    let attached = report
+        .attached
+        .map(|value| value.to_string())
+        .unwrap_or_default();
     for (index, resource) in report.resources.iter().enumerate() {
         let row_index = (index + 1).to_string();
         let source = resource.source.as_deref().unwrap_or("");
         let bytes = resource.bytes.to_string();
         let content_type = resource.content_type.as_deref().unwrap_or("");
         let error = resource.error.as_deref().unwrap_or("");
+        let render_attached = resource
+            .render_attached
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let render_attachment_kind = resource.render_attachment_kind.as_deref().unwrap_or("");
+        let image_visibility_state = resource.image_visibility_state.as_deref().unwrap_or("");
         browser_session_push_csv_row(
             &mut csv,
             &[
@@ -14186,6 +16195,7 @@ fn browser_session_resource_report_csv(payload: &BrowserSessionPayload) -> Strin
                 &skipped,
                 &applied,
                 &decoded,
+                &attached,
                 &row_index,
                 &resource.status,
                 &resource.kind,
@@ -14195,6 +16205,9 @@ fn browser_session_resource_report_csv(payload: &BrowserSessionPayload) -> Strin
                 &bytes,
                 content_type,
                 error,
+                &render_attached,
+                render_attachment_kind,
+                image_visibility_state,
                 &payload.id,
                 &payload.source,
             ],
@@ -14209,6 +16222,7 @@ fn browser_session_find_csv_response(payload: &BrowserSessionPayload) -> HttpRes
         reason: "OK",
         content_type: "text/csv; charset=utf-8",
         body: browser_session_find_csv(payload),
+        binary_body: None,
     }
 }
 
@@ -15093,7 +17107,7 @@ fn render_browser_session_viewport_scroll_controls(payload: &BrowserSessionPaylo
     }
     .max((payload.max_scroll_y > 0) as usize);
     format!(
-        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-browser-scroll-control-session="{id}" data-browser-scroll-control-from="{back_href}" data-browser-scroll-control-source="{source_attr}" data-browser-scroll-control-viewport-x="{x}" data-browser-scroll-control-viewport-y="{y}" data-browser-scroll-control-width="{width}" data-browser-scroll-control-height="{height}" data-browser-scroll-control-max-bytes="{max_bytes}" data-browser-scroll-control-coalescing="queued-target" data-browser-scroll-control-flush-delay-ms="18" data-browser-scroll-control-state-contract="session from source viewport dimensions max-bytes" data-browser-scroll-control-preserves="session from source viewport dimensions max-bytes" data-browser-scroll-control-target="queued-viewport" data-browser-scroll-control-feedback="compact" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
+        r#"<nav class="viewport-scroll-controls" data-browser-viewport-controls data-browser-auto-visual-control aria-label="Manual viewport scroll controls; x {x} of {max_x}, y {y} of {max_y}" data-browser-scroll-control-session="{id}" data-browser-scroll-control-from="{back_href}" data-browser-scroll-control-source="{source_attr}" data-browser-scroll-control-viewport-x="{x}" data-browser-scroll-control-viewport-y="{y}" data-browser-scroll-control-width="{width}" data-browser-scroll-control-height="{height}" data-browser-scroll-control-max-bytes="{max_bytes}" data-browser-scroll-control-coalescing="queued-target" data-browser-scroll-control-flush-delay-ms="8" data-browser-scroll-control-state-contract="session from source viewport dimensions max-bytes" data-browser-scroll-control-preserves="session from source viewport dimensions max-bytes" data-browser-scroll-control-target="queued-viewport" data-browser-scroll-control-feedback="compact" data-scroll-x="{x}" data-scroll-y="{y}" data-max-scroll-x="{max_x}" data-max-scroll-y="{max_y}" data-can-scroll-left="{can_scroll_left}" data-can-scroll-right="{can_scroll_right}" data-can-scroll-up="{can_scroll_up}" data-can-scroll-down="{can_scroll_down}" data-browser-scroll-control-layout="line horizontal exact feedback"><span class="viewport-scroll-control-group" data-browser-scroll-control-group="line" aria-label="Line scroll actions">{line_up}{line_down}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="horizontal" aria-label="Horizontal scroll actions">{left}{right}</span><span class="viewport-scroll-control-group" data-browser-scroll-control-group="exact" aria-label="Exact scroll action"><form class="viewport-scroll-step" action="/browser" method="get" data-browser-scroll-step-form aria-label="Scroll by exact delta">{common}<input type="hidden" name="action" value="scroll"><label for="browser-scroll-step-dx">dx</label><input id="browser-scroll-step-dx" type="number" name="dx" value="{horizontal_step}" aria-label="Horizontal scroll delta"><label for="browser-scroll-step-dy">dy</label><input id="browser-scroll-step-dy" type="number" name="dy" value="{vertical_step}" aria-label="Vertical scroll delta"><button type="submit">Scroll</button></form></span><span class="viewport-scroll-feedback" data-browser-viewport-feedback aria-live="polite">{viewport_feedback}</span></nav>"#,
         x = payload.viewport_x,
         y = payload.viewport_y,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
@@ -15292,71 +17306,6 @@ fn render_browser_session_viewport_page_state(payload: &BrowserSessionPayload) -
         visual_flow_status = visual_flow_status,
         action_feedback = action_feedback,
     )
-}
-
-fn render_browser_session_visual_flow_status(payload: &BrowserSessionPayload) -> String {
-    let Some(report) = payload.resource_report.as_ref() else {
-        if payload.resource_stylesheet_count == 0 && payload.resource_image_count == 0 {
-            if payload.viewport_image.is_some() {
-                return r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#.to_owned();
-            }
-            return r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions unavailable</span>"#.to_owned();
-        }
-        return format!(
-            r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions ready: {} · {}</span>"#,
-            html_escape::encode_text(&browser_resource_count_label(
-                payload.resource_stylesheet_count,
-                "stylesheet",
-                "stylesheets",
-            )),
-            html_escape::encode_text(&browser_resource_count_label(
-                payload.resource_image_count,
-                "image",
-                "images",
-            )),
-        );
-    };
-
-    let mut chips = String::new();
-    if payload.resource_stylesheet_count > 0 {
-        let label = match report.applied {
-            Some(count) if count > 0 => format!("styles applied: {count}"),
-            Some(_) => "styles unchanged".to_owned(),
-            None => "styles waiting".to_owned(),
-        };
-        let _ = write!(
-            chips,
-            r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>{}</span>"#,
-            html_escape::encode_text(&label),
-        );
-    }
-    if payload.resource_image_count > 0 {
-        let label = match report.decoded {
-            Some(count) if count > 0 => format!("images loaded: {count}"),
-            Some(_) => format!(
-                "images not decoded: fetched {}, failed {}, skipped {}",
-                report.fetched, report.failed, report.skipped
-            ),
-            None => "images waiting".to_owned(),
-        };
-        let _ = write!(
-            chips,
-            r#"<span class="viewport-state-chip report" data-browser-visual-flow-status>{}</span>"#,
-            html_escape::encode_text(&label),
-        );
-    }
-    if report.failed > 0 {
-        let _ = write!(
-            chips,
-            r#"<span class="viewport-state-chip warning" data-browser-visual-flow-status>resource failures: {}</span>"#,
-            report.failed,
-        );
-    }
-    if chips.is_empty() {
-        r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual actions complete</span>"#.to_owned()
-    } else {
-        chips
-    }
 }
 
 fn render_browser_session_action_feedback(payload: &BrowserSessionPayload) -> String {
@@ -15593,8 +17542,13 @@ fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> 
         .find(|session| session.current)
         .map(|session| session.title.as_str())
         .unwrap_or(payload.title.as_str());
+    let compact_tabs = payload.sessions.len() > 8;
     let mut tabs = String::new();
-    for session in &payload.sessions {
+    for session in payload
+        .sessions
+        .iter()
+        .filter(|session| !compact_tabs || session.current)
+    {
         let class = match (session.current, session.pinned) {
             (true, true) => "browser-tab-pill current pinned",
             (true, false) => "browser-tab-pill current",
@@ -15619,11 +17573,21 @@ fn render_browser_session_primary_tab_strip(payload: &BrowserSessionPayload) -> 
             source = html_escape::encode_text(&session.source),
         );
     }
+    if compact_tabs {
+        let diagnostics_href =
+            browser_session_action_href(&payload.id, "current", &[], payload) + "&debug=1";
+        let _ = write!(
+            tabs,
+            r#"<a class="browser-tab-pill" href="{href}"><strong>All tabs</strong><span>Open full tab manager</span></a>"#,
+            href = html_escape::encode_double_quoted_attribute(&diagnostics_href),
+        );
+    }
 
     format!(
-        r#"<details class="browser-tab-strip browser-tab-menu" data-browser-tab-menu aria-label="Open browser tabs"><summary data-browser-tab-summary><strong>{count} tabs</strong><span>{current}</span></summary><div class="browser-tab-list">{tabs}</div></details>"#,
+        r#"<details class="browser-tab-strip browser-tab-menu" data-browser-tab-menu data-browser-tab-menu-render="{render_mode}" aria-label="Open browser tabs"><summary data-browser-tab-summary><strong>{count} tabs</strong><span>{current}</span></summary><div class="browser-tab-list">{tabs}</div></details>"#,
         count = payload.sessions.len(),
         current = html_escape::encode_text(&browser_session_feedback_excerpt(current_title)),
+        render_mode = if compact_tabs { "compact" } else { "full" },
         tabs = tabs,
     )
 }
@@ -15796,7 +17760,11 @@ fn render_browser_session_tabs(payload: &BrowserSessionPayload) -> String {
         label = html_escape::encode_double_quoted_attribute(current_label),
     );
     let tab_search = render_browser_session_tab_search(payload);
-    let source_input = browser_session_source_hidden_input(&payload.source);
+    let source_input = format!(
+        "{}{}",
+        browser_session_visual_hidden_input(payload),
+        browser_session_source_hidden_input(&payload.source)
+    );
 
     format!(
         r#"<section class="session-shell"><div class="session-title"><h2>Sessions</h2><div class="resource-actions"><span class="meta">{count} open</span><a class="clear-link" href="{tabs_csv_href}">Tabs CSV</a>{forget_saved}</div></div><div class="session-tabs">{tabs}{jump_form}{label_form}{tab_search}<form class="session-new" action="/browser" method="get"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">{source_input}<input type="text" inputmode="url" autocapitalize="none" spellcheck="false" name="url" placeholder="New session URL" aria-label="New session URL"><button type="submit">New</button></form></div></section>"#,
@@ -16397,12 +18365,15 @@ fn render_browser_session_state_export(payload: &BrowserSessionPayload) -> Strin
     let state_csv_href = browser_session_api_href(&payload.id, "session-state-csv", payload);
     let viewport_text_href = browser_session_api_href(&payload.id, "viewport-text", payload);
     let page_text_href = browser_session_api_href(&payload.id, "page-text", payload);
+    let diagnostics_href =
+        browser_session_api_href(&payload.id, "render-diagnostics-json", payload);
     format!(
-        r#"<section><div class="section-title"><h3>Session State</h3><div class="resource-actions"><a class="clear-link" href="{state_json_href}">State JSON</a><a class="clear-link" href="{state_csv_href}">State CSV</a><a class="clear-link" href="{viewport_text_href}">Viewport Text</a><a class="clear-link" href="{page_text_href}">Page Text</a></div></div><div class="meta">cookies {cookies} · localStorage {local_storage} · sessionStorage {session_storage}</div></section>"#,
+        r#"<section><div class="section-title"><h3>Session State</h3><div class="resource-actions"><a class="clear-link" href="{state_json_href}">State JSON</a><a class="clear-link" href="{state_csv_href}">State CSV</a><a class="clear-link" href="{viewport_text_href}">Viewport Text</a><a class="clear-link" href="{page_text_href}">Page Text</a><a class="clear-link" href="{diagnostics_href}">Render Diagnostics</a></div></div><div class="meta">cookies {cookies} · localStorage {local_storage} · sessionStorage {session_storage}</div></section>"#,
         state_json_href = html_escape::encode_double_quoted_attribute(&state_json_href),
         state_csv_href = html_escape::encode_double_quoted_attribute(&state_csv_href),
         viewport_text_href = html_escape::encode_double_quoted_attribute(&viewport_text_href),
         page_text_href = html_escape::encode_double_quoted_attribute(&page_text_href),
+        diagnostics_href = html_escape::encode_double_quoted_attribute(&diagnostics_href),
         cookies = payload.cookies.len(),
         local_storage = payload.local_storage.len(),
         session_storage = payload.session_storage.len(),
@@ -16901,12 +18872,18 @@ fn render_browser_session_resource_report(
         let source = resource.source.as_deref().unwrap_or("-");
         let content_type = resource.content_type.as_deref().unwrap_or("-");
         let error = resource.error.as_deref().unwrap_or("-");
+        let attachment = resource
+            .image_visibility_state
+            .as_deref()
+            .or(resource.render_attachment_kind.as_deref())
+            .unwrap_or("-");
         let _ = write!(
             rows,
-            r#"<tr><td>{status}</td><td>{kind}</td><td>{bytes}</td><td>{source}</td><td>{url}</td><td>{content_type}</td><td>{error}</td></tr>"#,
+            r#"<tr><td>{status}</td><td>{kind}</td><td>{bytes}</td><td>{attachment}</td><td>{source}</td><td>{url}</td><td>{content_type}</td><td>{error}</td></tr>"#,
             status = html_escape::encode_text(&resource.status),
             kind = html_escape::encode_text(&resource.kind),
             bytes = resource.bytes,
+            attachment = html_escape::encode_text(attachment),
             source = html_escape::encode_text(source),
             url = html_escape::encode_text(&resource.resolved),
             content_type = html_escape::encode_text(content_type),
@@ -16916,16 +18893,16 @@ fn render_browser_session_resource_report(
     if report.resources.len() > 20 {
         let _ = write!(
             rows,
-            r#"<tr><td colspan="7">{count} more resource results omitted.</td></tr>"#,
+            r#"<tr><td colspan="8">{count} more resource results omitted.</td></tr>"#,
             count = report.resources.len() - 20,
         );
     }
     if rows.is_empty() {
-        rows.push_str(r#"<tr><td colspan="7">No resource results.</td></tr>"#);
+        rows.push_str(r#"<tr><td colspan="8">No resource results.</td></tr>"#);
     }
 
     format!(
-        r#"<div class="resource-report"><div class="resource-report-summary">{summary}</div><table><thead><tr><th>Status</th><th>Kind</th><th>Bytes</th><th>Source</th><th>Resolved</th><th>Content Type</th><th>Error</th></tr></thead><tbody>{rows}</tbody></table></div>"#,
+        r#"<div class="resource-report"><div class="resource-report-summary">{summary}</div><table><thead><tr><th>Status</th><th>Kind</th><th>Bytes</th><th>Attachment</th><th>Source</th><th>Resolved</th><th>Content Type</th><th>Error</th></tr></thead><tbody>{rows}</tbody></table></div>"#,
         summary = html_escape::encode_text(&status),
         rows = rows,
     )
@@ -16941,6 +18918,9 @@ fn browser_session_resource_report_status(report: &BrowserSessionResourceReportP
     }
     if let Some(decoded) = report.decoded {
         let _ = write!(status, " decoded={decoded}");
+    }
+    if let Some(attached) = report.attached {
+        let _ = write!(status, " attached={attached}");
     }
     status
 }
@@ -17237,7 +19217,11 @@ fn browser_session_select_option_links(control: &BrowserSessionFormControlPayloa
 }
 
 fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> String {
-    let source_input = browser_session_source_hidden_input(&payload.source);
+    let source_input = format!(
+        "{}{}",
+        browser_session_visual_hidden_input(payload),
+        browser_session_source_hidden_input(&payload.source)
+    );
     format!(
         r#"<input type="hidden" name="id" value="{id}"><input type="hidden" name="from" value="{back_href}"><input type="hidden" name="width" value="{width}"><input type="hidden" name="height" value="{height}"><input type="hidden" name="viewport_x" value="{viewport_x}"><input type="hidden" name="viewport_y" value="{viewport_y}"><input type="hidden" name="max_bytes" value="{max_bytes}">{source_input}"#,
         id = html_escape::encode_double_quoted_attribute(&payload.id),
@@ -17249,6 +19233,14 @@ fn browser_session_common_hidden_inputs(payload: &BrowserSessionPayload) -> Stri
         max_bytes = payload.max_bytes,
         source_input = source_input,
     )
+}
+
+fn browser_session_visual_hidden_input(payload: &BrowserSessionPayload) -> &'static str {
+    if payload.visual_viewport_images {
+        r#"<input type="hidden" name="visual" value="auto">"#
+    } else {
+        ""
+    }
 }
 
 fn browser_session_source_hidden_input(source: &str) -> String {
@@ -17330,6 +19322,9 @@ fn browser_session_action_href<T: BrowserSessionHrefSource>(
     query.append_pair("viewport_x", &source.viewport_x().to_string());
     query.append_pair("viewport_y", &source.viewport_y().to_string());
     query.append_pair("max_bytes", &source.max_bytes().to_string());
+    if source.visual_auto() {
+        query.append_pair("visual", "auto");
+    }
     if let Some(source) = browser_safe_source_param(source.source()) {
         query.append_pair("source", source);
     }
@@ -17348,6 +19343,9 @@ fn browser_session_new_session_href<T: BrowserSessionHrefSource>(url: &str, sour
     query.append_pair("viewport_x", &source.viewport_x().to_string());
     query.append_pair("viewport_y", &source.viewport_y().to_string());
     query.append_pair("max_bytes", &source.max_bytes().to_string());
+    if source.visual_auto() {
+        query.append_pair("visual", "auto");
+    }
     if let Some(source) = browser_safe_source_param(source.source()) {
         query.append_pair("source", source);
     }
@@ -17379,6 +19377,7 @@ trait BrowserSessionHrefSource {
     fn viewport_x(&self) -> usize;
     fn viewport_y(&self) -> usize;
     fn max_bytes(&self) -> usize;
+    fn visual_auto(&self) -> bool;
 }
 
 impl BrowserSessionHrefSource for BrowserWebSession {
@@ -17417,6 +19416,10 @@ impl BrowserSessionHrefSource for BrowserWebSession {
     fn max_bytes(&self) -> usize {
         self.max_bytes
     }
+
+    fn visual_auto(&self) -> bool {
+        self.visual_viewport_images
+    }
 }
 
 impl BrowserSessionHrefSource for BrowserSessionPayload {
@@ -17446,6 +19449,10 @@ impl BrowserSessionHrefSource for BrowserSessionPayload {
 
     fn max_bytes(&self) -> usize {
         self.max_bytes
+    }
+
+    fn visual_auto(&self) -> bool {
+        self.visual_viewport_images
     }
 }
 
@@ -17886,6 +19893,7 @@ fn reset_viewport_to_fragment(web_session: &mut BrowserWebSession) {
 fn reset_viewport_after_navigation(web_session: &mut BrowserWebSession) {
     web_session.viewport_x = 0;
     web_session.resource_report = None;
+    web_session.visual_stylesheets_ready = false;
     reset_viewport_to_fragment(web_session);
 }
 
@@ -17948,6 +19956,16 @@ fn set_browser_viewport_jump_feedback(
 }
 
 fn set_browser_viewport_settled_feedback(web_session: &mut BrowserWebSession) {
+    if web_session
+        .action_feedback
+        .as_deref()
+        .is_some_and(|feedback| {
+            feedback.starts_with("Visual loading deferred;")
+                || feedback.starts_with("Visual viewport refresh pending;")
+        })
+    {
+        return;
+    }
     web_session.action_feedback = Some(format!(
         "Viewport settled at x {}, y {}.",
         web_session.viewport_x, web_session.viewport_y

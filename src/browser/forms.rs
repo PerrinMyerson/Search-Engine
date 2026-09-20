@@ -6,7 +6,7 @@ use url::{Url, form_urlencoded};
 
 use super::{
     BrowserRender, DisplayCommand, DisplayHitTarget, Dom, ElementData, NodeKind, TextHitTargetRun,
-    collapse_ascii_whitespace, resolve_browser_href, text_content,
+    collapse_ascii_whitespace, readable_display_text, resolve_browser_href, text_content,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -637,8 +637,33 @@ fn render_text_from_display_list(display_list: &[DisplayCommand]) -> String {
     let mut lines = BTreeMap::<usize, String>::new();
     for command in display_list {
         match command {
-            DisplayCommand::Text { y, text, .. } | DisplayCommand::StyledText { y, text, .. } => {
-                lines.entry(*y).or_default().push_str(text);
+            DisplayCommand::Text { x, y, text } | DisplayCommand::StyledText { x, y, text, .. } => {
+                // Scaled headings emit the same doubled-glyph text on each of
+                // their rows; collapse the glyph doubling and drop vertical
+                // duplicate rows so the projected text reads unscaled.
+                let readable = readable_display_text(text);
+                if *y > 0
+                    && lines
+                        .get(&(y - 1))
+                        .is_some_and(|previous| previous == &readable)
+                    && display_list.iter().any(|other| match other {
+                        DisplayCommand::Text {
+                            x: other_x,
+                            y: other_y,
+                            text: other_text,
+                        }
+                        | DisplayCommand::StyledText {
+                            x: other_x,
+                            y: other_y,
+                            text: other_text,
+                            ..
+                        } => other_x == x && *other_y == y - 1 && other_text == text,
+                        _ => false,
+                    })
+                {
+                    continue;
+                }
+                lines.entry(*y).or_default().push_str(&readable);
             }
             _ => {}
         }

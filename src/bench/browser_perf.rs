@@ -1087,6 +1087,7 @@ mod tests {
         crate::browser::BrowserFixture {
             name: Some("fixture".to_owned()),
             path: PathBuf::from("page.html"),
+            source: None,
             width: 80,
             external_scripts: false,
             click_selector: None,

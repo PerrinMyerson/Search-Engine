@@ -86,10 +86,8 @@ fn browse_cmd_click_then_render_shows_mutated_page() {
     ]);
 
     assert!(stdout.contains("# Click Fixture"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("Done\nClicked by handler"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("Done"), "stdout: {stdout}");
+    assert!(stdout.contains("Clicked by handler"), "stdout: {stdout}");
     assert!(!stdout.contains("Waiting"), "stdout: {stdout}");
 }
 

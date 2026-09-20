@@ -67,6 +67,8 @@ fn browser_window_app_options(args: &BrowserWindowCli) -> BrowserAppOptions {
         render: BrowserRenderOptions {
             width: args.width,
             max_bytes: args.max_bytes,
+            css_cell_width_px: args.cell_width,
+            css_cell_height_px: args.cell_height,
         },
         viewport_width: args.viewport_width.unwrap_or(args.width),
         viewport_height: args.viewport_height,

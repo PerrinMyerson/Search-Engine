@@ -4985,7 +4985,7 @@ mod tests {
             .then_some(())
             .unwrap();
         let claim = frontier.claim_next(110, 10).unwrap();
-        frontier.record_failed(&claim.url, "timeout".to_owned(), 30, 120);
+        frontier.record_failed(&claim.url, "timeout".to_owned(), 0, 120);
         frontier
             .discover(Url::parse("https://example.com/fetched").unwrap(), 0, 130)
             .then_some(())
@@ -7303,7 +7303,10 @@ mod tests {
         assert!(lines.contains(&"browser_document_storage_projected_rows_after: 2".to_owned()));
         assert!(lines.contains(&"browser_document_storage_projected_rows_removed: 0".to_owned()));
         assert!(lines.contains(&"browser_document_storage_zero_removal: true".to_owned()));
-        assert!(lines.contains(&"browser_document_storage_cleanup_next_action: report_only=true action=cleanup-pointless retained_rows=2 removable_rows=0 retained_row_bytes=100 removable_row_bytes=0 zero_removal=true".to_owned()));
+        assert!(lines.contains(&format!(
+            "browser_document_storage_cleanup_next_action: report_only=true action=cleanup-pointless retained_rows=2 removable_rows=0 retained_row_bytes={} removable_row_bytes=0 zero_removal=true",
+            stats.browser_document_unique_row_bytes
+        )));
         assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
         assert!(lines.contains(&"browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing".to_owned()));
     }

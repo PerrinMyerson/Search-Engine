@@ -71,6 +71,47 @@ fn location_readback_properties_feed_dom_text() {
 }
 
 #[test]
+fn local_location_readback_properties_use_file_urls() {
+    let render = render_html(
+        "bench/browser-fixtures/location-readback.html?q=rust#details",
+        br#"
+        <html><body>
+          <p id="state">Before</p>
+          <script>
+            const state = document.getElementById("state");
+            state.textContent = location.href;
+            state.textContent += " ";
+            state.textContent += document.URL;
+            state.textContent += " ";
+            state.textContent += document.location.pathname;
+            state.textContent += " ";
+            state.textContent += location.search;
+            state.textContent += " ";
+            state.textContent += location.hash;
+            state.textContent += " ";
+            state.textContent += location.origin;
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions {
+            width: 320,
+            ..BrowserRenderOptions::default()
+        },
+    );
+
+    let source = "bench/browser-fixtures/location-readback.html?q=rust#details";
+    assert_eq!(
+        render.text,
+        format!(
+            "{} {} {} ?q=rust #details file://",
+            location_property(source, "href"),
+            location_property(source, "href"),
+            location_property(source, "pathname")
+        )
+    );
+}
+
+#[test]
 fn executes_inline_script_create_and_append_child() {
     let render = render_html(
         "mem://page",
@@ -710,6 +751,8 @@ fn form_control_properties_feed_dom_and_form_state() {
             state.textContent += " ";
             state.textContent += form.action;
             state.textContent += " ";
+            state.textContent += form.getAttribute("action");
+            state.textContent += " ";
             state.textContent += q.name;
             state.textContent += " ";
             state.textContent += q.value;
@@ -729,7 +772,7 @@ fn form_control_properties_feed_dom_and_form_state() {
 
     assert_eq!(
         render.text,
-        "[rust browser] [x] Go\npost /find query rust browser search true false submit"
+        "[rust browser]   x   Go\npost https://example.com/find /find query rust browser search true false submit"
     );
     assert_eq!(render.forms.len(), 1);
     let form = &render.forms[0];
@@ -746,6 +789,42 @@ fn form_control_properties_feed_dom_and_form_state() {
         form.controls
             .iter()
             .any(|control| control.name == "commit" && control.value == "submit")
+    );
+}
+
+#[test]
+fn local_file_dom_url_properties_resolve_to_file_urls() {
+    let render = render_html(
+        "bench/browser-fixtures/local-file-page.html",
+        br#"
+        <html><body>
+          <form id="search" action="/find"></form>
+          <a id="next" href="next.html">Next</a>
+          <p id="state"></p>
+          <script>
+            const form = document.getElementById("search");
+            const next = document.getElementById("next");
+            const state = document.getElementById("state");
+            state.textContent = form.action;
+            state.textContent += " ";
+            state.textContent += next.href;
+            state.textContent += " ";
+            state.textContent += form.getAttribute("action");
+            state.textContent += " ";
+            state.textContent += next.getAttribute("href");
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    let expected_next = resolve_browser_dom_url_property(
+        "bench/browser-fixtures/local-file-page.html",
+        "next.html",
+    );
+    assert_eq!(
+        normalize_browser_parity_text(&render.text),
+        format!("Next file:///find {expected_next} /find next.html")
     );
 }
 
@@ -773,4 +852,273 @@ fn add_event_listener_click_dispatch_mutates_dom() {
     .unwrap();
 
     assert_eq!(render.text, "Listened\nClicked listener");
+}
+
+#[test]
+fn tiny_js_if_else_branches_on_class_state() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-if-else",
+        br#"
+            <html><body>
+              <p id="a" class="open">pending</p>
+              <p id="b">pending</p>
+              <script>
+                const a = document.getElementById("a");
+                if (a.classList.contains("open")) { a.textContent = "was open"; } else { a.textContent = "was closed"; }
+                const b = document.getElementById("b");
+                if (b.classList.contains("open")) { b.textContent = "was open"; } else { b.textContent = "was closed"; }
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("was open"),
+        "then-branch should run for matching class"
+    );
+    assert!(
+        render.text.contains("was closed"),
+        "else-branch should run for missing class"
+    );
+    assert!(
+        !render.text.contains("pending"),
+        "both conditionals should execute"
+    );
+}
+
+#[test]
+fn tiny_js_conditions_support_boolean_and_numeric_operators() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-bool-ops",
+        br#"
+            <html><body>
+              <p id="x" class="a b">pending</p>
+              <script>
+                const x = document.getElementById("x");
+                if (x.classList.contains("a") && x.classList.contains("b")) { x.textContent = "both"; }
+                if (x.classList.contains("zz") || x.classList.contains("a")) { x.textContent = x.textContent + " or"; }
+                if (x.childElementCount >= 0) { x.textContent = x.textContent + " num"; }
+                if (x.classList.contains("zz") && x.classList.contains("a")) { x.textContent = "wrong"; }
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 40,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("both"),
+        "&& should require both operands"
+    );
+    assert!(
+        !render.text.contains("wrong"),
+        "&& should short-circuit false"
+    );
+}
+
+#[test]
+fn tiny_js_for_of_iterates_query_selector_lists() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-for-of",
+        br#"
+            <html><body>
+              <ul><li class="x">one</li><li class="x">two</li><li>three</li></ul>
+              <script>
+                for (const item of document.querySelectorAll("li.x")) { item.textContent = "done"; }
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert_eq!(
+        render.text.matches("done").count(),
+        2,
+        "both matching items should mutate"
+    );
+    assert!(
+        render.text.contains("three"),
+        "non-matching item should be untouched"
+    );
+}
+
+#[test]
+fn tiny_js_zero_arg_functions_declare_and_invoke() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-functions",
+        br#"
+            <html><body>
+              <p id="t">pending</p><p id="u">pending</p>
+              <script>
+                function setDone() { document.getElementById("t").textContent = "fn done"; }
+                setDone();
+                const arrowDone = () => { document.getElementById("u").textContent = "arrow done"; };
+                arrowDone();
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("fn done"),
+        "function declaration should invoke"
+    );
+    assert!(
+        render.text.contains("arrow done"),
+        "arrow binding should invoke"
+    );
+}
+
+#[test]
+fn tiny_js_while_loops_until_condition_clears() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-while",
+        br#"
+            <html><body>
+              <p id="t" class="loop">pending</p>
+              <script>
+                const t = document.getElementById("t");
+                while (t.classList.contains("loop")) { t.textContent = "looped"; t.classList.remove("loop"); }
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("looped"),
+        "while body should run while the class is present"
+    );
+}
+
+#[test]
+fn tiny_js_classic_for_accumulates_with_arithmetic() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-classic-for",
+        br#"
+            <html><body>
+              <p id="sum">0</p>
+              <script>
+                let total = 0;
+                for (let i = 1; i <= 4; i++) { total += i; }
+                document.getElementById("sum").textContent = total;
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("10"),
+        "1+2+3+4 should accumulate to 10; got {}",
+        render.text
+    );
+}
+
+#[test]
+fn tiny_js_function_arguments_bind_nodes() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-fn-args",
+        br#"
+            <html><body>
+              <p id="a">1</p><p id="b">2</p>
+              <script>
+                function mark(el) { el.textContent = "marked"; }
+                mark(document.getElementById("a"));
+                mark(document.getElementById("b"));
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert_eq!(
+        render.text.matches("marked").count(),
+        2,
+        "both calls should bind their argument"
+    );
+}
+
+#[test]
+fn tiny_js_multi_argument_functions_bind_each_parameter() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-multi-args",
+        br#"
+            <html><body>
+              <p id="a">1</p>
+              <script>
+                function setTo(el, value) { el.textContent = value; }
+                setTo(document.getElementById("a"), "two args work");
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("two args work"),
+        "node + string args should bind; got {}",
+        render.text
+    );
+}
+
+#[test]
+fn tiny_js_function_return_values_bind_to_callers() {
+    let render = render_html_with_external_css_and_scripts(
+        "mem://js-returns",
+        br#"
+            <html><body>
+              <p id="out">pending</p>
+              <script>
+                function double(n) { return n * 2; }
+                const result = double(21);
+                document.getElementById("out").textContent = result;
+              </script>
+            </body></html>
+            "#,
+        BrowserRenderOptions {
+            width: 30,
+            ..BrowserRenderOptions::default()
+        },
+        &[],
+        &[],
+    );
+    assert!(
+        render.text.contains("42"),
+        "double(21) should return 42; got {}",
+        render.text
+    );
 }

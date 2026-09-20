@@ -556,6 +556,7 @@ fn run_browser_compat_test(
         let fixture = BrowserFixture {
             name: test.name.clone(),
             path: context.path.clone(),
+            source: None,
             width: test.width,
             external_scripts: test.external_scripts,
             click_selector: test.click_selector.clone(),

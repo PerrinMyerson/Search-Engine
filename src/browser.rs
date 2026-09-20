@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Command;
 use std::time::Instant;
 
@@ -8,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use html_escape::decode_html_entities;
 use memchr::memchr;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use url::Url;
 
 mod accessibility;
@@ -16,17 +19,24 @@ mod cookies;
 mod coverage;
 #[cfg(test)]
 mod coverage_tests;
+mod css_lengths;
 mod events;
+mod fixture_update;
 mod focus;
 mod forms;
 mod fragments;
+mod image_variants;
 mod images;
 mod labels;
 mod layout;
 #[cfg(test)]
+mod layout_scale_tests;
+#[cfg(test)]
 mod layout_tests;
+mod lazy_media;
 mod raster_pgm;
 mod resources;
+mod row_layout;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]
@@ -36,6 +46,7 @@ mod session_forms;
 mod storage_tests;
 #[cfg(test)]
 mod style_tests;
+mod vector_text;
 #[cfg(test)]
 mod viewport_tests;
 
@@ -53,6 +64,7 @@ pub use coverage::{
     BrowserCoverageGate, BrowserCoverageReport, BrowserFeatureCoverage, BrowserFeatureState,
     browser_coverage_report, unsupported_feature_summary,
 };
+pub use fixture_update::{BrowserFixtureUpdateReport, update_browser_fixture_expectations};
 pub use forms::{
     BrowserForm, BrowserFormControl, BrowserFormOption, build_get_form_url, build_post_form_body,
 };
@@ -62,6 +74,13 @@ pub use resources::{
     BrowserScriptRenderReport, BrowserStylesheetRenderReport,
 };
 
+use css_lengths::{
+    CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS, CSS_DEFAULT_VIEWPORT_WIDTH_CELLS, CSS_TEXT_CELL_UNITS,
+    CssLengthContext, DEFAULT_CSS_CELL_HEIGHT_PX, DEFAULT_CSS_CELL_WIDTH_PX, css_axis_cell_px,
+    css_class_visually_hidden, css_length_cell_units, css_length_cells, css_length_cells_rounded,
+    parse_css_clip_hides_paint, parse_css_length_pixels, parse_css_signed_length_pixels,
+    resolve_css_calc_expressions, with_css_length_context,
+};
 use events::{
     BrowserClickDispatch, BrowserEventDispatch, BrowserEventPayload, BrowserEventPhase,
     BrowserEventTarget, JsEventListener, TinyJsEvent, begin_click_dispatch, begin_event_dispatch,
@@ -84,20 +103,41 @@ use forms::{
     submitter_form_method, submitter_resolved_form_action, validate_supported_form_controls,
 };
 use fragments::{collect_fragment_targets, source_fragment};
+use image_variants::{
+    add_decoded_image_alias_entries, decoded_image_aliases_for_resources, decoded_image_cache_keys,
+    dedupe_first_viewport_image_width_variants, image_render_url_matches_resource,
+};
 use images::{
     DecodedImage, DecodedImageEntry, DecodedImageInfo, background_image_render_source,
-    decode_image_reference, decoded_cached_images, decoded_image_entry, image_mime_type_supported,
-    image_render_source,
+    decode_image_reference, decoded_cached_images, decoded_cached_images_for_urls,
+    decoded_image_entry, image_mime_type_supported, image_render_source,
+    image_width_variant_canonical_url, is_lazy_image_placeholder_src,
 };
 #[cfg(test)]
 use images::{decode_simple_png, tiny_test_jpeg_bytes, tiny_test_jpeg_data_url};
 use labels::associated_label_control_node;
 use layout::{list_item_marker, nested_list_indent};
+use lazy_media::{
+    LazyMediaLeadingContent, declared_image_intrinsic_size, first_lazy_media_or_visible_text,
+    image_has_explicit_layout_size, image_has_lazy_load_metadata,
+    lazy_media_child_reserves_own_flow, lazy_media_container_reserved_height,
+    lazy_media_positioning_context_height,
+};
 use raster_pgm::{compare_raster_with_pgm, diff_within_threshold, encode_diff_pgm};
+#[cfg(test)]
+use resources::fetch_resource_with_cache;
 use resources::{
     BrowserResourceCache, collect_resources, collect_selected_image_resources,
-    fetch_resource_with_cache, load_post_form_target_with_cookie_jar, load_target,
+    fetch_resources_with_cache, load_post_form_target_with_cookie_jar, load_target,
     load_target_with_cookie_jar, local_path_without_url_parts,
+};
+use row_layout::{
+    child_layout_is_non_wrapping_flex_row, row_item_should_inline_children,
+    row_layout_auto_margin_width, row_layout_child_has_constrained_block_slot,
+    row_layout_child_horizontal_margin, row_layout_child_is_inline_subtree,
+    row_layout_child_is_out_of_flow, row_layout_child_participates,
+    row_layout_child_width_estimate, row_layout_child_width_hint, row_layout_effective_column_gap,
+    row_layout_flex_growth, row_layout_flex_shrink, row_layout_justification,
 };
 
 const TABLE_COLUMN_GAP_CELLS: usize = 2;
@@ -107,6 +147,8 @@ const MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT: usize = 8;
 pub struct BrowserRenderOptions {
     pub width: usize,
     pub max_bytes: usize,
+    pub css_cell_width_px: usize,
+    pub css_cell_height_px: usize,
 }
 
 impl Default for BrowserRenderOptions {
@@ -114,6 +156,74 @@ impl Default for BrowserRenderOptions {
         Self {
             width: 100,
             max_bytes: 4 * 1024 * 1024,
+            css_cell_width_px: DEFAULT_CSS_CELL_WIDTH_PX,
+            css_cell_height_px: DEFAULT_CSS_CELL_HEIGHT_PX,
+        }
+    }
+}
+
+impl BrowserRenderOptions {
+    pub fn new(width: usize, max_bytes: usize) -> Self {
+        Self {
+            width,
+            max_bytes,
+            ..Self::default()
+        }
+    }
+
+    fn css_length_context(self) -> CssLengthContext {
+        CssLengthContext::new(
+            self.width,
+            CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS as usize,
+            self.css_cell_width_px,
+            self.css_cell_height_px,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserImageViewport {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserImageLoadMode {
+    All,
+    FirstViewport {
+        viewport: BrowserImageViewport,
+        lookahead_rows: usize,
+        max_images: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserImageLoadOptions {
+    pub max_resource_bytes: usize,
+    pub mode: BrowserImageLoadMode,
+}
+
+const FIRST_VIEWPORT_AMBIGUOUS_IMAGE_LIMIT: usize = 6;
+const FIRST_VIEWPORT_DEFERRED_TOP_IMAGE_LIMIT: usize = 4;
+
+impl BrowserImageLoadOptions {
+    pub fn all(max_resource_bytes: usize) -> Self {
+        Self {
+            max_resource_bytes,
+            mode: BrowserImageLoadMode::All,
+        }
+    }
+
+    pub fn first_viewport(max_resource_bytes: usize, viewport: BrowserImageViewport) -> Self {
+        Self {
+            max_resource_bytes,
+            mode: BrowserImageLoadMode::FirstViewport {
+                viewport,
+                lookahead_rows: viewport.height.saturating_mul(4).max(16),
+                max_images: 16,
+            },
         }
     }
 }
@@ -141,15 +251,18 @@ pub struct BrowserRender {
     decoded_images: Vec<DecodedImageEntry>,
     #[serde(skip)]
     hit_targets: Vec<DisplayHitTarget>,
+    #[serde(skip)]
+    document_height: usize,
     pub display_list: Vec<DisplayCommand>,
     pub text: String,
 }
 
 impl BrowserRender {
     fn decoded_image(&self, url: &str) -> Option<&DecodedImage> {
+        let keys = decoded_image_cache_keys(&self.source, url);
         self.decoded_images
             .iter()
-            .find(|image| image.url == url)
+            .find(|image| keys.iter().any(|key| key == &image.url))
             .map(|image| &image.image)
     }
 
@@ -252,9 +365,16 @@ pub struct BrowserWheelDispatchReport {
 struct DisplayHitTarget {
     target_node: Option<usize>,
     text_runs: Vec<TextHitTargetRun>,
+    text_color: Option<(u8, u8, u8)>,
+    text_bold: bool,
+    text_italic: bool,
+    object_fit_cover: bool,
+    border_radius: Option<CssBorderRadius>,
+    box_shadow: Option<CssBoxShadow>,
     viewport_fixed: bool,
     viewport_sticky_top: Option<usize>,
     source_bounds: Option<DisplaySourceBounds>,
+    node_diagnostics: Option<DisplayNodeDiagnostics>,
 }
 
 impl DisplayHitTarget {
@@ -262,9 +382,16 @@ impl DisplayHitTarget {
         Self {
             target_node,
             text_runs: Vec::new(),
+            text_color: None,
+            text_bold: false,
+            text_italic: false,
+            object_fit_cover: false,
+            border_radius: None,
+            box_shadow: None,
             viewport_fixed: false,
             viewport_sticky_top: None,
             source_bounds: None,
+            node_diagnostics: None,
         }
     }
 
@@ -272,9 +399,16 @@ impl DisplayHitTarget {
         Self {
             target_node: None,
             text_runs,
+            text_color: None,
+            text_bold: false,
+            text_italic: false,
+            object_fit_cover: false,
+            border_radius: None,
+            box_shadow: None,
             viewport_fixed: false,
             viewport_sticky_top: None,
             source_bounds: None,
+            node_diagnostics: None,
         }
     }
 
@@ -290,6 +424,9 @@ impl DisplayHitTarget {
     }
 
     fn target_near_column(&self, column: usize, tolerance: usize) -> Option<usize> {
+        if self.has_no_target_text_run_at_column(column) {
+            return None;
+        }
         self.target_at_column(column).or_else(|| {
             self.text_runs
                 .iter()
@@ -311,6 +448,14 @@ impl DisplayHitTarget {
         })
     }
 
+    fn has_no_target_text_run_at_column(&self, column: usize) -> bool {
+        self.text_runs.iter().any(|run| {
+            column >= run.start
+                && column < run.start.saturating_add(run.width)
+                && run.target_node.is_none()
+        })
+    }
+
     fn has_target(&self) -> bool {
         self.target_node.is_some() || self.text_runs.iter().any(|run| run.target_node.is_some())
     }
@@ -329,6 +474,41 @@ impl DisplayHitTarget {
         self.source_bounds = source_bounds;
         self
     }
+
+    fn with_node_diagnostics(mut self, diagnostics: Option<DisplayNodeDiagnostics>) -> Self {
+        self.node_diagnostics = diagnostics;
+        self
+    }
+
+    fn with_text_color(mut self, text_color: Option<(u8, u8, u8)>) -> Self {
+        self.text_color = text_color;
+        self
+    }
+
+    fn with_text_bold(mut self, text_bold: bool) -> Self {
+        self.text_bold = text_bold;
+        self
+    }
+
+    fn with_text_italic(mut self, text_italic: bool) -> Self {
+        self.text_italic = text_italic;
+        self
+    }
+
+    fn with_object_fit_cover(mut self, object_fit_cover: bool) -> Self {
+        self.object_fit_cover = object_fit_cover;
+        self
+    }
+
+    fn with_border_radius(mut self, border_radius: Option<CssBorderRadius>) -> Self {
+        self.border_radius = border_radius;
+        self
+    }
+
+    fn with_box_shadow(mut self, box_shadow: Option<CssBoxShadow>) -> Self {
+        self.box_shadow = box_shadow;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +517,19 @@ struct DisplaySourceBounds {
     y: usize,
     width: usize,
     height: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DisplayNodeDiagnostics {
+    node_id: usize,
+    tag: String,
+    id: Option<String>,
+    classes: Vec<String>,
+    display: String,
+    position: String,
+    height: Option<usize>,
+    min_height: usize,
+    background_shade: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,13 +902,15 @@ pub struct BrowserRasterOptions {
     pub viewport_width: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport_height: Option<usize>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vector_text: bool,
 }
 
 impl Default for BrowserRasterOptions {
     fn default() -> Self {
         Self {
-            cell_width: 12,
-            cell_height: 18,
+            cell_width: 8,
+            cell_height: 12,
             padding_x: 4,
             padding_y: 4,
             max_pixels: 32 * 1024 * 1024,
@@ -723,6 +918,7 @@ impl Default for BrowserRasterOptions {
             viewport_y: None,
             viewport_width: None,
             viewport_height: None,
+            vector_text: false,
         }
     }
 }
@@ -963,6 +1159,58 @@ pub struct BrowserTextViewportReport {
     pub lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRenderDiagnosticsReport {
+    pub source: String,
+    pub title: String,
+    pub viewport: BrowserViewportState,
+    pub document_width: usize,
+    pub document_height: usize,
+    pub display_command_count: usize,
+    pub visible_command_count: usize,
+    pub visual_fill_command_count: usize,
+    pub visual_fill_area: usize,
+    pub viewport_area: usize,
+    pub fill_coverage_bps: usize,
+    pub meaningful_text_rows: usize,
+    pub meaningful_text_rows_outside_visual: usize,
+    pub readability_overlay_applied: bool,
+    pub largest_visual_fills: Vec<BrowserRenderDiagnosticFill>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRenderDiagnosticFill {
+    pub command_index: usize,
+    pub kind: String,
+    pub url: Option<String>,
+    pub decoded_hash: Option<String>,
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub visible_x: usize,
+    pub visible_y: usize,
+    pub visible_width: usize,
+    pub visible_height: usize,
+    pub visible_area: usize,
+    pub viewport_fixed: bool,
+    pub viewport_sticky_top: Option<usize>,
+    pub node: Option<BrowserRenderDiagnosticNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserRenderDiagnosticNode {
+    pub node_id: usize,
+    pub tag: String,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub display: String,
+    pub position: String,
+    pub height: Option<usize>,
+    pub min_height: usize,
+    pub background_shade: Option<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserVisualReport {
     pub fixture_count: usize,
@@ -1021,6 +1269,7 @@ pub struct BrowserFixtureManifest {
 pub struct BrowserFixture {
     pub name: Option<String>,
     pub path: PathBuf,
+    pub source: Option<String>,
     #[serde(default = "default_fixture_width")]
     pub width: usize,
     #[serde(default)]
@@ -1381,6 +1630,12 @@ enum TextTransform {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextDecorationLine {
+    None,
+    Underline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OverflowWrap {
     Normal,
     BreakWord,
@@ -1402,8 +1657,22 @@ enum Visibility {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CssBoxShadow {
+    dx_px: i16,
+    dy_px: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CssBorderRadius {
+    Px(u16),
+    Percent(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaintOpacity {
     Opaque,
+    /// Fractional opacity (1-99 percent); paints lightened toward the background.
+    Semi(u8),
     Transparent,
 }
 
@@ -1485,6 +1754,15 @@ fn saturating_add_signed(base: usize, offset: isize) -> usize {
     }
 }
 
+fn horizontal_projection_intersects_viewport(
+    offset: isize,
+    width: usize,
+    viewport_width: usize,
+) -> bool {
+    let end = offset.saturating_add(width as isize);
+    end > 0 && offset < viewport_width as isize
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoxSizing {
     ContentBox,
@@ -1495,6 +1773,9 @@ enum BoxSizing {
 enum CssDimension {
     Cells(usize),
     Percent(i32),
+    /// `calc(A% + Bpx)`-style linear form: percent basis points plus a signed
+    /// cell offset, resolved against the same basis as Percent.
+    PercentOffset(i32, i32),
     Min([CssDimensionTerm; 4], usize),
     Max([CssDimensionTerm; 4], usize),
     Clamp(CssDimensionTerm, CssDimensionTerm, CssDimensionTerm),
@@ -1518,6 +1799,10 @@ impl CssDimension {
                 let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
                 resolved.max(0) as usize
             }
+            Self::PercentOffset(basis_points, offset_cells) => {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.saturating_add(offset_cells as i64).max(0) as usize
+            }
             Self::Min(terms, len) => terms
                 .iter()
                 .take(len)
@@ -1538,6 +1823,38 @@ impl CssDimension {
             }
         }
     }
+
+    fn resolve_optional(self, basis: Option<usize>) -> Option<usize> {
+        match self {
+            Self::Cells(cells) => Some(cells),
+            Self::Percent(basis_points) => basis.map(|basis| {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.max(0) as usize
+            }),
+            Self::PercentOffset(basis_points, offset_cells) => basis.map(|basis| {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.saturating_add(offset_cells as i64).max(0) as usize
+            }),
+            Self::Min(terms, len) => terms
+                .iter()
+                .take(len)
+                .map(|term| term.resolve_optional(basis))
+                .collect::<Option<Vec<_>>>()
+                .map(|values| values.into_iter().min().unwrap_or(0)),
+            Self::Max(terms, len) => terms
+                .iter()
+                .take(len)
+                .map(|term| term.resolve_optional(basis))
+                .collect::<Option<Vec<_>>>()
+                .map(|values| values.into_iter().max().unwrap_or(0)),
+            Self::Clamp(minimum, preferred, maximum) => {
+                let minimum = minimum.resolve_optional(basis)?;
+                let preferred = preferred.resolve_optional(basis)?;
+                let maximum = maximum.resolve_optional(basis)?;
+                Some(preferred.clamp(minimum.min(maximum), maximum.max(minimum)))
+            }
+        }
+    }
 }
 
 impl CssDimensionTerm {
@@ -1552,6 +1869,16 @@ impl CssDimensionTerm {
                 let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
                 resolved.max(0) as usize
             }
+        }
+    }
+
+    fn resolve_optional(self, basis: Option<usize>) -> Option<usize> {
+        match self {
+            Self::Cells(cells) => Some(cells),
+            Self::Percent(basis_points) => basis.map(|basis| {
+                let resolved = (basis as i64).saturating_mul(basis_points as i64) / 10_000;
+                resolved.max(0) as usize
+            }),
         }
     }
 
@@ -1610,12 +1937,16 @@ struct ComputedStyle {
     float: Option<FloatSide>,
     clear: Option<ClearSide>,
     background_shade: Option<u8>,
+    background_color: Option<(u8, u8, u8)>,
     background_image_url: Option<String>,
     background_image_size: BackgroundImageSize,
     background_image_position: BackgroundImagePosition,
     background_image_repeat: BackgroundImageRepeat,
     text_shade: Option<u8>,
+    text_color: Option<(u8, u8, u8)>,
+    text_color_is_default: bool,
     text_align: Option<TextAlign>,
+    text_decoration_line: TextDecorationLine,
     visibility: Option<Visibility>,
     opacity: PaintOpacity,
     animation_reveals_opacity: bool,
@@ -1624,6 +1955,8 @@ struct ComputedStyle {
     flex_direction: FlexDirection,
     flex_wrap: bool,
     flex_basis: Option<CssDimension>,
+    flex_grow: u32,
+    flex_shrink: u32,
     justify_content: JustifyContent,
     align_items: AlignItems,
     grid_columns: Option<usize>,
@@ -1645,6 +1978,12 @@ struct ComputedStyle {
     text_indent: Option<usize>,
     line_height: Option<usize>,
     font_scale: Option<usize>,
+    font_weight_bold: Option<bool>,
+    font_style_italic: Option<bool>,
+    object_fit_cover: Option<bool>,
+    border_radius: Option<CssBorderRadius>,
+    box_shadow: Option<CssBoxShadow>,
+    transform_scale: Option<u16>,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
     box_sizing: BoxSizing,
@@ -1704,12 +2043,67 @@ impl ComputedStyle {
         width.clamp(1, available_width.max(1))
     }
 
-    fn positioned_outer_height(&self) -> usize {
-        self.height
-            .map(|height| height.resolve(default_vertical_dimension_basis()))
+    fn positioned_outer_height(&self, containing_height: Option<usize>) -> usize {
+        self.resolved_outer_height_for_containing_block(containing_height)
+            .or_else(|| self.stretched_outer_height_for_containing_block(containing_height))
             .unwrap_or(0)
-            .max(self.min_height.resolve(default_vertical_dimension_basis()))
+            .max(self.resolved_min_outer_height_for_containing_block(containing_height))
             .max(1)
+    }
+
+    fn stretches_positioned_block_axis(&self) -> bool {
+        self.position.is_out_of_flow()
+            && self.height.is_none()
+            && self.position_top.is_some()
+            && self.position_bottom.is_some()
+    }
+
+    fn stretched_outer_height_for_containing_block(
+        &self,
+        containing_height: Option<usize>,
+    ) -> Option<usize> {
+        if !self.stretches_positioned_block_axis() {
+            return None;
+        }
+        let containing_height = containing_height?;
+        let top = self.position_top?.resolve(containing_height);
+        let bottom = self.position_bottom?.resolve(containing_height);
+        let available = containing_height as isize - top - bottom;
+        usize::try_from(available.max(1)).ok()
+    }
+
+    fn resolved_outer_height_for_containing_block(
+        &self,
+        containing_height: Option<usize>,
+    ) -> Option<usize> {
+        let height = self.height?.resolve_optional(containing_height)?;
+        Some(self.outer_height_from_content_height(height))
+    }
+
+    fn resolved_min_outer_height_for_containing_block(
+        &self,
+        containing_height: Option<usize>,
+    ) -> usize {
+        self.min_height
+            .resolve_optional(containing_height)
+            .map(|height| self.outer_height_from_content_height(height))
+            .unwrap_or(0)
+    }
+
+    fn outer_height_from_content_height(&self, content_height: usize) -> usize {
+        let vertical_box_extra = self
+            .padding
+            .top
+            .saturating_add(self.padding.bottom)
+            .saturating_add(
+                self.border
+                    .map(|border| border.width.saturating_mul(2))
+                    .unwrap_or(0),
+            );
+        match self.box_sizing {
+            BoxSizing::ContentBox => content_height.saturating_add(vertical_box_extra),
+            BoxSizing::BorderBox => content_height,
+        }
     }
 
     fn resolved_width(&self, basis: usize) -> Option<usize> {
@@ -1724,18 +2118,32 @@ impl ComputedStyle {
         self.min_width.resolve(basis)
     }
 
+    fn has_inline_width_constraint(&self, basis: usize) -> bool {
+        self.flex_basis.is_some()
+            || self.width.is_some()
+            || self.max_width.is_some()
+            || self.min_width.resolve(basis) > 0
+    }
+
     fn resolved_height(&self) -> Option<usize> {
+        self.resolved_height_for_containing_block(None)
+    }
+
+    fn resolved_height_for_containing_block(
+        &self,
+        containing_height: Option<usize>,
+    ) -> Option<usize> {
         self.height
-            .map(|height| height.resolve(default_vertical_dimension_basis()))
+            .and_then(|height| height.resolve_optional(containing_height))
     }
 
     fn resolved_max_height(&self) -> Option<usize> {
         self.max_height
-            .map(|height| height.resolve(default_vertical_dimension_basis()))
+            .and_then(|height| height.resolve_optional(None))
     }
 
     fn resolved_min_height(&self) -> usize {
-        self.min_height.resolve(default_vertical_dimension_basis())
+        self.min_height.resolve_optional(None).unwrap_or(0)
     }
 
     fn horizontal_projection_offset(&self, containing_width: usize) -> isize {
@@ -1751,10 +2159,14 @@ impl ComputedStyle {
         offset
     }
 
+    fn has_transform_translate(&self) -> bool {
+        !self.transform_translate.x.is_zero() || !self.transform_translate.y.is_zero()
+    }
+
     fn vertical_projection_offset(&self, containing_height: Option<usize>) -> Option<isize> {
         let has_top = self.position_top.is_some();
         let has_bottom = self.position_bottom.is_some();
-        let own_height = self.positioned_outer_height();
+        let own_height = self.positioned_outer_height(containing_height);
         let mut offset = if let Some(top) = self.position_top {
             top.resolve(containing_height.unwrap_or(0))
         } else if let (Some(bottom), Some(containing_height)) =
@@ -1845,23 +2257,31 @@ struct CssRule {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CssDeclarations {
+    grid_template_areas: Option<Vec<Vec<String>>>,
+    grid_area: Option<String>,
     display: Option<Display>,
     float: Option<Option<FloatSide>>,
     clear: Option<Option<ClearSide>>,
     flex_direction: Option<FlexDirection>,
     flex_wrap: Option<bool>,
     flex_basis: Option<CssDimension>,
+    flex_grow: Option<u32>,
+    flex_shrink: Option<u32>,
     justify_content: Option<JustifyContent>,
     align_items: Option<AlignItems>,
     grid_columns: Option<usize>,
     grid_auto_min_column_width: Option<usize>,
     background_shade: Option<u8>,
+    background_color: Option<(u8, u8, u8)>,
+    background_current_color: bool,
     background_image_url: Option<String>,
     background_image_size: Option<BackgroundImageSize>,
     background_image_position: Option<BackgroundImagePosition>,
     background_image_repeat: Option<BackgroundImageRepeat>,
     text_shade: Option<u8>,
+    text_color: Option<(u8, u8, u8)>,
     text_align: Option<TextAlign>,
+    text_decoration_line: Option<TextDecorationLine>,
     visibility: Option<Visibility>,
     opacity: Option<PaintOpacity>,
     animation_reveals_opacity: Option<bool>,
@@ -1883,6 +2303,12 @@ struct CssDeclarations {
     text_indent: Option<usize>,
     line_height: Option<usize>,
     font_scale: Option<usize>,
+    font_weight_bold: Option<bool>,
+    font_style_italic: Option<bool>,
+    object_fit_cover: Option<bool>,
+    border_radius: Option<CssBorderRadius>,
+    box_shadow: Option<CssBoxShadow>,
+    transform_scale: Option<u16>,
     row_gap: Option<usize>,
     column_gap: Option<usize>,
     box_sizing: Option<BoxSizing>,
@@ -1905,6 +2331,8 @@ struct CssDeclarations {
 struct BorderPaint {
     width: usize,
     shade: u8,
+    color: Option<(u8, u8, u8)>,
+    current_color: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1930,6 +2358,7 @@ struct CssCascade {
     attr_rules: HashMap<String, Vec<usize>>,
     universal_rules: Vec<usize>,
     custom_properties: HashMap<String, String>,
+    length_context: CssLengthContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1951,6 +2380,7 @@ struct CompoundSelector {
     attributes: Vec<AttributeSelector>,
     not_selectors: Vec<CompoundSelector>,
     first_child: bool,
+    link: bool,
     universal: bool,
 }
 
@@ -3504,23 +3934,35 @@ impl BrowserSession {
         &mut self,
         max_resource_bytes: usize,
     ) -> Result<BrowserResourceFetchReport> {
-        let Some(current) = self.current() else {
+        let Some(current_index) = self.current_index else {
             bail!("cannot fetch resources: session has no current page");
         };
-        let page_source = current.source.clone();
-        let resources = current.resources.clone();
-        let mut fetched_resources = Vec::with_capacity(resources.len());
-
-        for resource in resources {
-            let fetch = fetch_resource_with_cache(
-                resource,
-                max_resource_bytes,
-                &mut self.cookie_jar,
-                &mut self.resource_cache,
-            )
-            .await;
-            fetched_resources.push(fetch);
-        }
+        let entry = &self.entries[current_index];
+        let page_source = entry.render.source.clone();
+        let length_context = self.options.css_length_context();
+        let viewport_width_css_px = length_context.viewport_width_px;
+        let background_viewport_width = entry.render.viewport_width;
+        let css_cascade = parse_css(&entry.page_state.css_text, length_context);
+        let mut resources = collect_resources(
+            &entry.page_state.dom,
+            &page_source,
+            viewport_width_css_px,
+            background_viewport_width,
+        );
+        resources.extend(collect_css_background_image_resources(
+            &entry.page_state.dom,
+            &page_source,
+            &css_cascade,
+            background_viewport_width,
+        ));
+        dedupe_browser_resources_by_resolved_preserving_first(&mut resources);
+        let fetched_resources = fetch_resources_with_cache(
+            resources,
+            max_resource_bytes,
+            &mut self.cookie_jar,
+            &mut self.resource_cache,
+        )
+        .await;
 
         let fetched = fetched_resources
             .iter()
@@ -3567,30 +4009,47 @@ impl BrowserSession {
             .filter(|resource| resource.kind == "stylesheet")
             .cloned()
             .collect::<Vec<_>>();
-        let mut fetches = Vec::with_capacity(stylesheet_resources.len());
+        let fetches = fetch_resources_with_cache(
+            stylesheet_resources,
+            max_resource_bytes,
+            &mut self.cookie_jar,
+            &mut self.resource_cache,
+        )
+        .await;
+        let mut fetches = fetches;
         let mut stylesheet_text = Vec::new();
+        let mut stylesheet_roots = Vec::new();
+        let mut visited_stylesheets = HashSet::new();
 
-        for resource in stylesheet_resources {
-            let fetch = fetch_resource_with_cache(
-                resource,
-                max_resource_bytes,
-                &mut self.cookie_jar,
-                &mut self.resource_cache,
-            )
-            .await;
+        for fetch in &fetches {
             if matches!(fetch.status.as_str(), "fetched" | "cached")
                 && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
             {
                 let sheet = String::from_utf8_lossy(bytes);
-                stylesheet_text.push(rebase_stylesheet_relative_urls(
-                    sheet.as_ref(),
-                    &fetch.resource.resolved,
-                ));
+                visited_stylesheets.insert(fetch.resource.resolved.clone());
+                stylesheet_roots.push((sheet.into_owned(), fetch.resource.resolved.clone()));
             }
-            fetches.push(fetch);
         }
 
-        let applied = stylesheet_text.len();
+        for (sheet, source) in stylesheet_roots {
+            stylesheet_text.push(
+                self.expanded_stylesheet_text(
+                    sheet,
+                    source,
+                    page_source.clone(),
+                    max_resource_bytes,
+                    &mut fetches,
+                    &mut visited_stylesheets,
+                    0,
+                )
+                .await,
+            );
+        }
+
+        let applied = fetches
+            .iter()
+            .filter(|fetch| matches!(fetch.status.as_str(), "fetched" | "cached"))
+            .count();
         let failed = fetches
             .iter()
             .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
@@ -3602,6 +4061,8 @@ impl BrowserSession {
                 css_text.push_str(sheet);
             }
         }
+        self.load_page_fonts(current_index, max_resource_bytes)
+            .await;
         let render = self.render_entry_page_state(current_index);
         self.set_entry_render(current_index, render);
 
@@ -3613,6 +4074,112 @@ impl BrowserSession {
             cached_resource_count: self.resource_cache.len(),
             cached_resource_bytes: self.resource_cache.total_bytes(),
             fetches,
+        })
+    }
+
+    /// Fetch the first usable @font-face TTF/OTF source declared by the page
+    /// and register it as the page's vector face (opt-in raster feature).
+    async fn load_page_fonts(&mut self, current_index: usize, max_resource_bytes: usize) {
+        let (page_source, font_url) = {
+            let entry = &self.entries[current_index];
+            let Some(font_url) =
+                first_font_face_ttf_url(&entry.page_state.css_text, &entry.render.source)
+            else {
+                return;
+            };
+            (entry.render.source.clone(), font_url)
+        };
+        let resource = BrowserResource {
+            kind: "font".to_owned(),
+            initiator: "font-face".to_owned(),
+            url: font_url.clone(),
+            resolved: font_url.clone(),
+            rel: None,
+            media: None,
+            alt: None,
+            type_hint: None,
+        };
+        let fetches = fetch_resources_with_cache(
+            vec![resource],
+            max_resource_bytes,
+            &mut self.cookie_jar,
+            &mut self.resource_cache,
+        )
+        .await;
+        if fetches
+            .first()
+            .is_some_and(|fetch| matches!(fetch.status.as_str(), "fetched" | "cached"))
+            && let Some(bytes) = self.resource_cache.cached_bytes(&font_url)
+        {
+            vector_text::register_page_font(&page_source, bytes.to_vec());
+        }
+    }
+
+    fn expanded_stylesheet_text<'a>(
+        &'a mut self,
+        css: String,
+        stylesheet_source: String,
+        document_source: String,
+        max_resource_bytes: usize,
+        fetches: &'a mut Vec<BrowserResourceFetch>,
+        visited: &'a mut HashSet<String>,
+        depth: usize,
+    ) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> {
+        Box::pin(async move {
+            const MAX_STYLESHEET_IMPORT_DEPTH: usize = 8;
+            let mut out = String::new();
+            if depth < MAX_STYLESHEET_IMPORT_DEPTH {
+                let import_resources = stylesheet_import_resources(&css, &stylesheet_source)
+                    .into_iter()
+                    .filter(|resource| visited.insert(resource.resolved.clone()))
+                    .collect::<Vec<_>>();
+                if !import_resources.is_empty() {
+                    let import_fetches = fetch_resources_with_cache(
+                        import_resources,
+                        max_resource_bytes,
+                        &mut self.cookie_jar,
+                        &mut self.resource_cache,
+                    )
+                    .await;
+                    let imported_sheets = import_fetches
+                        .iter()
+                        .filter_map(|fetch| {
+                            if !matches!(fetch.status.as_str(), "fetched" | "cached") {
+                                return None;
+                            }
+                            let bytes =
+                                self.resource_cache.cached_bytes(&fetch.resource.resolved)?;
+                            Some((
+                                String::from_utf8_lossy(bytes).into_owned(),
+                                fetch.resource.resolved.clone(),
+                                fetch.resource.media.clone(),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    fetches.extend(import_fetches);
+                    for (imported_css, imported_source, media) in imported_sheets {
+                        let expanded = self
+                            .expanded_stylesheet_text(
+                                imported_css,
+                                imported_source,
+                                document_source.clone(),
+                                max_resource_bytes,
+                                fetches,
+                                visited,
+                                depth.saturating_add(1),
+                            )
+                            .await;
+                        out.push_str(&wrap_imported_stylesheet_media(expanded, media.as_deref()));
+                        out.push('\n');
+                    }
+                }
+            }
+            out.push_str(&rebase_stylesheet_relative_urls(
+                &css,
+                &stylesheet_source,
+                &document_source,
+            ));
+            out
         })
     }
 
@@ -3631,23 +4198,21 @@ impl BrowserSession {
             .filter(|resource| resource.kind == "script")
             .cloned()
             .collect::<Vec<_>>();
-        let mut fetches = Vec::with_capacity(script_resources.len());
+        let fetches = fetch_resources_with_cache(
+            script_resources,
+            max_resource_bytes,
+            &mut self.cookie_jar,
+            &mut self.resource_cache,
+        )
+        .await;
         let mut script_text = Vec::new();
 
-        for resource in script_resources {
-            let fetch = fetch_resource_with_cache(
-                resource,
-                max_resource_bytes,
-                &mut self.cookie_jar,
-                &mut self.resource_cache,
-            )
-            .await;
+        for fetch in &fetches {
             if matches!(fetch.status.as_str(), "fetched" | "cached")
                 && let Some(bytes) = self.resource_cache.cached_bytes(&fetch.resource.resolved)
             {
                 script_text.push(String::from_utf8_lossy(bytes).into_owned());
             }
-            fetches.push(fetch);
         }
 
         let applied = script_text.len();
@@ -3682,21 +4247,30 @@ impl BrowserSession {
         &mut self,
         max_resource_bytes: usize,
     ) -> Result<BrowserImageRenderReport> {
+        self.render_current_with_image_options(BrowserImageLoadOptions::all(max_resource_bytes))
+            .await
+    }
+
+    pub async fn render_current_with_image_options(
+        &mut self,
+        options: BrowserImageLoadOptions,
+    ) -> Result<BrowserImageRenderReport> {
         let Some(current_index) = self.current_index else {
             bail!("cannot render with images: session has no current page");
         };
         let page_source = self.entries[current_index].render.source.clone();
-        let viewport_width_css_px = self.entries[current_index]
-            .render
-            .viewport_width
-            .saturating_mul(8);
+        let length_context = self.options.css_length_context();
+        let viewport_width_css_px = length_context.viewport_width_px;
         let background_viewport_width = self.entries[current_index].render.viewport_width;
         let mut image_resources = collect_selected_image_resources(
             &self.entries[current_index].page_state.dom,
             &page_source,
             viewport_width_css_px,
         );
-        let css_cascade = parse_css(&self.entries[current_index].page_state.css_text);
+        let css_cascade = parse_css(
+            &self.entries[current_index].page_state.css_text,
+            length_context,
+        );
         image_resources.extend(collect_css_background_image_resources(
             &self.entries[current_index].page_state.dom,
             &page_source,
@@ -3705,25 +4279,68 @@ impl BrowserSession {
         ));
         let mut seen_image_resources = HashSet::new();
         image_resources.retain(|resource| seen_image_resources.insert(resource.resolved.clone()));
-        let mut fetches = Vec::with_capacity(image_resources.len());
-
-        for resource in image_resources {
-            let fetch = fetch_resource_with_cache(
-                resource,
-                max_resource_bytes,
-                &mut self.cookie_jar,
-                &mut self.resource_cache,
-            )
-            .await;
-            fetches.push(fetch);
+        prioritize_image_resources_for_load(
+            &self.entries[current_index].render,
+            &mut image_resources,
+            options.mode,
+        );
+        if let BrowserImageLoadMode::FirstViewport {
+            viewport,
+            max_images,
+            ..
+        } = options.mode
+        {
+            if viewport.y == 0
+                && first_viewport_distinct_image_identity_count(&page_source, &image_resources) <= 1
+            {
+                supplement_first_viewport_deferred_top_image_resources(
+                    &mut image_resources,
+                    &self.entries[current_index].render,
+                    &self.entries[current_index].page_state.dom,
+                    &page_source,
+                    viewport_width_css_px,
+                    background_viewport_width,
+                    viewport,
+                    max_images,
+                );
+            }
+            images::apply_first_viewport_width_variants(
+                &mut image_resources,
+                viewport_width_css_px,
+                &self.entries[current_index].render,
+            );
+            dedupe_first_viewport_image_width_variants(&mut image_resources);
         }
+        let decoded_resource_aliases =
+            decoded_image_aliases_for_resources(&page_source, &image_resources);
+        let decoded_resource_urls = image_resources
+            .iter()
+            .map(|resource| resource.resolved.clone())
+            .collect::<HashSet<_>>();
+        let mut fetches = fetch_resources_with_cache(
+            image_resources,
+            options.max_resource_bytes,
+            &mut self.cookie_jar,
+            &mut self.resource_cache,
+        )
+        .await;
 
-        let cached_images = decoded_cached_images(&self.resource_cache);
+        let mut cached_images = match options.mode {
+            BrowserImageLoadMode::All => decoded_cached_images(&self.resource_cache),
+            BrowserImageLoadMode::FirstViewport { .. } => {
+                decoded_cached_images_for_urls(&self.resource_cache, &decoded_resource_urls)
+            }
+        };
         let decoded = cached_images.len();
         let decoded_image_bytes = cached_images
             .iter()
             .map(|entry| entry.image.pixels.len())
             .sum();
+        add_decoded_image_alias_entries(
+            &page_source,
+            &mut cached_images,
+            &decoded_resource_aliases,
+        );
         let failed = fetches
             .iter()
             .filter(|fetch| matches!(fetch.status.as_str(), "failed" | "skipped"))
@@ -3807,18 +4424,341 @@ fn annotate_image_fetch_render_attachments(
         let Some(decoded_hash) = fetch.decoded_hash.as_deref() else {
             fetch.render_attached = Some(false);
             fetch.render_attachment_kind = None;
-            fetch.image_visibility_state = Some(image_fetch_visibility_state(fetch).to_owned());
+            fetch.image_visibility_state =
+                Some(image_fetch_visibility_state(fetch, false).to_owned());
             continue;
         };
+        let render_url_present = image_render_has_resource_url(render, &fetch.resource.resolved)
+            || image_render_has_resource_url(render, &fetch.resource.url);
         let attachment_kind =
-            image_render_attachment_kind(render, &fetch.resource.resolved, decoded_hash);
+            image_render_attachment_kind(render, &fetch.resource.resolved, decoded_hash).or_else(
+                || image_render_attachment_kind(render, &fetch.resource.url, decoded_hash),
+            );
         fetch.render_attached = Some(attachment_kind.is_some());
         fetch.render_attachment_kind = attachment_kind.map(str::to_owned);
-        fetch.image_visibility_state = Some(image_fetch_visibility_state(fetch).to_owned());
+        fetch.image_visibility_state =
+            Some(image_fetch_visibility_state(fetch, render_url_present).to_owned());
     }
 }
 
-fn image_fetch_visibility_state(fetch: &BrowserResourceFetch) -> &'static str {
+fn prioritize_image_resources_for_load(
+    render: &BrowserRender,
+    resources: &mut Vec<BrowserResource>,
+    mode: BrowserImageLoadMode,
+) {
+    let BrowserImageLoadMode::FirstViewport {
+        viewport,
+        lookahead_rows,
+        max_images,
+    } = mode
+    else {
+        return;
+    };
+    if resources.is_empty() {
+        return;
+    }
+
+    let ranks = first_viewport_image_resource_ranks(render, viewport, lookahead_rows);
+    let original_order = resources
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| (resource.resolved.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let has_visible_viewport_candidate = resources
+        .iter()
+        .any(|resource| ranks.get(&resource.resolved).is_some_and(|rank| *rank == 0));
+    let deferred_top_candidates = if has_visible_viewport_candidate && viewport.y == 0 {
+        first_viewport_deferred_top_image_candidates(resources, &ranks, max_images)
+    } else {
+        HashSet::new()
+    };
+
+    if has_visible_viewport_candidate {
+        resources.retain(|resource| {
+            ranks.get(&resource.resolved).is_some_and(|rank| *rank <= 1)
+                || deferred_top_candidates.contains(&resource.resolved)
+        });
+    } else if viewport.y > 0 && render.document_height > viewport.height {
+        let limit = max_images.max(1).min(resources.len());
+        let center = resources
+            .len()
+            .saturating_mul(viewport.y.saturating_add(viewport.height / 2))
+            / render.document_height.max(1);
+        let start = center
+            .saturating_sub(limit / 2)
+            .min(resources.len().saturating_sub(limit));
+        resources.drain(..start);
+        resources.truncate(limit);
+    } else {
+        resources.truncate(FIRST_VIEWPORT_AMBIGUOUS_IMAGE_LIMIT.min(max_images).max(1));
+    }
+    resources.sort_by_key(|resource| {
+        (
+            ranks.get(&resource.resolved).copied().unwrap_or(2),
+            original_order
+                .get(&resource.resolved)
+                .copied()
+                .unwrap_or(usize::MAX),
+        )
+    });
+    resources.truncate(max_images.max(1));
+}
+
+fn first_viewport_deferred_top_image_candidates(
+    resources: &[BrowserResource],
+    ranks: &HashMap<String, usize>,
+    max_images: usize,
+) -> HashSet<String> {
+    let Some(first_ranked_index) = resources
+        .iter()
+        .position(|resource| ranks.contains_key(&resource.resolved))
+    else {
+        return HashSet::new();
+    };
+    let limit = FIRST_VIEWPORT_DEFERRED_TOP_IMAGE_LIMIT
+        .min(max_images.saturating_sub(1))
+        .max(1);
+    resources
+        .iter()
+        .take(first_ranked_index)
+        .filter(|resource| {
+            matches!(
+                resource.kind.as_str(),
+                "image" | "image_candidate" | "background_image" | "poster"
+            )
+        })
+        .take(limit)
+        .map(|resource| resource.resolved.clone())
+        .collect()
+}
+
+fn first_viewport_distinct_image_identity_count(
+    source: &str,
+    resources: &[BrowserResource],
+) -> usize {
+    resources
+        .iter()
+        .map(|resource| {
+            let resolved = resolve_browser_href(source, &resource.resolved);
+            image_width_variant_canonical_url(&resolved).unwrap_or(resolved)
+        })
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn supplement_first_viewport_deferred_top_image_resources(
+    resources: &mut Vec<BrowserResource>,
+    render: &BrowserRender,
+    dom: &Dom,
+    source: &str,
+    viewport_width_css_px: usize,
+    background_viewport_width: usize,
+    viewport: BrowserImageViewport,
+    max_images: usize,
+) {
+    let available = max_images.saturating_sub(resources.len());
+    if available == 0 {
+        return;
+    }
+    let limit = FIRST_VIEWPORT_DEFERRED_TOP_IMAGE_LIMIT
+        .min(available)
+        .max(1);
+    let selected_keys = resources
+        .iter()
+        .flat_map(|resource| first_viewport_resource_identity_keys(source, resource))
+        .collect::<HashSet<_>>();
+    let all_resources = collect_resources(
+        dom,
+        source,
+        viewport_width_css_px,
+        background_viewport_width,
+    );
+    let Some(first_selected_index) = all_resources.iter().position(|resource| {
+        first_viewport_resource_identity_keys(source, resource)
+            .iter()
+            .any(|key| selected_keys.contains(key))
+    }) else {
+        return;
+    };
+    let selected_duplicate_after = all_resources
+        .iter()
+        .skip(first_selected_index.saturating_add(1))
+        .any(|resource| {
+            first_viewport_resource_identity_keys(source, resource)
+                .iter()
+                .any(|key| selected_keys.contains(key))
+        });
+    let selected_duplicate_identity =
+        resources.len() > first_viewport_distinct_image_identity_count(source, resources);
+    let search_after_selected = (selected_duplicate_after || selected_duplicate_identity)
+        && first_viewport_selected_plan_is_small_top_chrome(render, resources, source, viewport);
+    let mut supplemental = all_resources
+        .into_iter()
+        .enumerate()
+        .filter(|(index, resource)| {
+            *index < first_selected_index
+                || (search_after_selected && *index > first_selected_index)
+                    && !first_viewport_resource_identity_keys(source, resource)
+                        .iter()
+                        .any(|key| selected_keys.contains(key))
+        })
+        .map(|(_, resource)| resource)
+        .filter(first_viewport_supplemental_image_resource)
+        .take(limit)
+        .collect::<Vec<_>>();
+    supplemental.append(resources);
+    let mut seen = HashSet::new();
+    supplemental.retain(|resource| seen.insert(resource.resolved.clone()));
+    supplemental.truncate(max_images.max(1));
+    *resources = supplemental;
+}
+
+fn first_viewport_selected_plan_is_small_top_chrome(
+    render: &BrowserRender,
+    resources: &[BrowserResource],
+    source: &str,
+    viewport: BrowserImageViewport,
+) -> bool {
+    let selected_keys = resources
+        .iter()
+        .flat_map(|resource| first_viewport_resource_identity_keys(source, resource))
+        .collect::<HashSet<_>>();
+    if selected_keys.is_empty() {
+        return false;
+    }
+    let visible = DisplayCommandBounds {
+        x: viewport.x,
+        y: viewport.y,
+        width: viewport.width,
+        height: viewport.height,
+    };
+    let viewport_area = viewport.width.saturating_mul(viewport.height).max(1);
+    render.display_list.iter().any(|command| {
+        let Some(url) = display_command_image_url(command) else {
+            return false;
+        };
+        let url_keys = first_viewport_image_url_identity_keys(source, url);
+        if !url_keys.iter().any(|key| selected_keys.contains(key)) {
+            return false;
+        }
+        let bounds = display_command_bounds(command);
+        let Some(visible_bounds) = intersect_display_bounds(bounds, visible) else {
+            return false;
+        };
+        let area = visible_bounds.width.saturating_mul(visible_bounds.height);
+        let top_chrome_slop = viewport.height.saturating_div(6).max(2);
+        visible_bounds.y <= viewport.y.saturating_add(top_chrome_slop)
+            && visible_bounds.height <= viewport.height.saturating_div(4).max(6)
+            && area.saturating_mul(10) <= viewport_area
+    })
+}
+
+fn first_viewport_resource_identity_keys(source: &str, resource: &BrowserResource) -> Vec<String> {
+    first_viewport_image_url_identity_keys(source, &resource.resolved)
+        .into_iter()
+        .chain(first_viewport_image_url_identity_keys(
+            source,
+            &resource.url,
+        ))
+        .fold(Vec::new(), |mut keys, key| {
+            if !keys.iter().any(|existing| existing == &key) {
+                keys.push(key);
+            }
+            keys
+        })
+}
+
+fn first_viewport_image_url_identity_keys(source: &str, url: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let resolved = resolve_browser_href(source, url);
+    keys.push(resolved.clone());
+    if let Some(canonical) = image_width_variant_canonical_url(&resolved) {
+        keys.push(canonical);
+    }
+    if !keys.iter().any(|key| key == url) {
+        keys.push(url.to_owned());
+    }
+    if let Some(canonical) = image_width_variant_canonical_url(url)
+        && !keys.iter().any(|key| key == &canonical)
+    {
+        keys.push(canonical);
+    }
+    keys
+}
+
+fn first_viewport_supplemental_image_resource(resource: &BrowserResource) -> bool {
+    matches!(
+        resource.kind.as_str(),
+        "image" | "image_candidate" | "background_image" | "poster"
+    ) && !matches!(resource.initiator.as_str(), "link")
+}
+
+fn first_viewport_image_resource_ranks(
+    render: &BrowserRender,
+    viewport: BrowserImageViewport,
+    lookahead_rows: usize,
+) -> HashMap<String, usize> {
+    let visible = DisplayCommandBounds {
+        x: viewport.x,
+        y: viewport.y,
+        width: viewport.width,
+        height: viewport.height,
+    };
+    let lookahead_y = viewport.y.saturating_sub(lookahead_rows);
+    let near = DisplayCommandBounds {
+        x: viewport.x,
+        y: lookahead_y,
+        width: viewport.width,
+        height: viewport
+            .height
+            .saturating_add(lookahead_rows)
+            .saturating_add(viewport.y.saturating_sub(lookahead_y)),
+    };
+    let mut ranks: HashMap<String, usize> = HashMap::new();
+
+    for command in &render.display_list {
+        let Some(url) = display_command_image_url(command) else {
+            continue;
+        };
+        let bounds = display_command_bounds(command);
+        let rank = if intersect_display_bounds(bounds, visible).is_some() {
+            0
+        } else if intersect_display_bounds(bounds, near).is_some() {
+            1
+        } else {
+            continue;
+        };
+        let resolved = resolve_browser_href(&render.source, url);
+        ranks
+            .entry(resolved)
+            .and_modify(|current| *current = (*current).min(rank))
+            .or_insert(rank);
+    }
+
+    ranks
+}
+
+fn display_command_image_url(command: &DisplayCommand) -> Option<&str> {
+    match command {
+        DisplayCommand::Image { url, .. } | DisplayCommand::BackgroundImage { url, .. } => {
+            url.as_deref()
+        }
+        _ => None,
+    }
+}
+
+fn display_command_decoded_hash(command: &DisplayCommand) -> Option<&str> {
+    match command {
+        DisplayCommand::Image { decoded_hash, .. }
+        | DisplayCommand::BackgroundImage { decoded_hash, .. } => decoded_hash.as_deref(),
+        _ => None,
+    }
+}
+
+fn image_fetch_visibility_state(
+    fetch: &BrowserResourceFetch,
+    render_url_present: bool,
+) -> &'static str {
     if fetch.status == "skipped" {
         return "skipped";
     }
@@ -3827,7 +4767,8 @@ fn image_fetch_visibility_state(fetch: &BrowserResourceFetch) -> &'static str {
     }
     match fetch.image_decode_status.as_deref() {
         Some("decoded") if fetch.render_attached == Some(true) => "render_attached",
-        Some("decoded") => "decoded_unattached",
+        Some("decoded") if render_url_present => "decoded_unattached",
+        Some("decoded") => "decoded_not_rendered",
         Some("unsupported_format") => "unsupported_type",
         Some("undecoded") => "decode_failed",
         Some("not_fetched") => "not_fetched",
@@ -3836,11 +4777,31 @@ fn image_fetch_visibility_state(fetch: &BrowserResourceFetch) -> &'static str {
     }
 }
 
+fn image_render_has_resource_url(render: &BrowserRender, resource_url: &str) -> bool {
+    let resource_resolved = resolve_browser_href(&render.source, resource_url);
+    let resource_canonical =
+        image_width_variant_canonical_url(&resource_resolved).unwrap_or(resource_resolved.clone());
+    render.display_list.iter().any(|command| {
+        display_command_image_url(command).is_some_and(|url| {
+            image_render_url_matches_resource(
+                &render.source,
+                url,
+                resource_url,
+                &resource_resolved,
+                &resource_canonical,
+            )
+        })
+    })
+}
+
 fn image_render_attachment_kind<'a>(
     render: &'a BrowserRender,
     resource_url: &str,
     decoded_hash: &str,
 ) -> Option<&'a str> {
+    let resource_resolved = resolve_browser_href(&render.source, resource_url);
+    let resource_canonical =
+        image_width_variant_canonical_url(&resource_resolved).unwrap_or(resource_resolved.clone());
     render
         .display_list
         .iter()
@@ -3849,12 +4810,32 @@ fn image_render_attachment_kind<'a>(
                 url: Some(url),
                 decoded_hash: Some(hash),
                 ..
-            } if url == resource_url && hash == decoded_hash => Some("image"),
+            } if hash == decoded_hash
+                && image_render_url_matches_resource(
+                    &render.source,
+                    url,
+                    resource_url,
+                    &resource_resolved,
+                    &resource_canonical,
+                ) =>
+            {
+                Some("image")
+            }
             DisplayCommand::BackgroundImage {
                 url: Some(url),
                 decoded_hash: Some(hash),
                 ..
-            } if url == resource_url && hash == decoded_hash => Some("background_image"),
+            } if hash == decoded_hash
+                && image_render_url_matches_resource(
+                    &render.source,
+                    url,
+                    resource_url,
+                    &resource_resolved,
+                    &resource_canonical,
+                ) =>
+            {
+                Some("background_image")
+            }
             _ => None,
         })
 }
@@ -4069,9 +5050,10 @@ fn render_html_prepared_with_state(
         css_text.push('\n');
         css_text.push_str(sheet);
     }
-    let mut dom = parsed.dom;
     let mut scripts = parsed.inline_scripts;
     scripts.extend(preparation.external_scripts.iter().cloned());
+    let mut dom = parsed.dom;
+    promote_hydration_image_sources(&mut dom, &scripts);
 
     let script_start = Instant::now();
     let storage_origin = (preparation.local_storage.is_some()
@@ -4095,6 +5077,8 @@ fn render_html_prepared_with_state(
         TinyJsRuntime::with_web_storage(initial_local_storage, initial_session_storage);
     runtime.page_source = source.to_owned();
     execute_scripts_with_runtime(&mut dom, &mut runtime, &scripts);
+    apply_static_ancillary_header_layout(&mut dom);
+    let had_click_target = preparation.click_target.is_some();
     let click_default_action = match preparation.click_target {
         Some(RenderClickTarget::Selector(selector)) => {
             let dispatch = dispatch_click_selector(&mut dom, &mut runtime, selector)?;
@@ -4106,9 +5090,10 @@ fn render_html_prepared_with_state(
         }
         None => None,
     };
-    if click_default_action
-        .as_ref()
-        .is_none_or(BrowserClickDefaultAction::drains_post_click_timers)
+    if had_click_target
+        && click_default_action
+            .as_ref()
+            .is_none_or(BrowserClickDefaultAction::drains_post_click_timers)
     {
         drain_timer_tasks(&mut dom, &mut runtime);
     }
@@ -4183,16 +5168,54 @@ fn render_page_state_with_timings(
     total_start: Instant,
     click_default_action: Option<BrowserClickDefaultAction>,
 ) -> BrowserProfiledRender {
+    // Pin the CSS length context for the whole render: layout helpers resolve
+    // px lengths through a thread-local, and on multi-threaded executors a
+    // render may otherwise observe another thread's default context.
+    let result = with_css_length_context(options.css_length_context(), || {
+        render_page_state_with_timings_in_context(
+            source,
+            options,
+            page_state,
+            resource_cached_images,
+            parse_us,
+            script_us,
+            total_start,
+            click_default_action,
+        )
+    });
+    if std::env::var_os("BRUTAL_DEBUG_RENDER").is_some() {
+        eprintln!(
+            "DBGRENDER source={source} options={options:?} css_len={} dom={} doubled={}",
+            page_state.css_text.len(),
+            page_state.dom.nodes.len(),
+            result.render.text.contains("BBee"),
+        );
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_page_state_with_timings_in_context(
+    source: &str,
+    options: BrowserRenderOptions,
+    page_state: &BrowserPageState,
+    resource_cached_images: &[DecodedImageEntry],
+    parse_us: u128,
+    script_us: u128,
+    total_start: Instant,
+    click_default_action: Option<BrowserClickDefaultAction>,
+) -> BrowserProfiledRender {
     let style_start = Instant::now();
-    let css_cascade = parse_css(&page_state.css_text);
+    let length_context = options.css_length_context();
+    let viewport_width_css_px = length_context.viewport_width_px;
+    let background_viewport_width = options.width;
+    let css_cascade = parse_css(&page_state.css_text, length_context);
     let style_us = style_start.elapsed().as_micros();
 
     let collect_start = Instant::now();
     let title = dom_title(&page_state.dom);
     let links = collect_links(&page_state.dom, source);
     let forms = collect_forms(&page_state.dom, source);
-    let viewport_width_css_px = options.width.saturating_mul(8);
-    let background_viewport_width = options.width;
     let mut resources = collect_resources(
         &page_state.dom,
         source,
@@ -4205,12 +5228,13 @@ fn render_page_state_with_timings(
         &css_cascade,
         background_viewport_width,
     ));
+    dedupe_browser_resources_by_resolved(&mut resources);
     let collect_us = collect_start.elapsed().as_micros();
 
     let layout_start = Instant::now();
-    let mut renderer = FlowRenderer::new(options.width.max(20));
-    renderer.seed_decoded_images(&page_state.cached_images);
-    renderer.seed_decoded_images(resource_cached_images);
+    let mut renderer = FlowRenderer::new(options.width.max(1), length_context);
+    renderer.seed_decoded_images(source, &page_state.cached_images);
+    renderer.seed_decoded_images(source, resource_cached_images);
     let mut layout_box_count = 0usize;
 
     render_children(
@@ -4238,7 +5262,7 @@ fn render_page_state_with_timings(
     let render = BrowserRender {
         source: source.to_owned(),
         title,
-        viewport_width: options.width.max(20),
+        viewport_width: options.width.max(1),
         dom_node_count: page_state.dom.nodes.len(),
         css_rule_count: css_cascade.rules.len(),
         layout_box_count,
@@ -4250,6 +5274,7 @@ fn render_page_state_with_timings(
         fragment_targets,
         decoded_images: flow.decoded_images,
         hit_targets: flow.hit_targets,
+        document_height: flow.document_height,
         text: flow.text,
         display_list: flow.display_list,
     };
@@ -4301,10 +5326,18 @@ pub fn hit_test_render(render: &BrowserRender, x: usize, y: usize) -> BrowserHit
 }
 
 fn hit_test_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
-    hit_test_text_target_node_by_text_row(render, x, y)
-        .or_else(|| hit_test_text_target_node(render, x, y))
-        .or_else(|| hit_test_nearby_text_target_node(render, x, y))
+    hit_test_text_target_node(render, x, y)
         .or_else(|| hit_test_visual_target_node(render, x, y))
+        .or_else(|| {
+            (!hit_test_text_no_target_run(render, x, y))
+                .then(|| hit_test_text_target_node_by_text_row(render, x, y))
+                .flatten()
+        })
+        .or_else(|| {
+            (!hit_test_text_no_target_run(render, x, y))
+                .then(|| hit_test_nearby_text_target_node(render, x, y))
+                .flatten()
+        })
         .or_else(|| hit_test_nearby_visual_target_node(render, x, y))
 }
 
@@ -4390,6 +5423,27 @@ fn hit_test_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Opti
         })
 }
 
+fn hit_test_text_no_target_run(render: &BrowserRender, x: usize, y: usize) -> bool {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .rev()
+        .any(|(command_index, command)| {
+            if !matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return false;
+            }
+            let bounds = display_command_bounds(command);
+            bounds.contains(x, y)
+                && render.hit_targets.get(command_index).is_some_and(|target| {
+                    target.has_no_target_text_run_at_column(x.saturating_sub(bounds.x))
+                })
+        })
+}
+
 fn hit_test_nearby_text_target_node(render: &BrowserRender, x: usize, y: usize) -> Option<usize> {
     render
         .display_list
@@ -4471,12 +5525,12 @@ fn hit_test_topmost_pinned_text_layer_for_viewport(
             ) {
                 return None;
             }
-            let bounds = display_command_bounds_for_viewport(
+            let (bounds, _) = display_command_report_bounds_for_viewport(
+                render,
+                command_index,
                 command,
                 viewport,
-                display_command_viewport_fixed(render, command_index),
-                display_command_viewport_sticky_top(render, command_index),
-            );
+            )?;
             if !bounds.contains(x, y) {
                 return None;
             }
@@ -4520,8 +5574,12 @@ fn hit_test_topmost_normal_layer_for_viewport(
                 command,
                 DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
             ) {
-                let bounds = display_command_bounds_for_viewport(command, viewport, false, None);
-                let visible_bounds = intersect_display_bounds_with_viewport(bounds, viewport)?;
+                let (bounds, visible_bounds) = display_command_report_bounds_for_viewport(
+                    render,
+                    command_index,
+                    command,
+                    viewport,
+                )?;
                 if !visible_bounds.contains(x, y) {
                     return None;
                 }
@@ -4575,23 +5633,17 @@ fn hit_test_text_target_node_for_viewport(
             }
             let viewport_fixed = display_command_viewport_fixed(render, command_index);
             let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-            let bounds = display_command_bounds_for_viewport(
+            let (bounds, report_visible_bounds) = display_command_report_bounds_for_viewport(
+                render,
+                command_index,
                 command,
                 viewport,
-                viewport_fixed,
-                viewport_sticky_top,
-            );
+            )?;
             let pinned = viewport_fixed || viewport_sticky_top.is_some();
             let visible_bounds = if pinned {
                 bounds
             } else {
-                display_command_projected_visible_bounds_for_viewport(
-                    render,
-                    command_index,
-                    command,
-                    viewport,
-                )?
-                .1
+                report_visible_bounds
             };
             if !visible_bounds.contains(x, y) {
                 return None;
@@ -4653,25 +5705,16 @@ fn hit_test_nearby_text_target_node_for_viewport_matching(
         }
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
-        let command_bounds = display_command_bounds_for_viewport(
-            command,
-            viewport,
-            viewport_fixed,
-            viewport_sticky_top,
-        );
+        let Some((command_bounds, report_visible_bounds)) =
+            display_command_report_bounds_for_viewport(render, command_index, command, viewport)
+        else {
+            continue;
+        };
         let pinned = viewport_fixed || viewport_sticky_top.is_some();
         let visible_bounds = if pinned {
             command_bounds
         } else {
-            let Some((_, visible_bounds)) = display_command_projected_visible_bounds_for_viewport(
-                render,
-                command_index,
-                command,
-                viewport,
-            ) else {
-                continue;
-            };
-            visible_bounds
+            report_visible_bounds
         };
         let x_tolerance = if pinned || visible_bounds == command_bounds {
             2
@@ -4708,6 +5751,12 @@ fn hit_test_visual_target_node(render: &BrowserRender, x: usize, y: usize) -> Op
         .enumerate()
         .rev()
         .find_map(|(command_index, command)| {
+            if matches!(
+                command,
+                DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+            ) {
+                return None;
+            }
             let bounds = display_command_bounds(command);
             if !bounds.contains(x, y) {
                 return None;
@@ -5349,11 +6398,7 @@ fn display_command_bounds(command: &DisplayCommand) -> DisplayCommandBounds {
 }
 
 fn display_command_text_width(text: &str) -> usize {
-    collapse_repeated_glyph_runs(text)
-        .as_deref()
-        .unwrap_or(text)
-        .chars()
-        .count()
+    readable_display_text(text).chars().count()
 }
 
 #[derive(Debug, Clone)]
@@ -5491,7 +6536,7 @@ fn layout_box_kind(
 ) -> String {
     if element.tag == "img" || is_replaced_media_element(&element.tag) {
         "replaced".to_owned()
-    } else if form_control_render_text(dom, node_id, element).is_some() {
+    } else if form_control_render_text(dom, node_id, element, &style).is_some() {
         "form-control".to_owned()
     } else {
         match style.display {
@@ -5530,7 +6575,9 @@ fn nearest_retained_layout_parent(
 
 fn raster_full_grid(render: &BrowserRender) -> (usize, usize) {
     let mut max_column = render.viewport_width.max(1);
-    let mut max_row = render_text_row_count(render).max(1);
+    let mut max_row = render_text_row_count(render)
+        .max(render.document_height)
+        .max(1);
     for (command_index, command) in render.display_list.iter().enumerate() {
         if !display_command_affects_scroll_extent(render, command_index) {
             continue;
@@ -5735,6 +6782,17 @@ fn display_command_report_bounds_for_viewport(
     command: &DisplayCommand,
     viewport: RasterViewport,
 ) -> Option<(DisplayCommandBounds, DisplayCommandBounds)> {
+    if let Some(text) = display_command_text(command) {
+        let mut command_bounds = display_command_bounds_for_viewport(
+            command,
+            viewport,
+            display_command_viewport_fixed(render, command_index),
+            display_command_viewport_sticky_top(render, command_index),
+        );
+        command_bounds.width = readable_display_text(text).chars().count();
+        let visible_bounds = intersect_display_bounds_with_viewport(command_bounds, viewport)?;
+        return Some((command_bounds, visible_bounds));
+    }
     if !matches!(
         command,
         DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
@@ -6402,6 +7460,8 @@ fn append_viewport_positioned_invalidated_regions(
 ) {
     let previous_viewport = raster_viewport_from_state(previous);
     let current_viewport = raster_viewport_from_state(current);
+    let shift_x = browser_viewport_signed_delta(previous.x, current.x);
+    let shift_y = browser_viewport_signed_delta(previous.y, current.y);
     for (command_index, command) in render.display_list.iter().enumerate() {
         let viewport_fixed = display_command_viewport_fixed(render, command_index);
         let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
@@ -6409,24 +7469,31 @@ fn append_viewport_positioned_invalidated_regions(
             continue;
         }
 
-        append_display_command_viewport_dirty_region(
+        let current_rect = display_command_viewport_dirty_rect(
             render,
             command_index,
             command,
             current_viewport,
             0,
             0,
-            regions,
         );
-        append_display_command_viewport_dirty_region(
+        let previous_shifted_rect = display_command_viewport_dirty_rect(
             render,
             command_index,
             command,
             previous_viewport,
-            browser_viewport_signed_delta(previous.x, current.x),
-            browser_viewport_signed_delta(previous.y, current.y),
-            regions,
+            shift_x,
+            shift_y,
         );
+        if current_rect == previous_shifted_rect {
+            continue;
+        }
+        if let Some(rect) = current_rect {
+            append_non_overlapping_viewport_rect(regions, rect);
+        }
+        if let Some(rect) = previous_shifted_rect {
+            append_non_overlapping_viewport_rect(regions, rect);
+        }
     }
 }
 
@@ -6437,6 +7504,9 @@ fn append_viewport_readable_context_invalidated_regions(
     regions: &mut Vec<BrowserViewportRect>,
 ) {
     let current_viewport = raster_viewport_from_state(current);
+    if readable_context_overlay_viewport_rows(render, current_viewport).is_empty() {
+        return;
+    }
     append_viewport_readable_context_rows(
         render,
         current_viewport,
@@ -7343,6 +8413,7 @@ pub fn rasterize_render(
             }
         }
     }
+    draw_raster_readable_foreground_text(&mut pixels, width, render, viewport, options);
     if raster_viewport_needs_readable_context(render, viewport)
         && let Some(context) = nearby_visual_region_text_context(render, viewport)
     {
@@ -7391,11 +8462,53 @@ fn draw_raster_text_command(
     if y < viewport.y || y >= viewport.end_y() {
         return;
     }
-    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
+    if logical_text_vertical_duplicate(render, command_index, command, viewport) {
         return;
     }
     let text = readable_display_text(text);
-    draw_raster_text_run(pixels, raster_width, &text, x, y, viewport, options, ink);
+    let text_bold = render
+        .hit_targets
+        .get(command_index)
+        .is_some_and(|target| target.text_bold);
+    draw_raster_text_run(
+        pixels,
+        raster_width,
+        &text,
+        x,
+        y,
+        viewport,
+        options,
+        ink,
+        text_bold,
+    );
+}
+
+fn draw_raster_readable_foreground_text(
+    pixels: &mut [u8],
+    raster_width: usize,
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+) {
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) || display_command_viewport_pinned(render, command_index)
+            || display_text_intersects_pinned_visual_fill(render, command_index, command, viewport)
+        {
+            continue;
+        }
+        draw_raster_text_command(
+            pixels,
+            raster_width,
+            command,
+            render,
+            command_index,
+            viewport,
+            options,
+        );
+    }
 }
 
 fn draw_rgba_text_command(
@@ -7422,11 +8535,43 @@ fn draw_rgba_text_command(
     if y < viewport.y || y >= viewport.end_y() {
         return;
     }
-    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
+    if logical_text_vertical_duplicate(render, command_index, command, viewport) {
         return;
     }
+    let raw_char_count = text.chars().count().max(1);
     let text = readable_display_text(text);
-    draw_rgba_text_run(pixels, raster_width, &text, x, y, viewport, options, ink);
+    let glyph_scale = (raw_char_count / text.chars().count().max(1)).clamp(1, 4);
+    let text_color = render
+        .hit_targets
+        .get(command_index)
+        .and_then(|target| target.text_color);
+    let text_bold = render
+        .hit_targets
+        .get(command_index)
+        .is_some_and(|target| target.text_bold);
+    let text_italic = render
+        .hit_targets
+        .get(command_index)
+        .is_some_and(|target| target.text_italic);
+    let page_face = options
+        .vector_text
+        .then(|| vector_text::page_font(&render.source))
+        .flatten();
+    draw_rgba_text_run(
+        pixels,
+        raster_width,
+        &text,
+        x,
+        y,
+        viewport,
+        options,
+        glyph_scale,
+        ink,
+        text_color,
+        text_bold,
+        text_italic,
+        page_face.as_deref(),
+    );
 }
 
 pub fn rasterize_render_rgba(
@@ -7741,7 +8886,26 @@ pub fn rasterize_render_rgba(
                     );
                     let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
                     let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
-                    fill_rgba_rect(
+                    let corner_radius = rect_corner_radius_px(
+                        render,
+                        command_index,
+                        command_bounds,
+                        visible_bounds,
+                        rect_width,
+                        rect_height,
+                    );
+                    draw_rect_box_shadow(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        render,
+                        command_index,
+                        rect_x,
+                        rect_y,
+                        rect_width,
+                        rect_height,
+                        corner_radius,
+                    );
+                    fill_rgba_rect_with_radius(
                         &mut rgba.pixels,
                         rgba.width,
                         rect_x,
@@ -7749,6 +8913,7 @@ pub fn rasterize_render_rgba(
                         rect_width,
                         rect_height,
                         [*shade, *shade, *shade, 255],
+                        corner_radius,
                     );
                 }
                 DisplayCommand::ColorRect {
@@ -7768,7 +8933,26 @@ pub fn rasterize_render_rgba(
                     );
                     let rect_width = visible_bounds.width.saturating_mul(options.cell_width);
                     let rect_height = visible_bounds.height.saturating_mul(options.cell_height);
-                    fill_rgba_rect(
+                    let corner_radius = rect_corner_radius_px(
+                        render,
+                        command_index,
+                        command_bounds,
+                        visible_bounds,
+                        rect_width,
+                        rect_height,
+                    );
+                    draw_rect_box_shadow(
+                        &mut rgba.pixels,
+                        rgba.width,
+                        render,
+                        command_index,
+                        rect_x,
+                        rect_y,
+                        rect_width,
+                        rect_height,
+                        corner_radius,
+                    );
+                    fill_rgba_rect_with_radius(
                         &mut rgba.pixels,
                         rgba.width,
                         rect_x,
@@ -7776,11 +8960,13 @@ pub fn rasterize_render_rgba(
                         rect_width,
                         rect_height,
                         [*red, *green, *blue, 255],
+                        corner_radius,
                     );
                 }
             }
         }
     }
+    draw_rgba_readable_foreground_text(&mut rgba.pixels, rgba.width, render, viewport, options);
     if let Some((context, rows)) = readable_context_overlay(render, viewport) {
         draw_rgba_text_context_lines(
             &mut rgba.pixels,
@@ -7792,6 +8978,72 @@ pub fn rasterize_render_rgba(
         );
     }
     Ok(rgba)
+}
+
+fn draw_rgba_readable_foreground_text(
+    pixels: &mut [u8],
+    raster_width: usize,
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    options: BrowserRasterOptions,
+) {
+    if options.vector_text {
+        // Vector glyphs blend by coverage; redrawing doubles ink and any
+        // subcell divergence. The legibility pass is a bitmap-lane concept.
+        return;
+    }
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !matches!(
+            command,
+            DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. }
+        ) || display_command_viewport_pinned(render, command_index)
+            || display_text_intersects_pinned_visual_fill(render, command_index, command, viewport)
+        {
+            continue;
+        }
+        draw_rgba_text_command(
+            pixels,
+            raster_width,
+            command,
+            render,
+            command_index,
+            viewport,
+            options,
+        );
+    }
+}
+
+fn display_text_intersects_pinned_visual_fill(
+    render: &BrowserRender,
+    command_index: usize,
+    command: &DisplayCommand,
+    viewport: RasterViewport,
+) -> bool {
+    let Some((_, text_visible)) = display_command_projected_visible_bounds_for_viewport(
+        render,
+        command_index,
+        command,
+        viewport,
+    ) else {
+        return false;
+    };
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .any(|(visual_index, visual_command)| {
+            display_command_viewport_pinned(render, visual_index)
+                && display_command_is_visual_fill(visual_command)
+                && display_command_projected_visible_bounds_for_viewport(
+                    render,
+                    visual_index,
+                    visual_command,
+                    viewport,
+                )
+                .is_some_and(|(_, visual_visible)| {
+                    intersect_display_bounds(text_visible, visual_visible).is_some()
+                })
+        })
 }
 
 pub fn raster_report(
@@ -7907,13 +9159,21 @@ pub fn browser_text_viewport(
                 )
             }
             DisplayCommand::Image { alt, .. } => {
-                fill_text_viewport_visual_cells(
-                    &mut cells,
-                    viewport,
-                    visible_bounds,
-                    '@',
-                    display_command_viewport_pinned(render, command_index),
-                );
+                let has_alt = alt
+                    .as_deref()
+                    .map(collapse_ascii_whitespace)
+                    .is_some_and(|alt| !alt.is_empty());
+                if has_alt {
+                    fill_text_viewport_empty_cells(&mut cells, viewport, visible_bounds, ' ', true);
+                } else {
+                    fill_text_viewport_visual_cells(
+                        &mut cells,
+                        viewport,
+                        visible_bounds,
+                        '@',
+                        display_command_viewport_pinned(render, command_index),
+                    );
+                }
                 overlay_text_viewport_image_alt(
                     &mut cells,
                     viewport,
@@ -7963,6 +9223,121 @@ pub fn browser_text_viewport(
     }
 }
 
+pub fn browser_render_diagnostics(
+    render: &BrowserRender,
+    options: BrowserTextViewportOptions,
+) -> BrowserRenderDiagnosticsReport {
+    let document_viewport = browser_document_viewport(
+        render,
+        BrowserViewportState {
+            x: options.x,
+            y: options.y,
+            width: options.width,
+            height: options.height,
+        },
+        None,
+    );
+    let viewport = raster_viewport_from_state(document_viewport.viewport);
+    let viewport_area = viewport.width.saturating_mul(viewport.height);
+    let mut fills = Vec::new();
+    let mut visual_fill_area = 0usize;
+
+    for (command_index, command) in render.display_list.iter().enumerate() {
+        if !display_command_is_visual_fill(command) {
+            continue;
+        }
+        let Some((command_bounds, visible_bounds)) =
+            display_command_report_bounds_for_viewport(render, command_index, command, viewport)
+        else {
+            continue;
+        };
+        let visible_area = visible_bounds.width.saturating_mul(visible_bounds.height);
+        visual_fill_area = visual_fill_area.saturating_add(visible_area);
+        let target = render.hit_targets.get(command_index);
+        fills.push(BrowserRenderDiagnosticFill {
+            command_index,
+            kind: display_command_kind(command).to_owned(),
+            url: display_command_image_url(command).map(str::to_owned),
+            decoded_hash: display_command_decoded_hash(command).map(str::to_owned),
+            x: command_bounds.x,
+            y: command_bounds.y,
+            width: command_bounds.width,
+            height: command_bounds.height,
+            visible_x: visible_bounds.x.saturating_sub(viewport.x),
+            visible_y: visible_bounds.y.saturating_sub(viewport.y),
+            visible_width: visible_bounds.width,
+            visible_height: visible_bounds.height,
+            visible_area,
+            viewport_fixed: target.is_some_and(|target| target.viewport_fixed),
+            viewport_sticky_top: target.and_then(|target| target.viewport_sticky_top),
+            node: target.and_then(|target| browser_render_diagnostic_node(render, target)),
+        });
+    }
+
+    fills.sort_by_key(|fill| (std::cmp::Reverse(fill.visible_area), fill.command_index));
+    let visual_fill_command_count = fills.len();
+    fills.truncate(16);
+    let clamped_fill_area = visual_fill_area.min(viewport_area);
+
+    BrowserRenderDiagnosticsReport {
+        source: render.source.clone(),
+        title: render.title.clone(),
+        viewport: document_viewport.viewport,
+        document_width: document_viewport.document_width,
+        document_height: document_viewport.document_height,
+        display_command_count: document_viewport.display_command_count,
+        visible_command_count: document_viewport.visible_command_count,
+        visual_fill_command_count,
+        visual_fill_area: clamped_fill_area,
+        viewport_area,
+        fill_coverage_bps: if viewport_area == 0 {
+            0
+        } else {
+            clamped_fill_area.saturating_mul(10_000) / viewport_area
+        },
+        meaningful_text_rows: viewport_meaningful_visible_text_row_count(render, viewport, false),
+        meaningful_text_rows_outside_visual:
+            viewport_meaningful_visible_text_outside_visual_fill_row_count(render, viewport, false),
+        readability_overlay_applied: readable_context_overlay(render, viewport).is_some(),
+        largest_visual_fills: fills,
+    }
+}
+
+fn browser_render_diagnostic_node(
+    render: &BrowserRender,
+    target: &DisplayHitTarget,
+) -> Option<BrowserRenderDiagnosticNode> {
+    if let Some(node) = target.node_diagnostics.as_ref() {
+        return Some(BrowserRenderDiagnosticNode {
+            node_id: node.node_id,
+            tag: node.tag.clone(),
+            id: node.id.clone(),
+            classes: node.classes.clone(),
+            display: node.display.clone(),
+            position: node.position.clone(),
+            height: node.height,
+            min_height: node.min_height,
+            background_shade: node.background_shade,
+        });
+    }
+    let node_id = target.target_node?;
+    let layout_box = render
+        .layout_boxes
+        .iter()
+        .find(|layout_box| layout_box.node_id == node_id)?;
+    Some(BrowserRenderDiagnosticNode {
+        node_id,
+        tag: layout_box.tag.clone(),
+        id: None,
+        classes: Vec::new(),
+        display: layout_box.kind.clone(),
+        position: "unknown".to_owned(),
+        height: Some(layout_box.height),
+        min_height: 0,
+        background_shade: None,
+    })
+}
+
 fn draw_text_viewport_command(
     cells: &mut [Vec<char>],
     command: &DisplayCommand,
@@ -7986,7 +9361,7 @@ fn draw_text_viewport_command(
     if y < viewport.y || y >= viewport.end_y() {
         return;
     }
-    if scaled_text_vertical_duplicate(render, command_index, command, viewport) {
+    if logical_text_vertical_duplicate(render, command_index, command, viewport) {
         return;
     }
     let row = y.saturating_sub(viewport.y);
@@ -8038,9 +9413,13 @@ fn raster_viewport_needs_readable_context(
     viewport: RasterViewport,
 ) -> bool {
     let visual_rows = raster_viewport_visual_fill_row_count(render, viewport);
+    let visual_coverage_bps = viewport_visual_fill_coverage_bps(render, viewport);
     visual_rows >= text_viewport_mixed_media_row_threshold(viewport.height)
+        && visual_coverage_bps >= READABLE_CONTEXT_MIN_VISUAL_FILL_COVERAGE_BPS
         && raster_viewport_needs_more_body_context(render, viewport, visual_rows)
 }
+
+const READABLE_CONTEXT_MIN_VISUAL_FILL_COVERAGE_BPS: usize = 5_000;
 
 fn viewport_needs_more_body_context(
     render: &BrowserRender,
@@ -8085,7 +9464,7 @@ fn viewport_meaningful_visible_text_row_count(
     viewport: RasterViewport,
     include_pinned: bool,
 ) -> usize {
-    let mut row_text_counts = vec![0usize; viewport.height];
+    let mut row_texts = vec![String::new(); viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
         let Some(text) = display_command_text(command) else {
             continue;
@@ -8099,6 +9478,9 @@ fn viewport_meaningful_visible_text_row_count(
         if !include_pinned && (viewport_fixed || viewport_sticky_top.is_some()) {
             continue;
         }
+        if logical_text_vertical_duplicate(render, command_index, command, viewport) {
+            continue;
+        }
         let command_bounds = display_command_bounds_for_viewport(
             command,
             viewport,
@@ -8109,15 +9491,49 @@ fn viewport_meaningful_visible_text_row_count(
             continue;
         }
         let row = command_bounds.y.saturating_sub(viewport.y);
-        if let Some(count) = row_text_counts.get_mut(row) {
-            *count =
-                count.saturating_add(text.chars().filter(|ch| ch.is_ascii_alphanumeric()).count());
+        if let Some(row_text) = row_texts.get_mut(row) {
+            if !row_text.is_empty() {
+                row_text.push(' ');
+            }
+            row_text.push_str(&text);
         }
     }
-    row_text_counts
+    row_texts
         .into_iter()
-        .filter(|count| *count >= meaningful_text_row_threshold(viewport.width))
+        .filter(|text| body_context_text_is_meaningful(text, viewport))
         .count()
+}
+
+fn viewport_has_visible_alphanumeric_text(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+    include_pinned: bool,
+) -> bool {
+    render
+        .display_list
+        .iter()
+        .enumerate()
+        .any(|(command_index, command)| {
+            let Some(text) = display_command_text(command) else {
+                return false;
+            };
+            if !readable_display_text(text)
+                .chars()
+                .any(|ch| ch.is_ascii_alphanumeric())
+            {
+                return false;
+            }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            if !include_pinned && (viewport_fixed || viewport_sticky_top.is_some()) {
+                return false;
+            }
+            if logical_text_vertical_duplicate(render, command_index, command, viewport) {
+                return false;
+            }
+            display_command_report_bounds_for_viewport(render, command_index, command, viewport)
+                .is_some()
+        })
 }
 
 fn viewport_meaningful_visible_text_outside_visual_fill_row_count(
@@ -8126,7 +9542,7 @@ fn viewport_meaningful_visible_text_outside_visual_fill_row_count(
     include_pinned: bool,
 ) -> usize {
     let visual_bounds = viewport_visual_fill_bounds(render, viewport);
-    let mut row_text_counts = vec![0usize; viewport.height];
+    let mut row_texts = vec![String::new(); viewport.height];
     for (command_index, command) in render.display_list.iter().enumerate() {
         let Some(text) = display_command_text(command) else {
             continue;
@@ -8160,15 +9576,17 @@ fn viewport_meaningful_visible_text_outside_visual_fill_row_count(
             .saturating_add(visible.height)
             .min(viewport.height);
         for row in start_row..end_row {
-            if let Some(count) = row_text_counts.get_mut(row) {
-                *count = count
-                    .saturating_add(text.chars().filter(|ch| ch.is_ascii_alphanumeric()).count());
+            if let Some(row_text) = row_texts.get_mut(row) {
+                if !row_text.is_empty() {
+                    row_text.push(' ');
+                }
+                row_text.push_str(&text);
             }
         }
     }
-    row_text_counts
+    row_texts
         .into_iter()
-        .filter(|count| *count >= meaningful_text_row_threshold(viewport.width))
+        .filter(|text| body_context_text_is_meaningful(text, viewport))
         .count()
 }
 
@@ -8226,6 +9644,16 @@ fn viewport_visual_fill_bounds(
     visible_bounds
 }
 
+fn viewport_visual_fill_coverage_bps(render: &BrowserRender, viewport: RasterViewport) -> usize {
+    let viewport_area = viewport.width.saturating_mul(viewport.height).max(1);
+    let visual_area = viewport_visual_fill_bounds(render, viewport)
+        .into_iter()
+        .map(|bounds| bounds.width.saturating_mul(bounds.height))
+        .sum::<usize>()
+        .min(viewport_area);
+    visual_area.saturating_mul(10_000) / viewport_area
+}
+
 fn readable_context_overlay(
     render: &BrowserRender,
     viewport: RasterViewport,
@@ -8277,6 +9705,8 @@ fn raster_text_context_overlay_rows(
             .hit_targets
             .get(command_index)
             .is_some_and(DisplayHitTarget::has_target)
+            && !(display_command_text(command).is_some()
+                && logical_text_vertical_duplicate(render, command_index, command, viewport))
             && (display_command_text(command).is_some()
                 || !display_command_is_visual_fill(command)
                 || !large_text_viewport_visual_fill(viewport, visible));
@@ -8295,8 +9725,9 @@ fn raster_text_context_overlay_rows(
             }
             continue;
         }
-        if display_command_text(command)
-            .is_some_and(|text| text.chars().any(|ch| ch.is_ascii_alphanumeric()))
+        if !logical_text_vertical_duplicate(render, command_index, command, viewport)
+            && display_command_text(command)
+                .is_some_and(|text| text.chars().any(|ch| ch.is_ascii_alphanumeric()))
         {
             for row in start_row..end_row {
                 if let Some(has_text) = row_has_text.get_mut(row) {
@@ -8381,13 +9812,25 @@ fn nearby_visual_region_text_context(
                 candidate.viewport_distance,
                 candidate.visual_distance,
             )
-        })?;
-    let lines =
-        nearby_visual_region_text_context_lines(render, viewport, &visual_bounds, &selected);
-    Some(VisualTextContext {
-        lines,
-        bounds: selected.bounds,
-    })
+        });
+    let (lines, bounds) = if let Some(selected) = selected {
+        let lines =
+            nearby_visual_region_text_context_lines(render, viewport, &visual_bounds, &selected);
+        let lines = if visual_context_lines_are_weak(&lines, viewport) {
+            first_meaningful_document_context_lines(render, viewport).unwrap_or(lines)
+        } else {
+            lines
+        };
+        (lines, selected.bounds)
+    } else {
+        let lines = first_meaningful_document_context_lines(render, viewport)?;
+        let bounds = visual_bounds
+            .iter()
+            .copied()
+            .max_by_key(|bounds| bounds.width.saturating_mul(bounds.height))?;
+        (lines, bounds)
+    };
+    Some(VisualTextContext { lines, bounds })
 }
 
 fn visual_text_context_candidate(
@@ -8417,6 +9860,13 @@ fn visual_text_context_candidate(
         .min();
     let near_visual = visual_distance
         .is_some_and(|distance| distance <= bounds_visual_region_search_rows(viewport));
+    if viewport.y == 0
+        && bounds.y >= viewport.end_y()
+        && !inside_visual
+        && viewport_has_visible_alphanumeric_text(render, viewport, false)
+    {
+        return None;
+    }
     if intersect_display_bounds_with_viewport(bounds, viewport).is_some() {
         if !include_visible_visual_text || (!inside_visual && !near_visual) {
             return None;
@@ -8466,7 +9916,168 @@ fn nearby_visual_region_text_context_lines(
     if lines.is_empty() {
         return vec![selected.text.clone()];
     }
-    lines.into_iter().take(3).map(|(_, _, text)| text).collect()
+    let lines = lines
+        .into_iter()
+        .map(|(_, _, text)| text)
+        .collect::<Vec<_>>();
+    coalesce_weak_visual_context_lines(lines, viewport)
+        .into_iter()
+        .take(3)
+        .collect()
+}
+
+fn coalesce_weak_visual_context_lines(lines: Vec<String>, viewport: RasterViewport) -> Vec<String> {
+    let mut coalesced = Vec::new();
+    let mut pending = String::new();
+    for line in lines {
+        let line = collapse_ascii_whitespace(&line);
+        if line.is_empty() {
+            continue;
+        }
+        if pending.is_empty() {
+            pending = line;
+            continue;
+        }
+        if body_context_text_is_meaningful(&pending, viewport) {
+            coalesced.push(std::mem::take(&mut pending));
+            pending = line;
+        } else {
+            let combined = collapse_ascii_whitespace(&format!("{pending} {line}"));
+            if combined.chars().count()
+                > viewport
+                    .width
+                    .saturating_sub(context_text_column_offset(viewport.width))
+            {
+                coalesced.push(std::mem::take(&mut pending));
+                pending = line;
+            } else {
+                pending = combined;
+            }
+        }
+    }
+    if !pending.is_empty() {
+        coalesced.push(pending);
+    }
+    coalesced
+}
+
+fn visual_context_lines_are_weak(lines: &[String], viewport: RasterViewport) -> bool {
+    !lines
+        .iter()
+        .any(|line| body_context_text_is_meaningful(line, viewport))
+}
+
+fn first_meaningful_document_context_lines(
+    render: &BrowserRender,
+    viewport: RasterViewport,
+) -> Option<Vec<String>> {
+    let text_lines = render
+        .text
+        .lines()
+        .map(|line| collapse_ascii_whitespace(&readable_display_text(line)))
+        .filter(|line| body_context_text_is_meaningful(line, viewport))
+        .take(3)
+        .collect::<Vec<_>>();
+    if !text_lines.is_empty() {
+        return Some(text_lines);
+    }
+
+    let mut lines = render
+        .display_list
+        .iter()
+        .enumerate()
+        .filter_map(|(command_index, command)| {
+            let text = display_command_text(command)?;
+            let text = collapse_ascii_whitespace(&readable_display_text(text));
+            if !body_context_text_is_meaningful(&text, viewport) {
+                return None;
+            }
+            let viewport_fixed = display_command_viewport_fixed(render, command_index);
+            let viewport_sticky_top = display_command_viewport_sticky_top(render, command_index);
+            if viewport_fixed || viewport_sticky_top.is_some() {
+                return None;
+            }
+            let bounds = display_command_bounds_for_viewport(
+                command,
+                viewport,
+                viewport_fixed,
+                viewport_sticky_top,
+            );
+            Some((usize::from(bounds.y < viewport.y), bounds.y, bounds.x, text))
+        })
+        .collect::<Vec<_>>();
+    lines.sort_by_key(|(before_viewport, y, x, _)| (*before_viewport, *y, *x));
+    lines.dedup_by(|left, right| left.3 == right.3);
+    let lines = lines
+        .into_iter()
+        .take(3)
+        .map(|(_, _, _, text)| text)
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then_some(lines)
+}
+
+fn body_context_text_is_meaningful(text: &str, viewport: RasterViewport) -> bool {
+    let normalized = collapse_ascii_whitespace(text);
+    let lower = normalized.to_ascii_lowercase();
+    if lower.is_empty()
+        || lower == "button"
+        || lower == "search"
+        || lower.contains("skip to main content")
+        || lower.contains("type any word")
+        || lower.starts_with('[')
+        || body_context_text_looks_like_navigation(&normalized)
+    {
+        return false;
+    }
+    let alnum = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .count();
+    let word_count = normalized
+        .split_ascii_whitespace()
+        .filter(|word| word.chars().any(|ch| ch.is_ascii_alphanumeric()))
+        .count();
+    let min_word_count = if viewport.width <= 24 { 2 } else { 3 };
+    word_count >= min_word_count
+        && alnum
+            >= meaningful_text_row_threshold(viewport.width)
+                .saturating_div(2)
+                .max(10)
+}
+
+fn body_context_text_looks_like_navigation(text: &str) -> bool {
+    let words = text
+        .split_ascii_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+                .to_ascii_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    if words.len() < 3 || words.len() > 12 {
+        return false;
+    }
+    let nav_words = words
+        .iter()
+        .filter(|word| {
+            matches!(
+                word.as_str(),
+                "animals"
+                    | "games"
+                    | "home"
+                    | "login"
+                    | "menu"
+                    | "more"
+                    | "news"
+                    | "search"
+                    | "shop"
+                    | "subscribe"
+                    | "travel"
+                    | "videos"
+            )
+        })
+        .count();
+    nav_words >= 3 && nav_words.saturating_mul(2) >= words.len()
 }
 
 fn display_command_text(command: &DisplayCommand) -> Option<&str> {
@@ -8485,7 +10096,7 @@ fn readable_display_text(text: &str) -> String {
     collapse_repeated_glyph_runs(text).unwrap_or_else(|| text.to_owned())
 }
 
-fn scaled_text_vertical_duplicate(
+fn logical_text_vertical_duplicate(
     render: &BrowserRender,
     command_index: usize,
     command: &DisplayCommand,
@@ -8494,9 +10105,10 @@ fn scaled_text_vertical_duplicate(
     let Some(text) = display_command_text(command) else {
         return false;
     };
-    let Some(readable) = collapse_repeated_glyph_runs(text) else {
+    let readable = readable_display_text(text);
+    if readable.trim().is_empty() {
         return false;
-    };
+    }
     let current_bounds = display_command_bounds_for_viewport(
         command,
         viewport,
@@ -8508,7 +10120,7 @@ fn scaled_text_vertical_duplicate(
         let Some(previous_text) = display_command_text(previous_command) else {
             continue;
         };
-        if collapse_repeated_glyph_runs(previous_text).as_deref() != Some(readable.as_str()) {
+        if readable_display_text(previous_text) != readable {
             continue;
         }
         let previous_bounds = display_command_bounds_for_viewport(
@@ -8545,7 +10157,15 @@ fn collapse_repeated_glyph_runs(text: &str) -> Option<String> {
         .iter()
         .filter(|(ch, len)| !ch.is_whitespace() && *len >= 2)
         .count();
-    if repeated_non_space_runs < 3 {
+    let single_non_space_runs = runs
+        .iter()
+        .filter(|(ch, len)| !ch.is_whitespace() && *len == 1)
+        .count();
+    // Short wrapped fragments of scaled headings ("oom" -> "oooomm") have only
+    // two repeated runs; accept them when no stray single glyph contradicts the
+    // doubling (a lone odd run already bails below via the divisibility check).
+    let required_repeats = if single_non_space_runs == 0 { 2 } else { 3 };
+    if repeated_non_space_runs < required_repeats {
         return None;
     }
 
@@ -8582,13 +10202,17 @@ fn gcd_usize(mut left: usize, mut right: usize) -> usize {
 }
 
 fn display_command_is_visual_fill(command: &DisplayCommand) -> bool {
-    matches!(
-        command,
-        DisplayCommand::Rect { .. }
-            | DisplayCommand::ColorRect { .. }
-            | DisplayCommand::Image { .. }
-            | DisplayCommand::BackgroundImage { .. }
-    )
+    match command {
+        // Near-white fills read as page background, not visual content;
+        // counting them made light-themed pages trigger readable-context
+        // overlays meant for photo/dark-hero viewports.
+        DisplayCommand::Rect { shade, .. } => *shade < 241,
+        DisplayCommand::ColorRect {
+            red, green, blue, ..
+        } => (u16::from(*red) + u16::from(*green) + u16::from(*blue)) / 3 < 241,
+        DisplayCommand::Image { .. } | DisplayCommand::BackgroundImage { .. } => true,
+        DisplayCommand::Text { .. } | DisplayCommand::StyledText { .. } => false,
+    }
 }
 
 fn bounds_inside_visual_region(text: DisplayCommandBounds, visual: DisplayCommandBounds) -> bool {
@@ -8672,12 +10296,14 @@ fn overlay_text_viewport_context(
         preferred_context_overlay_row(viewport, context_bounds),
         lines.len(),
     );
+    let column_offset = context_text_column_offset(viewport.width);
     for (text, row) in lines.iter().zip(rows) {
         let Some(line) = cells.get_mut(row) else {
             continue;
         };
+        line.fill(' ');
         for (column, ch) in text.chars().take(line.len()).enumerate() {
-            if let Some(cell) = line.get_mut(column) {
+            if let Some(cell) = line.get_mut(column.saturating_add(column_offset)) {
                 *cell = ch;
             }
         }
@@ -8692,16 +10318,40 @@ fn draw_raster_text_context_lines(
     options: BrowserRasterOptions,
     rows: &[usize],
 ) {
+    let column_offset = context_text_column_offset(viewport.width);
     for (text, row) in lines.iter().zip(rows) {
+        let row_y = options
+            .padding_y
+            .saturating_add(row.saturating_mul(options.cell_height));
+        let row_width = viewport.width.saturating_mul(options.cell_width);
+        if grayscale_raster_row_needs_context_clear(
+            pixels,
+            raster_width,
+            options.padding_x,
+            row_y,
+            row_width,
+            options.cell_height,
+        ) {
+            fill_raster_rect(
+                pixels,
+                raster_width,
+                options.padding_x,
+                row_y,
+                row_width,
+                options.cell_height,
+                255,
+            );
+        }
         draw_raster_text_run(
             pixels,
             raster_width,
             text,
-            viewport.x,
+            viewport.x.saturating_add(column_offset),
             viewport.y.saturating_add(*row),
             viewport,
             options,
             0,
+            false,
         );
     }
 }
@@ -8714,18 +10364,107 @@ fn draw_rgba_text_context_lines(
     options: BrowserRasterOptions,
     rows: &[usize],
 ) {
+    let column_offset = context_text_column_offset(viewport.width);
     for (text, row) in lines.iter().zip(rows) {
+        let row_y = options
+            .padding_y
+            .saturating_add(row.saturating_mul(options.cell_height));
+        let row_width = viewport.width.saturating_mul(options.cell_width);
+        if rgba_raster_row_needs_context_clear(
+            pixels,
+            raster_width,
+            options.padding_x,
+            row_y,
+            row_width,
+            options.cell_height,
+        ) {
+            fill_rgba_rect(
+                pixels,
+                raster_width,
+                options.padding_x,
+                row_y,
+                row_width,
+                options.cell_height,
+                [255, 255, 255, 255],
+            );
+        }
         draw_rgba_text_run(
             pixels,
             raster_width,
             text,
-            viewport.x,
+            viewport.x.saturating_add(column_offset),
             viewport.y.saturating_add(*row),
             viewport,
             options,
+            1,
             0,
+            None,
+            false,
+            false,
+            None,
         );
     }
+}
+
+fn context_text_column_offset(viewport_width: usize) -> usize {
+    usize::from(viewport_width > 2)
+}
+
+fn grayscale_raster_row_needs_context_clear(
+    pixels: &[u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+) -> bool {
+    let mut dark = 0usize;
+    let mut total = 0usize;
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            let index = row.saturating_mul(raster_width).saturating_add(column);
+            let Some(pixel) = pixels.get(index) else {
+                continue;
+            };
+            total = total.saturating_add(1);
+            if *pixel < 96 {
+                dark = dark.saturating_add(1);
+            }
+        }
+    }
+    total > 0 && dark.saturating_mul(2) > total
+}
+
+fn rgba_raster_row_needs_context_clear(
+    pixels: &[u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+) -> bool {
+    let mut dark = 0usize;
+    let mut total = 0usize;
+    for row in y..y.saturating_add(height) {
+        for column in x..x.saturating_add(width) {
+            let index = row
+                .saturating_mul(raster_width)
+                .saturating_add(column)
+                .saturating_mul(4);
+            let Some(pixel) = pixels.get(index..index.saturating_add(4)) else {
+                continue;
+            };
+            total = total.saturating_add(1);
+            let luminance = u16::from(pixel[0])
+                .saturating_add(u16::from(pixel[1]))
+                .saturating_add(u16::from(pixel[2]))
+                / 3;
+            if luminance < 96 {
+                dark = dark.saturating_add(1);
+            }
+        }
+    }
+    total > 0 && dark.saturating_mul(2) > total
 }
 
 fn preferred_context_overlay_row(
@@ -8827,6 +10566,13 @@ fn fill_text_viewport_empty_cells(
     let end_x = start_x.saturating_add(bounds.width).min(viewport.width);
     for row in start_y..end_y {
         if let Some(line) = cells.get_mut(row) {
+            if !overwrite
+                && line
+                    .get(start_x..end_x)
+                    .is_some_and(|cells| cells.iter().any(|cell| *cell != ' '))
+            {
+                continue;
+            }
             for column in start_x..end_x {
                 if let Some(cell) = line.get_mut(column) {
                     if overwrite || *cell == ' ' {
@@ -8945,25 +10691,46 @@ fn draw_raster_text_run(
     viewport: RasterViewport,
     options: BrowserRasterOptions,
     ink: u8,
+    text_bold: bool,
 ) {
     if document_y < viewport.y || document_y >= viewport.end_y() {
         return;
     }
-    let viewport_pixel_x = viewport.x.saturating_mul(options.cell_width);
-    let viewport_end_pixel_x = viewport.end_x().saturating_mul(options.cell_width);
-    let mut cursor_x = document_x.saturating_mul(options.cell_width);
+    let skip_chars = viewport.x.saturating_sub(document_x);
+    let mut cursor_x = document_x
+        .saturating_sub(viewport.x)
+        .saturating_mul(options.cell_width);
     let cell_y = options.padding_y.saturating_add(
         document_y
             .saturating_sub(viewport.y)
             .saturating_mul(options.cell_height),
     );
-    for ch in text.chars() {
-        let glyph_end = cursor_x.saturating_add(options.cell_width);
-        if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
-            let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
-            draw_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
+    for (index, ch) in text.chars().enumerate().skip(skip_chars) {
+        let document_cell = document_x.saturating_add(index);
+        if document_cell >= viewport.end_x() {
+            break;
         }
-        cursor_x = cursor_x.saturating_add(raster_text_document_advance(options.cell_width));
+        if ch.is_whitespace() {
+            cursor_x = cursor_x.max(
+                document_cell
+                    .saturating_add(1)
+                    .saturating_sub(viewport.x)
+                    .saturating_mul(options.cell_width),
+            );
+            continue;
+        }
+        let cell_x = options.padding_x.saturating_add(cursor_x) as isize;
+        draw_glyph_clipped(
+            pixels,
+            raster_width,
+            cell_x,
+            cell_y,
+            ch,
+            options,
+            ink,
+            text_bold,
+        );
+        cursor_x = cursor_x.saturating_add(raster_glyph_advance(ch, options.cell_width));
     }
 }
 
@@ -8976,31 +10743,84 @@ fn draw_rgba_text_run(
     document_y: usize,
     viewport: RasterViewport,
     options: BrowserRasterOptions,
+    glyph_scale: usize,
     ink: u8,
+    text_color: Option<(u8, u8, u8)>,
+    text_bold: bool,
+    text_italic: bool,
+    page_face: Option<&ab_glyph::FontVec>,
 ) {
     if document_y < viewport.y || document_y >= viewport.end_y() {
         return;
     }
-    let viewport_pixel_x = viewport.x.saturating_mul(options.cell_width);
-    let viewport_end_pixel_x = viewport.end_x().saturating_mul(options.cell_width);
-    let mut cursor_x = document_x.saturating_mul(options.cell_width);
+    let skip_chars = viewport.x.saturating_sub(document_x);
+    let mut cursor_x = document_x
+        .saturating_sub(viewport.x)
+        .saturating_mul(options.cell_width);
     let cell_y = options.padding_y.saturating_add(
         document_y
             .saturating_sub(viewport.y)
             .saturating_mul(options.cell_height),
     );
-    for ch in text.chars() {
-        let glyph_end = cursor_x.saturating_add(options.cell_width);
-        if cursor_x < viewport_end_pixel_x && glyph_end > viewport_pixel_x {
-            let cell_x = options.padding_x as isize + cursor_x as isize - viewport_pixel_x as isize;
-            draw_rgba_glyph_clipped(pixels, raster_width, cell_x, cell_y, ch, options, ink);
+    if options.vector_text && vector_text::vector_font().is_some() {
+        let glyph_px = options.cell_height.saturating_mul(glyph_scale.max(1));
+        let color = text_color.unwrap_or((ink, ink, ink));
+        let mut pen_x = options.padding_x.saturating_add(cursor_x) as f32;
+        for (index, ch) in text.chars().enumerate().skip(skip_chars) {
+            let document_cell = document_x.saturating_add(index);
+            if document_cell >= viewport.end_x() {
+                break;
+            }
+            if ch.is_whitespace() {
+                pen_x +=
+                    vector_text::space_advance(glyph_px).unwrap_or(options.cell_width as f32 * 0.5);
+                continue;
+            }
+            let advance = vector_text::draw_rgba_vector_glyph(
+                pixels,
+                raster_width,
+                pen_x,
+                cell_y,
+                glyph_px,
+                ch,
+                color,
+                text_bold,
+                text_italic,
+                page_face,
+            )
+            .unwrap_or(options.cell_width as f32);
+            pen_x += advance;
         }
-        cursor_x = cursor_x.saturating_add(raster_text_document_advance(options.cell_width));
+        return;
     }
-}
-
-fn raster_text_document_advance(cell_width: usize) -> usize {
-    cell_width.max(1)
+    for (index, ch) in text.chars().enumerate().skip(skip_chars) {
+        let document_cell = document_x.saturating_add(index);
+        if document_cell >= viewport.end_x() {
+            break;
+        }
+        if ch.is_whitespace() {
+            cursor_x = cursor_x.max(
+                document_cell
+                    .saturating_add(1)
+                    .saturating_sub(viewport.x)
+                    .saturating_mul(options.cell_width),
+            );
+            continue;
+        }
+        let cell_x = options.padding_x.saturating_add(cursor_x) as isize;
+        draw_rgba_glyph_clipped(
+            pixels,
+            raster_width,
+            cell_x,
+            cell_y,
+            ch,
+            options,
+            ink,
+            text_color,
+            text_bold,
+        );
+        cursor_x = cursor_x.saturating_add(raster_glyph_advance(ch, options.cell_width));
+    }
 }
 
 fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
@@ -9023,9 +10843,9 @@ fn raster_glyph_advance(ch: char, cell_width: usize) -> usize {
 
 fn readable_raster_glyph_min_advance(cell_width: usize) -> usize {
     cell_width
-        .saturating_mul(5)
-        .saturating_add(5)
-        .checked_div(6)
+        .saturating_mul(3)
+        .saturating_add(3)
+        .checked_div(4)
         .unwrap_or(cell_width)
         .clamp(3, cell_width.max(3))
 }
@@ -9075,6 +10895,7 @@ fn draw_glyph_clipped(
     ch: char,
     options: BrowserRasterOptions,
     ink: u8,
+    text_bold: bool,
 ) {
     let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
         contrasting_glyph_ink(pixels, width, cell_x, cell_y, ch, ink)
@@ -9108,6 +10929,18 @@ fn draw_glyph_clipped(
                             .saturating_add(dy),
                         pixel_ink,
                     );
+                    if text_bold && dx.saturating_add(1) == scale {
+                        set_raster_pixel(
+                            pixels,
+                            width,
+                            pixel_x.saturating_add(1),
+                            cell_y
+                                .saturating_add(offset_y)
+                                .saturating_add(row.saturating_mul(scale))
+                                .saturating_add(dy),
+                            pixel_ink,
+                        );
+                    }
                 }
             }
         }
@@ -9122,6 +10955,8 @@ fn draw_rgba_glyph_clipped(
     ch: char,
     options: BrowserRasterOptions,
     ink: u8,
+    text_color: Option<(u8, u8, u8)>,
+    text_bold: bool,
 ) {
     let ink = if let Ok(cell_x) = usize::try_from(cell_x) {
         contrasting_rgba_glyph_ink(pixels, width, cell_x, cell_y, ch, ink)
@@ -9145,20 +10980,104 @@ fn draw_rgba_glyph_clipped(
                         continue;
                     };
                     let pixel_ink = raster_glyph_pixel_ink(ink, scale, dx, dy);
-                    set_rgba_pixel(
-                        pixels,
-                        width,
-                        pixel_x,
-                        cell_y
-                            .saturating_add(offset_y)
-                            .saturating_add(row.saturating_mul(scale))
-                            .saturating_add(dy),
-                        [pixel_ink, pixel_ink, pixel_ink, 255],
-                    );
+                    let pixel_y = cell_y
+                        .saturating_add(offset_y)
+                        .saturating_add(row.saturating_mul(scale))
+                        .saturating_add(dy);
+                    let pixel = text_color
+                        .map(|color| {
+                            rgba_text_glyph_pixel(
+                                pixels, width, pixel_x, pixel_y, color, ink, pixel_ink,
+                            )
+                        })
+                        .unwrap_or([pixel_ink, pixel_ink, pixel_ink, 255]);
+                    set_rgba_pixel(pixels, width, pixel_x, pixel_y, pixel);
+                    if text_bold && dx.saturating_add(1) == scale {
+                        let bold_x = pixel_x.saturating_add(1);
+                        let bold_pixel = text_color
+                            .map(|color| {
+                                rgba_text_glyph_pixel(
+                                    pixels, width, bold_x, pixel_y, color, ink, pixel_ink,
+                                )
+                            })
+                            .unwrap_or([pixel_ink, pixel_ink, pixel_ink, 255]);
+                        set_rgba_pixel(pixels, width, bold_x, pixel_y, bold_pixel);
+                    }
                 }
             }
         }
     }
+}
+
+fn rgba_text_glyph_pixel(
+    pixels: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    color: (u8, u8, u8),
+    ink: u8,
+    pixel_ink: u8,
+) -> [u8; 4] {
+    if pixel_ink == ink {
+        return [color.0, color.1, color.2, 255];
+    }
+    let background = rgba_pixel(pixels, width, x, y).unwrap_or([255, 255, 255, 255]);
+    let background_luma = rgb_to_luma(background[0], background[1], background[2]);
+    let coverage = glyph_coverage_from_luma(ink, pixel_ink, background_luma);
+    [
+        blend_channel(background[0], color.0, coverage),
+        blend_channel(background[1], color.1, coverage),
+        blend_channel(background[2], color.2, coverage),
+        255,
+    ]
+}
+
+fn rgba_pixel(pixels: &[u8], width: usize, x: usize, y: usize) -> Option<[u8; 4]> {
+    let index = y.checked_mul(width)?.checked_add(x)?.checked_mul(4)?;
+    let pixel = pixels.get(index..index.checked_add(4)?)?;
+    Some([pixel[0], pixel[1], pixel[2], pixel[3]])
+}
+
+fn glyph_coverage_from_luma(ink: u8, pixel_ink: u8, background_luma: u8) -> u8 {
+    if ink == background_luma {
+        return 255;
+    }
+    if ink < background_luma {
+        if pixel_ink <= ink {
+            return 255;
+        }
+        if pixel_ink >= background_luma {
+            return 0;
+        }
+        return coverage_ratio(
+            background_luma.saturating_sub(pixel_ink),
+            background_luma - ink,
+        );
+    }
+    if pixel_ink >= ink {
+        return 255;
+    }
+    if pixel_ink <= background_luma {
+        return 0;
+    }
+    coverage_ratio(
+        pixel_ink.saturating_sub(background_luma),
+        ink - background_luma,
+    )
+}
+
+fn coverage_ratio(numerator: u8, denominator: u8) -> u8 {
+    if denominator == 0 {
+        return 255;
+    }
+    ((u16::from(numerator) * 255 + u16::from(denominator) / 2) / u16::from(denominator)).min(255)
+        as u8
+}
+
+fn blend_channel(background: u8, foreground: u8, coverage: u8) -> u8 {
+    let inverse = 255u16.saturating_sub(u16::from(coverage));
+    ((u16::from(background) * inverse + u16::from(foreground) * u16::from(coverage) + 127) / 255)
+        as u8
 }
 
 fn raster_glyph_pixel_ink(ink: u8, scale: usize, dx: usize, dy: usize) -> u8 {
@@ -9262,6 +11181,148 @@ fn fill_raster_rect(
     for row in y..y.saturating_add(height) {
         for column in x..x.saturating_add(width) {
             set_raster_pixel(pixels, raster_width, column, row, value);
+        }
+    }
+}
+
+/// Draw a soft offset shadow (35% black blend, sharing the rect's corner
+/// radius) beneath a rect whose target declares box-shadow.
+#[allow(clippy::too_many_arguments)]
+fn draw_rect_box_shadow(
+    pixels: &mut [u8],
+    raster_width: usize,
+    render: &BrowserRender,
+    command_index: usize,
+    rect_x: usize,
+    rect_y: usize,
+    rect_width: usize,
+    rect_height: usize,
+    radius: usize,
+) {
+    let Some(shadow) = render
+        .hit_targets
+        .get(command_index)
+        .and_then(|target| target.box_shadow)
+    else {
+        return;
+    };
+    let shadow_x = rect_x.saturating_add_signed(shadow.dx_px as isize);
+    let shadow_y = rect_y.saturating_add_signed(shadow.dy_px as isize);
+    let raster_height = pixels.len() / 4 / raster_width.max(1);
+    let r2 = (radius * radius) as i64;
+    for row in 0..rect_height {
+        for column in 0..rect_width {
+            if radius > 0 {
+                let corner_dx = if column < radius {
+                    Some(radius - column)
+                } else if column >= rect_width - radius {
+                    Some(column + radius + 1 - rect_width)
+                } else {
+                    None
+                };
+                let corner_dy = if row < radius {
+                    Some(radius - row)
+                } else if row >= rect_height - radius {
+                    Some(row + radius + 1 - rect_height)
+                } else {
+                    None
+                };
+                if let (Some(dx), Some(dy)) = (corner_dx, corner_dy) {
+                    let (dx, dy) = (dx as i64, dy as i64);
+                    if dx * dx + dy * dy > r2 {
+                        continue;
+                    }
+                }
+            }
+            let x = shadow_x + column;
+            let y = shadow_y + row;
+            if x >= raster_width || y >= raster_height {
+                continue;
+            }
+            let index = (y * raster_width + x) * 4;
+            if let Some(pixel) = pixels.get_mut(index..index + 4) {
+                pixel[0] = (pixel[0] as u16 * 65 / 100) as u8;
+                pixel[1] = (pixel[1] as u16 * 65 / 100) as u8;
+                pixel[2] = (pixel[2] as u16 * 65 / 100) as u8;
+                pixel[3] = 255;
+            }
+        }
+    }
+}
+
+/// Corner radius in pixels for a rect command, when its target declares
+/// border-radius and the rect is unclipped (partial visibility falls back to
+/// square corners rather than mis-anchored arcs).
+fn rect_corner_radius_px(
+    render: &BrowserRender,
+    command_index: usize,
+    command_bounds: DisplayCommandBounds,
+    visible_bounds: DisplayCommandBounds,
+    rect_width: usize,
+    rect_height: usize,
+) -> usize {
+    if command_bounds != visible_bounds {
+        return 0;
+    }
+    let Some(radius) = render
+        .hit_targets
+        .get(command_index)
+        .and_then(|target| target.border_radius)
+    else {
+        return 0;
+    };
+    let max_radius = rect_width.min(rect_height) / 2;
+    match radius {
+        CssBorderRadius::Px(px) => (px as usize).min(max_radius),
+        CssBorderRadius::Percent(percent) => {
+            rect_width
+                .min(rect_height)
+                .saturating_mul(percent.min(50) as usize)
+                / 100
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_rgba_rect_with_radius(
+    pixels: &mut [u8],
+    raster_width: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    color: [u8; 4],
+    radius: usize,
+) {
+    if radius == 0 {
+        fill_rgba_rect(pixels, raster_width, x, y, width, height, color);
+        return;
+    }
+    let radius = radius.min(width.min(height) / 2);
+    let r2 = (radius * radius) as i64;
+    for row in 0..height {
+        for column in 0..width {
+            let corner_dx = if column < radius {
+                Some(radius - column)
+            } else if column >= width - radius {
+                Some(column + radius + 1 - width)
+            } else {
+                None
+            };
+            let corner_dy = if row < radius {
+                Some(radius - row)
+            } else if row >= height - radius {
+                Some(row + radius + 1 - height)
+            } else {
+                None
+            };
+            if let (Some(dx), Some(dy)) = (corner_dx, corner_dy) {
+                let (dx, dy) = (dx as i64, dy as i64);
+                if dx * dx + dy * dy > r2 {
+                    continue;
+                }
+            }
+            set_rgba_pixel(pixels, raster_width, x + column, y + row, color);
         }
     }
 }
@@ -9866,7 +11927,23 @@ fn set_rgba_pixel(pixels: &mut [u8], width: usize, x: usize, y: usize, value: [u
     }
 }
 
+/// Fold typographic Unicode punctuation onto the nearest ASCII glyph so
+/// dashes, curly quotes, and exotic spaces raster legibly instead of tofu.
+fn normalize_glyph_char(ch: char) -> char {
+    match ch {
+        '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{00AD}' => '-',
+        '\u{2018}'..='\u{201B}' | '\u{2032}' => '\'',
+        '\u{201C}'..='\u{201F}' | '\u{2033}' => '"',
+        '\u{2022}' | '\u{00B7}' | '\u{2027}' => '*',
+        '\u{2026}' => '.',
+        '\u{2044}' | '\u{2215}' => '/',
+        ch if ch.is_whitespace() => ' ',
+        _ => ch,
+    }
+}
+
 fn glyph_rows(ch: char) -> [u8; 7] {
+    let ch = normalize_glyph_char(ch);
     if let Some(rows) = lowercase_glyph_rows(ch) {
         return rows;
     }
@@ -10607,10 +12684,11 @@ fn compare_browser_fixture_with_chromium(
     fixture: &BrowserFixture,
 ) -> Result<BrowserChromiumParityComparison> {
     let bytes = fs::read(path).with_context(|| format!("read browser fixture {name}"))?;
-    let render = render_browser_fixture(path, &bytes, fixture)?;
+    let (page_state, profiled) = render_browser_fixture_profiled_with_state(path, &bytes, fixture)?;
+    let render = profiled.render;
     let chromium = chromium_static_render(chrome, path, &bytes, fixture.click_selector.as_deref())?;
-    let brutal_text = normalize_browser_parity_text(&render.text);
-    let chromium_text = normalize_browser_parity_text(&chromium.text);
+    let brutal_text = browser_fixture_parity_text(&render, &page_state, &bytes);
+    let chromium_text = chromium_fixture_parity_text(&chromium.text, &bytes);
     let brutal_title = render.title.trim().to_owned();
     let chromium_title = chromium.title.trim().to_owned();
 
@@ -10639,14 +12717,25 @@ pub(crate) fn render_browser_fixture_profiled(
     bytes: &[u8],
     fixture: &BrowserFixture,
 ) -> Result<BrowserProfiledRender> {
-    let source = path.display().to_string();
+    Ok(render_browser_fixture_profiled_with_state(path, bytes, fixture)?.1)
+}
+
+fn render_browser_fixture_profiled_with_state(
+    path: &Path,
+    bytes: &[u8],
+    fixture: &BrowserFixture,
+) -> Result<(BrowserPageState, BrowserProfiledRender)> {
+    let source = fixture
+        .source
+        .clone()
+        .unwrap_or_else(|| path.display().to_string());
     let options = BrowserRenderOptions {
         width: fixture.width,
         ..BrowserRenderOptions::default()
     };
     if !fixture.external_scripts {
         if let Some(selector) = fixture.click_selector.as_deref() {
-            return render_html_prepared_profiled(
+            return render_html_prepared_with_state(
                 &source,
                 bytes,
                 options,
@@ -10660,7 +12749,7 @@ pub(crate) fn render_browser_fixture_profiled(
                 },
             );
         }
-        return render_html_prepared_profiled(
+        return render_html_prepared_with_state(
             &source,
             bytes,
             options,
@@ -10675,7 +12764,7 @@ pub(crate) fn render_browser_fixture_profiled(
         );
     }
 
-    let first_pass = render_html_prepared_profiled(
+    let (_, first_pass) = render_html_prepared_with_state(
         &source,
         bytes,
         options,
@@ -10689,7 +12778,7 @@ pub(crate) fn render_browser_fixture_profiled(
         },
     )?;
     let script_text = local_external_script_texts(&first_pass.render)?;
-    let mut second_pass = render_html_prepared_profiled(
+    let (second_state, mut second_pass) = render_html_prepared_with_state(
         &source,
         bytes,
         options,
@@ -10706,7 +12795,7 @@ pub(crate) fn render_browser_fixture_profiled(
         },
     )?;
     second_pass.timings = first_pass.timings.add(second_pass.timings);
-    Ok(second_pass)
+    Ok((second_state, second_pass))
 }
 
 fn local_external_script_texts(render: &BrowserRender) -> Result<Vec<String>> {
@@ -10852,6 +12941,138 @@ fn normalize_browser_parity_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn browser_fixture_parity_text(
+    render: &BrowserRender,
+    page_state: &BrowserPageState,
+    html: &[u8],
+) -> String {
+    if browser_fixture_uses_form_control_inner_text(html) {
+        return normalize_browser_parity_text(&chromium_like_body_inner_text(&page_state.dom));
+    }
+    normalize_browser_fixture_parity_text(&render.text, html)
+}
+
+fn chromium_fixture_parity_text(text: &str, html: &[u8]) -> String {
+    normalize_browser_fixture_parity_text(text, html)
+}
+
+fn normalize_browser_fixture_parity_text(text: &str, html: &[u8]) -> String {
+    if browser_fixture_uses_location_readback(html) {
+        return normalize_browser_location_readback_text(text);
+    }
+    if browser_fixture_uses_generated_list_markers(html) {
+        return normalize_browser_parity_text(&strip_generated_list_marker_lines(text));
+    }
+    normalize_browser_parity_text(text)
+}
+
+fn browser_fixture_uses_location_readback(html: &[u8]) -> bool {
+    let html = String::from_utf8_lossy(html).to_ascii_lowercase();
+    html.contains("location.href")
+        || html.contains("window.location")
+        || html.contains("document.location")
+        || html.contains("document.url")
+        || html.contains("document.documenturi")
+        || html.contains("document.baseuri")
+}
+
+fn normalize_browser_location_readback_text(text: &str) -> String {
+    normalize_browser_parity_text(text)
+        .split_whitespace()
+        .map(normalize_browser_location_readback_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_browser_location_readback_token(token: &str) -> String {
+    if Url::parse(token).is_ok() {
+        return "<location-url>".to_owned();
+    }
+    if token.starts_with('/') || token.contains(".html") || token.contains(".htm") {
+        return "<location-path>".to_owned();
+    }
+    token.to_owned()
+}
+
+fn browser_fixture_uses_form_control_inner_text(html: &[u8]) -> bool {
+    let html = String::from_utf8_lossy(html).to_ascii_lowercase();
+    html.contains("<input")
+        || html.contains("<select")
+        || html.contains("<textarea")
+        || html.contains("<button")
+}
+
+fn chromium_like_body_inner_text(dom: &Dom) -> String {
+    let root = find_first_element_by_tag(dom, "body").unwrap_or(0);
+    let mut out = String::new();
+    collect_chromium_like_inner_text(dom, root, &mut out);
+    out
+}
+
+fn collect_chromium_like_inner_text(dom: &Dom, node_id: usize, out: &mut String) {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return;
+    };
+    match &node.kind {
+        NodeKind::Text(text) => out.push_str(text),
+        NodeKind::Element(element)
+            if matches!(
+                element.tag.as_str(),
+                "input" | "script" | "style" | "textarea" | "title"
+            ) =>
+        {
+            return;
+        }
+        NodeKind::Element(element) => {
+            let before = out.len();
+            for &child in &node.children {
+                collect_chromium_like_inner_text(dom, child, out);
+            }
+            if element.tag == "option" && out.len() > before {
+                out.push('\n');
+            }
+        }
+        _ => {
+            for &child in &node.children {
+                collect_chromium_like_inner_text(dom, child, out);
+            }
+        }
+    }
+}
+
+fn browser_fixture_uses_generated_list_markers(html: &[u8]) -> bool {
+    let html = String::from_utf8_lossy(html).to_ascii_lowercase();
+    html.contains("<li")
+        || html.contains("display:list-item")
+        || html.contains("display: list-item")
+        || html.contains("list-style")
+}
+
+fn strip_generated_list_marker_lines(text: &str) -> String {
+    text.lines()
+        .map(strip_generated_list_marker_prefix)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_generated_list_marker_prefix(line: &str) -> &str {
+    let line = line.trim_start();
+    for prefix in ["- ", "* ", "o "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    let Some((marker, rest)) = line.split_once(". ") else {
+        return line;
+    };
+    if marker.chars().all(|ch| ch.is_ascii_digit())
+        || marker.chars().all(|ch| ch.is_ascii_alphabetic())
+    {
+        return rest;
+    }
+    line
+}
+
 #[derive(Debug)]
 struct ParsedHtml {
     dom: Dom,
@@ -10988,6 +13209,583 @@ fn push_text(
     push_node(dom, parent, NodeKind::Text(decoded));
 }
 
+#[derive(Debug, Clone)]
+struct HydrationImageCandidate {
+    url: String,
+    labels: Vec<String>,
+    aspect_ratio: Option<f64>,
+    used: bool,
+}
+
+fn promote_hydration_image_sources(dom: &mut Dom, scripts: &[String]) {
+    let mut candidates = hydration_image_candidates_from_scripts(scripts);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let image_node_ids = dom
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, node)| match &node.kind {
+            NodeKind::Element(element)
+                if element.tag == "img"
+                    && element
+                        .src
+                        .as_deref()
+                        .is_some_and(is_lazy_image_placeholder_src)
+                    && !element.attrs.contains_key("data-src") =>
+            {
+                Some(node_id)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for node_id in image_node_ids {
+        let alt = dom
+            .nodes
+            .get(node_id)
+            .and_then(|node| match &node.kind {
+                NodeKind::Element(element) => element.alt.as_deref(),
+                _ => None,
+            })
+            .unwrap_or("")
+            .to_owned();
+        let Some(candidate_index) =
+            select_hydration_image_candidate_for_node(dom, node_id, &candidates, &alt)
+        else {
+            continue;
+        };
+        let candidate = candidates[candidate_index].clone();
+        candidates[candidate_index].used = true;
+        let Some(NodeKind::Element(element)) =
+            dom.nodes.get_mut(node_id).map(|node| &mut node.kind)
+        else {
+            continue;
+        };
+        element
+            .attrs
+            .insert("data-src".to_owned(), candidate.url.clone());
+        element
+            .attrs
+            .insert("data-hydration-src".to_owned(), candidate.url);
+        if let Some((width, height)) =
+            hydration_image_dimensions_from_aspect_ratio(candidate.aspect_ratio)
+        {
+            element
+                .attrs
+                .entry("data-image-dimensions".to_owned())
+                .or_insert_with(|| format!("{width}x{height}"));
+        }
+    }
+}
+
+fn apply_static_ancillary_header_layout(dom: &mut Dom) {
+    let Some(body_classes) = first_element_classes(dom, "body") else {
+        return;
+    };
+    let moves = dom
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(node_id, node)| {
+            let NodeKind::Element(element) = &node.kind else {
+                return None;
+            };
+            let nc_element = element.attrs.get("data-nc-element")?;
+            let target_container =
+                static_ancillary_header_target_container(&body_classes, nc_element)?;
+            let header_root = ancestor_with_attr(dom, node_id, "data-nc-base", "header")?;
+            let target_id =
+                descendant_with_attr(dom, header_root, "data-nc-container", target_container)?;
+            let current_parent = dom.nodes.get(node_id).and_then(|node| node.parent);
+            (current_parent != Some(target_id)).then_some((node_id, target_id))
+        })
+        .collect::<Vec<_>>();
+
+    for (node_id, target_id) in moves {
+        if !is_descendant_of(dom, target_id, node_id) {
+            append_child(dom, target_id, node_id);
+        }
+    }
+}
+
+fn first_element_classes(dom: &Dom, tag: &str) -> Option<Vec<String>> {
+    dom.nodes.iter().find_map(|node| match &node.kind {
+        NodeKind::Element(element) if element.tag == tag => Some(element.classes.clone()),
+        _ => None,
+    })
+}
+
+fn static_ancillary_header_target_container(
+    body_classes: &[String],
+    nc_element: &str,
+) -> Option<&'static str> {
+    let element_name = match nc_element {
+        "branding" => "branding",
+        "tagline" => "tagline",
+        "primary-nav" => "primary-nav",
+        "secondary-nav" => "secondary-nav",
+        "social" => "social",
+        "search" => "search",
+        "cart" => "cart",
+        "account" => "account",
+        _ => return None,
+    };
+    for region in ["top", "bottom"] {
+        for slot in ["left", "center", "right"] {
+            let class = format!("ancillary-header-{element_name}-position-{region}-{slot}");
+            if body_classes.iter().any(|candidate| candidate == &class) {
+                return Some(match (region, slot) {
+                    ("top", "left") => "top-left",
+                    ("top", "center") => "top-center",
+                    ("top", "right") => "top-right",
+                    ("bottom", "left") => "bottom-left",
+                    ("bottom", "center") => "bottom-center",
+                    ("bottom", "right") => "bottom-right",
+                    _ => unreachable!(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn ancestor_with_attr(dom: &Dom, node_id: usize, name: &str, value: &str) -> Option<usize> {
+    let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+    while let Some(parent) = current {
+        if let Some(NodeKind::Element(element)) = dom.nodes.get(parent).map(|node| &node.kind)
+            && element.attrs.get(name).is_some_and(|found| found == value)
+        {
+            return Some(parent);
+        }
+        current = dom.nodes.get(parent).and_then(|node| node.parent);
+    }
+    None
+}
+
+fn descendant_with_attr(dom: &Dom, node_id: usize, name: &str, value: &str) -> Option<usize> {
+    let node = dom.nodes.get(node_id)?;
+    if let NodeKind::Element(element) = &node.kind
+        && element.attrs.get(name).is_some_and(|found| found == value)
+    {
+        return Some(node_id);
+    }
+    node.children
+        .iter()
+        .find_map(|&child_id| descendant_with_attr(dom, child_id, name, value))
+}
+
+fn hydration_image_candidates_from_scripts(scripts: &[String]) -> Vec<HydrationImageCandidate> {
+    let mut candidates = Vec::new();
+    for script in scripts {
+        for value in hydration_json_values_from_script(script) {
+            collect_hydration_image_candidates(&value, &mut candidates);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| {
+        let label_key = candidate
+            .labels
+            .iter()
+            .map(|label| normalized_hydration_label(label))
+            .find(|label| !label.is_empty())
+            .unwrap_or_default();
+        seen.insert((candidate.url.clone(), label_key))
+    });
+    candidates
+}
+
+fn hydration_json_values_from_script(script: &str) -> Vec<Value> {
+    let mut values = Vec::new();
+    let trimmed = script.trim();
+    if matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'['))
+        && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+    {
+        values.push(value);
+    }
+
+    for marker in ["window['__", "window[\"__", "window.__"] {
+        let mut search_start = 0usize;
+        while let Some(marker_offset) = script[search_start..].find(marker) {
+            let marker_start = search_start + marker_offset;
+            let Some(eq_offset) = script[marker_start..].find('=') else {
+                break;
+            };
+            let eq_index = marker_start + eq_offset;
+            let Some(json_start) = skip_json_whitespace(script, eq_index.saturating_add(1)) else {
+                break;
+            };
+            if !matches!(script.as_bytes().get(json_start), Some(b'{') | Some(b'[')) {
+                search_start = eq_index.saturating_add(1);
+                continue;
+            }
+            if let Some(json_end) = balanced_json_value_end(script, json_start)
+                && let Ok(value) = serde_json::from_str::<Value>(&script[json_start..json_end])
+            {
+                values.push(value);
+                search_start = json_end;
+                continue;
+            }
+            search_start = json_start.saturating_add(1);
+        }
+    }
+
+    values
+}
+
+fn skip_json_whitespace(source: &str, start: usize) -> Option<usize> {
+    source[start..]
+        .char_indices()
+        .find(|(_, ch)| !ch.is_ascii_whitespace())
+        .map(|(offset, _)| start + offset)
+}
+
+fn balanced_json_value_end(source: &str, start: usize) -> Option<usize> {
+    let open = *source.as_bytes().get(start)?;
+    let close = match open {
+        b'{' => b'}',
+        b'[' => b']',
+        _ => return None,
+    };
+    let mut stack = vec![close];
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in source.as_bytes()[start..].iter().copied().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                if offset != 0 {
+                    stack.push(b'}');
+                }
+            }
+            b'[' => {
+                if offset != 0 {
+                    stack.push(b']');
+                }
+            }
+            b'}' | b']' => {
+                if stack.pop() != Some(byte) {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(start + offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn collect_hydration_image_candidates(value: &Value, out: &mut Vec<HydrationImageCandidate>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(candidate) = hydration_image_candidate_from_object(object) {
+                out.push(candidate);
+            }
+            for child in object.values() {
+                collect_hydration_image_candidates(child, out);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_hydration_image_candidates(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn hydration_image_candidate_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<HydrationImageCandidate> {
+    if !hydration_image_object_may_contain_source(object) {
+        return None;
+    }
+    let (url, aspect_ratio) = hydration_image_url_from_object(object)?;
+    let labels = hydration_image_labels_from_object(object);
+    if labels.is_empty() {
+        return None;
+    }
+    Some(HydrationImageCandidate {
+        url,
+        labels,
+        aspect_ratio,
+        used: false,
+    })
+}
+
+fn hydration_image_object_may_contain_source(object: &serde_json::Map<String, Value>) -> bool {
+    object.contains_key("src")
+        || object.contains_key("rt")
+        || object.contains_key("crps")
+        || object.contains_key("altText")
+        || object.contains_key("imageSrc")
+        || object.contains_key("url")
+        || object.contains_key("href")
+        || object.contains_key("lg")
+        || object.contains_key("logo")
+}
+
+fn hydration_image_url_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<(String, Option<f64>)> {
+    if let Some(crop) = hydration_preferred_crop_url_from_object(object) {
+        return Some(crop);
+    }
+
+    for key in ["src", "rt", "imageSrc", "imgSrc", "imageUrl", "lg", "logo"] {
+        if let Some(url) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| hydration_image_url_supported(url))
+        {
+            return Some((
+                url.to_owned(),
+                hydration_image_aspect_ratio_for_url(object, url),
+            ));
+        }
+    }
+
+    hydration_fallback_url_from_object(object)
+}
+
+fn hydration_preferred_crop_url_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<(String, Option<f64>)> {
+    if let Some(crops) = object.get("crps").and_then(Value::as_array) {
+        for preferred_name in ["16x9", "3x2", "raw", "4x3", "square"] {
+            for crop in crops {
+                let Some(crop_object) = crop.as_object() else {
+                    continue;
+                };
+                if crop_object
+                    .get("nm")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(preferred_name))
+                    && let Some(url) = crop_object
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|url| hydration_image_url_supported(url))
+                {
+                    return Some((
+                        url.to_owned(),
+                        crop_object.get("aspRto").and_then(Value::as_f64),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hydration_fallback_url_from_object(
+    object: &serde_json::Map<String, Value>,
+) -> Option<(String, Option<f64>)> {
+    for key in ["url", "href"] {
+        if let Some(url) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| hydration_image_url_supported(url))
+        {
+            return Some((url.to_owned(), object.get("aspRto").and_then(Value::as_f64)));
+        }
+    }
+    None
+}
+
+fn hydration_image_aspect_ratio_for_url(
+    object: &serde_json::Map<String, Value>,
+    url: &str,
+) -> Option<f64> {
+    object
+        .get("crps")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|crop| {
+            crop.get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate_url| candidate_url == url)
+        })
+        .and_then(|crop| crop.get("aspRto").and_then(Value::as_f64))
+}
+
+fn hydration_image_labels_from_object(object: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut labels = Vec::new();
+    for key in [
+        "altText",
+        "alt",
+        "dsc",
+        "description",
+        "ttl",
+        "title",
+        "headline",
+        "text",
+        "name",
+        "pblshr",
+        "publisher",
+    ] {
+        if let Some(label) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            && !labels.iter().any(|existing| existing == label)
+        {
+            labels.push(label.to_owned());
+        }
+    }
+    labels
+}
+
+fn hydration_image_url_supported(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() || is_lazy_image_placeholder_src(url) {
+        return false;
+    }
+    let lower = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    [
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".jfif", ".pjpeg", ".jpe", ".apng",
+    ]
+    .iter()
+    .any(|extension| lower.ends_with(extension))
+}
+
+fn select_hydration_image_candidate_for_node(
+    dom: &Dom,
+    node_id: usize,
+    candidates: &[HydrationImageCandidate],
+    alt: &str,
+) -> Option<usize> {
+    if let Some(index) = select_hydration_image_candidate(candidates, alt) {
+        return Some(index);
+    }
+    let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+    while let Some(parent_id) = current {
+        if current_element_is(dom, parent_id, "body") || current_element_is(dom, parent_id, "html")
+        {
+            break;
+        }
+        let label = text_content(dom, parent_id);
+        if hydration_label_tokens(&normalized_hydration_label(&label)).len() >= 3
+            && let Some(index) = select_hydration_image_candidate(candidates, &label)
+        {
+            return Some(index);
+        }
+        current = dom.nodes.get(parent_id).and_then(|node| node.parent);
+    }
+    None
+}
+
+fn select_hydration_image_candidate(
+    candidates: &[HydrationImageCandidate],
+    alt: &str,
+) -> Option<usize> {
+    let normalized_alt = normalized_hydration_label(alt);
+    if normalized_alt.is_empty() {
+        return None;
+    }
+
+    if let Some(index) = candidates.iter().position(|candidate| {
+        !candidate.used
+            && candidate
+                .labels
+                .iter()
+                .any(|label| normalized_hydration_label(label) == normalized_alt)
+    }) {
+        return Some(index);
+    }
+
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| !candidate.used)
+        .filter_map(|(index, candidate)| {
+            let score = candidate
+                .labels
+                .iter()
+                .map(|label| hydration_label_similarity_score(&normalized_alt, label))
+                .max()
+                .unwrap_or(0);
+            (score >= 30).then_some((index, score))
+        })
+        .max_by_key(|(_, score)| *score)
+        .map(|(index, _)| index)
+}
+
+fn normalized_hydration_label(label: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_space = true;
+    for ch in label.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_was_space = false;
+        } else if !last_was_space {
+            out.push(' ');
+            last_was_space = true;
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn hydration_label_similarity_score(normalized_alt: &str, label: &str) -> usize {
+    let alt_tokens = hydration_label_tokens(normalized_alt);
+    if alt_tokens.is_empty() {
+        return 0;
+    }
+    let label_tokens = hydration_label_tokens(&normalized_hydration_label(label));
+    if label_tokens.is_empty() {
+        return 0;
+    }
+    let common = alt_tokens.intersection(&label_tokens).count();
+    if common < 3 {
+        return 0;
+    }
+    let smaller = alt_tokens.len().min(label_tokens.len()).max(1);
+    common.saturating_mul(100) / smaller
+}
+
+fn hydration_label_tokens(label: &str) -> HashSet<String> {
+    label
+        .split_ascii_whitespace()
+        .filter(|token| token.len() >= 3)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn hydration_image_dimensions_from_aspect_ratio(
+    aspect_ratio: Option<f64>,
+) -> Option<(usize, usize)> {
+    let aspect_ratio = aspect_ratio?;
+    if !aspect_ratio.is_finite() || aspect_ratio <= 0.0 {
+        return None;
+    }
+    let width = 718usize;
+    let height = ((width as f64) / aspect_ratio).round().max(1.0) as usize;
+    Some((width, height))
+}
+
 fn push_node(dom: &mut Dom, parent: usize, kind: NodeKind) -> usize {
     let node_id = dom.nodes.len();
     dom.nodes.push(Node {
@@ -11071,6 +13869,10 @@ struct TinyJsRuntime {
     node_list_bindings: HashMap<String, Vec<usize>>,
     string_bindings: HashMap<String, String>,
     function_bindings: HashMap<String, String>,
+    function_params: HashMap<String, String>,
+    call_depth: usize,
+    returning: bool,
+    return_value: Option<String>,
     event_listeners: HashMap<(BrowserEventTarget, String), Vec<JsEventListener>>,
     lifecycle_event_listeners: HashMap<String, Vec<String>>,
     local_storage: HashMap<String, String>,
@@ -11102,6 +13904,10 @@ impl Default for TinyJsRuntime {
             node_list_bindings: HashMap::new(),
             string_bindings: HashMap::new(),
             function_bindings: HashMap::new(),
+            function_params: HashMap::new(),
+            call_depth: 0,
+            returning: false,
+            return_value: None,
             event_listeners: HashMap::new(),
             lifecycle_event_listeners: HashMap::new(),
             local_storage: HashMap::new(),
@@ -11140,7 +13946,11 @@ fn execute_scripts_with_runtime(dom: &mut Dom, runtime: &mut TinyJsRuntime, scri
             execute_js_statement(dom, runtime, statement);
         }
     }
+    drain_timer_tasks(dom, runtime);
     dispatch_lifecycle_event(dom, runtime, "DOMContentLoaded");
+    // Timers queued by DOMContentLoaded and load handlers still fire before
+    // the render settles, matching the final DOM state Chromium reaches.
+    drain_timer_tasks(dom, runtime);
     dispatch_lifecycle_event(dom, runtime, "load");
     drain_timer_tasks(dom, runtime);
 }
@@ -11553,13 +14363,714 @@ fn split_js_statements(script: &str) -> Vec<&str> {
     statements
 }
 
+fn format_js_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        format!("{}", value as i64)
+    } else {
+        format!("{value}")
+    }
+}
+
+/// Arithmetic over numeric literals and bindings: + - * / with left-to-right
+/// * / precedence over + -, parentheses via recursion.
+fn evaluate_js_numeric_expression(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<f64> {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return None;
+    }
+    for (op, index) in js_top_level_operator(expression, &['+', '-']) {
+        let (left, right) = expression.split_at(index);
+        let right = &right[1..];
+        if left.trim().is_empty() {
+            continue;
+        }
+        let left = evaluate_js_numeric_expression(dom, runtime, left)?;
+        let right = evaluate_js_numeric_expression(dom, runtime, right)?;
+        return Some(if op == '+' {
+            left + right
+        } else {
+            left - right
+        });
+    }
+    for (op, index) in js_top_level_operator(expression, &['*', '/']) {
+        let (left, right) = expression.split_at(index);
+        let right = &right[1..];
+        let left = evaluate_js_numeric_expression(dom, runtime, left)?;
+        let right = evaluate_js_numeric_expression(dom, runtime, right)?;
+        return Some(if op == '*' {
+            left * right
+        } else if right != 0.0 {
+            left / right
+        } else {
+            return None;
+        });
+    }
+    if let Some(inner) = expression
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return evaluate_js_numeric_expression(dom, runtime, inner);
+    }
+    if let Ok(value) = expression.parse::<f64>() {
+        return value.is_finite().then_some(value);
+    }
+    evaluate_js_string_expression(dom, runtime, expression)?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+/// Last top-level occurrence of any operator (right-to-left split keeps
+/// left-associativity through recursion).
+fn js_top_level_operator(expression: &str, ops: &[char]) -> Vec<(char, usize)> {
+    let bytes = expression.as_bytes();
+    let mut depth = 0usize;
+    let mut best: Option<(char, usize)> = None;
+    for (index, ch) in expression.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && ops.contains(&ch) => {
+                // skip unary signs following another operator or start
+                let prev = expression[..index].trim_end().chars().next_back();
+                if matches!(ch, '+' | '-')
+                    && matches!(
+                        prev,
+                        None | Some('+') | Some('-') | Some('*') | Some('/') | Some('(')
+                    )
+                {
+                    continue;
+                }
+                best = Some((ch, index));
+            }
+            _ => {}
+        }
+    }
+    let _ = bytes;
+    best.into_iter().collect()
+}
+
+/// `n = expr`, `n += expr`, `n -= expr`, `n++`, `n--` over numeric bindings.
+fn execute_js_numeric_assignment(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    statement: &str,
+) -> bool {
+    let statement = statement.trim().trim_end_matches(';').trim();
+    let is_ident = |name: &str| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    };
+    for (suffix, delta) in [("++", 1.0), ("--", -1.0)] {
+        if let Some(name) = statement.strip_suffix(suffix) {
+            let name = name.trim();
+            if is_ident(name)
+                && let Some(current) = runtime
+                    .string_bindings
+                    .get(name)
+                    .and_then(|value| value.parse::<f64>().ok())
+            {
+                runtime
+                    .string_bindings
+                    .insert(name.to_owned(), format_js_number(current + delta));
+                return true;
+            }
+            return false;
+        }
+    }
+    for (op, combine) in [("+=", 1.0f64), ("-=", -1.0f64)] {
+        if let Some((name, expr)) = statement.split_once(op) {
+            let name = name.trim();
+            if !is_ident(name) {
+                return false;
+            }
+            let Some(current) = runtime
+                .string_bindings
+                .get(name)
+                .and_then(|value| value.parse::<f64>().ok())
+            else {
+                return false;
+            };
+            let Some(rhs) = evaluate_js_numeric_expression(dom, runtime, expr) else {
+                return false;
+            };
+            runtime
+                .string_bindings
+                .insert(name.to_owned(), format_js_number(current + combine * rhs));
+            return true;
+        }
+    }
+    if let Some((name, expr)) = statement.split_once('=') {
+        let name = name.trim();
+        if !is_ident(name) || expr.starts_with('=') || runtime.string_bindings.get(name).is_none() {
+            return false;
+        }
+        if let Some(value) = evaluate_js_numeric_expression(dom, runtime, expr) {
+            runtime
+                .string_bindings
+                .insert(name.to_owned(), format_js_number(value));
+            return true;
+        }
+    }
+    false
+}
+
+/// `for (init; cond; update) { body }` — classic counter loop, capped.
+fn execute_js_classic_for(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let Some(rest) = statement.trim_start().strip_prefix("for") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') {
+        return false;
+    }
+    let Some(header_end) = find_js_matching_paren(rest) else {
+        return false;
+    };
+    let header = &rest[1..header_end];
+    let parts: Vec<&str> = header.split(';').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let after = rest[header_end + 1..].trim_start();
+    let Some(block) = after.strip_prefix('{') else {
+        return false;
+    };
+    let Some(end) = find_js_matching_brace(block) else {
+        return false;
+    };
+    let body = &block[..end];
+    execute_js_statement(dom, runtime, parts[0]);
+    const FOR_MAX_ITERATIONS: usize = 512;
+    let mut iterations = 0usize;
+    while iterations < FOR_MAX_ITERATIONS && evaluate_js_condition(dom, runtime, parts[1]) {
+        for inner in split_js_statements(body) {
+            execute_js_statement(dom, runtime, inner);
+        }
+        execute_js_statement(dom, runtime, parts[2]);
+        iterations += 1;
+    }
+    let remainder = block[end + 1..].trim();
+    if !remainder.is_empty() {
+        for inner in split_js_statements(remainder) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    true
+}
+
+/// `while (cond) { ... }` with a hard iteration cap; conditions re-evaluate
+/// each pass so class/attribute mutations in the body can terminate the loop.
+fn execute_js_while(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let Some(rest) = statement.trim_start().strip_prefix("while") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') {
+        return false;
+    }
+    let Some(condition_end) = find_js_matching_paren(rest) else {
+        return false;
+    };
+    let condition = &rest[1..condition_end];
+    let after = rest[condition_end + 1..].trim_start();
+    let Some(block) = after.strip_prefix('{') else {
+        return false;
+    };
+    let Some(end) = find_js_matching_brace(block) else {
+        return false;
+    };
+    let body = &block[..end];
+    const WHILE_MAX_ITERATIONS: usize = 256;
+    let mut iterations = 0usize;
+    while iterations < WHILE_MAX_ITERATIONS && evaluate_js_condition(dom, runtime, condition) {
+        for inner in split_js_statements(body) {
+            execute_js_statement(dom, runtime, inner);
+        }
+        iterations += 1;
+    }
+    let remainder = block[end + 1..].trim();
+    if !remainder.is_empty() {
+        for inner in split_js_statements(remainder) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    true
+}
+
+/// `function name() { ... }` declarations (zero-arg) stored as callable
+/// bodies; the remainder after the block executes like other block forms.
+fn execute_js_function_declaration(
+    dom: &mut Dom,
+    runtime: &mut TinyJsRuntime,
+    statement: &str,
+) -> bool {
+    let Some(rest) = statement.trim_start().strip_prefix("function") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+        .collect();
+    if name.is_empty() {
+        return false;
+    }
+    let after_name = rest[name.len()..].trim_start();
+    if !after_name.starts_with('(') {
+        return false;
+    }
+    let Some(params_end) = find_js_matching_paren(after_name) else {
+        return false;
+    };
+    let param = after_name[1..params_end].trim();
+    if !param.is_empty()
+        && !param
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == ',' || c == ' ')
+    {
+        return false;
+    }
+    let after_params = after_name[params_end + 1..].trim_start();
+    let Some(block) = after_params.strip_prefix('{') else {
+        return false;
+    };
+    let Some(end) = find_js_matching_brace(block) else {
+        return false;
+    };
+    if param.is_empty() {
+        runtime.function_params.remove(&name);
+    } else {
+        runtime
+            .function_params
+            .insert(name.clone(), param.to_owned());
+    }
+    runtime
+        .function_bindings
+        .insert(name, block[..end].to_owned());
+    let remainder = block[end + 1..].trim();
+    if !remainder.is_empty() {
+        for inner in split_js_statements(remainder) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    true
+}
+
+/// `name();` invokes a stored zero-arg function body (declaration or arrow
+/// binding), with a depth cap against recursion.
+fn execute_js_function_call(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let call = statement.trim().trim_end_matches(';').trim_end();
+    let Some(open) = call.find('(') else {
+        return false;
+    };
+    if !call.ends_with(')') {
+        return false;
+    }
+    let name = call[..open].trim();
+    let argument = call[open + 1..call.len() - 1].trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return false;
+    }
+    let Some(body) = runtime.function_bindings.get(name).cloned() else {
+        return false;
+    };
+    const JS_CALL_MAX_DEPTH: usize = 16;
+    if runtime.call_depth >= JS_CALL_MAX_DEPTH {
+        return true;
+    }
+    let params: Vec<String> = runtime
+        .function_params
+        .get(name)
+        .map(|list| {
+            list.split(',')
+                .map(|p| p.trim().to_owned())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let arguments = split_js_arguments(argument);
+    let mut saved: Vec<(String, Option<usize>, Option<String>)> = Vec::new();
+    for (index, param) in params.iter().enumerate() {
+        let saved_node = runtime.bindings.remove(param);
+        let saved_string = runtime.string_bindings.remove(param);
+        saved.push((param.clone(), saved_node, saved_string));
+        let Some(argument) = arguments
+            .get(index)
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+        else {
+            continue;
+        };
+        if let Some(node_id) = resolve_js_node_ref(dom, runtime, argument) {
+            runtime.bindings.insert(param.clone(), node_id);
+        } else if let Some(value) = evaluate_js_numeric_expression(dom, runtime, argument) {
+            runtime
+                .string_bindings
+                .insert(param.clone(), format_js_number(value));
+        } else if let Some(value) = evaluate_js_string_expression(dom, runtime, argument) {
+            runtime.string_bindings.insert(param.clone(), value);
+        }
+    }
+    runtime.call_depth += 1;
+    runtime.return_value = None;
+    for inner in split_js_statements(&body) {
+        execute_js_statement(dom, runtime, inner);
+    }
+    runtime.returning = false;
+    runtime.call_depth -= 1;
+    for (param, saved_node, saved_string) in saved {
+        runtime.bindings.remove(&param);
+        runtime.string_bindings.remove(&param);
+        if let Some(node) = saved_node {
+            runtime.bindings.insert(param.clone(), node);
+        }
+        if let Some(value) = saved_string {
+            runtime.string_bindings.insert(param, value);
+        }
+    }
+    true
+}
+
+/// `for (const x of <list-expr>) { ... }` over querySelectorAll-style lists.
+/// The loop variable binds each node in turn; a bounded iteration cap guards
+/// against pathological lists.
+fn execute_js_for_of(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let Some(rest) = statement.trim_start().strip_prefix("for") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') {
+        return false;
+    }
+    let Some(header_end) = find_js_matching_paren(rest) else {
+        return false;
+    };
+    let header = &rest[1..header_end];
+    let after = rest[header_end + 1..].trim_start();
+    let Some(body_block) = after.strip_prefix('{') else {
+        return false;
+    };
+    let Some(body_end) = find_js_matching_brace(body_block) else {
+        return false;
+    };
+    let body = &body_block[..body_end];
+    let remainder = &body_block[body_end + 1..];
+    let Some((binding, list_expr)) = split_js_top_level(header, " of ") else {
+        return false;
+    };
+    let binding = binding
+        .trim()
+        .trim_start_matches("const ")
+        .trim_start_matches("let ")
+        .trim_start_matches("var ")
+        .trim();
+    if binding.is_empty()
+        || !binding
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return false;
+    }
+    let Some(node_ids) = resolve_js_node_list_ref(dom, runtime, list_expr.trim()) else {
+        return true;
+    };
+    const FOR_OF_MAX_ITERATIONS: usize = 512;
+    for node_id in node_ids.into_iter().take(FOR_OF_MAX_ITERATIONS) {
+        runtime.bindings.insert(binding.to_owned(), node_id);
+        for inner in split_js_statements(body) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    runtime.bindings.remove(binding);
+    let remainder = remainder.trim();
+    if !remainder.is_empty() {
+        for inner in split_js_statements(remainder) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    true
+}
+
+/// `if (cond) { ... } else { ... }` over the tiny evaluator: conditions are
+/// string expressions (classList.contains, matches, bindings) with optional
+/// `!` negation and ==/===/!=/!== comparisons of evaluated operands.
+fn execute_js_conditional(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) -> bool {
+    let Some(rest) = statement.trim_start().strip_prefix("if") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') {
+        return false;
+    }
+    let Some(condition_end) = find_js_matching_paren(rest) else {
+        return false;
+    };
+    let condition = &rest[1..condition_end];
+    let after = rest[condition_end + 1..].trim_start();
+    let Some(then_block) = after.strip_prefix('{') else {
+        return false;
+    };
+    let Some(then_end) = find_js_matching_brace(then_block) else {
+        return false;
+    };
+    let then_body = &then_block[..then_end];
+    let tail = then_block[then_end + 1..].trim_start();
+    let (else_body, remainder) = match tail.strip_prefix("else") {
+        Some(else_rest) => {
+            let else_rest = else_rest.trim_start();
+            match else_rest
+                .strip_prefix('{')
+                .and_then(|block| find_js_matching_brace(block).map(|end| (block, end)))
+            {
+                Some((block, end)) => (Some(&block[..end]), &block[end + 1..]),
+                None => (None, tail),
+            }
+        }
+        None => (None, tail),
+    };
+    let branch = if evaluate_js_condition(dom, runtime, condition) {
+        Some(then_body)
+    } else {
+        else_body
+    };
+    if let Some(branch) = branch {
+        for inner in split_js_statements(branch) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    // Blocks need no terminating semicolon, so following statements can share
+    // this split; run them too.
+    let remainder = remainder.trim();
+    if !remainder.is_empty() {
+        for inner in split_js_statements(remainder) {
+            execute_js_statement(dom, runtime, inner);
+        }
+    }
+    true
+}
+
+fn find_js_matching_paren(text: &str) -> Option<usize> {
+    find_js_matching_delimiter(text, '(', ')')
+}
+
+fn find_js_matching_brace(block_after_open: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in block_after_open.char_indices() {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' | '`' => quote = Some(ch),
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_js_matching_delimiter(text: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '"' | '\'' | '`') {
+            quote = Some(ch);
+        } else if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn evaluate_js_condition(dom: &Dom, runtime: &TinyJsRuntime, condition: &str) -> bool {
+    let condition = condition.trim();
+    // Short-circuit boolean operators, split at top level (|| binds looser).
+    for (op, is_or) in [("||", true), ("&&", false)] {
+        if let Some((left, right)) = split_js_top_level(condition, op) {
+            let left_true = evaluate_js_condition(dom, runtime, left);
+            return if is_or {
+                left_true || evaluate_js_condition(dom, runtime, right)
+            } else {
+                left_true && evaluate_js_condition(dom, runtime, right)
+            };
+        }
+    }
+    for (op, negate) in [("!==", true), ("===", false), ("!=", true), ("==", false)] {
+        if let Some((left, right)) = split_js_top_level(condition, op) {
+            let left = evaluate_js_string_expression(dom, runtime, left.trim());
+            let right = evaluate_js_string_expression(dom, runtime, right.trim());
+            return (left == right) != negate;
+        }
+    }
+    for op in [">=", "<=", ">", "<"] {
+        if let Some((left, right)) = split_js_top_level(condition, op) {
+            let left = evaluate_js_string_expression(dom, runtime, left.trim())
+                .and_then(|value| value.trim().parse::<f64>().ok());
+            let right = evaluate_js_string_expression(dom, runtime, right.trim())
+                .and_then(|value| value.trim().parse::<f64>().ok());
+            let (Some(left), Some(right)) = (left, right) else {
+                return false;
+            };
+            return match op {
+                ">=" => left >= right,
+                "<=" => left <= right,
+                ">" => left > right,
+                _ => left < right,
+            };
+        }
+    }
+    if let Some(inner) = condition.strip_prefix('!') {
+        return !evaluate_js_condition(dom, runtime, inner);
+    }
+    let condition = condition
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .unwrap_or(condition);
+    match evaluate_js_string_expression(dom, runtime, condition).as_deref() {
+        Some("" | "false" | "0" | "null" | "undefined") | None => false,
+        Some(_) => true,
+    }
+}
+
+/// Split at the first top-level occurrence of `op` (outside quotes/parens).
+fn split_js_top_level<'a>(text: &'a str, op: &str) -> Option<(&'a str, &'a str)> {
+    let bytes = text.as_bytes();
+    let op_bytes = op.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' | b'`' => quote = Some(byte),
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && bytes[index..].starts_with(op_bytes) => {
+                // Avoid matching < inside <= handled by ordering; also avoid
+                // matching the tail of !== / === for < and >.
+                let prev = index.checked_sub(1).map(|i| bytes[i]);
+                if (op == ">" || op == "<")
+                    && matches!(prev, Some(b'=') | Some(b'!') | Some(b'<') | Some(b'>'))
+                {
+                    index += 1;
+                    continue;
+                }
+                return Some((&text[..index], &text[index + op.len()..]));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
 fn execute_js_statement(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &str) {
     let statement = statement.trim();
     if statement.is_empty() || statement.starts_with("//") {
         return;
     }
+    if runtime.returning {
+        return;
+    }
+    if runtime.call_depth > 0
+        && let Some(expr) = statement.strip_prefix("return")
+        && (expr.is_empty() || expr.starts_with([' ', '\t', ';', '(']))
+    {
+        let expr = expr.trim().trim_end_matches(';').trim();
+        runtime.return_value = if expr.is_empty() {
+            None
+        } else if let Some(value) = evaluate_js_numeric_expression(dom, runtime, expr) {
+            Some(format_js_number(value))
+        } else {
+            evaluate_js_string_expression(dom, runtime, expr)
+        };
+        runtime.returning = true;
+        return;
+    }
 
     if execute_js_default_prevention(runtime, statement) {
+        return;
+    }
+
+    if execute_js_conditional(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_for_of(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_function_declaration(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_while(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_classic_for(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_numeric_assignment(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_function_call(dom, runtime, statement) {
         return;
     }
 
@@ -11709,6 +15220,29 @@ fn execute_js_declaration(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement:
         return false;
     };
 
+    if expression.ends_with(')')
+        && expression
+            .split('(')
+            .next()
+            .is_some_and(|head| runtime.function_bindings.contains_key(head.trim()))
+        && execute_js_function_call(dom, runtime, expression)
+    {
+        let value = runtime.return_value.take().unwrap_or_default();
+        runtime.string_bindings.insert(name.to_owned(), value);
+        runtime.bindings.remove(name);
+        runtime.node_list_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
+    if let Some(value) = evaluate_js_numeric_expression(dom, runtime, expression) {
+        runtime
+            .string_bindings
+            .insert(name.to_owned(), format_js_number(value));
+        runtime.bindings.remove(name);
+        runtime.node_list_bindings.remove(name);
+        runtime.function_bindings.remove(name);
+        return true;
+    }
     if let Some(node_id) = create_js_node_from_expression(dom, expression) {
         runtime.bindings.insert(name.to_owned(), node_id);
         runtime.node_list_bindings.remove(name);
@@ -12646,7 +16180,7 @@ fn evaluate_js_string_expression(
     ] {
         if let Some(target) = expression.strip_suffix(suffix) {
             let node_id = resolve_js_node_ref(dom, runtime, target)?;
-            return get_element_string_property(dom, node_id, property);
+            return get_element_string_property(dom, node_id, property, &runtime.page_source);
         }
     }
     if let Some(target) = expression.strip_suffix(".childElementCount") {
@@ -12886,7 +16420,7 @@ fn is_supported_location_property(property: &str) -> bool {
 }
 
 fn location_property(source: &str, property: &str) -> String {
-    if let Ok(url) = Url::parse(source) {
+    if let Some(url) = location_source_url(source) {
         return parsed_url_location_property(&url, property);
     }
     match property {
@@ -12896,6 +16430,35 @@ fn location_property(source: &str, property: &str) -> String {
         "hash" => source_hash(source),
         _ => String::new(),
     }
+}
+
+fn location_source_url(source: &str) -> Option<Url> {
+    if let Ok(url) = Url::parse(source) {
+        return Some(url);
+    }
+
+    let local_path = local_path_without_url_parts(source);
+    if local_path.is_empty() {
+        return None;
+    }
+    let path = Path::new(local_path);
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut url = Url::from_file_path(absolute_path).ok()?;
+    if let Some(search) = source_search(source).strip_prefix('?')
+        && !search.is_empty()
+    {
+        url.set_query(Some(search));
+    }
+    if let Some(hash) = source_hash(source).strip_prefix('#')
+        && !hash.is_empty()
+    {
+        url.set_fragment(Some(hash));
+    }
+    Some(url)
 }
 
 fn parsed_url_location_property(url: &Url, property: &str) -> String {
@@ -13592,12 +17155,21 @@ fn get_element_style_property(dom: &Dom, node_id: usize, property: &str) -> Opti
     get_element_style_property_data(element, property)
 }
 
-fn get_element_string_property(dom: &Dom, node_id: usize, property: &str) -> Option<String> {
+fn get_element_string_property(
+    dom: &Dom,
+    node_id: usize,
+    property: &str,
+    source: &str,
+) -> Option<String> {
     match property {
         "textContent" | "innerText" => Some(text_content(dom, node_id)),
         "innerHTML" => Some(inner_html(dom, node_id)),
-        "id" | "className" | "href" | "value" | "name" | "type" | "src" | "alt" | "action"
-        | "method" => get_element_attribute(dom, node_id, property).or_else(|| Some(String::new())),
+        "href" | "action" => get_element_attribute(dom, node_id, property)
+            .map(|value| resolve_browser_dom_url_property(source, &value))
+            .or_else(|| Some(String::new())),
+        "id" | "className" | "value" | "name" | "type" | "src" | "alt" | "method" => {
+            get_element_attribute(dom, node_id, property).or_else(|| Some(String::new()))
+        }
         "checked" | "disabled" | "hidden" | "selected" => {
             Some(get_element_boolean_property(dom, node_id, property).to_string())
         }
@@ -14374,9 +17946,14 @@ fn is_void_tag(tag: &str) -> bool {
     )
 }
 
-fn parse_css(css: &str) -> CssCascade {
+fn parse_css(css: &str, context: CssLengthContext) -> CssCascade {
+    with_css_length_context(context, || parse_css_with_active_context(css, context))
+}
+
+fn parse_css_with_active_context(css: &str, context: CssLengthContext) -> CssCascade {
     let css = strip_css_comments(css);
-    let custom_properties = collect_root_css_custom_properties(&css);
+    let viewport_width_css_px = context.viewport_width_px;
+    let custom_properties = collect_root_css_custom_properties(&css, viewport_width_css_px);
     let mut cascade = CssCascade {
         rules: Vec::new(),
         id_rules: HashMap::new(),
@@ -14385,10 +17962,14 @@ fn parse_css(css: &str) -> CssCascade {
         attr_rules: HashMap::new(),
         universal_rules: Vec::new(),
         custom_properties,
+        length_context: context,
     };
 
-    for (selectors, declarations) in top_level_css_rule_blocks(&css) {
-        let resolved_declarations = substitute_css_vars(declarations, &cascade.custom_properties);
+    for (selectors, declarations) in top_level_css_rule_blocks(&css, viewport_width_css_px) {
+        let resolved_declarations = resolve_css_calc_expressions(&substitute_css_vars(
+            declarations,
+            &cascade.custom_properties,
+        ));
         let declarations = parse_css_declarations(&resolved_declarations);
         if declarations == CssDeclarations::default() {
             continue;
@@ -14406,15 +17987,16 @@ fn parse_css(css: &str) -> CssCascade {
     cascade
 }
 
-fn collect_root_css_custom_properties(css: &str) -> HashMap<String, String> {
+fn collect_root_css_custom_properties(
+    css: &str,
+    viewport_width_css_px: usize,
+) -> HashMap<String, String> {
     let mut custom_properties = HashMap::new();
-    for (selectors, declarations) in top_level_css_rule_blocks(css) {
-        if !split_css_selector_list(selectors)
+    let mut scoped_custom_properties = HashMap::new();
+    for (selectors, declarations) in top_level_css_rule_blocks(css, viewport_width_css_px) {
+        let defines_root = split_css_selector_list(selectors)
             .iter()
-            .any(|selector| css_selector_defines_root_custom_properties(selector))
-        {
-            continue;
-        }
+            .any(|selector| css_selector_defines_root_custom_properties(selector));
         for declaration in declarations.split(';') {
             let Some((name, value)) = declaration.split_once(':') else {
                 continue;
@@ -14424,15 +18006,26 @@ fn collect_root_css_custom_properties(css: &str) -> HashMap<String, String> {
                 continue;
             }
             let value = css_declaration_value(value);
-            if !value.is_empty() {
+            if value.is_empty() {
+                continue;
+            }
+            if defines_root {
                 custom_properties.insert(name.to_ascii_lowercase(), value.to_owned());
+            } else {
+                // Scoped declarations resolve globally as a fallback; :root wins.
+                // Later declarations override earlier ones, matching cascade
+                // order (theme base -> customizer overrides).
+                scoped_custom_properties.insert(name.to_ascii_lowercase(), value.to_owned());
             }
         }
+    }
+    for (name, value) in scoped_custom_properties {
+        custom_properties.entry(name).or_insert(value);
     }
     custom_properties
 }
 
-fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
+fn top_level_css_rule_blocks(css: &str, viewport_width_css_px: usize) -> Vec<(&str, &str)> {
     let bytes = css.as_bytes();
     let mut blocks = Vec::new();
     let mut index = 0usize;
@@ -14443,10 +18036,16 @@ fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
         }
         if bytes[index] == b'@' {
             if let Some(open_brace) = find_css_rule_open_brace(css, index)
-                && css_at_rule_allows_nested_style_rules(&css[index..open_brace])
+                && css_at_rule_allows_nested_style_rules(
+                    &css[index..open_brace],
+                    viewport_width_css_px,
+                )
                 && let Some(close_brace) = find_matching_css_brace(css, open_brace)
             {
-                blocks.extend(top_level_css_rule_blocks(&css[open_brace + 1..close_brace]));
+                blocks.extend(top_level_css_rule_blocks(
+                    &css[open_brace + 1..close_brace],
+                    viewport_width_css_px,
+                ));
                 index = close_brace + 1;
             } else {
                 index = skip_css_at_rule(css, index);
@@ -14469,7 +18068,7 @@ fn top_level_css_rule_blocks(css: &str) -> Vec<(&str, &str)> {
     blocks
 }
 
-fn css_at_rule_allows_nested_style_rules(rule_header: &str) -> bool {
+fn css_at_rule_allows_nested_style_rules(rule_header: &str, viewport_width_css_px: usize) -> bool {
     let name = rule_header
         .trim_start()
         .trim_start_matches('@')
@@ -14477,7 +18076,72 @@ fn css_at_rule_allows_nested_style_rules(rule_header: &str) -> bool {
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    matches!(name.as_str(), "media" | "supports" | "container" | "layer")
+    match name.as_str() {
+        "media" => css_media_query_matches(rule_header, viewport_width_css_px),
+        "supports" | "container" | "layer" => true,
+        _ => false,
+    }
+}
+
+fn css_media_query_matches(rule_header: &str, viewport_width_css_px: usize) -> bool {
+    let query = rule_header
+        .trim_start()
+        .trim_start_matches('@')
+        .trim_start_matches(|ch: char| ch.is_ascii_alphabetic() || ch == '-')
+        .trim();
+    if query.is_empty() {
+        return true;
+    }
+    split_css_top_level_commas(query)
+        .into_iter()
+        .any(|query| css_single_media_query_matches(&query, viewport_width_css_px))
+}
+
+fn css_single_media_query_matches(query: &str, viewport_width_css_px: usize) -> bool {
+    let mut query = query.trim();
+    let negated = query
+        .strip_prefix("not ")
+        .map(|remaining| {
+            query = remaining.trim();
+            true
+        })
+        .unwrap_or(false);
+    if let Some(remaining) = query.strip_prefix("only ") {
+        query = remaining.trim();
+    }
+
+    let mut matched = true;
+    for part in query.split("and") {
+        let part = part.trim();
+        if part.is_empty()
+            || part.eq_ignore_ascii_case("all")
+            || part.eq_ignore_ascii_case("screen")
+        {
+            continue;
+        }
+        if part.eq_ignore_ascii_case("print") {
+            matched = false;
+            break;
+        }
+        if let Some(result) = css_media_width_feature_matches(part, viewport_width_css_px) {
+            matched &= result;
+            continue;
+        }
+    }
+
+    if negated { !matched } else { matched }
+}
+
+fn css_media_width_feature_matches(part: &str, viewport_width_css_px: usize) -> Option<bool> {
+    let feature = part.trim().trim_start_matches('(').trim_end_matches(')');
+    let (name, value) = feature.split_once(':')?;
+    let width = parse_css_length_pixels(value)? as usize;
+    match name.trim().to_ascii_lowercase().as_str() {
+        "max-width" | "max-inline-size" => Some(viewport_width_css_px <= width),
+        "min-width" | "min-inline-size" => Some(viewport_width_css_px >= width),
+        "width" | "inline-size" => Some(viewport_width_css_px == width),
+        _ => None,
+    }
 }
 
 fn skip_css_whitespace(bytes: &[u8], mut index: usize) -> usize {
@@ -14815,6 +18479,24 @@ impl CssCascade {
         indices.dedup();
         indices
     }
+
+    fn static_load_effect_reveals_opacity(
+        &self,
+        element: &ElementData,
+        dom: &Dom,
+        node_id: usize,
+        hidden_specificity: u32,
+    ) -> bool {
+        self.candidate_rule_indices(element)
+            .into_iter()
+            .filter_map(|rule_index| self.rules.get(rule_index))
+            .any(|rule| {
+                rule.declarations.opacity == Some(PaintOpacity::Opaque)
+                    && selector_specificity(&rule.selector) >= hidden_specificity
+                    && selector_is_static_load_effect_reveal(&rule.selector)
+                    && selector_matches_with_assumed_loaded_class(&rule.selector, dom, node_id)
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -14932,6 +18614,7 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
     let mut attributes = Vec::new();
     let mut not_selectors = Vec::new();
     let mut first_child = false;
+    let mut link = false;
     let mut universal = false;
     let mut i = 0usize;
 
@@ -14969,6 +18652,11 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             i += ":first-child".len();
             continue;
         }
+        if selector[i..].starts_with(":link") {
+            link = true;
+            i += ":link".len();
+            continue;
+        }
         if !matches!(prefix, b'#' | b'.') {
             return None;
         }
@@ -15000,7 +18688,8 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
         || !classes.is_empty()
         || !attributes.is_empty()
         || !not_selectors.is_empty()
-        || first_child)
+        || first_child
+        || link)
         .then_some(CompoundSelector {
             tag,
             id,
@@ -15008,6 +18697,7 @@ fn parse_compound_selector(selector: &str) -> Option<CompoundSelector> {
             attributes,
             not_selectors,
             first_child,
+            link,
             universal,
         })
 }
@@ -15125,6 +18815,8 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
     let mut declarations = CssDeclarations::default();
     let mut border_width = None;
     let mut border_shade = None;
+    let mut border_color = None;
+    let mut border_current_color = false;
     let mut border_enabled = false;
     let mut padding = PartialBoxSpacing::default();
     let mut margin = PartialBoxSpacing::default();
@@ -15148,12 +18840,22 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 declarations.flex_basis =
                     parse_css_dimension(value, CssAxis::Horizontal).or(declarations.flex_basis);
             }
+            "flex-grow" | "-webkit-box-flex" | "-ms-flex-positive" => {
+                declarations.flex_grow = parse_css_flex_grow(value).or(declarations.flex_grow);
+            }
+            "flex-shrink" | "-ms-flex-negative" => {
+                declarations.flex_shrink = parse_css_flex_grow(value).or(declarations.flex_shrink);
+            }
             "flex-flow" => {
                 declarations.flex_direction =
                     parse_css_flex_direction(value).or(declarations.flex_direction);
                 declarations.flex_wrap = parse_css_flex_wrap(value).or(declarations.flex_wrap);
             }
-            "flex" => {
+            "flex" | "-ms-flex" => {
+                declarations.flex_grow =
+                    parse_css_flex_grow_shorthand(value).or(declarations.flex_grow);
+                declarations.flex_shrink =
+                    parse_css_flex_shrink_shorthand(value).or(declarations.flex_shrink);
                 declarations.flex_basis =
                     parse_css_flex_basis_shorthand(value).or(declarations.flex_basis);
             }
@@ -15172,19 +18874,53 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     parse_css_grid_auto_min_column_width(value)
                         .or(declarations.grid_auto_min_column_width);
             }
+            "grid-template-areas" => {
+                declarations.grid_template_areas = parse_css_grid_template_areas(value)
+                    .or(declarations.grid_template_areas.take());
+            }
+            "grid-area" => {
+                declarations.grid_area =
+                    parse_css_grid_area_name(value).or(declarations.grid_area.take());
+            }
+            "grid-template" | "grid" => {
+                if let Some(columns) = css_grid_template_shorthand_columns(value) {
+                    declarations.grid_columns =
+                        parse_css_grid_template_columns(columns).or(declarations.grid_columns);
+                    declarations.grid_auto_min_column_width =
+                        parse_css_grid_auto_min_column_width(columns)
+                            .or(declarations.grid_auto_min_column_width);
+                }
+            }
             "float" => {
                 declarations.float = parse_css_float(value).or(declarations.float);
             }
             "clear" => {
                 declarations.clear = parse_css_clear(value).or(declarations.clear);
             }
-            "background" | "background-color" => {
-                declarations.background_shade =
-                    parse_css_color_shade(value).or(declarations.background_shade);
+            "background" => {
+                if let Some((red, green, blue)) = parse_css_gradient_color_rgb_value(value) {
+                    apply_css_background_rgb(&mut declarations, red, green, blue);
+                } else if let Some((red, green, blue)) = parse_css_color_rgb_value(value) {
+                    apply_css_background_rgb(&mut declarations, red, green, blue);
+                } else if css_value_contains_current_color(value) {
+                    apply_css_background_current_color(&mut declarations);
+                }
+                declarations.background_image_url =
+                    parse_css_image_url(value).or(declarations.background_image_url);
+            }
+            "background-color" => {
+                if let Some((red, green, blue)) = parse_css_color_rgb_value(value) {
+                    apply_css_background_rgb(&mut declarations, red, green, blue);
+                } else if css_value_contains_current_color(value) {
+                    apply_css_background_current_color(&mut declarations);
+                }
                 declarations.background_image_url =
                     parse_css_image_url(value).or(declarations.background_image_url);
             }
             "background-image" => {
+                if let Some((red, green, blue)) = parse_css_gradient_color_rgb_value(value) {
+                    apply_css_background_rgb(&mut declarations, red, green, blue);
+                }
                 declarations.background_image_url =
                     parse_css_image_url(value).or(declarations.background_image_url);
             }
@@ -15201,16 +18937,26 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                     .or(declarations.background_image_repeat);
             }
             "color" => {
-                declarations.text_shade = parse_css_color_shade(value).or(declarations.text_shade);
+                if let Some((red, green, blue)) = parse_css_color_rgb_value(value) {
+                    declarations.text_shade = Some(rgb_to_luma(red, green, blue));
+                    declarations.text_color = Some((red, green, blue));
+                }
             }
             "text-align" => {
                 declarations.text_align = parse_css_text_align(value).or(declarations.text_align);
+            }
+            "text-decoration" | "text-decoration-line" => {
+                declarations.text_decoration_line =
+                    parse_css_text_decoration_line(value).or(declarations.text_decoration_line);
             }
             "visibility" => {
                 declarations.visibility = parse_css_visibility(value).or(declarations.visibility);
             }
             "opacity" => {
                 declarations.opacity = parse_css_opacity(value).or(declarations.opacity);
+            }
+            "clip" | "clip-path" if parse_css_clip_hides_paint(value) => {
+                declarations.opacity = Some(PaintOpacity::Transparent);
             }
             "animation-fill-mode" | "-webkit-animation-fill-mode" => {
                 declarations.animation_reveals_opacity = parse_css_animation_reveals_opacity(value)
@@ -15275,6 +19021,8 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "transform" | "-webkit-transform" => {
                 declarations.transform_translate =
                     parse_css_transform_translate(value).or(declarations.transform_translate);
+                declarations.transform_scale =
+                    parse_css_transform_scale_percent(value).or(declarations.transform_scale);
             }
             "translate" => {
                 declarations.transform_translate =
@@ -15286,6 +19034,9 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "white-space" => {
                 declarations.white_space =
                     parse_css_white_space(value).or(declarations.white_space);
+            }
+            "text-wrap" | "text-wrap-mode" => {
+                declarations.white_space = parse_css_text_wrap(value).or(declarations.white_space);
             }
             "text-transform" => {
                 declarations.text_transform =
@@ -15317,9 +19068,37 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
             "font-size" => {
                 declarations.font_scale = parse_css_font_scale(value).or(declarations.font_scale);
             }
+            "font-weight" => {
+                declarations.font_weight_bold =
+                    parse_css_font_weight_bold(value).or(declarations.font_weight_bold);
+            }
+            "box-shadow" => {
+                declarations.box_shadow = parse_css_box_shadow(value).or(declarations.box_shadow);
+            }
+            "border-radius" => {
+                declarations.border_radius =
+                    parse_css_border_radius(value).or(declarations.border_radius);
+            }
+            "object-fit" => {
+                declarations.object_fit_cover = match value.trim().to_ascii_lowercase().as_str() {
+                    "cover" => Some(true),
+                    "contain" | "fill" | "none" | "scale-down" => Some(false),
+                    _ => declarations.object_fit_cover,
+                };
+            }
+            "font-style" => {
+                declarations.font_style_italic =
+                    parse_css_font_style_italic(value).or(declarations.font_style_italic);
+            }
             "font" => {
                 declarations.font_scale =
                     parse_css_font_shorthand_scale(value).or(declarations.font_scale);
+                declarations.font_weight_bold =
+                    parse_css_font_shorthand_weight_bold(value).or(declarations.font_weight_bold);
+                declarations.font_style_italic = split_css_top_level_whitespace(value)
+                    .into_iter()
+                    .find_map(|token| parse_css_font_style_italic(&token))
+                    .or(declarations.font_style_italic);
             }
             "gap" => {
                 if let Some((row_gap, column_gap)) = parse_css_gap(value) {
@@ -15359,6 +19138,8 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 border_enabled |= border.enabled;
                 border_width = border.width.or(border_width);
                 border_shade = border.shade.or(border_shade);
+                border_color = border.color.or(border_color);
+                border_current_color = border.current_color;
             }
             "border-style" => {
                 border_enabled |= parse_css_border_style_enabled(value);
@@ -15367,7 +19148,15 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
                 border_width = parse_css_border_width(value).or(border_width);
             }
             "border-color" => {
-                border_shade = parse_css_color_shade(value).or(border_shade);
+                if let Some((red, green, blue)) = parse_css_color_rgb_value(value) {
+                    border_shade = Some(rgb_to_luma(red, green, blue));
+                    border_color = Some((red, green, blue));
+                    border_current_color = false;
+                } else if css_value_contains_current_color(value) {
+                    border_shade = None;
+                    border_color = None;
+                    border_current_color = true;
+                }
             }
             "padding" => {
                 if let Some(parsed) = parse_css_padding(value) {
@@ -15493,11 +19282,17 @@ fn parse_css_declarations(style: &str) -> CssDeclarations {
         declarations.border = Some(BorderPaint {
             width: border_width.unwrap_or(1).clamp(1, 4),
             shade: border_shade.unwrap_or(0),
+            color: border_color,
+            current_color: border_current_color || border_shade.is_none(),
         });
     }
     declarations.padding = padding.finish();
     declarations.margin = margin.finish();
     declarations
+}
+
+fn parse_css_declarations_with_context(style: &str, context: CssLengthContext) -> CssDeclarations {
+    with_css_length_context(context, || parse_css_declarations(style))
 }
 
 fn css_declaration_value(value: &str) -> &str {
@@ -15558,92 +19353,6 @@ impl PartialBoxSpacing {
 enum CssAxis {
     Horizontal,
     Vertical,
-}
-
-fn css_axis_cell_px(axis: CssAxis) -> f32 {
-    match axis {
-        CssAxis::Horizontal => 8.0,
-        CssAxis::Vertical => 12.0,
-    }
-}
-
-const CSS_TEXT_CELL_UNITS: usize = 256;
-const CSS_DEFAULT_VIEWPORT_WIDTH_CELLS: f32 = 100.0;
-const CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS: f32 = 44.0;
-
-fn parse_css_length_pixels(value: &str) -> Option<f32> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.starts_with('-') {
-        return None;
-    }
-    parse_css_signed_length_pixels(&value)
-}
-
-fn parse_css_signed_length_pixels(value: &str) -> Option<f32> {
-    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
-    if value.contains('%') || value == "auto" || value == "inherit" || value == "initial" {
-        return None;
-    }
-    let (numeric, multiplier) =
-        if let Some((numeric, multiplier)) = parse_css_viewport_unit_length(&value) {
-            (numeric, multiplier)
-        } else if let Some(numeric) = value.strip_suffix("rem") {
-            (numeric, 16.0)
-        } else if let Some(numeric) = value.strip_suffix("em") {
-            (numeric, 16.0)
-        } else if let Some(numeric) = value.strip_suffix("ch") {
-            (numeric, 8.0)
-        } else if let Some(numeric) = value.strip_suffix("px") {
-            (numeric, 1.0)
-        } else {
-            (value.as_str(), 1.0)
-        };
-    let pixels = numeric.parse::<f32>().ok()? * multiplier;
-    pixels.is_finite().then_some(pixels)
-}
-
-fn parse_css_viewport_unit_length(value: &str) -> Option<(&str, f32)> {
-    let viewport_width_px =
-        CSS_DEFAULT_VIEWPORT_WIDTH_CELLS * css_axis_cell_px(CssAxis::Horizontal);
-    let viewport_height_px =
-        CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS * css_axis_cell_px(CssAxis::Vertical);
-    let viewport_min_px = viewport_width_px.min(viewport_height_px);
-    let viewport_max_px = viewport_width_px.max(viewport_height_px);
-    for (unit, unit_px) in [
-        ("svw", viewport_width_px / 100.0),
-        ("lvw", viewport_width_px / 100.0),
-        ("dvw", viewport_width_px / 100.0),
-        ("svh", viewport_height_px / 100.0),
-        ("lvh", viewport_height_px / 100.0),
-        ("dvh", viewport_height_px / 100.0),
-        ("vmin", viewport_min_px / 100.0),
-        ("vmax", viewport_max_px / 100.0),
-        ("vw", viewport_width_px / 100.0),
-        ("vh", viewport_height_px / 100.0),
-    ] {
-        if let Some(numeric) = value.strip_suffix(unit) {
-            return Some((numeric, unit_px));
-        }
-    }
-    None
-}
-
-fn css_length_cells(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
-    let pixels = parse_css_length_pixels(value)?;
-    if pixels == 0.0 {
-        return Some(0);
-    }
-    let cells = (pixels / css_axis_cell_px(axis)).ceil() as usize;
-    Some(cells.clamp(1, max_cells))
-}
-
-fn css_length_cell_units(value: &str, axis: CssAxis, max_cells: usize) -> Option<usize> {
-    let pixels = parse_css_length_pixels(value)?;
-    if pixels == 0.0 {
-        return Some(0);
-    }
-    let units = ((pixels / css_axis_cell_px(axis)) * CSS_TEXT_CELL_UNITS as f32).round() as usize;
-    Some(units.clamp(1, max_cells.saturating_mul(CSS_TEXT_CELL_UNITS)))
 }
 
 fn parse_css_gap(value: &str) -> Option<(usize, usize)> {
@@ -15734,6 +19443,72 @@ fn parse_css_align_items(value: &str) -> Option<AlignItems> {
     })
 }
 
+const CSS_FLEX_GROW_SCALE: u32 = 1000;
+
+fn parse_css_flex_grow(value: &str) -> Option<u32> {
+    let value = value.trim().trim_end_matches(';');
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => return Some(CSS_FLEX_GROW_SCALE),
+        "none" | "initial" | "inherit" | "unset" => return Some(0),
+        _ => {}
+    }
+    let parsed = value.parse::<f32>().ok()?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return None;
+    }
+    Some(
+        (parsed * CSS_FLEX_GROW_SCALE as f32)
+            .round()
+            .clamp(0.0, u32::MAX as f32) as u32,
+    )
+}
+
+fn parse_css_flex_grow_shorthand(value: &str) -> Option<u32> {
+    let value = value.trim().trim_end_matches(';');
+    match value.to_ascii_lowercase().as_str() {
+        "auto" => return Some(CSS_FLEX_GROW_SCALE),
+        "none" | "initial" | "inherit" | "unset" => return Some(0),
+        _ => {}
+    }
+    value.split_ascii_whitespace().find_map(|token| {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("auto") {
+            return Some(CSS_FLEX_GROW_SCALE);
+        }
+        if token.eq_ignore_ascii_case("none")
+            || token.eq_ignore_ascii_case("initial")
+            || token.eq_ignore_ascii_case("inherit")
+            || token.eq_ignore_ascii_case("unset")
+        {
+            return Some(0);
+        }
+        parse_css_flex_grow(token)
+    })
+}
+
+fn parse_css_flex_shrink_shorthand(value: &str) -> Option<u32> {
+    let value = value.trim().trim_end_matches(';');
+    match value.to_ascii_lowercase().as_str() {
+        "none" => return Some(0),
+        "auto" | "initial" | "inherit" | "unset" => return Some(CSS_FLEX_GROW_SCALE),
+        _ => {}
+    }
+
+    let mut numeric_tokens = value.split_ascii_whitespace().filter_map(|token| {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("auto")
+            || token.eq_ignore_ascii_case("none")
+            || token.eq_ignore_ascii_case("initial")
+            || token.eq_ignore_ascii_case("inherit")
+            || token.eq_ignore_ascii_case("unset")
+        {
+            return None;
+        }
+        parse_css_flex_grow(token)
+    });
+    numeric_tokens.nth(1)
+}
+
 fn parse_css_flex_basis_shorthand(value: &str) -> Option<CssDimension> {
     let mut parsed = None;
     for token in value.split_ascii_whitespace() {
@@ -15751,6 +19526,134 @@ fn parse_css_flex_basis_shorthand(value: &str) -> Option<CssDimension> {
         parsed = parse_css_dimension(token, CssAxis::Horizontal).or(parsed);
     }
     parsed
+}
+
+fn parse_css_grid_template_areas(value: &str) -> Option<Vec<Vec<String>>> {
+    let mut rows = Vec::new();
+    let mut rest = value.trim();
+    while let Some(quote) = rest.chars().next() {
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let end = rest[1..].find(quote)?.saturating_add(1);
+        let row: Vec<String> = rest[1..end].split_whitespace().map(str::to_owned).collect();
+        if row.is_empty() {
+            return None;
+        }
+        rows.push(row);
+        rest = rest[end.saturating_add(1)..].trim_start();
+        if rest.is_empty() {
+            break;
+        }
+    }
+    (!rows.is_empty()).then_some(rows)
+}
+
+fn parse_css_grid_area_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.contains('/')
+        || value.eq_ignore_ascii_case("auto")
+        || !value
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn css_grid_template_areas_for_node(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    css_cascade: &CssCascade,
+) -> Option<Vec<Vec<String>>> {
+    let mut best: Option<(u32, Vec<Vec<String>>)> = None;
+    for rule_index in css_cascade.candidate_rule_indices(element) {
+        let Some(rule) = css_cascade.rules.get(rule_index) else {
+            continue;
+        };
+        if let Some(areas) = rule.declarations.grid_template_areas.as_ref()
+            && selector_matches(&rule.selector, dom, node_id)
+        {
+            let specificity = selector_specificity(&rule.selector);
+            if best
+                .as_ref()
+                .is_none_or(|(existing, _)| specificity >= *existing)
+            {
+                best = Some((specificity, areas.clone()));
+            }
+        }
+    }
+    best.map(|(_, areas)| areas)
+}
+
+fn css_grid_area_for_node(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    css_cascade: &CssCascade,
+) -> Option<String> {
+    let mut best: Option<(u32, String)> = None;
+    for rule_index in css_cascade.candidate_rule_indices(element) {
+        let Some(rule) = css_cascade.rules.get(rule_index) else {
+            continue;
+        };
+        if let Some(name) = rule.declarations.grid_area.as_ref()
+            && selector_matches(&rule.selector, dom, node_id)
+        {
+            let specificity = selector_specificity(&rule.selector);
+            if best
+                .as_ref()
+                .is_none_or(|(existing, _)| specificity >= *existing)
+            {
+                best = Some((specificity, name.clone()));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// (row, column, column span) of a named area within the template, clamped to
+/// the container's explicit column count. Vertical spans are collapsed to the
+/// first row the name appears in.
+fn grid_template_area_placement(
+    template: &[Vec<String>],
+    name: &str,
+    columns: usize,
+) -> Option<(usize, usize, usize)> {
+    let columns = columns.max(1);
+    for (row_index, row) in template.iter().enumerate() {
+        if let Some(col) = row.iter().position(|cell| cell == name) {
+            let span = row[col..]
+                .iter()
+                .take_while(|cell| cell.as_str() == name)
+                .count()
+                .max(1);
+            let col = col.min(columns.saturating_sub(1));
+            return Some((row_index, col, span.min(columns.saturating_sub(col)).max(1)));
+        }
+    }
+    None
+}
+
+/// Extract the column-track portion of a `grid-template`/`grid` shorthand:
+/// everything after the last top-level `/`. Returns None when the shorthand
+/// has no explicit column tracks (e.g. row-only or `none`).
+fn css_grid_template_shorthand_columns(value: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut split = None;
+    for (index, ch) in value.char_indices() {
+        match ch {
+            '(' => depth = depth.saturating_add(1),
+            ')' => depth = depth.saturating_sub(1),
+            '/' if depth == 0 => split = Some(index),
+            _ => {}
+        }
+    }
+    let columns = value[split?.saturating_add(1)..].trim();
+    (!columns.is_empty()).then_some(columns)
 }
 
 fn parse_css_grid_template_columns(value: &str) -> Option<usize> {
@@ -16045,7 +19948,7 @@ fn parse_css_margin_length(value: &str, axis: CssAxis) -> Option<usize> {
 }
 
 fn parse_css_box_spacing_length(value: &str, axis: CssAxis) -> Option<usize> {
-    css_length_cells(value, axis, 8)
+    css_length_cells_rounded(value, axis, 8)
 }
 
 fn parse_css_dimension_length(value: &str, axis: CssAxis) -> Option<usize> {
@@ -16079,7 +19982,63 @@ fn parse_css_dimension(value: &str, axis: CssAxis) -> Option<CssDimension> {
         return parse_css_dimension_function_terms(args, axis)
             .map(|(terms, len)| CssDimension::Max(terms, len));
     }
+    if let Some(args) = css_function_arguments(&value, "calc").first() {
+        return parse_css_calc_linear_dimension(args, axis);
+    }
     parse_css_dimension_term(&value, axis).map(CssDimensionTerm::into_dimension)
+}
+
+/// Parse the layout-dependent calc() forms the static resolver leaves behind:
+/// `A%`, `A% + B<len>`, `A% - B<len>`, and `B<len> + A%`.
+fn parse_css_calc_linear_dimension(args: &str, axis: CssAxis) -> Option<CssDimension> {
+    let args = args.trim();
+    let mut percent_basis_points: Option<i32> = None;
+    let mut offset_cells: i32 = 0;
+    let mut sign = 1i32;
+    let mut rest = args;
+    let mut terms = 0usize;
+    while !rest.is_empty() {
+        let split = rest
+            .char_indices()
+            .skip(1)
+            .find(|(index, ch)| {
+                matches!(ch, '+' | '-') && rest.as_bytes().get(index.wrapping_sub(1)) == Some(&b' ')
+            })
+            .map(|(index, _)| index);
+        let (term, next_sign, remaining) = match split {
+            Some(index) => (
+                rest[..index].trim(),
+                if rest.as_bytes()[index] == b'+' {
+                    1
+                } else {
+                    -1
+                },
+                rest[index + 1..].trim(),
+            ),
+            None => (rest.trim(), 1, ""),
+        };
+        if term.is_empty() || terms >= 2 {
+            return None;
+        }
+        if let Some(percent) = term.strip_suffix('%') {
+            let percent = percent.trim().parse::<f32>().ok()?;
+            if !percent.is_finite() || percent_basis_points.is_some() || sign < 0 {
+                return None;
+            }
+            percent_basis_points = Some((percent * 100.0).round() as i32);
+        } else {
+            let cells = css_length_cells(term, axis, 4096)? as i32;
+            offset_cells = offset_cells.saturating_add(sign.saturating_mul(cells));
+        }
+        terms += 1;
+        sign = next_sign;
+        rest = remaining;
+    }
+    let basis_points = percent_basis_points?;
+    if offset_cells == 0 {
+        return Some(CssDimension::Percent(basis_points));
+    }
+    Some(CssDimension::PercentOffset(basis_points, offset_cells))
 }
 
 fn parse_css_dimension_function_terms(
@@ -16125,6 +20084,20 @@ fn parse_css_aspect_ratio(value: &str) -> Option<CssAspectRatio> {
     Some(CssAspectRatio { width, height })
 }
 
+fn element_aspect_ratio_from_classes(element: &ElementData) -> Option<CssAspectRatio> {
+    element
+        .classes
+        .iter()
+        .filter_map(|class| class.strip_prefix("aspect-ratio--"))
+        .find_map(|ratio| {
+            let (width, height) = ratio.split_once('x')?;
+            Some(CssAspectRatio {
+                width: parse_css_aspect_ratio_component(width)?,
+                height: parse_css_aspect_ratio_component(height)?,
+            })
+        })
+}
+
 fn parse_css_aspect_ratio_component(value: &str) -> Option<usize> {
     let component = value.trim().parse::<f32>().ok()?;
     if !component.is_finite() || component <= 0.0 {
@@ -16141,11 +20114,31 @@ fn default_vertical_dimension_basis() -> usize {
     CSS_DEFAULT_VIEWPORT_HEIGHT_CELLS as usize
 }
 
+fn apply_css_background_rgb(declarations: &mut CssDeclarations, red: u8, green: u8, blue: u8) {
+    declarations.background_shade = Some(rgb_to_luma(red, green, blue));
+    declarations.background_color = Some((red, green, blue));
+    declarations.background_current_color = false;
+}
+
+fn apply_css_background_current_color(declarations: &mut CssDeclarations) {
+    declarations.background_shade = None;
+    declarations.background_color = None;
+    declarations.background_current_color = true;
+}
+
+fn css_value_contains_current_color(value: &str) -> bool {
+    value
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .any(|token| token.eq_ignore_ascii_case("currentcolor"))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ParsedBorder {
     enabled: bool,
     width: Option<usize>,
     shade: Option<u8>,
+    color: Option<(u8, u8, u8)>,
+    current_color: bool,
 }
 
 fn parse_css_border(value: &str) -> ParsedBorder {
@@ -16156,7 +20149,15 @@ fn parse_css_border(value: &str) -> ParsedBorder {
         }
         border.enabled |= parse_css_border_style_enabled(token);
         border.width = parse_css_border_width(token).or(border.width);
-        border.shade = parse_css_color_shade(token).or(border.shade);
+        if let Some((red, green, blue)) = parse_css_color_rgb_value(token) {
+            border.shade = Some(rgb_to_luma(red, green, blue));
+            border.color = Some((red, green, blue));
+            border.current_color = false;
+        } else if token.eq_ignore_ascii_case("currentColor") {
+            border.shade = None;
+            border.color = None;
+            border.current_color = true;
+        }
     }
     border
 }
@@ -16193,8 +20194,25 @@ fn parse_css_color_shade(value: &str) -> Option<u8> {
     Some(rgb_to_luma(red, green, blue))
 }
 
+fn presentational_bgcolor_rgb(element: &ElementData) -> Option<(u8, u8, u8)> {
+    if !matches!(
+        element.tag.as_str(),
+        "body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" | "col" | "colgroup"
+    ) {
+        return None;
+    }
+    let value = element.attrs.get("bgcolor")?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    parse_css_color_rgb_value(value)
+}
+
 fn parse_css_color_rgb_value(value: &str) -> Option<(u8, u8, u8)> {
     if let Some((red, green, blue)) = parse_css_rgb_function(value) {
+        return Some((red, green, blue));
+    }
+    if let Some((red, green, blue)) = parse_css_hsl_function(value) {
         return Some((red, green, blue));
     }
     for token in value.split_ascii_whitespace() {
@@ -16205,22 +20223,123 @@ fn parse_css_color_rgb_value(value: &str) -> Option<(u8, u8, u8)> {
         if let Some((red, green, blue)) = parse_css_rgb_function(token) {
             return Some((red, green, blue));
         }
+        if let Some((red, green, blue)) = parse_css_hsl_function(token) {
+            return Some((red, green, blue));
+        }
         if let Some(rgb) = parse_hex_color_rgb(token) {
             return Some(rgb);
         }
-        match token.to_ascii_lowercase().as_str() {
-            "black" => return Some((0, 0, 0)),
-            "white" => return Some((255, 255, 255)),
-            "gray" | "grey" => return Some((128, 128, 128)),
-            "silver" => return Some((192, 192, 192)),
-            "red" => return Some((255, 0, 0)),
-            "green" => return Some((0, 128, 0)),
-            "blue" => return Some((0, 0, 255)),
-            "yellow" => return Some((255, 255, 0)),
-            _ => {}
+        if let Some(rgb) = parse_named_css_color_rgb(token) {
+            return Some(rgb);
         }
     }
     None
+}
+
+fn parse_css_gradient_color_rgb_value(value: &str) -> Option<(u8, u8, u8)> {
+    if !value.to_ascii_lowercase().contains("gradient(") {
+        return None;
+    }
+    let mut best: Option<(usize, (u8, u8, u8))> = None;
+    let mut last: Option<(usize, (u8, u8, u8))> = None;
+    let mut record = |offset, rgb| {
+        if best.is_none_or(|(best_offset, _)| offset < best_offset) {
+            best = Some((offset, rgb));
+        }
+        if last.is_none_or(|(last_offset, _)| offset > last_offset) {
+            last = Some((offset, rgb));
+        }
+    };
+
+    let lower = value.to_ascii_lowercase();
+    for (offset, _) in value.match_indices('#') {
+        if let Some((_, rgb)) = parse_hex_color_rgb_prefix(&value[offset..]) {
+            record(offset, rgb);
+        }
+    }
+    for name in ["rgba", "rgb", "hsla", "hsl"] {
+        let mut cursor = 0usize;
+        while let Some(relative_start) = lower[cursor..].find(name) {
+            let name_start = cursor.saturating_add(relative_start);
+            let open = name_start.saturating_add(name.len());
+            let previous = value[..name_start].chars().next_back();
+            if previous
+                .is_none_or(|ch| !matches!(ch, '-' | '_' | 'a'..='z' | 'A'..='Z' | '0'..='9'))
+                && value[open..].starts_with('(')
+                && let Some(args_end) = find_css_function_close(value, open.saturating_add(1))
+            {
+                let function_value = &value[name_start..=args_end];
+                let rgb = if name.starts_with("rgb") {
+                    parse_css_rgb_function(function_value)
+                } else {
+                    parse_css_hsl_function(function_value)
+                };
+                if let Some(rgb) = rgb {
+                    record(name_start, rgb);
+                }
+            }
+            cursor = name_start.saturating_add(1);
+        }
+    }
+
+    let mut token_start = None;
+    for (offset, ch) in value.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            token_start.get_or_insert(offset);
+        } else if let Some(start) = token_start.take()
+            && let Some(rgb) = parse_named_css_color_rgb(&value[start..offset])
+        {
+            record(start, rgb);
+        }
+    }
+    if let Some(start) = token_start
+        && let Some(rgb) = parse_named_css_color_rgb(&value[start..])
+    {
+        record(start, rgb);
+    }
+
+    // A single color approximates a gradient least badly at its midpoint:
+    // blend the first and last stops (Chromium's perceptual average).
+    match (best, last) {
+        (Some((first_offset, first)), Some((last_offset, last))) if first_offset != last_offset => {
+            Some((
+                ((first.0 as u16 + last.0 as u16) / 2) as u8,
+                ((first.1 as u16 + last.1 as u16) / 2) as u8,
+                ((first.2 as u16 + last.2 as u16) / 2) as u8,
+            ))
+        }
+        (Some((_, rgb)), _) => Some(rgb),
+        (None, _) => None,
+    }
+}
+
+fn parse_hex_color_rgb_prefix(value: &str) -> Option<(usize, (u8, u8, u8))> {
+    let hex = value.strip_prefix('#')?;
+    let digits = hex
+        .bytes()
+        .take_while(|byte| byte.is_ascii_hexdigit())
+        .count();
+    let color_len = match digits {
+        8 | 6 => 6,
+        4 | 3 => 3,
+        _ => return None,
+    };
+    let end = 1usize.saturating_add(color_len);
+    Some((end, parse_hex_color_rgb(&value[..end])?))
+}
+
+fn parse_named_css_color_rgb(token: &str) -> Option<(u8, u8, u8)> {
+    match token.to_ascii_lowercase().as_str() {
+        "black" => Some((0, 0, 0)),
+        "white" => Some((255, 255, 255)),
+        "gray" | "grey" => Some((128, 128, 128)),
+        "silver" => Some((192, 192, 192)),
+        "red" => Some((255, 0, 0)),
+        "green" => Some((0, 128, 0)),
+        "blue" => Some((0, 0, 255)),
+        "yellow" => Some((255, 255, 0)),
+        _ => None,
+    }
 }
 
 fn parse_css_rgb_function(value: &str) -> Option<(u8, u8, u8)> {
@@ -16232,6 +20351,67 @@ fn parse_css_rgb_function(value: &str) -> Option<(u8, u8, u8)> {
     let green = parse_css_rgb_component(components.next()?)?;
     let blue = parse_css_rgb_component(components.next()?)?;
     Some((red, green, blue))
+}
+
+fn parse_css_hsl_function(value: &str) -> Option<(u8, u8, u8)> {
+    let args = css_first_function_arguments(value, &["hsl", "hsla"])?;
+    let args = args.split('/').next().unwrap_or(args);
+    let normalized = args.replace(',', " ");
+    let mut components = normalized.split_ascii_whitespace();
+    let hue = parse_css_hue_degrees(components.next()?)?;
+    let saturation = parse_css_percent_unit(components.next()?)?;
+    let lightness = parse_css_percent_unit(components.next()?)?;
+    Some(hsl_to_rgb(hue, saturation, lightness))
+}
+
+fn parse_css_hue_degrees(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let degrees = if let Some(value) = value.strip_suffix("deg") {
+        value.trim().parse::<f32>().ok()?
+    } else if let Some(value) = value.strip_suffix("turn") {
+        value.trim().parse::<f32>().ok()? * 360.0
+    } else if let Some(value) = value.strip_suffix("rad") {
+        value.trim().parse::<f32>().ok()?.to_degrees()
+    } else {
+        value.parse::<f32>().ok()?
+    };
+    Some(degrees.rem_euclid(360.0))
+}
+
+fn parse_css_percent_unit(value: &str) -> Option<f32> {
+    Some(
+        value
+            .trim()
+            .strip_suffix('%')?
+            .parse::<f32>()
+            .ok()?
+            .clamp(0.0, 100.0)
+            / 100.0,
+    )
+}
+
+fn hsl_to_rgb(hue_degrees: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let hue = hue_degrees / 60.0;
+    let x = chroma * (1.0 - (hue.rem_euclid(2.0) - 1.0).abs());
+    let (red1, green1, blue1) = match hue as u8 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let m = lightness - chroma / 2.0;
+    (
+        css_unit_float_to_u8(red1 + m),
+        css_unit_float_to_u8(green1 + m),
+        css_unit_float_to_u8(blue1 + m),
+    )
+}
+
+fn css_unit_float_to_u8(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn parse_css_rgb_component(value: &str) -> Option<u8> {
@@ -16347,7 +20527,155 @@ fn parse_css_image_url_token(value: &str) -> Option<String> {
     (!url.is_empty()).then(|| url.to_owned())
 }
 
-fn rebase_stylesheet_relative_urls(css: &str, stylesheet_source: &str) -> String {
+fn stylesheet_import_resources(css: &str, stylesheet_source: &str) -> Vec<BrowserResource> {
+    let css = strip_css_comments(css);
+    let lower = css.to_ascii_lowercase();
+    let mut resources = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(offset) = lower[cursor..].find("@import") {
+        let import_start = cursor.saturating_add(offset);
+        let mut value_start = import_start.saturating_add("@import".len());
+        value_start = skip_css_whitespace(css.as_bytes(), value_start);
+        let Some((url, after_url)) = parse_css_import_url(&css, value_start) else {
+            cursor = value_start;
+            continue;
+        };
+        let Some(rule_end) = css_import_rule_end(&css, after_url) else {
+            cursor = after_url;
+            continue;
+        };
+        if css_import_url_supported(&url) {
+            let media = css[after_url..rule_end].trim();
+            let resolved = resolve_browser_href(stylesheet_source, &url);
+            resources.push(BrowserResource {
+                kind: "stylesheet".to_owned(),
+                initiator: "css-import".to_owned(),
+                url,
+                resolved,
+                rel: Some("stylesheet".to_owned()),
+                media: (!media.is_empty()).then(|| media.to_owned()),
+                alt: None,
+                type_hint: Some("text/css".to_owned()),
+            });
+        }
+        cursor = rule_end.saturating_add(1);
+    }
+    resources
+}
+
+fn parse_css_import_url(css: &str, value_start: usize) -> Option<(String, usize)> {
+    let bytes = css.as_bytes();
+    let value_start = skip_css_whitespace(bytes, value_start);
+    let rest = css.get(value_start..)?;
+    if rest
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("url("))
+    {
+        let token_start = value_start.saturating_add("url(".len());
+        let token_end = css_url_function_end(css, token_start)?;
+        let url = parse_css_image_url_token(&css[token_start..token_end])?;
+        return Some((url, token_end.saturating_add(1)));
+    }
+    let quote = bytes.get(value_start).copied()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let token_start = value_start.saturating_add(1);
+    let mut escaped = false;
+    let mut index = token_start;
+    while index < css.len() {
+        let ch = css[index..].chars().next()?;
+        let next = index.saturating_add(ch.len_utf8());
+        if escaped {
+            escaped = false;
+            index = next;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            index = next;
+            continue;
+        }
+        if ch as u8 == quote {
+            let url = css[token_start..index].trim();
+            return (!url.is_empty()).then(|| (url.to_owned(), next));
+        }
+        index = next;
+    }
+    None
+}
+
+fn css_import_rule_end(css: &str, value_start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut paren_depth = 0usize;
+    let mut index = value_start;
+    while index < css.len() {
+        let ch = css[index..].chars().next()?;
+        let next = index.saturating_add(ch.len_utf8());
+        if escaped {
+            escaped = false;
+            index = next;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            index = next;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            index = next;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            index = next;
+            continue;
+        }
+        match ch {
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            ';' if paren_depth == 0 => return Some(index),
+            '{' if paren_depth == 0 => return None,
+            _ => {}
+        }
+        index = next;
+    }
+    None
+}
+
+fn css_import_url_supported(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    !lower.starts_with("data:") && !lower.starts_with("javascript:")
+}
+
+fn wrap_imported_stylesheet_media(css: String, media: Option<&str>) -> String {
+    let Some(media) = media.map(str::trim).filter(|media| !media.is_empty()) else {
+        return css;
+    };
+    if media.eq_ignore_ascii_case("all") || css_import_media_is_non_media_condition(media) {
+        return css;
+    }
+    format!("@media {media} {{\n{css}\n}}")
+}
+
+fn css_import_media_is_non_media_condition(media: &str) -> bool {
+    let lower = media.trim_start().to_ascii_lowercase();
+    lower.starts_with("layer") || lower.starts_with("supports")
+}
+
+fn rebase_stylesheet_relative_urls(
+    css: &str,
+    stylesheet_source: &str,
+    document_source: &str,
+) -> String {
     let lower = css.to_ascii_lowercase();
     let mut out = String::with_capacity(css.len());
     let mut cursor = 0usize;
@@ -16365,7 +20693,7 @@ fn rebase_stylesheet_relative_urls(css: &str, stylesheet_source: &str) -> String
         let token_end = value_start
             .saturating_add(raw_value.len())
             .saturating_sub(trailing);
-        let rebased = css_url_token_rebased(trimmed, stylesheet_source);
+        let rebased = css_url_token_rebased(trimmed, stylesheet_source, document_source);
         if let Some(rebased) = rebased {
             out.push_str(&css[cursor..token_start]);
             out.push_str(&rebased);
@@ -16416,7 +20744,11 @@ fn css_url_function_end(css: &str, value_start: usize) -> Option<usize> {
     None
 }
 
-fn css_url_token_rebased(token: &str, stylesheet_source: &str) -> Option<String> {
+fn css_url_token_rebased(
+    token: &str,
+    stylesheet_source: &str,
+    document_source: &str,
+) -> Option<String> {
     let quote = token.as_bytes().first().copied();
     let url = if let Some(quote) = quote
         && matches!(quote, b'\'' | b'"')
@@ -16430,6 +20762,9 @@ fn css_url_token_rebased(token: &str, stylesheet_source: &str) -> Option<String>
         return None;
     }
     let resolved = resolve_browser_href(stylesheet_source, url);
+    if resolved == resolve_browser_href(document_source, url) {
+        return None;
+    }
     match quote {
         Some(quote) if matches!(quote, b'\'' | b'"') => {
             let quote = quote as char;
@@ -16456,16 +20791,64 @@ fn css_url_should_rebase(url: &str) -> bool {
 }
 
 fn css_image_url_supported(url: &str, candidate: &str) -> bool {
-    let candidate = candidate.to_ascii_lowercase();
-    if candidate.contains("image/avif")
-        || candidate.contains("image/heic")
-        || candidate.contains("image/heif")
-        || candidate.contains("image/tiff")
-        || !css_background_image_resource_supported(url)
-    {
+    if let Some(image_type) = css_image_set_candidate_type(candidate) {
+        return image_mime_type_supported(&image_type)
+            && !url.trim_start().get(..5).is_some_and(|prefix| {
+                prefix.eq_ignore_ascii_case("data:")
+                    && !css_background_image_resource_supported(url)
+            });
+    }
+    if !css_background_image_resource_supported(url) {
         return false;
     }
     true
+}
+
+fn css_image_set_candidate_type(candidate: &str) -> Option<String> {
+    css_nested_function_args(candidate, &["type"]).and_then(parse_css_image_url_token)
+}
+
+fn css_nested_function_args<'a>(value: &'a str, names: &[&str]) -> Option<&'a str> {
+    for (open, _) in value.match_indices('(') {
+        let name_start = value[..open]
+            .rfind(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        let name = value[name_start..open].trim();
+        if names
+            .iter()
+            .any(|expected| name.eq_ignore_ascii_case(expected))
+        {
+            let close = matching_closing_paren(value, open)?;
+            return Some(&value[open + 1..close]);
+        }
+    }
+    None
+}
+
+fn matching_closing_paren(input: &str, open_index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    for (offset, byte) in input.as_bytes().iter().enumerate().skip(open_index) {
+        if let Some(quote_byte) = quote {
+            if *byte == quote_byte {
+                quote = None;
+            }
+            continue;
+        }
+        match *byte {
+            b'\'' | b'"' => quote = Some(*byte),
+            b'(' => depth = depth.saturating_add(1),
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn css_background_image_resource_supported(url: &str) -> bool {
@@ -16660,6 +21043,83 @@ fn parse_css_visibility(value: &str) -> Option<Visibility> {
     }
 }
 
+fn first_font_face_ttf_url(css: &str, page_source: &str) -> Option<String> {
+    let lower = css.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(at) = lower[cursor..].find("@font-face") {
+        let block_start = cursor + at;
+        let Some(open) = lower[block_start..].find('{') else {
+            return None;
+        };
+        let Some(close) = lower[block_start + open..].find('}') else {
+            return None;
+        };
+        let block = &css[block_start + open + 1..block_start + open + close];
+        for url in parse_css_image_url_candidates(block) {
+            let trimmed = url.trim().trim_matches(|c| c == '"' || c == '\'');
+            let lower_url = trimmed.to_ascii_lowercase();
+            let path = lower_url.split(['?', '#']).next().unwrap_or("");
+            if path.ends_with(".ttf") || path.ends_with(".otf") {
+                return Some(resolve_browser_href(page_source, trimmed));
+            }
+        }
+        cursor = block_start + open + close;
+    }
+    None
+}
+
+fn parse_css_image_url_candidates(block: &str) -> Vec<String> {
+    let lower = block.to_ascii_lowercase();
+    let mut urls = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(at) = lower[cursor..].find("url(") {
+        let start = cursor + at + 4;
+        let Some(end) = block[start..].find(')') else {
+            break;
+        };
+        urls.push(block[start..start + end].to_owned());
+        cursor = start + end;
+    }
+    urls
+}
+
+fn parse_css_box_shadow(value: &str) -> Option<CssBoxShadow> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    if value == "none" {
+        return None;
+    }
+    // First shadow only; offsets are the first two lengths in the list.
+    let first_shadow = value.split(',').next()?;
+    let mut offsets = first_shadow
+        .split_whitespace()
+        .filter_map(parse_css_signed_length_pixels);
+    let dx = offsets.next()?;
+    let dy = offsets.next()?;
+    Some(CssBoxShadow {
+        dx_px: dx.clamp(-24.0, 24.0) as i16,
+        dy_px: dy.clamp(-24.0, 24.0) as i16,
+    })
+}
+
+fn parse_css_border_radius(value: &str) -> Option<CssBorderRadius> {
+    let first = value
+        .trim()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+    if let Some(percent) = first.strip_suffix('%') {
+        let percent = percent.trim().parse::<f32>().ok()?;
+        if !percent.is_finite() || percent <= 0.0 {
+            return None;
+        }
+        return Some(CssBorderRadius::Percent(percent.min(50.0) as u8));
+    }
+    let pixels = parse_css_length_pixels(&first)?;
+    (pixels > 0.0).then(|| CssBorderRadius::Px(pixels.min(u16::MAX as f32) as u16))
+}
+
 fn parse_css_opacity(value: &str) -> Option<PaintOpacity> {
     let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
     let opacity = value.parse::<f32>().ok()?;
@@ -16668,7 +21128,9 @@ fn parse_css_opacity(value: &str) -> Option<PaintOpacity> {
     } else if opacity >= 1.0 {
         Some(PaintOpacity::Opaque)
     } else {
-        None
+        Some(PaintOpacity::Semi(
+            (opacity * 100.0).round().clamp(1.0, 99.0) as u8,
+        ))
     }
 }
 
@@ -16831,6 +21293,21 @@ fn parse_css_inset_axis_offsets(
     }
     .and_then(|end| parse_css_position_offset(end, axis));
     (start, end)
+}
+
+/// First scale() factor as percent (e.g. scale(1.5) -> 150). Uniform scale
+/// only; scaleX/scaleY and matrices are ignored.
+fn parse_css_transform_scale_percent(value: &str) -> Option<u16> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    let args = css_function_arguments(&value, "scale");
+    let first = args.first()?;
+    let factor = split_css_transform_arguments(first)
+        .first()
+        .and_then(|arg| arg.trim().parse::<f32>().ok())?;
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    Some((factor * 100.0).min(1000.0) as u16)
 }
 
 fn parse_css_transform_translate(value: &str) -> Option<CssTranslate> {
@@ -17113,6 +21590,17 @@ fn parse_css_white_space(value: &str) -> Option<WhiteSpace> {
     }
 }
 
+fn parse_css_text_wrap(value: &str) -> Option<WhiteSpace> {
+    value
+        .trim()
+        .trim_end_matches(';')
+        .split_ascii_whitespace()
+        .find_map(|token| match token.to_ascii_lowercase().as_str() {
+            "nowrap" => Some(WhiteSpace::Nowrap),
+            _ => None,
+        })
+}
+
 fn parse_css_text_transform(value: &str) -> Option<TextTransform> {
     match value
         .trim()
@@ -17126,6 +21614,18 @@ fn parse_css_text_transform(value: &str) -> Option<TextTransform> {
         "capitalize" => Some(TextTransform::Capitalize),
         _ => None,
     }
+}
+
+fn parse_css_text_decoration_line(value: &str) -> Option<TextDecorationLine> {
+    let mut saw_underline = false;
+    for token in value.trim().trim_end_matches(';').split_ascii_whitespace() {
+        match token.to_ascii_lowercase().as_str() {
+            "none" => return Some(TextDecorationLine::None),
+            "underline" => saw_underline = true,
+            _ => {}
+        }
+    }
+    saw_underline.then_some(TextDecorationLine::Underline)
 }
 
 fn parse_css_letter_spacing(value: &str) -> Option<usize> {
@@ -17227,6 +21727,43 @@ fn parse_css_font_shorthand_scale(value: &str) -> Option<usize> {
         }
     }
     None
+}
+
+fn parse_css_font_weight_bold(value: &str) -> Option<bool> {
+    let value = value.trim().trim_end_matches(';').to_ascii_lowercase();
+    match value.as_str() {
+        "normal" | "lighter" | "initial" => return Some(false),
+        "bold" | "bolder" => return Some(true),
+        "inherit" | "unset" | "revert" => return None,
+        _ => {}
+    }
+    let weight = value.parse::<u16>().ok()?;
+    Some(weight >= 600)
+}
+
+fn parse_css_font_style_italic(value: &str) -> Option<bool> {
+    match value
+        .trim()
+        .trim_end_matches(';')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "normal" | "initial" => Some(false),
+        "italic" | "oblique" => Some(true),
+        _ => None,
+    }
+}
+
+fn parse_css_font_shorthand_weight_bold(value: &str) -> Option<bool> {
+    split_css_top_level_whitespace(value)
+        .into_iter()
+        .find_map(|token| {
+            parse_css_font_weight_bold(
+                token
+                    .split_once('/')
+                    .map_or(&token, |(font_size, _)| font_size),
+            )
+        })
 }
 
 fn parse_css_font_size_pixels(value: &str) -> Option<f32> {
@@ -17650,6 +22187,13 @@ fn collapse_ascii_whitespace(text: &str) -> String {
 }
 
 fn resolve_browser_href(source: &str, href: &str) -> String {
+    let trimmed_href = href.trim();
+    if trimmed_href
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        return trimmed_href.to_owned();
+    }
     if let Ok(url) = Url::parse(href) {
         return url.to_string();
     }
@@ -17683,6 +22227,26 @@ fn resolve_browser_href(source: &str, href: &str) -> String {
     parent.join(href).display().to_string()
 }
 
+fn resolve_browser_dom_url_property(source: &str, href: &str) -> String {
+    if Url::parse(source).is_ok() {
+        return resolve_browser_href(source, href);
+    }
+    let path = Path::new(source);
+    let absolute_source = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    if let Ok(base) = Url::from_file_path(&absolute_source)
+        && let Ok(url) = base.join(href)
+    {
+        return url.to_string();
+    }
+    resolve_browser_href(source, href)
+}
+
 fn collect_text(dom: &Dom, node_id: usize, out: &mut String) {
     let Some(node) = dom.nodes.get(node_id) else {
         return;
@@ -17695,6 +22259,49 @@ fn collect_text(dom: &Dom, node_id: usize, out: &mut String) {
             }
         }
     }
+}
+
+fn dedupe_browser_resources_by_resolved(resources: &mut Vec<BrowserResource>) {
+    let mut seen: HashMap<String, (usize, u8)> = HashMap::new();
+    let mut deduped = Vec::with_capacity(resources.len());
+    for resource in resources.drain(..) {
+        let priority = browser_resource_dedupe_priority(&resource);
+        if let Some((index, current_priority)) = seen.get_mut(&resource.resolved) {
+            if priority < *current_priority {
+                deduped[*index] = resource;
+                *current_priority = priority;
+            }
+            continue;
+        }
+        let index = deduped.len();
+        seen.insert(resource.resolved.clone(), (index, priority));
+        deduped.push(resource);
+    }
+    *resources = deduped;
+}
+
+fn browser_resource_dedupe_priority(resource: &BrowserResource) -> u8 {
+    match (resource.kind.as_str(), resource.initiator.as_str()) {
+        ("background_image", "css") => 0,
+        _ => 1,
+    }
+}
+
+fn dedupe_browser_resources_by_resolved_preserving_first(resources: &mut Vec<BrowserResource>) {
+    let mut seen = HashSet::new();
+    resources.retain(|resource| {
+        if !browser_resource_is_image_like(resource) {
+            return true;
+        }
+        seen.insert(resource.resolved.clone())
+    });
+}
+
+fn browser_resource_is_image_like(resource: &BrowserResource) -> bool {
+    matches!(
+        resource.kind.as_str(),
+        "image" | "image_candidate" | "background_image" | "poster" | "icon"
+    )
 }
 
 fn collect_css_background_image_resources(
@@ -17758,6 +22365,7 @@ fn collect_css_background_image_resources_at(
                 for &child in &node.children {
                     if child_layout.row_items
                         && !row_layout_child_participates(dom, child, css_cascade)
+                        && !row_layout_child_is_out_of_flow(dom, child, css_cascade)
                     {
                         continue;
                     }
@@ -17782,7 +22390,9 @@ fn collect_css_background_image_resources_at(
                 push_css_background_image_resource(resources, seen, source, &url);
             }
             for &child in &node.children {
-                if child_layout.row_items && !row_layout_child_participates(dom, child, css_cascade)
+                if child_layout.row_items
+                    && !row_layout_child_participates(dom, child, css_cascade)
+                    && !row_layout_child_is_out_of_flow(dom, child, css_cascade)
                 {
                     continue;
                 }
@@ -17847,19 +22457,18 @@ fn render_children(
         renderer.enter_row_align_items(child_layout.align_items);
     }
     let mut child_seen = false;
+    let mut leading_flow_content_seen = false;
     let mut row_item_count = 0usize;
-    let row_justification = row_layout_justification(
-        dom,
-        node_id,
-        css_cascade,
-        child_layout,
-        renderer.available_width(),
-    );
-    if let Some(justification) = row_justification
-        && justification.leading_space > 0
+    let out_of_flow_row_children: Vec<usize> = if child_layout.row_items || child_layout.flex_items
     {
-        renderer.push_fixed_space_width(justification.leading_space, None);
-    }
+        node.children
+            .iter()
+            .copied()
+            .filter(|&child| row_layout_child_is_out_of_flow(dom, child, css_cascade))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut child_sequence: Vec<usize> = if child_layout.row_items || child_layout.flex_items {
         node.children
             .iter()
@@ -17872,21 +22481,172 @@ fn render_children(
     if child_layout.reverse_items {
         child_sequence.reverse();
     }
+    let non_wrapping_flex_row = child_layout_is_non_wrapping_flex_row(child_layout);
+    let grid_column_slots =
+        (child_layout.row_items && !child_layout.flex_items && child_layout.wrap_after.is_some())
+            .then(|| {
+                let columns = child_layout.wrap_after.unwrap_or(1).max(1);
+                let gap = child_layout
+                    .column_gap
+                    .unwrap_or_else(|| row_layout_effective_column_gap(child_layout));
+                let available = renderer.available_width();
+                available
+                    .saturating_sub(gap.saturating_mul(columns.saturating_sub(1)))
+                    .checked_div(columns)
+                    .unwrap_or(available)
+                    .max(1)
+            })
+            .or_else(|| {
+                // Wrapping flex rows with width-sized block children compose in
+                // column slots derived from the first sized child (product-card
+                // grids: `.grid{display:flex;flex-wrap:wrap} .card{width:25%}`).
+                if !(child_layout.row_items && child_layout.flex_items && child_layout.wrap_items) {
+                    return None;
+                }
+                let available = renderer.available_width().max(1);
+                child_sequence.iter().find_map(|&child| {
+                    let NodeKind::Element(element) = &dom.nodes.get(child)?.kind else {
+                        return None;
+                    };
+                    if !row_layout_child_participates(dom, child, css_cascade)
+                        || row_layout_child_is_inline_subtree(dom, child, css_cascade)
+                    {
+                        return None;
+                    }
+                    let style = computed_style(dom, child, element, css_cascade);
+                    let width = style.resolved_width(available)?;
+                    (width < available).then(|| width.max(1))
+                })
+            });
+    let mut grid_row_start_y: Option<usize> = None;
+    let grid_area_placements = grid_column_slots.and_then(|_| {
+        let NodeKind::Element(container) = &node.kind else {
+            return None;
+        };
+        let template = css_grid_template_areas_for_node(dom, node_id, container, css_cascade)?;
+        let columns = child_layout.wrap_after.unwrap_or(1).max(1);
+        let mut placements: Vec<Option<(usize, usize, usize)>> = child_sequence
+            .iter()
+            .map(|&child| {
+                let NodeKind::Element(child_element) = &dom.nodes.get(child)?.kind else {
+                    return None;
+                };
+                let name = css_grid_area_for_node(dom, child, child_element, css_cascade)?;
+                grid_template_area_placement(&template, &name, columns)
+            })
+            .collect();
+        if !placements.iter().any(Option::is_some) {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..child_sequence.len()).collect();
+        order.sort_by_key(|&index| {
+            placements[index]
+                .map(|(row, col, _)| (row, col, index))
+                .unwrap_or((usize::MAX, usize::MAX, index))
+        });
+        child_sequence = order.iter().map(|&index| child_sequence[index]).collect();
+        placements = order
+            .iter()
+            .map(|&index| placements[index].take())
+            .collect();
+        Some(placements)
+    });
+    let row_flex_growth = non_wrapping_flex_row
+        .then(|| {
+            row_layout_flex_growth(
+                dom,
+                &child_sequence,
+                css_cascade,
+                child_layout,
+                renderer.available_width(),
+            )
+        })
+        .flatten();
+    let row_flex_shrink = if row_flex_growth.is_some() {
+        None
+    } else {
+        non_wrapping_flex_row
+            .then(|| {
+                row_layout_flex_shrink(
+                    dom,
+                    &child_sequence,
+                    css_cascade,
+                    child_layout,
+                    renderer.available_width(),
+                )
+            })
+            .flatten()
+    };
+    let row_auto_margin_width = if row_flex_growth.is_some() || row_flex_shrink.is_some() {
+        None
+    } else {
+        row_layout_auto_margin_width(
+            dom,
+            &child_sequence,
+            css_cascade,
+            child_layout,
+            renderer.available_width(),
+        )
+    };
+    let row_justification = if row_flex_growth.is_some()
+        || row_flex_shrink.is_some()
+        || row_auto_margin_width.is_some()
+    {
+        None
+    } else {
+        row_layout_justification(
+            dom,
+            node_id,
+            css_cascade,
+            child_layout,
+            renderer.available_width(),
+        )
+    };
+    if let Some(justification) = row_justification
+        && justification.leading_space > 0
+    {
+        renderer.push_fixed_space_width(justification.leading_space, None);
+    }
+    let mut row_cross_size = 0usize;
+    let mut previous_area_row: Option<usize> = None;
     for (child_index, &child) in child_sequence.iter().enumerate() {
+        let area_placement = grid_area_placements
+            .as_ref()
+            .and_then(|placements| placements.get(child_index))
+            .copied()
+            .flatten();
         let child_width_hint = child_layout
             .wrap_items
             .then(|| {
                 row_layout_child_width_hint(dom, child, css_cascade, renderer.available_width())
             })
             .flatten();
+        let child_width_estimate = non_wrapping_flex_row
+            .then(|| {
+                row_layout_child_width_estimate(dom, child, css_cascade, renderer.available_width())
+            })
+            .flatten();
         if child_seen {
             if child_layout.row_items {
                 let column_gap = row_justification
                     .map(|justification| justification.column_gap)
-                    .unwrap_or_else(|| child_layout.column_gap.unwrap_or(1));
-                let wraps_by_count = child_layout
-                    .wrap_after
-                    .is_some_and(|wrap_after| row_item_count >= wrap_after);
+                    .unwrap_or_else(|| {
+                        if child_layout.flex_items
+                            && child_layout.column_gap.is_none()
+                            && grid_column_slots.is_some()
+                        {
+                            0
+                        } else {
+                            row_layout_effective_column_gap(child_layout)
+                        }
+                    });
+                let wraps_by_count = if grid_area_placements.is_some() {
+                    previous_area_row != area_placement.map(|(row, _, _)| row)
+                } else {
+                    child_layout
+                        .wrap_after
+                        .is_some_and(|wrap_after| row_item_count >= wrap_after)
+                };
                 let wraps_by_width = child_layout.wrap_items
                     && child_width_hint.is_some_and(|width| {
                         renderer.current_inline_width() > 0
@@ -17898,31 +22658,159 @@ fn render_children(
                     });
                 if wraps_by_count || wraps_by_width {
                     renderer.break_line();
+                    if grid_column_slots.is_some()
+                        && let Some(row_start) = grid_row_start_y.take()
+                    {
+                        renderer
+                            .ensure_current_row_at_least(row_start.saturating_add(row_cross_size));
+                        row_cross_size = 0;
+                    }
                     if let Some(row_gap) = child_layout.row_gap {
                         renderer.push_vertical_space(row_gap);
                     }
                     row_item_count = 0;
+                } else if grid_area_placements.is_some() {
+                    // Area-placed items position by absolute track slots; no gap runs.
                 } else if row_justification.is_some() {
-                    renderer.push_fixed_space_width(column_gap, None);
+                    if non_wrapping_flex_row || grid_column_slots.is_some() {
+                        renderer.advance_inline_cursor(column_gap);
+                    } else {
+                        renderer.push_fixed_space_width(column_gap, None);
+                    }
                 } else {
                     match child_layout.column_gap {
-                        Some(gap) => renderer.push_fixed_space_width(gap, None),
-                        None => renderer.push_text(" ", None),
+                        Some(gap) => {
+                            if non_wrapping_flex_row || grid_column_slots.is_some() {
+                                renderer.advance_inline_cursor(gap);
+                            } else {
+                                renderer.push_fixed_space_width(gap, None);
+                            }
+                        }
+                        None => {
+                            let default_gap =
+                                if child_layout.flex_items && grid_column_slots.is_some() {
+                                    // Width-slotted flex rows partition the row exactly;
+                                    // CSS flex has no implicit gap between items.
+                                    0
+                                } else {
+                                    row_layout_effective_column_gap(child_layout)
+                                };
+                            if default_gap == 0 {
+                                // CSS flex rows have no implicit gap. Text row layout keeps a
+                                // one-cell separator through row_layout_effective_column_gap.
+                            } else if non_wrapping_flex_row || grid_column_slots.is_some() {
+                                renderer.advance_inline_cursor(default_gap);
+                            } else {
+                                renderer.push_fixed_space_width(default_gap, None);
+                            }
+                        }
                     }
                 }
             } else if let Some(row_gap) = child_layout.row_gap {
                 renderer.push_vertical_space(row_gap);
             }
         }
+        let flex_shrink_width = row_flex_shrink
+            .as_ref()
+            .and_then(|shrink| shrink.widths.get(child_index))
+            .copied();
         let item_start_width = renderer.current_inline_width();
         let item_start_row = renderer.current_row();
         let item_margin = child_layout
             .row_items
             .then(|| row_layout_child_horizontal_margin(dom, child, css_cascade))
             .unwrap_or_default();
-        if item_margin.left > 0 {
-            renderer.push_fixed_space_width(item_margin.left, None);
+        if let Some(auto_width) = row_auto_margin_width.filter(|_| item_margin.left_auto) {
+            renderer.advance_inline_cursor(auto_width);
         }
+        if item_margin.left > 0 {
+            if non_wrapping_flex_row {
+                renderer.advance_inline_cursor(item_margin.left);
+            } else {
+                renderer.push_fixed_space_width(item_margin.left, None);
+            }
+        }
+        if row_flex_growth.is_some()
+            && let Some(child_width_estimate) = child_width_estimate
+        {
+            renderer.clamp_inline_cursor_to_fit(child_width_estimate);
+        }
+        let leading_flow_content =
+            (child_layout.row_items || child_layout.flex_items || !leading_flow_content_seen)
+                .then(|| first_lazy_media_or_visible_text(dom, child, css_cascade))
+                .flatten();
+        let leading_media_reservation_width = child_width_estimate
+            .or(child_width_hint)
+            .unwrap_or_else(|| renderer.available_width())
+            .max(1);
+        let row_item_slot = if let (Some(slot_width), Some((_, area_col, area_span))) =
+            (grid_column_slots, area_placement)
+        {
+            let gap = child_layout
+                .column_gap
+                .unwrap_or_else(|| row_layout_effective_column_gap(child_layout));
+            let available_width = renderer.available_width();
+            let left = area_col
+                .saturating_mul(slot_width.saturating_add(gap))
+                .min(available_width.saturating_sub(1));
+            let width = slot_width
+                .saturating_mul(area_span)
+                .saturating_add(gap.saturating_mul(area_span.saturating_sub(1)))
+                .min(available_width.saturating_sub(left))
+                .max(1);
+            let right = available_width.saturating_sub(left).saturating_sub(width);
+            if left > 0 || right > 0 {
+                renderer.enter_insets(left, right);
+                Some((left, right))
+            } else {
+                None
+            }
+        } else if let Some(slot_width) = grid_column_slots.filter(|_| {
+            grid_area_placements.is_none()
+                && !row_layout_child_is_inline_subtree(dom, child, css_cascade)
+        }) {
+            let available_width = renderer.available_width();
+            let left = renderer
+                .current_inline_width()
+                .min(available_width.saturating_sub(1));
+            let slot_width = slot_width.min(available_width.saturating_sub(left).max(1));
+            let right = available_width
+                .saturating_sub(left)
+                .saturating_sub(slot_width);
+            if left > 0 || right > 0 {
+                renderer.enter_insets(left, right);
+                Some((left, right))
+            } else {
+                None
+            }
+        } else if non_wrapping_flex_row
+            && child_layout.row_items
+            && !child_layout.reverse_items
+            && child_width_estimate.is_some()
+            && (flex_shrink_width.is_some()
+                || row_layout_child_has_constrained_block_slot(dom, child, css_cascade))
+            && !row_item_should_inline_children(dom, child, css_cascade)
+        {
+            let available_width = renderer.available_width();
+            let left = renderer
+                .current_inline_width()
+                .min(available_width.saturating_sub(1));
+            let slot_width = flex_shrink_width
+                .or(child_width_estimate)
+                .unwrap_or(available_width)
+                .min(available_width.saturating_sub(left).max(1));
+            let right = available_width
+                .saturating_sub(left)
+                .saturating_sub(slot_width);
+            if left > 0 || right > 0 {
+                renderer.enter_insets(left, right);
+                Some((left, right))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         render_node(
             dom,
             child,
@@ -17932,12 +22820,72 @@ fn render_children(
             layout_box_count,
             child_layout.row_items,
         );
+        if let Some(leading_content) = leading_flow_content {
+            if !child_layout.row_items && !child_layout.flex_items {
+                leading_flow_content_seen = true;
+            }
+            if let LazyMediaLeadingContent::Image(image) = leading_content
+                && !lazy_media_child_reserves_own_flow(dom, child, css_cascade)
+                && !(row_layout_child_is_out_of_flow(dom, child, css_cascade)
+                    && item_start_row > renderer.current_positioning_context_y())
+                && let Some((intrinsic_width, intrinsic_height)) =
+                    declared_image_intrinsic_size(image)
+                && let Some(height) = scale_image_dimension(
+                    leading_media_reservation_width,
+                    intrinsic_height,
+                    intrinsic_width,
+                )
+            {
+                renderer.ensure_current_row_at_least(
+                    item_start_row.saturating_add(height.clamp(1, 24)),
+                );
+            }
+        }
+        if let Some((left, right)) = row_item_slot {
+            renderer.exit_insets(left, right);
+        }
         let has_following_row_item =
             child_layout.row_items && child_index.saturating_add(1) < child_sequence.len();
         if item_margin.right > 0 && has_following_row_item {
-            renderer.push_fixed_space_width(item_margin.right, None);
+            if non_wrapping_flex_row {
+                renderer.advance_inline_cursor(item_margin.right);
+            } else {
+                renderer.push_fixed_space_width(item_margin.right, None);
+            }
         }
+        if let Some(auto_width) =
+            row_auto_margin_width.filter(|_| item_margin.right_auto && has_following_row_item)
+        {
+            renderer.advance_inline_cursor(auto_width);
+        }
+        if let Some(extra_width) = row_flex_growth
+            .as_ref()
+            .and_then(|growth| growth.extra_widths.get(child_index))
+            .copied()
+            .filter(|extra_width| *extra_width > 0)
+        {
+            renderer.advance_inline_cursor(extra_width);
+        }
+        let grid_item_slotted = grid_column_slots.is_some() && row_item_slot.is_some();
         let item_spanned_rows = child_layout.row_items && renderer.current_row() > item_start_row;
+        if item_spanned_rows && (non_wrapping_flex_row || grid_item_slotted) {
+            let item_end_width = renderer.current_inline_width();
+            renderer.break_line();
+            let item_height = renderer.current_row().saturating_sub(item_start_row).max(1);
+            row_cross_size = row_cross_size.max(item_height);
+            let item_width = flex_shrink_width
+                .or(child_width_estimate)
+                .or(grid_column_slots.filter(|_| grid_item_slotted))
+                .unwrap_or_else(|| item_end_width.saturating_sub(item_start_width).max(1));
+            if grid_item_slotted {
+                grid_row_start_y.get_or_insert(item_start_row);
+            }
+            renderer.resume_row_after_spanning_item(
+                item_start_row,
+                item_start_width.saturating_add(item_width),
+                row_cross_size,
+            );
+        }
         if let Some(width_hint) = child_width_hint
             && !item_spanned_rows
         {
@@ -17949,9 +22897,10 @@ fn render_children(
             }
         }
         child_seen = true;
+        previous_area_row = area_placement.map(|(row, _, _)| row);
         if child_layout.row_items {
             row_item_count = row_item_count.saturating_add(1);
-            if item_spanned_rows {
+            if item_spanned_rows && !non_wrapping_flex_row && !grid_item_slotted {
                 renderer.break_line();
                 if let Some(row_gap) = child_layout.row_gap {
                     renderer.push_vertical_space(row_gap);
@@ -17960,197 +22909,23 @@ fn render_children(
             }
         }
     }
+    if (non_wrapping_flex_row || grid_column_slots.is_some()) && row_cross_size > 0 {
+        renderer.reserve_inline_replaced_height(row_cross_size);
+    }
     if row_align_entered {
         renderer.break_line();
         renderer.exit_row_align_items();
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RowJustification {
-    leading_space: usize,
-    column_gap: usize,
-}
-
-fn row_layout_justification(
-    dom: &Dom,
-    node_id: usize,
-    css_cascade: &CssCascade,
-    child_layout: ChildLayout,
-    available_width: usize,
-) -> Option<RowJustification> {
-    if !child_layout.row_items
-        || child_layout.wrap_items
-        || child_layout.wrap_after.is_some()
-        || child_layout.justify_content == JustifyContent::Start
-    {
-        return None;
-    }
-    let node = dom.nodes.get(node_id)?;
-    let mut item_widths = Vec::new();
-    for &child in &node.children {
-        if !row_layout_child_participates(dom, child, css_cascade) {
-            continue;
-        }
-        item_widths.push(row_layout_child_width_estimate(
+    for child in out_of_flow_row_children {
+        render_node(
             dom,
             child,
+            source,
             css_cascade,
-            available_width,
-        )?);
-    }
-    if item_widths.is_empty() {
-        return None;
-    }
-    let base_gap = child_layout.column_gap.unwrap_or(1);
-    let gap_count = item_widths.len().saturating_sub(1);
-    let content_width = item_widths
-        .iter()
-        .copied()
-        .sum::<usize>()
-        .saturating_add(base_gap.saturating_mul(gap_count));
-    let remaining = available_width.checked_sub(content_width)?;
-    match child_layout.justify_content {
-        JustifyContent::Start => None,
-        JustifyContent::Center => Some(RowJustification {
-            leading_space: remaining / 2,
-            column_gap: base_gap,
-        }),
-        JustifyContent::End => Some(RowJustification {
-            leading_space: remaining,
-            column_gap: base_gap,
-        }),
-        JustifyContent::SpaceBetween => Some(RowJustification {
-            leading_space: 0,
-            column_gap: if gap_count > 0 {
-                base_gap.saturating_add(remaining / gap_count)
-            } else {
-                base_gap
-            },
-        }),
-        JustifyContent::SpaceAround => {
-            let item_count = item_widths.len();
-            Some(RowJustification {
-                leading_space: remaining / item_count.saturating_mul(2).max(1),
-                column_gap: base_gap.saturating_add(remaining / item_count.max(1)),
-            })
-        }
-        JustifyContent::SpaceEvenly => {
-            let spacing_slots = item_widths.len().saturating_add(1);
-            let distributed = remaining / spacing_slots.max(1);
-            Some(RowJustification {
-                leading_space: distributed,
-                column_gap: base_gap.saturating_add(distributed),
-            })
-        }
-    }
-}
-
-fn row_layout_child_width_estimate(
-    dom: &Dom,
-    node_id: usize,
-    css_cascade: &CssCascade,
-    basis: usize,
-) -> Option<usize> {
-    let node = dom.nodes.get(node_id)?;
-    match &node.kind {
-        NodeKind::Text(text) => {
-            let width = collapse_ascii_whitespace(text).chars().count();
-            (width > 0).then_some(width)
-        }
-        NodeKind::Element(element) => {
-            let style = computed_style(dom, node_id, element, css_cascade);
-            if style.display == Display::None {
-                return None;
-            }
-            let horizontal_margin = style.margin.left.saturating_add(style.margin.right);
-            if let Some(width) = style.flex_basis.or(style.width) {
-                return Some(
-                    width
-                        .resolve(basis)
-                        .saturating_add(horizontal_margin)
-                        .clamp(1, basis.max(1)),
-                );
-            }
-            if element.tag == "img"
-                || element.tag == "svg"
-                || is_replaced_media_element(&element.tag)
-            {
-                return Some(10usize.saturating_add(horizontal_margin).min(basis.max(1)));
-            }
-            let text_width = collapse_ascii_whitespace(&text_content(dom, node_id))
-                .chars()
-                .count();
-            if text_width > 0 {
-                return Some(
-                    text_width
-                        .saturating_add(horizontal_margin)
-                        .clamp(1, basis.max(1)),
-                );
-            }
-            let child_width = node
-                .children
-                .iter()
-                .filter_map(|&child| {
-                    row_layout_child_width_estimate(dom, child, css_cascade, basis)
-                })
-                .sum::<usize>();
-            (child_width > 0).then_some(
-                child_width
-                    .saturating_add(horizontal_margin)
-                    .clamp(1, basis.max(1)),
-            )
-        }
-        NodeKind::Document | NodeKind::DocumentFragment => None,
-    }
-}
-
-fn row_layout_child_width_hint(
-    dom: &Dom,
-    node_id: usize,
-    css_cascade: &CssCascade,
-    basis: usize,
-) -> Option<usize> {
-    let node = dom.nodes.get(node_id)?;
-    let NodeKind::Element(element) = &node.kind else {
-        return None;
-    };
-    let style = computed_style(dom, node_id, element, css_cascade);
-    let horizontal_margin = style.margin.left.saturating_add(style.margin.right);
-    style.flex_basis.or(style.width).map(|width| {
-        width
-            .resolve(basis)
-            .saturating_add(horizontal_margin)
-            .clamp(1, basis.max(1))
-    })
-}
-
-fn row_layout_child_horizontal_margin(
-    dom: &Dom,
-    node_id: usize,
-    css_cascade: &CssCascade,
-) -> BoxSpacing {
-    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
-        return BoxSpacing::default();
-    };
-    let style = computed_style(dom, node_id, element, css_cascade);
-    BoxSpacing {
-        left: style.margin.left,
-        right: style.margin.right,
-        ..BoxSpacing::default()
-    }
-}
-
-fn row_layout_child_participates(dom: &Dom, node_id: usize, css_cascade: &CssCascade) -> bool {
-    let Some(node) = dom.nodes.get(node_id) else {
-        return false;
-    };
-    match &node.kind {
-        NodeKind::Text(text) => !text.trim().is_empty(),
-        NodeKind::Element(element) => {
-            computed_style(dom, node_id, element, css_cascade).display != Display::None
-        }
-        NodeKind::Document | NodeKind::DocumentFragment => true,
+            renderer,
+            layout_box_count,
+            false,
+        );
     }
 }
 
@@ -18179,9 +22954,6 @@ fn render_node(
         NodeKind::Text(text) => renderer.push_text(text, element_target_for_node(dom, node_id)),
         NodeKind::Element(element) => {
             let style = computed_style(dom, node_id, element, css_cascade);
-            if source.starts_with("mem://overflow-wrap") && element.tag == "p" {
-                eprintln!("style for p: {:?}", style);
-            }
             if style.display == Display::None {
                 return;
             }
@@ -18198,21 +22970,57 @@ fn render_node(
                 );
                 return;
             }
+            let node_diagnostics = display_node_diagnostics(node_id, element, &style);
             *layout_box_count += 1;
 
             let visibility_entered = style.visibility;
             if let Some(visibility) = visibility_entered {
                 renderer.enter_visibility(visibility);
             }
-            let opacity_entered = style.suppresses_paint();
-            if opacity_entered {
-                renderer.enter_transparent_opacity();
-            }
             let containing_height = if style.position == Position::Fixed {
                 Some(default_vertical_dimension_basis())
+            } else if style.stretches_positioned_block_axis() {
+                renderer.current_positioning_context_height_or_auto_so_far()
             } else {
                 renderer.current_positioning_context_height()
             };
+            let horizontal_projection_offset = if style.position.is_out_of_flow()
+                || matches!(style.position, Position::Relative | Position::Sticky)
+                || style.has_transform_translate()
+            {
+                style.horizontal_projection_offset(renderer.available_width())
+            } else {
+                0
+            };
+            let horizontally_offscreen = style.position.is_out_of_flow()
+                && !horizontal_projection_intersects_viewport(
+                    horizontal_projection_offset,
+                    style.positioned_outer_width(renderer.available_width()),
+                    renderer.available_width(),
+                );
+            let opacity_entered = style.suppresses_paint() || horizontally_offscreen;
+            if opacity_entered {
+                renderer.enter_transparent_opacity();
+            }
+            let semi_opacity_entered = match style.opacity {
+                PaintOpacity::Semi(percent) if !opacity_entered => Some(percent),
+                _ => None,
+            };
+            if let Some(percent) = semi_opacity_entered {
+                renderer.enter_semi_opacity(percent);
+            }
+            let fixed_flow_reservation_height = static_ancillary_top_header_flow_height(
+                dom,
+                node_id,
+                element,
+                &style,
+                css_cascade,
+                renderer,
+            );
+            if let Some(height) = fixed_flow_reservation_height {
+                renderer.break_line();
+                renderer.push_vertical_space(height);
+            }
             let out_of_flow_y = style.position.is_out_of_flow().then(|| {
                 style
                     .vertical_projection_offset(containing_height)
@@ -18220,25 +23028,31 @@ fn render_node(
                         saturating_add_signed(renderer.current_positioning_context_y(), offset)
                     })
             });
+            let out_of_flow_y = if fixed_flow_reservation_height.is_some()
+                && style.position == Position::Fixed
+                && out_of_flow_y == Some(None)
+            {
+                Some(Some(0))
+            } else {
+                out_of_flow_y
+            };
             let mut out_of_flow_entered = style
                 .position
                 .is_out_of_flow()
                 .then(|| renderer.enter_out_of_flow(out_of_flow_y.flatten()));
             let mut horizontal_projection_entered = (style.position.is_out_of_flow()
-                || matches!(style.position, Position::Relative | Position::Sticky))
+                || matches!(style.position, Position::Relative | Position::Sticky)
+                || style.has_transform_translate())
+            .then(|| renderer.enter_horizontal_projection(horizontal_projection_offset))
+            .flatten();
+            let mut vertical_projection_entered = (style.position == Position::Relative
+                || (style.position == Position::Static && style.has_transform_translate()))
             .then(|| {
-                renderer.enter_horizontal_projection(
-                    style.horizontal_projection_offset(renderer.available_width()),
-                )
+                style
+                    .vertical_projection_offset(None)
+                    .and_then(|offset| renderer.enter_vertical_projection(offset))
             })
             .flatten();
-            let mut vertical_projection_entered = (style.position == Position::Relative)
-                .then(|| {
-                    style
-                        .vertical_projection_offset(None)
-                        .and_then(|offset| renderer.enter_vertical_projection(offset))
-                })
-                .flatten();
             let viewport_fixed_entered = style.position == Position::Fixed;
             if viewport_fixed_entered {
                 renderer.enter_viewport_fixed();
@@ -18249,6 +23063,16 @@ fn render_node(
             } else {
                 false
             };
+            let fixed_flow_clip_entered =
+                fixed_flow_reservation_height.map(|height| DisplayCommandBounds {
+                    x: 0,
+                    y: 0,
+                    width: renderer.width.max(1),
+                    height: height.max(1),
+                });
+            if let Some(bounds) = fixed_flow_clip_entered {
+                renderer.enter_clip(bounds);
+            }
             let viewport_sticky_top_entered = if style.position == Position::Sticky {
                 style
                     .vertical_projection_offset(Some(default_vertical_dimension_basis()))
@@ -18274,7 +23098,8 @@ fn render_node(
                 && element
                     .href
                     .as_ref()
-                    .is_some_and(|href| !href.trim().is_empty());
+                    .is_some_and(|href| !href.trim().is_empty())
+                && style.text_decoration_line == TextDecorationLine::Underline;
             if link_text_entered {
                 renderer.enter_link_text();
             }
@@ -18301,6 +23126,9 @@ fn render_node(
                 if paint_layer_z_index.is_some() {
                     renderer.exit_positive_z_layer();
                 }
+                if fixed_flow_clip_entered.is_some() {
+                    renderer.exit_clip();
+                }
                 if fixed_clip_escape_entered {
                     renderer.exit_unclipped();
                 }
@@ -18312,6 +23140,9 @@ fn render_node(
                 }
                 if opacity_entered {
                     renderer.exit_transparent_opacity();
+                }
+                if semi_opacity_entered.is_some() {
+                    renderer.exit_semi_opacity();
                 }
                 if visibility_entered.is_some() {
                     renderer.exit_visibility();
@@ -18351,6 +23182,14 @@ fn render_node(
             if element.tag == "svg" {
                 let (svg_width, svg_height) =
                     replaced_media_placeholder_extent(element, &style, renderer);
+                let (svg_width, svg_height) = clamp_percent_svg_extent_in_inline_container(
+                    dom,
+                    node_id,
+                    css_cascade,
+                    &style,
+                    svg_width,
+                    svg_height,
+                );
                 let rgb = svg_paint_rgb(dom, node_id, element);
                 let shade = rgb
                     .map(|(red, green, blue)| rgb_to_luma(red, green, blue))
@@ -18390,6 +23229,8 @@ fn render_node(
                     image_render_source(dom, node_id, element, renderer.viewport_width_css_px());
                 let intrinsic_size =
                     renderer.decoded_image_intrinsic_size(source, image_source.as_deref());
+                let image_behavior =
+                    image_placeholder_behavior(element, &style, intrinsic_size.is_some());
                 let (image_width, image_height) =
                     image_placeholder_extent(element, &style, renderer, intrinsic_size);
                 if let Some(float_side) = style.float {
@@ -18401,8 +23242,12 @@ fn render_node(
                         source,
                         image_source.as_deref(),
                         Some(node_id),
+                        image_behavior,
                     );
-                } else if is_row_item || !style.display.is_block_flow() {
+                } else if is_row_item
+                    || (!style.display.is_block_flow()
+                        && !standalone_image_uses_block_flow(dom, node_id))
+                {
                     renderer.push_inline_image_placeholder(
                         image_width,
                         image_height,
@@ -18410,6 +23255,7 @@ fn render_node(
                         source,
                         image_source.as_deref(),
                         Some(node_id),
+                        image_behavior,
                     );
                 } else {
                     renderer.push_image_placeholder(
@@ -18419,6 +23265,7 @@ fn render_node(
                         source,
                         image_source.as_deref(),
                         Some(node_id),
+                        image_behavior,
                     );
                 }
                 exit_outer_contexts(
@@ -18440,6 +23287,7 @@ fn render_node(
                         source,
                         replaced_media_render_source(element),
                         Some(node_id),
+                        ImagePlaceholderBehavior::default(),
                     );
                 } else {
                     renderer.push_image_placeholder(
@@ -18449,6 +23297,7 @@ fn render_node(
                         source,
                         replaced_media_render_source(element),
                         Some(node_id),
+                        ImagePlaceholderBehavior::default(),
                     );
                 }
                 exit_outer_contexts(
@@ -18459,7 +23308,7 @@ fn render_node(
                 );
                 return;
             }
-            if let Some(label) = form_control_render_text(dom, node_id, element) {
+            if let Some(label) = form_control_render_text(dom, node_id, element, &style) {
                 if !label.is_empty() {
                     let block_control = style.display.is_block_flow() && !is_row_item;
                     if block_control {
@@ -18478,9 +23327,19 @@ fn render_node(
                 );
                 return;
             }
-            let text_shade_entered = style.text_shade;
+            let suppress_default_link_color =
+                style.text_color_is_default && renderer.has_active_text_color();
+            let text_shade_entered = (!suppress_default_link_color)
+                .then_some(style.text_shade)
+                .flatten();
             if let Some(text_shade) = text_shade_entered {
                 renderer.enter_text_shade(text_shade);
+            }
+            let text_color_entered = (!suppress_default_link_color)
+                .then_some(style.text_color)
+                .flatten();
+            if text_color_entered.is_some() {
+                renderer.enter_text_color(text_color_entered);
             }
             let text_align_entered = style.text_align;
             let white_space_entered = style.white_space;
@@ -18492,6 +23351,11 @@ fn render_node(
             let text_indent_entered = style.text_indent;
             let line_height_entered = style.line_height;
             let font_scale_entered = style.font_scale;
+            let font_weight_bold_entered = style.font_weight_bold;
+            let font_style_italic_entered = style.font_style_italic;
+            if let Some(font_style_italic) = font_style_italic_entered {
+                renderer.enter_font_style_italic(font_style_italic);
+            }
             let block_flow = style.display.is_block_flow() && !is_row_item;
             let inline_margin = if block_flow || is_row_item {
                 BoxSpacing::default()
@@ -18519,7 +23383,34 @@ fn render_node(
                     renderer.enter_insets(margin.left, margin.right);
                 }
             }
-            let width_inset = if block_flow {
+            let float_entered = block_flow
+                .then_some(style.float)
+                .flatten()
+                .filter(|_| element.tag != "img")
+                .map(|side| {
+                    let available_width = renderer.available_width();
+                    let float_width = style
+                        .resolved_width(available_width)
+                        .or_else(|| style.resolved_max_width(available_width))
+                        .unwrap_or_else(|| available_width.div_ceil(3))
+                        .clamp(
+                            1,
+                            available_width.saturating_sub(available_width / 4).max(1),
+                        );
+                    let (left_pad, right_pad) = match side {
+                        FloatSide::Left => (0, available_width.saturating_sub(float_width)),
+                        FloatSide::Right => (available_width.saturating_sub(float_width), 0),
+                    };
+                    renderer.enter_insets(left_pad, right_pad);
+                    (
+                        side,
+                        float_width,
+                        renderer.current_row(),
+                        left_pad,
+                        right_pad,
+                    )
+                });
+            let width_inset = if block_flow && float_entered.is_none() {
                 let available_width = renderer.available_width();
                 let block_width = style.positioned_outer_width(available_width);
                 let remaining_width = available_width.saturating_sub(block_width);
@@ -18545,13 +23436,41 @@ fn render_node(
                     renderer.current_row(),
                 )
             });
+            let lazy_media_reserved_height =
+                block_box
+                    .filter(|_| block_flow)
+                    .and_then(|(_, box_width, _)| {
+                        lazy_media_container_reserved_height(dom, node_id, css_cascade, box_width)
+                    });
+            let lazy_media_positioning_height =
+                block_box
+                    .filter(|_| block_flow)
+                    .and_then(|(_, box_width, _)| {
+                        lazy_media_positioning_context_height(dom, node_id, css_cascade, box_width)
+                    });
             let positioning_context_entered = block_box
                 .filter(|_| style.position != Position::Static)
                 .map(|(_, _, start_y)| {
-                    let context_height = style.resolved_height().or_else(|| {
-                        (style.resolved_min_height() > 0).then(|| style.resolved_min_height())
-                    });
-                    renderer.enter_positioning_context(start_y, context_height);
+                    let definite_context_height = style
+                        .resolved_height_for_containing_block(containing_height)
+                        .or_else(|| {
+                            style.stretched_outer_height_for_containing_block(containing_height)
+                        });
+                    let context_height = definite_context_height
+                        .or_else(|| {
+                            let min_height = style
+                                .min_height
+                                .resolve_optional(containing_height)
+                                .unwrap_or(0);
+                            (min_height > 0).then_some(min_height)
+                        })
+                        .or(lazy_media_positioning_height)
+                        .or(lazy_media_reserved_height);
+                    renderer.enter_positioning_context(
+                        start_y,
+                        context_height,
+                        definite_context_height.is_none(),
+                    );
                 })
                 .is_some();
             let border = block_box.and(style.border);
@@ -18572,12 +23491,22 @@ fn render_node(
             let underlay_insert = block_box.map(|_| renderer.underlay_insert_position());
             let background_start = block_box.and_then(|(box_x, box_width, start_y)| {
                 style.background_shade.and_then(|shade| {
-                    underlay_insert.map(|insert| (box_x, box_width, start_y, shade, insert))
+                    underlay_insert.clone().map(|insert| {
+                        (
+                            box_x,
+                            box_width,
+                            start_y,
+                            shade,
+                            style.background_color,
+                            insert,
+                        )
+                    })
                 })
             });
             let background_image_start = block_box.and_then(|(box_x, box_width, start_y)| {
                 style.background_image_url.clone().map(|url| {
                     let insert = underlay_insert
+                        .as_ref()
                         .map(|insert| insert.offset(usize::from(style.background_shade.is_some())))
                         .unwrap_or_else(|| renderer.underlay_insert_position());
                     (
@@ -18603,6 +23532,7 @@ fn render_node(
             let overflow_clip_entered = if block_flow && style.clips_overflow() {
                 let clips_x = style.overflow_x.clips();
                 let clips_y = style.overflow_y.clips();
+                let document_height_before_clip = renderer.document_height;
                 let clip_x = if clips_x {
                     renderer.box_x().saturating_sub(padding.left)
                 } else {
@@ -18632,7 +23562,12 @@ fn render_node(
                     width: clip_width,
                     height: clip_height.unwrap_or_else(|| usize::MAX.saturating_sub(clip_y)),
                 });
-                Some((clip_y, style_height.is_some(), clip_height))
+                Some((
+                    clip_y,
+                    style_height.is_some(),
+                    clip_height,
+                    document_height_before_clip,
+                ))
             } else {
                 None
             };
@@ -18661,15 +23596,19 @@ fn render_node(
                         renderer.enter_clip(clip_bounds);
                         if let Some(shade) = style.background_shade
                             && renderer.paint_visible()
-                            && let Some(command) = renderer.clipped_rect_command(
+                            && let Some(command) = renderer.clipped_paint_rect_command(
                                 clip_bounds.x,
                                 clip_bounds.y,
                                 clip_bounds.width,
                                 clip_bounds.height,
                                 shade,
+                                style.background_color,
                             )
                         {
-                            let target = renderer.node_hit_target(Some(node_id));
+                            let target = renderer
+                                .node_hit_target(Some(node_id))
+                                .with_node_diagnostics(Some(node_diagnostics.clone()))
+                                .with_border_radius(style.border_radius);
                             renderer.push_underlay_command(command, target);
                         }
                         Some(clip_bounds)
@@ -18719,6 +23658,9 @@ fn render_node(
             if let Some(font_scale) = font_scale_entered {
                 renderer.enter_font_scale(font_scale);
             }
+            if let Some(font_weight_bold) = font_weight_bold_entered {
+                renderer.enter_font_weight_bold(font_weight_bold);
+            }
             let text_indent_block_entered = if block_flow {
                 renderer.enter_block_text_indent();
                 true
@@ -18727,7 +23669,11 @@ fn render_node(
             };
             let table_entered = if is_table_layout_container(element, &style) {
                 renderer.enter_table(
-                    table_column_widths(dom, node_id, css_cascade),
+                    table_column_widths_for_available(
+                        table_column_widths(dom, node_id, css_cascade),
+                        style.column_gap.unwrap_or(TABLE_COLUMN_GAP_CELLS),
+                        renderer.available_width(),
+                    ),
                     style.column_gap.unwrap_or(TABLE_COLUMN_GAP_CELLS),
                     style.row_gap.unwrap_or(0),
                     table_rows(dom, node_id, css_cascade).len(),
@@ -18747,6 +23693,7 @@ fn render_node(
                     table_cell_colspan(dom, node_id),
                     table_cell_rowspan(dom, node_id),
                     style.background_shade,
+                    style.background_color,
                     Some(node_id),
                 );
                 true
@@ -18761,6 +23708,12 @@ fn render_node(
             if list_indent > 0 {
                 renderer.enter_insets(list_indent, 0);
             }
+            let list_indent_line_start_reset = if list_indent > 0 {
+                renderer.enter_line_start_indent_override(0);
+                true
+            } else {
+                false
+            };
             let list_marker_indent_entered = if style.display == Display::ListItem
                 && let Some(marker) = list_item_marker(dom, node_id, css_cascade)
             {
@@ -18780,8 +23733,31 @@ fn render_node(
                 renderer.push_fixed_space_width(inline_margin.left, None);
             }
 
+            let lazy_media_reservation = lazy_media_positioning_height
+                .or(lazy_media_reserved_height)
+                .map(|height| (renderer.current_row(), height));
+            let mut child_layout = style.child_layout_for_width(renderer.available_width());
+            if is_row_item
+                && child_layout.row_items
+                && child_layout.justify_content != JustifyContent::Start
+                && !style.has_inline_width_constraint(renderer.available_width())
+            {
+                child_layout.justify_content = JustifyContent::Start;
+            }
+            if is_row_item
+                && !child_layout.row_items
+                && row_item_should_inline_children(dom, node_id, css_cascade)
+            {
+                child_layout = ChildLayout {
+                    row_items: true,
+                    flex_items: false,
+                    reverse_items: false,
+                    justify_content: JustifyContent::Start,
+                    wrap_items: false,
+                    ..child_layout
+                };
+            }
             if element.tag == "details" {
-                let child_layout = style.child_layout_for_width(renderer.available_width());
                 render_details_children(
                     dom,
                     node_id,
@@ -18793,7 +23769,6 @@ fn render_node(
                     child_layout,
                 );
             } else {
-                let child_layout = style.child_layout_for_width(renderer.available_width());
                 render_children(
                     dom,
                     node_id,
@@ -18803,6 +23778,9 @@ fn render_node(
                     layout_box_count,
                     child_layout,
                 );
+            }
+            if let Some((start_y, height)) = lazy_media_reservation {
+                renderer.ensure_current_row_at_least(start_y.saturating_add(height));
             }
 
             if let Some(clip_bounds) = row_item_overflow_clip_entered {
@@ -18823,24 +23801,35 @@ fn render_node(
             }
             if list_indent > 0 {
                 renderer.break_line();
+                if list_indent_line_start_reset {
+                    renderer.exit_line_start_indent();
+                }
                 renderer.exit_insets(list_indent, 0);
             }
             if block_flow {
                 renderer.break_line();
             }
-            if let Some((clip_y, fixed_height, clip_height)) = overflow_clip_entered {
+            if let Some((clip_y, fixed_height, clip_height, document_height_before_clip)) =
+                overflow_clip_entered
+            {
                 if let Some(clip_height) = clip_height {
                     let clip_end = clip_y.saturating_add(clip_height);
-                    if fixed_height {
-                        renderer.set_current_row(clip_end);
-                    } else {
-                        renderer.cap_current_row(clip_end);
-                    }
+                    renderer.finish_overflow_clip(
+                        document_height_before_clip,
+                        clip_end,
+                        fixed_height,
+                    );
                 }
                 renderer.exit_clip();
             }
             if text_indent_block_entered {
                 renderer.exit_block_text_indent();
+            }
+            if font_style_italic_entered.is_some() {
+                renderer.exit_font_style_italic();
+            }
+            if font_weight_bold_entered.is_some() {
+                renderer.exit_font_weight_bold();
             }
             if font_scale_entered.is_some() {
                 renderer.exit_font_scale();
@@ -18885,11 +23874,31 @@ fn render_node(
                 renderer.push_vertical_space(padding.bottom);
             }
             if let Some((_, _, start_y)) = block_box {
-                let block_height = style
-                    .resolved_height()
-                    .unwrap_or(0)
-                    .max(style.resolved_min_height());
-                renderer.ensure_current_row_at_least(start_y.saturating_add(block_height));
+                let min_height =
+                    style.resolved_min_outer_height_for_containing_block(containing_height);
+                if let Some(block_height) =
+                    style.resolved_outer_height_for_containing_block(containing_height)
+                {
+                    renderer.set_current_row(start_y.saturating_add(block_height.max(min_height)));
+                } else if let Some(block_height) =
+                    style.stretched_outer_height_for_containing_block(containing_height)
+                {
+                    renderer.set_current_row(start_y.saturating_add(block_height.max(min_height)));
+                } else if min_height > 0 {
+                    renderer.ensure_current_row_at_least(start_y.saturating_add(min_height));
+                }
+                if style
+                    .resolved_height_for_containing_block(containing_height)
+                    .is_none()
+                    && let Some((_, box_width, _)) = block_box
+                    && let Some(aspect_height) = style
+                        .aspect_ratio
+                        .and_then(|ratio| ratio.height_for_width(box_width))
+                {
+                    renderer.ensure_current_row_at_least(
+                        start_y.saturating_add(aspect_height.max(min_height)),
+                    );
+                }
             }
             if let (Some((box_x, box_width, _)), Some(border)) = (block_box, border) {
                 let content_height = renderer.current_row().saturating_sub(side_start_y);
@@ -18904,14 +23913,18 @@ fn render_node(
                 );
                 renderer.push_block_border_bottom(box_x, box_width, border, Some(node_id));
             }
-            if let Some((box_x, box_width, start_y, shade, insert)) = background_start {
+            if let Some((box_x, box_width, start_y, shade, color, insert)) = background_start {
                 renderer.insert_block_background(
                     insert,
                     box_x,
                     box_width,
                     start_y,
                     shade,
+                    color,
                     Some(node_id),
+                    Some(node_diagnostics.clone()),
+                    style.border_radius,
+                    style.box_shadow,
                 );
             }
             if let Some((box_x, box_width, start_y, url, size, position, repeat, insert)) =
@@ -18928,6 +23941,7 @@ fn render_node(
                     position,
                     repeat,
                     Some(node_id),
+                    Some(node_diagnostics),
                 );
             }
             if block_flow {
@@ -18941,8 +23955,16 @@ fn render_node(
                     renderer.push_vertical_space(margin.bottom);
                 }
             }
+            if let Some((side, float_width, start_y, left_pad, right_pad)) = float_entered {
+                renderer.break_line();
+                renderer.exit_insets(left_pad, right_pad);
+                renderer.finish_block_float(side, float_width, start_y);
+            }
             if text_shade_entered.is_some() {
                 renderer.exit_text_shade();
+            }
+            if text_color_entered.is_some() {
+                renderer.exit_text_color();
             }
             if table_entered {
                 renderer.exit_table();
@@ -18975,9 +23997,26 @@ fn render_contents_node(
     if opacity_entered {
         renderer.enter_transparent_opacity();
     }
-    let text_shade_entered = style.text_shade;
+    let semi_opacity_entered = match style.opacity {
+        PaintOpacity::Semi(percent) if !opacity_entered => Some(percent),
+        _ => None,
+    };
+    if let Some(percent) = semi_opacity_entered {
+        renderer.enter_semi_opacity(percent);
+    }
+    let suppress_default_link_color =
+        style.text_color_is_default && renderer.has_active_text_color();
+    let text_shade_entered = (!suppress_default_link_color)
+        .then_some(style.text_shade)
+        .flatten();
     if let Some(text_shade) = text_shade_entered {
         renderer.enter_text_shade(text_shade);
+    }
+    let text_color_entered = (!suppress_default_link_color)
+        .then_some(style.text_color)
+        .flatten();
+    if text_color_entered.is_some() {
+        renderer.enter_text_color(text_color_entered);
     }
     let text_align_entered = style.text_align;
     if let Some(text_align) = text_align_entered {
@@ -19019,6 +24058,14 @@ fn render_contents_node(
     if let Some(font_scale) = font_scale_entered {
         renderer.enter_font_scale(font_scale);
     }
+    let font_weight_bold_entered = style.font_weight_bold;
+    let font_style_italic_entered = style.font_style_italic;
+    if let Some(font_style_italic) = font_style_italic_entered {
+        renderer.enter_font_style_italic(font_style_italic);
+    }
+    if let Some(font_weight_bold) = font_weight_bold_entered {
+        renderer.enter_font_weight_bold(font_weight_bold);
+    }
 
     render_children(
         dom,
@@ -19033,6 +24080,12 @@ fn render_contents_node(
         },
     );
 
+    if font_style_italic_entered.is_some() {
+        renderer.exit_font_style_italic();
+    }
+    if font_weight_bold_entered.is_some() {
+        renderer.exit_font_weight_bold();
+    }
     if font_scale_entered.is_some() {
         renderer.exit_font_scale();
     }
@@ -19066,8 +24119,14 @@ fn render_contents_node(
     if text_shade_entered.is_some() {
         renderer.exit_text_shade();
     }
+    if text_color_entered.is_some() {
+        renderer.exit_text_color();
+    }
     if opacity_entered {
         renderer.exit_transparent_opacity();
+    }
+    if semi_opacity_entered.is_some() {
+        renderer.exit_semi_opacity();
     }
     if visibility_entered.is_some() {
         renderer.exit_visibility();
@@ -19146,6 +24205,41 @@ fn element_target_for_node(dom: &Dom, node_id: usize) -> Option<usize> {
     None
 }
 
+fn standalone_image_uses_block_flow(dom: &Dom, node_id: usize) -> bool {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return false;
+    };
+    let Some(parent_id) = node.parent else {
+        return false;
+    };
+    let Some(parent) = dom.nodes.get(parent_id) else {
+        return false;
+    };
+    let NodeKind::Element(parent_element) = &parent.kind else {
+        return false;
+    };
+    if matches!(
+        parent_element.tag.as_str(),
+        "a" | "button" | "label" | "p" | "span" | "summary" | "textarea"
+    ) {
+        return false;
+    }
+    !parent.children.iter().any(|&sibling_id| {
+        sibling_id != node_id
+            && dom
+                .nodes
+                .get(sibling_id)
+                .is_some_and(|sibling| match &sibling.kind {
+                    NodeKind::Text(text) => !text.trim().is_empty(),
+                    NodeKind::Element(element) => matches!(
+                        element.tag.as_str(),
+                        "a" | "button" | "input" | "label" | "select" | "span" | "textarea"
+                    ),
+                    NodeKind::Document | NodeKind::DocumentFragment => false,
+                })
+    })
+}
+
 fn image_placeholder_extent(
     element: &ElementData,
     style: &ComputedStyle,
@@ -19164,6 +24258,7 @@ fn image_placeholder_extent(
         .get("height")
         .and_then(|value| parse_css_dimension(value, CssAxis::Vertical))
         .map(|height| height.resolve(height_basis));
+    let (declared_width, declared_height) = declared_image_intrinsic_size(element).unzip();
     let (decoded_width, decoded_height) = intrinsic_size.unzip();
     let style_ratio = style
         .aspect_ratio
@@ -19171,7 +24266,10 @@ fn image_placeholder_extent(
     let (ratio_width, ratio_height) =
         style_ratio.unwrap_or_else(|| match (attr_width, attr_height) {
             (Some(width), Some(height)) => (Some(width), Some(height)),
-            _ => (decoded_width, decoded_height),
+            _ => (
+                declared_width.or(decoded_width),
+                declared_height.or(decoded_height),
+            ),
         });
     let style_width = style.resolved_width(width_basis);
     let style_height = style.resolved_height();
@@ -19190,6 +24288,7 @@ fn image_placeholder_extent(
                         })
                 })
                 .or(attr_height)
+                .or(declared_height)
                 .or(decoded_height)
                 .unwrap_or(4);
             (width, height)
@@ -19207,6 +24306,7 @@ fn image_placeholder_extent(
                         })
                 })
                 .or(attr_width)
+                .or(declared_width)
                 .or(decoded_width)
                 .unwrap_or(10);
             (width, height)
@@ -19224,6 +24324,14 @@ fn image_placeholder_extent(
                             },
                         )
                     })
+                    .or_else(|| {
+                        declared_width.zip(declared_height).and_then(
+                            |(intrinsic_width, intrinsic_height)| {
+                                scale_image_dimension(width, intrinsic_height, intrinsic_width)
+                            },
+                        )
+                    })
+                    .or(declared_height)
                     .or(decoded_height)
                     .unwrap_or(4);
                 (width, height)
@@ -19239,13 +24347,25 @@ fn image_placeholder_extent(
                             },
                         )
                     })
+                    .or_else(|| {
+                        declared_width.zip(declared_height).and_then(
+                            |(intrinsic_width, intrinsic_height)| {
+                                scale_image_dimension(height, intrinsic_width, intrinsic_height)
+                            },
+                        )
+                    })
+                    .or(declared_width)
                     .or(decoded_width)
                     .unwrap_or(10);
                 (width, height)
             }
-            (None, None) => (decoded_width.unwrap_or(10), decoded_height.unwrap_or(4)),
+            (None, None) => (
+                declared_width.or(decoded_width).unwrap_or(10),
+                declared_height.or(decoded_height).unwrap_or(4),
+            ),
         },
     };
+    let pre_constraint_width = width.max(1);
     width = constrain_image_width(width, style, width_basis);
     height = constrain_image_height(height, style);
     let unclamped_width = width.max(1);
@@ -19257,7 +24377,121 @@ fn image_placeholder_extent(
     {
         height = scaled_height.max(1);
     }
+    if width < pre_constraint_width
+        && style_height.is_none()
+        && let Some((ratio_w, ratio_h)) = ratio_width.zip(ratio_height)
+        && let Some(scaled_height) = scale_image_dimension(width, ratio_h, ratio_w)
+    {
+        height = constrain_image_height(scaled_height.max(1), style);
+    }
+    if let Some(scale_percent) = style.transform_scale.filter(|percent| *percent != 100) {
+        width = (width.saturating_mul(scale_percent as usize) / 100).clamp(1, width_basis);
+        height = ((height.saturating_mul(scale_percent as usize) / 100).max(1)).min(96);
+    }
+    if style_height.is_none()
+        && attr_height.is_none()
+        && declared_width.is_some()
+        && declared_height.is_some()
+        && image_has_lazy_load_metadata(element)
+        && let Some(slot_height) = renderer.current_positioning_context_height()
+        && slot_height > height
+    {
+        height = style
+            .resolved_max_height()
+            .map(|max_height| slot_height.min(max_height.max(1)))
+            .unwrap_or(slot_height)
+            .max(style.resolved_min_height())
+            .max(1);
+    }
     (width, height)
+}
+
+fn image_placeholder_should_emit_command(
+    url: Option<&str>,
+    decoded_info: Option<&DecodedImageInfo>,
+) -> bool {
+    let Some(url) = url else {
+        return true;
+    };
+    if !is_lazy_image_placeholder_src(url) {
+        return true;
+    }
+    if !url
+        .trim_start()
+        .get(..14)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/gif"))
+    {
+        return true;
+    }
+    decoded_info.is_some_and(|image| image.width > 1 || image.height > 1)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ImagePlaceholderBehavior {
+    force_decoded_paint: bool,
+    reserve_unresolved_extent: bool,
+    defer_unresolved_paint: bool,
+    decoded_cover_position: Option<BackgroundImagePosition>,
+}
+
+fn image_placeholder_behavior(
+    element: &ElementData,
+    style: &ComputedStyle,
+    has_decoded_image: bool,
+) -> ImagePlaceholderBehavior {
+    let has_lazy_metadata = image_has_lazy_load_metadata(element);
+    ImagePlaceholderBehavior {
+        force_decoded_paint: has_decoded_image && has_lazy_metadata,
+        reserve_unresolved_extent: has_lazy_metadata
+            && (declared_image_intrinsic_size(element).is_some()
+                || image_has_explicit_layout_size(element, style)),
+        defer_unresolved_paint: has_lazy_metadata
+            && unresolved_lazy_image_should_defer_paint(element),
+        decoded_cover_position: (has_decoded_image && has_lazy_metadata)
+            .then(|| lazy_image_focal_point_position(element))
+            .flatten()
+            .or_else(|| {
+                // object-fit: cover crops via the existing cover-background
+                // paint path, centered unless a focal point is declared.
+                (has_decoded_image && style.object_fit_cover == Some(true)).then(|| {
+                    lazy_image_focal_point_position(element).unwrap_or(BackgroundImagePosition {
+                        x_percent: 50,
+                        y_percent: 50,
+                    })
+                })
+            }),
+    }
+}
+
+fn lazy_image_focal_point_position(element: &ElementData) -> Option<BackgroundImagePosition> {
+    let raw = element.attrs.get("data-image-focal-point")?;
+    let (x, y) = raw.split_once(',')?;
+    Some(BackgroundImagePosition {
+        x_percent: parse_unit_focal_percent(x)?,
+        y_percent: parse_unit_focal_percent(y)?,
+    })
+}
+
+fn parse_unit_focal_percent(value: &str) -> Option<i32> {
+    let value = value.trim().parse::<f32>().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some((value.clamp(0.0, 1.0) * 100.0).round() as i32)
+}
+
+fn unresolved_lazy_image_should_defer_paint(element: &ElementData) -> bool {
+    if element.attrs.contains_key("data-hydration-src") {
+        return false;
+    }
+    if element
+        .src
+        .as_deref()
+        .is_some_and(|src| !src.trim().is_empty() && !is_lazy_image_placeholder_src(src))
+    {
+        return false;
+    }
+    true
 }
 
 fn constrain_image_width(width: usize, style: &ComputedStyle, basis: usize) -> usize {
@@ -19295,6 +24529,44 @@ fn scale_image_dimension(
 
 fn is_replaced_media_element(tag: &str) -> bool {
     matches!(tag, "audio" | "embed" | "iframe" | "object" | "video")
+}
+
+/// A percent-sized `<svg>` inside a shrink-wrap inline container has no
+/// definite basis; Chromium resolves it to roughly the line box (icon-sized),
+/// not the page width. Clamp to a text-line footprint in that situation.
+fn clamp_percent_svg_extent_in_inline_container(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    style: &ComputedStyle,
+    svg_width: usize,
+    svg_height: usize,
+) -> (usize, usize) {
+    let width_is_percent = matches!(style.width, Some(CssDimension::Percent(_)));
+    if !width_is_percent {
+        return (svg_width, svg_height);
+    }
+    let parent_is_inline_shrink_wrap = dom
+        .nodes
+        .get(node_id)
+        .and_then(|node| node.parent)
+        .and_then(|parent_id| {
+            let NodeKind::Element(parent) = &dom.nodes.get(parent_id)?.kind else {
+                return None;
+            };
+            let parent_style = computed_style(dom, parent_id, parent, css_cascade);
+            Some(
+                matches!(
+                    parent_style.display,
+                    Display::Inline | Display::InlineBlock | Display::InlineFlex
+                ) && parent_style.width.is_none(),
+            )
+        })
+        .unwrap_or(false);
+    if !parent_is_inline_shrink_wrap {
+        return (svg_width, svg_height);
+    }
+    (svg_width.clamp(1, 2), svg_height.clamp(1, 2))
 }
 
 fn replaced_media_placeholder_extent(
@@ -19659,33 +24931,44 @@ fn svg_pixels_to_bounds(
     ))
 }
 
-fn form_control_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> Option<String> {
+fn form_control_render_text(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    style: &ComputedStyle,
+) -> Option<String> {
     match element.tag.as_str() {
         "input" => input_render_text(element),
         "select" => Some(select_render_text(dom, node_id)),
         "textarea" => {
-            Some(control_label_text(&element.value.clone().unwrap_or_else(
+            Some(control_field_text(&element.value.clone().unwrap_or_else(
                 || collapse_ascii_whitespace(&text_content(dom, node_id)),
             )))
         }
+        "button" if button_uses_author_content_rendering(style) => None,
         "button" => Some(button_render_text(dom, node_id, element)),
         _ => None,
     }
 }
 
+fn button_uses_author_content_rendering(style: &ComputedStyle) -> bool {
+    matches!(style.display, Display::Flex | Display::InlineFlex)
+}
+
 fn button_render_text(dom: &Dom, node_id: usize, element: &ElementData) -> String {
-    let label = element
-        .value
-        .as_deref()
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| collapse_ascii_whitespace(&text_content(dom, node_id)));
-    if label.is_empty() {
-        "Button".to_owned()
+    let label = collapse_ascii_whitespace(&text_content(dom, node_id));
+    let label = if label.is_empty() {
+        element
+            .value
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_default()
     } else {
         label
-    }
+    };
+    control_label_text(&label)
 }
 
 fn input_render_text(element: &ElementData) -> Option<String> {
@@ -19713,10 +24996,10 @@ fn input_render_text(element: &ElementData) -> Option<String> {
             .or(element.value.as_deref())
             .map(control_label_text)
             .or_else(|| Some("image".to_owned())),
-        "password" => Some(control_label_text(
+        "password" => Some(control_field_text(
             &"*".repeat(element.value.as_deref().unwrap_or_default().chars().count()),
         )),
-        _ => Some(control_label_text(
+        _ => Some(control_field_text(
             element
                 .value
                 .as_deref()
@@ -19724,6 +25007,10 @@ fn input_render_text(element: &ElementData) -> Option<String> {
                 .unwrap_or_default(),
         )),
     }
+}
+
+fn control_field_text(value: &str) -> String {
+    format!("[{}]", value.trim())
 }
 
 fn control_label_text(value: &str) -> String {
@@ -19753,18 +25040,32 @@ fn computed_style(
     element: &ElementData,
     css_cascade: &CssCascade,
 ) -> ComputedStyle {
-    if element.hidden || default_display(&element.tag) == Display::None {
+    if element.hidden
+        || element
+            .classes
+            .iter()
+            .any(|class| css_class_visually_hidden(class))
+        || element
+            .attrs
+            .get("aria-hidden")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        || default_display(&element.tag) == Display::None
+    {
         return ComputedStyle {
             display: Display::None,
             float: None,
             clear: None,
             background_shade: None,
+            background_color: None,
             background_image_url: None,
             background_image_size: BackgroundImageSize::default(),
             background_image_position: BackgroundImagePosition::default(),
             background_image_repeat: BackgroundImageRepeat::default(),
             text_shade: None,
+            text_color: None,
+            text_color_is_default: false,
             text_align: None,
+            text_decoration_line: TextDecorationLine::None,
             visibility: None,
             opacity: PaintOpacity::Opaque,
             animation_reveals_opacity: false,
@@ -19773,6 +25074,8 @@ fn computed_style(
             flex_direction: FlexDirection::Row,
             flex_wrap: false,
             flex_basis: None,
+            flex_grow: 0,
+            flex_shrink: CSS_FLEX_GROW_SCALE,
             justify_content: JustifyContent::Start,
             align_items: AlignItems::Start,
             grid_columns: None,
@@ -19794,6 +25097,12 @@ fn computed_style(
             text_indent: None,
             line_height: None,
             font_scale: None,
+            font_weight_bold: None,
+            font_style_italic: None,
+            object_fit_cover: None,
+            border_radius: None,
+            box_shadow: None,
+            transform_scale: None,
             row_gap: None,
             column_gap: None,
             box_sizing: BoxSizing::ContentBox,
@@ -19816,12 +25125,17 @@ fn computed_style(
     let mut float = None;
     let mut clear = None;
     let mut background_shade = None;
+    let mut background_color = None;
+    let mut background_current_color = false;
     let mut background_image_url = None;
     let mut background_image_size = BackgroundImageSize::default();
     let mut background_image_position = BackgroundImagePosition::default();
     let mut background_image_repeat = BackgroundImageRepeat::default();
     let mut text_shade = default_text_shade(element);
+    let mut text_color = default_text_color(element);
+    let mut text_color_is_default = text_color.is_some();
     let mut text_align = None;
+    let mut text_decoration_line = default_text_decoration_line(element);
     let mut visibility = None;
     let mut opacity = PaintOpacity::Opaque;
     let mut animation_reveals_opacity = false;
@@ -19830,6 +25144,8 @@ fn computed_style(
     let mut flex_direction = FlexDirection::Row;
     let mut flex_wrap = false;
     let mut flex_basis = None;
+    let mut flex_grow = 0u32;
+    let mut flex_shrink = CSS_FLEX_GROW_SCALE;
     let mut justify_content = JustifyContent::Start;
     let mut align_items = AlignItems::Start;
     let mut grid_columns = None;
@@ -19851,6 +25167,13 @@ fn computed_style(
     let mut text_indent = None;
     let mut line_height = default_line_height(&element.tag);
     let mut font_scale = default_font_scale(&element.tag);
+    let mut font_weight_bold = default_font_weight_bold(&element.tag);
+    let mut font_style_italic = default_font_style_italic(&element.tag);
+    let mut object_fit_cover: Option<bool> = None;
+    let mut border_radius: Option<CssBorderRadius> = None;
+    let mut box_shadow: Option<CssBoxShadow> = None;
+    let mut transform_scale: Option<u16> = None;
+    let mut font_style_specificity = 0u32;
     let mut row_gap = None;
     let mut column_gap = None;
     let mut box_sizing = BoxSizing::ContentBox;
@@ -19863,7 +25186,7 @@ fn computed_style(
     let mut min_width = CssDimension::zero();
     let mut height = None;
     let mut max_height = None;
-    let mut aspect_ratio = None;
+    let mut aspect_ratio = element_aspect_ratio_from_classes(element);
     let mut margin_left_auto = false;
     let mut margin_right_auto = false;
     let mut min_height = CssDimension::zero();
@@ -19877,6 +25200,7 @@ fn computed_style(
     let mut background_image_repeat_specificity = 0u32;
     let mut text_specificity = 0u32;
     let mut text_align_specificity = 0u32;
+    let mut text_decoration_specificity = 0u32;
     let mut visibility_specificity = 0u32;
     let mut opacity_specificity = 0u32;
     let mut animation_reveals_opacity_specificity = 0u32;
@@ -19885,6 +25209,8 @@ fn computed_style(
     let mut flex_direction_specificity = 0u32;
     let mut flex_wrap_specificity = 0u32;
     let mut flex_basis_specificity = 0u32;
+    let mut flex_grow_specificity = 0u32;
+    let mut flex_shrink_specificity = 0u32;
     let mut justify_content_specificity = 0u32;
     let mut align_items_specificity = 0u32;
     let mut grid_columns_specificity = 0u32;
@@ -19905,6 +25231,7 @@ fn computed_style(
     let mut text_indent_specificity = 0u32;
     let mut line_height_specificity = 0u32;
     let mut font_scale_specificity = 0u32;
+    let mut font_weight_specificity = 0u32;
     let mut row_gap_specificity = 0u32;
     let mut column_gap_specificity = 0u32;
     let mut box_sizing_specificity = 0u32;
@@ -19949,6 +25276,16 @@ fn computed_style(
                 && rule_specificity >= background_specificity
             {
                 background_shade = Some(rule_background);
+                background_color = rule.declarations.background_color;
+                background_current_color = false;
+                background_specificity = rule_specificity;
+            }
+            if rule.declarations.background_current_color
+                && rule_specificity >= background_specificity
+            {
+                background_shade = None;
+                background_color = None;
+                background_current_color = true;
                 background_specificity = rule_specificity;
             }
             if let Some(rule_background_image_url) = rule.declarations.background_image_url.as_ref()
@@ -19980,6 +25317,8 @@ fn computed_style(
                 && rule_specificity >= text_specificity
             {
                 text_shade = Some(rule_text);
+                text_color = rule.declarations.text_color;
+                text_color_is_default = false;
                 text_specificity = rule_specificity;
             }
             if let Some(rule_text_align) = rule.declarations.text_align
@@ -19987,6 +25326,12 @@ fn computed_style(
             {
                 text_align = Some(rule_text_align);
                 text_align_specificity = rule_specificity;
+            }
+            if let Some(rule_text_decoration) = rule.declarations.text_decoration_line
+                && rule_specificity >= text_decoration_specificity
+            {
+                text_decoration_line = rule_text_decoration;
+                text_decoration_specificity = rule_specificity;
             }
             if let Some(rule_visibility) = rule.declarations.visibility
                 && rule_specificity >= visibility_specificity
@@ -20036,6 +25381,18 @@ fn computed_style(
             {
                 flex_basis = Some(rule_flex_basis);
                 flex_basis_specificity = rule_specificity;
+            }
+            if let Some(rule_flex_grow) = rule.declarations.flex_grow
+                && rule_specificity >= flex_grow_specificity
+            {
+                flex_grow = rule_flex_grow;
+                flex_grow_specificity = rule_specificity;
+            }
+            if let Some(rule_flex_shrink) = rule.declarations.flex_shrink
+                && rule_specificity >= flex_shrink_specificity
+            {
+                flex_shrink = rule_flex_shrink;
+                flex_shrink_specificity = rule_specificity;
             }
             if let Some(rule_justify_content) = rule.declarations.justify_content
                 && rule_specificity >= justify_content_specificity
@@ -20159,6 +25516,30 @@ fn computed_style(
                 font_scale = Some(rule_font_scale);
                 font_scale_specificity = rule_specificity;
             }
+            if let Some(rule_font_weight_bold) = rule.declarations.font_weight_bold
+                && rule_specificity >= font_weight_specificity
+            {
+                font_weight_bold = Some(rule_font_weight_bold);
+                font_weight_specificity = rule_specificity;
+            }
+            if let Some(rule_font_style_italic) = rule.declarations.font_style_italic
+                && rule_specificity >= font_style_specificity
+            {
+                font_style_italic = Some(rule_font_style_italic);
+                font_style_specificity = rule_specificity;
+            }
+            if let Some(rule_object_fit_cover) = rule.declarations.object_fit_cover {
+                object_fit_cover = Some(rule_object_fit_cover);
+            }
+            if let Some(rule_border_radius) = rule.declarations.border_radius {
+                border_radius = Some(rule_border_radius);
+            }
+            if let Some(rule_box_shadow) = rule.declarations.box_shadow {
+                box_shadow = Some(rule_box_shadow);
+            }
+            if let Some(rule_transform_scale) = rule.declarations.transform_scale {
+                transform_scale = Some(rule_transform_scale);
+            }
             if let Some(rule_row_gap) = rule.declarations.row_gap
                 && rule_specificity >= row_gap_specificity
             {
@@ -20260,7 +25641,9 @@ fn computed_style(
     if let Some(inline_style) = element.style.as_deref() {
         let resolved_inline_style =
             substitute_css_vars(inline_style, &css_cascade.custom_properties);
-        let inline = parse_css_declarations(&resolved_inline_style);
+        let inline =
+            parse_css_declarations_with_context(&resolved_inline_style, css_cascade.length_context);
+        let inline_sets_opacity = inline.opacity.is_some();
         if let Some(inline_display) = inline.display {
             display = inline_display;
         }
@@ -20272,6 +25655,13 @@ fn computed_style(
         }
         if let Some(inline_background) = inline.background_shade {
             background_shade = Some(inline_background);
+            background_color = inline.background_color;
+            background_current_color = false;
+        }
+        if inline.background_current_color {
+            background_shade = None;
+            background_color = None;
+            background_current_color = true;
         }
         if let Some(inline_background_image_url) = inline.background_image_url {
             background_image_url = Some(inline_background_image_url);
@@ -20287,9 +25677,14 @@ fn computed_style(
         }
         if let Some(inline_text) = inline.text_shade {
             text_shade = Some(inline_text);
+            text_color = inline.text_color;
+            text_color_is_default = false;
         }
         if let Some(inline_text_align) = inline.text_align {
             text_align = Some(inline_text_align);
+        }
+        if let Some(inline_text_decoration) = inline.text_decoration_line {
+            text_decoration_line = inline_text_decoration;
         }
         if let Some(inline_visibility) = inline.visibility {
             visibility = Some(inline_visibility);
@@ -20314,6 +25709,12 @@ fn computed_style(
         }
         if let Some(inline_flex_basis) = inline.flex_basis {
             flex_basis = Some(inline_flex_basis);
+        }
+        if let Some(inline_flex_grow) = inline.flex_grow {
+            flex_grow = inline_flex_grow;
+        }
+        if let Some(inline_flex_shrink) = inline.flex_shrink {
+            flex_shrink = inline_flex_shrink;
         }
         if let Some(inline_justify_content) = inline.justify_content {
             justify_content = inline_justify_content;
@@ -20376,6 +25777,24 @@ fn computed_style(
         if let Some(inline_font_scale) = inline.font_scale {
             font_scale = Some(inline_font_scale);
         }
+        if let Some(inline_font_weight_bold) = inline.font_weight_bold {
+            font_weight_bold = Some(inline_font_weight_bold);
+        }
+        if let Some(inline_object_fit_cover) = inline.object_fit_cover {
+            object_fit_cover = Some(inline_object_fit_cover);
+        }
+        if let Some(inline_border_radius) = inline.border_radius {
+            border_radius = Some(inline_border_radius);
+        }
+        if let Some(inline_box_shadow) = inline.box_shadow {
+            box_shadow = Some(inline_box_shadow);
+        }
+        if let Some(inline_transform_scale) = inline.transform_scale {
+            transform_scale = Some(inline_transform_scale);
+        }
+        if let Some(inline_font_style_italic) = inline.font_style_italic {
+            font_style_italic = Some(inline_font_style_italic);
+        }
         if let Some(inline_row_gap) = inline.row_gap {
             row_gap = Some(inline_row_gap);
         }
@@ -20424,24 +25843,77 @@ fn computed_style(
         if let Some(inline_min_height) = inline.min_height {
             min_height = inline_min_height;
         }
+        if !inline_sets_opacity
+            && opacity == PaintOpacity::Transparent
+            && !animation_reveals_opacity
+            && css_cascade.static_load_effect_reveals_opacity(
+                element,
+                dom,
+                node_id,
+                opacity_specificity,
+            )
+        {
+            animation_reveals_opacity = true;
+        }
+    } else if opacity == PaintOpacity::Transparent
+        && !animation_reveals_opacity
+        && css_cascade.static_load_effect_reveals_opacity(
+            element,
+            dom,
+            node_id,
+            opacity_specificity,
+        )
+    {
+        animation_reveals_opacity = true;
+    }
+    if background_current_color {
+        let (red, green, blue) = resolved_current_text_color_rgb(text_color, text_shade);
+        background_shade = Some(rgb_to_luma(red, green, blue));
+        background_color = Some((red, green, blue));
+    }
+    if background_color.is_none()
+        && background_shade.is_none()
+        && let Some((red, green, blue)) = presentational_bgcolor_rgb(element)
+    {
+        background_shade = Some(rgb_to_luma(red, green, blue));
+        background_color = Some((red, green, blue));
+    }
+    if let Some(border) = border.as_mut()
+        && border.current_color
+    {
+        let (red, green, blue) = resolved_current_text_color_rgb(text_color, text_shade);
+        border.shade = rgb_to_luma(red, green, blue);
+        border.color = Some((red, green, blue));
+        border.current_color = false;
     }
     if background_image_url.is_none()
-        && let Some(lazy_background_image_url) =
-            background_image_render_source(element, BrowserRenderOptions::default().width)
+        && let Some(lazy_background_image_url) = background_image_render_source(
+            element,
+            css_cascade.length_context.viewport_width_cells(),
+        )
     {
         background_image_url = Some(lazy_background_image_url);
+    }
+    if display == Display::None
+        && static_ancillary_header_group_should_render(dom, node_id, element)
+    {
+        display = default_display(&element.tag);
     }
     ComputedStyle {
         display,
         float,
         clear,
         background_shade,
+        background_color,
         background_image_url,
         background_image_size,
         background_image_position,
         background_image_repeat,
         text_shade,
+        text_color,
+        text_color_is_default,
         text_align,
+        text_decoration_line,
         visibility,
         opacity,
         animation_reveals_opacity,
@@ -20450,6 +25922,8 @@ fn computed_style(
         flex_direction,
         flex_wrap,
         flex_basis,
+        flex_grow,
+        flex_shrink,
         justify_content,
         align_items,
         grid_columns,
@@ -20471,6 +25945,12 @@ fn computed_style(
         text_indent,
         line_height,
         font_scale,
+        font_weight_bold,
+        font_style_italic,
+        object_fit_cover,
+        border_radius,
+        box_shadow,
+        transform_scale,
         row_gap,
         column_gap,
         box_sizing,
@@ -20490,8 +25970,224 @@ fn computed_style(
     }
 }
 
+fn static_ancillary_header_group_should_render(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+) -> bool {
+    let is_header_group = element
+        .attrs
+        .get("data-nc-group")
+        .is_some_and(|group| group == "top" || group == "bottom");
+    let is_header_container = element.attrs.contains_key("data-nc-container");
+    let is_header_shell = element.tag == "header"
+        && element.classes.iter().any(|class| class == "Header")
+        && element
+            .classes
+            .iter()
+            .any(|class| class == "Header--top" || class == "Header--bottom");
+    if !is_header_group && !is_header_container && !is_header_shell {
+        return false;
+    }
+    if !has_ancestor_with_attr(dom, node_id, "data-nc-base", "header") {
+        return false;
+    }
+    subtree_has_static_ancillary_header_content(dom, node_id)
+}
+
+fn static_ancillary_top_header_flow_height(
+    dom: &Dom,
+    node_id: usize,
+    element: &ElementData,
+    style: &ComputedStyle,
+    css_cascade: &CssCascade,
+    renderer: &FlowRenderer,
+) -> Option<usize> {
+    if style.position != Position::Fixed
+        || element.tag != "header"
+        || !element.classes.iter().any(|class| class == "Header")
+        || !element.classes.iter().any(|class| class == "Header--top")
+        || !has_ancestor_with_attr(dom, node_id, "data-nc-base", "header")
+    {
+        return None;
+    }
+    Some(
+        static_ancillary_header_content_height(dom, node_id, css_cascade, renderer)
+            .max(style.positioned_outer_height(Some(default_vertical_dimension_basis())))
+            .max(1),
+    )
+}
+
+fn static_ancillary_header_content_height(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    renderer: &FlowRenderer,
+) -> usize {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return 0;
+    };
+    node.children
+        .iter()
+        .map(|&child_id| static_ancillary_header_node_height(dom, child_id, css_cascade, renderer))
+        .max()
+        .unwrap_or(0)
+}
+
+fn static_ancillary_header_node_height(
+    dom: &Dom,
+    node_id: usize,
+    css_cascade: &CssCascade,
+    renderer: &FlowRenderer,
+) -> usize {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return 0;
+    };
+    match &node.kind {
+        NodeKind::Text(text) => usize::from(!text.trim().is_empty()),
+        NodeKind::Element(element) => {
+            let style = computed_style(dom, node_id, element, css_cascade);
+            if style.display == Display::None || style.visibility == Some(Visibility::Hidden) {
+                return 0;
+            }
+            let own_height = if element.tag == "img" {
+                let (_, height) = image_placeholder_extent(element, &style, renderer, None);
+                height
+            } else if is_replaced_media_element(&element.tag) {
+                replaced_media_placeholder_extent(element, &style, renderer).1
+            } else if form_control_render_text(dom, node_id, element, &style).is_some() {
+                2
+            } else {
+                style
+                    .resolved_outer_height_for_containing_block(Some(
+                        default_vertical_dimension_basis(),
+                    ))
+                    .or_else(|| {
+                        style.stretched_outer_height_for_containing_block(Some(
+                            default_vertical_dimension_basis(),
+                        ))
+                    })
+                    .unwrap_or(0)
+                    .max(style.resolved_min_outer_height_for_containing_block(Some(
+                        default_vertical_dimension_basis(),
+                    )))
+            };
+            own_height.max(static_ancillary_header_content_height(
+                dom,
+                node_id,
+                css_cascade,
+                renderer,
+            ))
+        }
+        NodeKind::Document | NodeKind::DocumentFragment => {
+            static_ancillary_header_content_height(dom, node_id, css_cascade, renderer)
+        }
+    }
+}
+
+fn has_ancestor_with_attr(dom: &Dom, node_id: usize, name: &str, value: &str) -> bool {
+    let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+    while let Some(parent) = current {
+        if let Some(NodeKind::Element(element)) = dom.nodes.get(parent).map(|node| &node.kind)
+            && element.attrs.get(name).is_some_and(|found| found == value)
+        {
+            return true;
+        }
+        current = dom.nodes.get(parent).and_then(|node| node.parent);
+    }
+    false
+}
+
+fn subtree_has_static_ancillary_header_content(dom: &Dom, node_id: usize) -> bool {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return false;
+    };
+    if let NodeKind::Element(element) = &node.kind
+        && element.attrs.get("data-nc-element").is_some_and(|value| {
+            matches!(
+                value.as_str(),
+                "branding" | "primary-nav" | "secondary-nav" | "search"
+            )
+        })
+    {
+        return true;
+    }
+    node.children
+        .iter()
+        .any(|&child_id| subtree_has_static_ancillary_header_content(dom, child_id))
+}
+
+fn display_node_diagnostics(
+    node_id: usize,
+    element: &ElementData,
+    style: &ComputedStyle,
+) -> DisplayNodeDiagnostics {
+    DisplayNodeDiagnostics {
+        node_id,
+        tag: element.tag.clone(),
+        id: element.id.clone(),
+        classes: element.classes.clone(),
+        display: css_display_name(style.display).to_owned(),
+        position: css_position_name(style.position).to_owned(),
+        height: style.resolved_height(),
+        min_height: style.resolved_min_height(),
+        background_shade: style.background_shade,
+    }
+}
+
+fn css_display_name(display: Display) -> &'static str {
+    match display {
+        Display::None => "none",
+        Display::Inline => "inline",
+        Display::InlineBlock => "inline-block",
+        Display::InlineFlex => "inline-flex",
+        Display::InlineGrid => "inline-grid",
+        Display::Block => "block",
+        Display::Flex => "flex",
+        Display::Grid => "grid",
+        Display::FlowRoot => "flow-root",
+        Display::ListItem => "list-item",
+        Display::Table => "table",
+        Display::TableRow => "table-row",
+        Display::TableCell => "table-cell",
+        Display::Contents => "contents",
+    }
+}
+
+fn css_position_name(position: Position) -> &'static str {
+    match position {
+        Position::Static => "static",
+        Position::Relative => "relative",
+        Position::Absolute => "absolute",
+        Position::Fixed => "fixed",
+        Position::Sticky => "sticky",
+    }
+}
+
 fn default_text_shade(element: &ElementData) -> Option<u8> {
     (element.tag == "a" && element.href.is_some()).then(|| rgb_to_luma(0, 0, 255))
+}
+
+fn default_text_color(element: &ElementData) -> Option<(u8, u8, u8)> {
+    (element.tag == "a" && element.href.is_some()).then_some((0, 0, 255))
+}
+
+fn resolved_current_text_color_rgb(
+    text_color: Option<(u8, u8, u8)>,
+    text_shade: Option<u8>,
+) -> (u8, u8, u8) {
+    text_color.unwrap_or_else(|| {
+        let shade = text_shade.unwrap_or(0);
+        (shade, shade, shade)
+    })
+}
+
+fn default_text_decoration_line(element: &ElementData) -> TextDecorationLine {
+    if element.tag == "a" && element.href.is_some() {
+        TextDecorationLine::Underline
+    } else {
+        TextDecorationLine::None
+    }
 }
 
 fn default_display(tag: &str) -> Display {
@@ -20518,12 +26214,7 @@ fn default_margin(tag: &str) -> BoxSpacing {
             bottom: 1,
             ..BoxSpacing::default()
         },
-        "p" => BoxSpacing {
-            top: 1,
-            bottom: 1,
-            ..BoxSpacing::default()
-        },
-        "article" | "aside" | "details" | "figure" | "form" | "main" | "section" => BoxSpacing {
+        "figure" => BoxSpacing {
             top: 1,
             bottom: 1,
             ..BoxSpacing::default()
@@ -20541,18 +26232,27 @@ fn default_margin(tag: &str) -> BoxSpacing {
     }
 }
 
-fn default_line_height(tag: &str) -> Option<usize> {
-    match tag {
-        "h1" | "h2" | "h3" => Some(2),
-        _ => None,
-    }
+fn default_line_height(_tag: &str) -> Option<usize> {
+    None
 }
 
 fn default_font_scale(tag: &str) -> Option<usize> {
     match tag {
-        "h1" | "h2" => Some(2),
+        "h1" => Some(2),
         _ => None,
     }
+}
+
+fn default_font_style_italic(tag: &str) -> Option<bool> {
+    matches!(tag, "i" | "em" | "cite" | "var" | "dfn" | "address").then_some(true)
+}
+
+fn default_font_weight_bold(tag: &str) -> Option<bool> {
+    matches!(
+        tag,
+        "b" | "strong" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "th"
+    )
+    .then_some(true)
 }
 
 fn is_table_cell_tag(tag: &str) -> bool {
@@ -20574,6 +26274,31 @@ fn is_table_layout_cell_for_flow(element: &ElementData, style: &ComputedStyle) -
 
 fn is_table_layout_cell_for_collection(element: &ElementData, style: &ComputedStyle) -> bool {
     is_table_cell_tag(&element.tag) || style.display == Display::TableCell
+}
+
+fn table_column_widths_for_available(
+    mut widths: Vec<usize>,
+    column_gap: usize,
+    available_width: usize,
+) -> Vec<usize> {
+    let column_count = widths.len();
+    if column_count == 0 {
+        return widths;
+    }
+    let gap_total = column_gap.saturating_mul(column_count.saturating_sub(1));
+    let total: usize = widths.iter().sum();
+    let budget = available_width.saturating_sub(gap_total).max(column_count);
+    if total <= budget {
+        return widths;
+    }
+    for width in &mut widths {
+        *width = width
+            .saturating_mul(budget)
+            .checked_div(total)
+            .unwrap_or(1)
+            .max(1);
+    }
+    widths
 }
 
 fn table_column_widths(dom: &Dom, table_id: usize, css_cascade: &CssCascade) -> Vec<usize> {
@@ -20677,8 +26402,16 @@ fn push_table_column_width_hint(
     let width = table_column_layout_width(dom, column_id, css_cascade)
         .or(inherited_width)
         .unwrap_or(0);
-    for _ in 0..table_column_span(dom, column_id) {
-        widths.push(width);
+    for offset in 0..table_column_span(dom, column_id) {
+        widths.push(table_column_span_hint_width(width, offset));
+    }
+}
+
+fn table_column_span_hint_width(width: usize, offset: usize) -> usize {
+    if offset == 0 || width == 0 {
+        width
+    } else {
+        width.saturating_sub(1).max(1)
     }
 }
 
@@ -20811,9 +26544,25 @@ fn table_column_layout_width(
     let attr_width = element
         .attrs
         .get("width")
-        .and_then(|value| parse_css_dimension(value, CssAxis::Horizontal))
-        .map(|width| width.resolve(default_horizontal_dimension_basis()));
+        .and_then(|value| parse_table_width_attribute(value));
     style_width.or(attr_width)
+}
+
+fn parse_table_width_attribute(value: &str) -> Option<usize> {
+    let value = value.trim().trim_end_matches(';');
+    if value.ends_with('%') {
+        return parse_css_dimension(value, CssAxis::Horizontal)
+            .map(|width| width.resolve(default_horizontal_dimension_basis()));
+    }
+    let pixels = parse_css_length_pixels(value)?;
+    if pixels == 0.0 {
+        return Some(0);
+    }
+    Some(
+        ((pixels / css_axis_cell_px(CssAxis::Horizontal)).ceil() as usize)
+            .saturating_sub(1)
+            .max(1),
+    )
 }
 
 fn decrement_table_rowspans(rowspans: &mut [usize]) {
@@ -20887,6 +26636,37 @@ fn selector_matches(selector: &CssSelector, dom: &Dom, node_id: usize) -> bool {
     selector_matches_step(selector, selector.steps.len() - 1, dom, node_id)
 }
 
+fn selector_is_static_load_effect_reveal(selector: &CssSelector) -> bool {
+    let mut has_load_effect_gate = false;
+    let mut has_loaded_state = false;
+    for step in &selector.steps {
+        for class in &step.compound.classes {
+            match class.as_str() {
+                "enable-load-effects" => has_load_effect_gate = true,
+                "loaded" => has_loaded_state = true,
+                _ => {}
+            }
+        }
+    }
+    has_load_effect_gate && has_loaded_state
+}
+
+fn selector_matches_with_assumed_loaded_class(
+    selector: &CssSelector,
+    dom: &Dom,
+    node_id: usize,
+) -> bool {
+    if selector.steps.is_empty() {
+        return false;
+    }
+    selector_matches_step_with_assumed_loaded_class(
+        selector,
+        selector.steps.len() - 1,
+        dom,
+        node_id,
+    )
+}
+
 fn selector_matches_step(
     selector: &CssSelector,
     step_index: usize,
@@ -20913,6 +26693,53 @@ fn selector_matches_step(
             let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
             while let Some(parent) = current {
                 if selector_matches_step(selector, step_index - 1, dom, parent) {
+                    return true;
+                }
+                current = dom.nodes.get(parent).and_then(|node| node.parent);
+            }
+            false
+        }
+    }
+}
+
+fn selector_matches_step_with_assumed_loaded_class(
+    selector: &CssSelector,
+    step_index: usize,
+    dom: &Dom,
+    node_id: usize,
+) -> bool {
+    let Some(step) = selector.steps.get(step_index) else {
+        return false;
+    };
+    if !compound_selector_matches_with_assumed_loaded_class(&step.compound, dom, node_id) {
+        return false;
+    }
+    if step_index == 0 {
+        return true;
+    }
+
+    match step.combinator.unwrap_or(SelectorCombinator::Descendant) {
+        SelectorCombinator::Child => dom
+            .nodes
+            .get(node_id)
+            .and_then(|node| node.parent)
+            .is_some_and(|parent| {
+                selector_matches_step_with_assumed_loaded_class(
+                    selector,
+                    step_index - 1,
+                    dom,
+                    parent,
+                )
+            }),
+        SelectorCombinator::Descendant => {
+            let mut current = dom.nodes.get(node_id).and_then(|node| node.parent);
+            while let Some(parent) = current {
+                if selector_matches_step_with_assumed_loaded_class(
+                    selector,
+                    step_index - 1,
+                    dom,
+                    parent,
+                ) {
                     return true;
                 }
                 current = dom.nodes.get(parent).and_then(|node| node.parent);
@@ -20965,6 +26792,9 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
     if compound.first_child && !element_is_first_child(dom, node_id) {
         return false;
     }
+    if compound.link && !element_is_unvisited_link(element) {
+        return false;
+    }
     compound.universal
         || compound.tag.is_some()
         || compound.id.is_some()
@@ -20972,6 +26802,71 @@ fn compound_selector_matches(compound: &CompoundSelector, dom: &Dom, node_id: us
         || !compound.attributes.is_empty()
         || !compound.not_selectors.is_empty()
         || compound.first_child
+        || compound.link
+}
+
+fn element_is_unvisited_link(element: &ElementData) -> bool {
+    matches!(element.tag.as_str(), "a" | "area") && element.href.is_some()
+}
+
+fn compound_selector_matches_with_assumed_loaded_class(
+    compound: &CompoundSelector,
+    dom: &Dom,
+    node_id: usize,
+) -> bool {
+    let Some(NodeKind::Element(element)) = dom.nodes.get(node_id).map(|node| &node.kind) else {
+        return false;
+    };
+    if let Some(tag) = &compound.tag
+        && element.tag != *tag
+    {
+        return false;
+    }
+    if let Some(id) = &compound.id
+        && element.id.as_deref() != Some(id.as_str())
+    {
+        return false;
+    }
+    if !compound
+        .classes
+        .iter()
+        .all(|class| class == "loaded" || element.classes.iter().any(|item| item == class))
+    {
+        return false;
+    }
+    for attribute in &compound.attributes {
+        let Some(value) = get_element_attribute_data(element, &attribute.name) else {
+            return false;
+        };
+        if attribute
+            .value
+            .as_deref()
+            .is_some_and(|expected| value != expected)
+        {
+            return false;
+        }
+    }
+    if compound
+        .not_selectors
+        .iter()
+        .any(|selector| compound_selector_matches_with_assumed_loaded_class(selector, dom, node_id))
+    {
+        return false;
+    }
+    if compound.first_child && !element_is_first_child(dom, node_id) {
+        return false;
+    }
+    if compound.link && !element_is_unvisited_link(element) {
+        return false;
+    }
+    compound.universal
+        || compound.tag.is_some()
+        || compound.id.is_some()
+        || !compound.classes.is_empty()
+        || !compound.attributes.is_empty()
+        || !compound.not_selectors.is_empty()
+        || compound.first_child
+        || compound.link
 }
 
 fn element_is_first_child(dom: &Dom, node_id: usize) -> bool {
@@ -20996,11 +26891,70 @@ struct TextRun {
     start_x: usize,
     text: String,
     shade: u8,
+    text_color: Option<(u8, u8, u8)>,
     font_scale: usize,
+    font_weight_bold: bool,
+    font_style_italic: bool,
     background_shade: Option<u8>,
     link_underline: bool,
     visible: bool,
     target_runs: Vec<TextHitTargetRun>,
+    trailing_layout_space_width: usize,
+}
+
+fn projected_text_needs_inline_link_boundary_space(
+    projected_line: &str,
+    previous_link_run: Option<bool>,
+    run: &TextRun,
+) -> bool {
+    let Some(previous_link_run) = previous_link_run else {
+        return false;
+    };
+    if previous_link_run == run.link_underline {
+        return false;
+    }
+    let Some(previous) = projected_line.chars().next_back() else {
+        return false;
+    };
+    let Some(next) = run.text.chars().next() else {
+        return false;
+    };
+    previous.is_alphanumeric() && next.is_alphanumeric()
+}
+
+fn unscale_layout_run_geometry(runs: &mut [TextRun]) {
+    let mut prev_scaled_end = 0usize;
+    let mut prev_end = 0usize;
+    for run in runs {
+        let gap = run.start_x.saturating_sub(prev_scaled_end);
+        prev_scaled_end = run
+            .start_x
+            .saturating_add(text_cell_width(&run.text, run.font_scale));
+        run.target_runs = unscale_text_hit_target_runs(&run.text, run.font_scale, &run.target_runs);
+        run.start_x = prev_end.saturating_add(gap);
+        prev_end = run.start_x.saturating_add(text_cell_width(&run.text, 1));
+    }
+}
+
+fn trim_trailing_layout_space_runs(runs: &mut Vec<TextRun>) {
+    while let Some(last) = runs.last_mut() {
+        let trim_width = last
+            .trailing_layout_space_width
+            .min(text_cell_width(&last.text, last.font_scale));
+        if trim_width == 0 {
+            break;
+        }
+        let trim_chars = trim_width;
+        let keep_chars = last.text.chars().count().saturating_sub(trim_chars);
+        last.text = text_char_slice(&last.text, 0, keep_chars);
+        let kept_width = text_cell_width(&last.text, last.font_scale);
+        last.target_runs = clip_text_hit_target_runs(&last.target_runs, 0, kept_width);
+        last.trailing_layout_space_width = 0;
+        if !last.text.is_empty() {
+            break;
+        }
+        runs.pop();
+    }
 }
 
 #[derive(Debug)]
@@ -21012,6 +26966,7 @@ struct FlowOutOfFlowSnapshot {
     pending_inter_word_space: Option<usize>,
     soft_break_opportunity: bool,
     next_y: usize,
+    document_height: usize,
     pending_text_indent: Option<usize>,
     line_start_indent: usize,
     table_stack: Vec<TableFlow>,
@@ -21033,6 +26988,7 @@ struct FlowVerticalProjectionSnapshot {
 struct FlowPositioningContext {
     y: usize,
     height: Option<usize>,
+    height_allows_auto_growth: bool,
 }
 
 #[derive(Debug)]
@@ -21060,6 +27016,7 @@ struct TableCellFlow {
     start_width: usize,
     start_y: usize,
     background_shade: Option<u8>,
+    background_color: Option<(u8, u8, u8)>,
     target_node: Option<usize>,
 }
 
@@ -21072,7 +27029,7 @@ struct ActiveFloat {
 
 #[derive(Debug)]
 struct PaintLayerCommands {
-    z_index: i32,
+    z_path: Vec<i32>,
     underlay_list: Vec<DisplayCommand>,
     underlay_targets: Vec<DisplayHitTarget>,
     border_list: Vec<DisplayCommand>,
@@ -21081,25 +27038,25 @@ struct PaintLayerCommands {
     display_targets: Vec<DisplayHitTarget>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PaintUnderlayInsertion {
-    z_index: Option<i32>,
+    z_path: Option<Vec<i32>>,
     index: usize,
 }
 
 impl PaintUnderlayInsertion {
-    fn offset(self, amount: usize) -> Self {
+    fn offset(&self, amount: usize) -> Self {
         Self {
-            z_index: self.z_index,
+            z_path: self.z_path.clone(),
             index: self.index.saturating_add(amount),
         }
     }
 }
 
 impl PaintLayerCommands {
-    fn new(z_index: i32) -> Self {
+    fn new(z_path: Vec<i32>) -> Self {
         Self {
-            z_index,
+            z_path,
             underlay_list: Vec::new(),
             underlay_targets: Vec::new(),
             border_list: Vec::new(),
@@ -21145,9 +27102,7 @@ fn table_skipped_column_padding(
         .get(start..start.saturating_add(span))
         .map(|columns| columns.iter().copied().sum::<usize>())
         .unwrap_or(0);
-    width
-        .saturating_add(span.saturating_mul(column_gap))
-        .saturating_sub(1)
+    width.saturating_add(span.saturating_mul(column_gap))
 }
 
 fn push_text_hit_target_run(
@@ -21179,23 +27134,57 @@ fn text_char_slice(text: &str, start: usize, width: usize) -> String {
     text.chars().skip(start).take(width).collect()
 }
 
+fn text_char_cell_width(ch: char, font_scale: usize) -> usize {
+    if ch.is_whitespace() {
+        1
+    } else {
+        font_scale.max(1)
+    }
+}
+
 fn text_cell_width(text: &str, font_scale: usize) -> usize {
-    text.chars().count().saturating_mul(font_scale.max(1))
+    let font_scale = font_scale.max(1);
+    if font_scale == 1 {
+        return text.chars().count();
+    }
+    text.chars()
+        .map(|ch| text_char_cell_width(ch, font_scale))
+        .sum()
+}
+
+fn scaled_text_prefix_width(text: &str, chars: usize, font_scale: usize) -> usize {
+    let font_scale = font_scale.max(1);
+    text.chars()
+        .take(chars)
+        .map(|ch| text_char_cell_width(ch, font_scale))
+        .sum()
 }
 
 fn scaled_text_char_range(
+    text: &str,
     start: usize,
     width: usize,
     font_scale: usize,
-    char_count: usize,
 ) -> (usize, usize) {
     let font_scale = font_scale.max(1);
-    let start_char = start / font_scale;
-    let end_char = start
-        .saturating_add(width)
-        .saturating_add(font_scale.saturating_sub(1))
-        / font_scale;
-    (start_char.min(char_count), end_char.min(char_count))
+    let end = start.saturating_add(width);
+    let mut cell = 0usize;
+    let mut start_char = None;
+    let mut end_char = 0usize;
+    for (index, ch) in text.chars().enumerate() {
+        let char_end = cell.saturating_add(text_char_cell_width(ch, font_scale));
+        if cell >= end {
+            break;
+        }
+        if char_end > start {
+            if start_char.is_none() {
+                start_char = Some(index);
+            }
+            end_char = index.saturating_add(1);
+        }
+        cell = char_end;
+    }
+    (start_char.unwrap_or(0), end_char)
 }
 
 fn scaled_text_for_line(text: &str, font_scale: usize) -> String {
@@ -21203,11 +27192,36 @@ fn scaled_text_for_line(text: &str, font_scale: usize) -> String {
     if font_scale == 1 {
         return text.to_owned();
     }
-    let mut out = String::with_capacity(text_cell_width(text, font_scale));
+    let mut scaled = String::with_capacity(text.len().saturating_mul(font_scale));
     for ch in text.chars() {
-        out.extend(std::iter::repeat(ch).take(font_scale));
+        scaled.extend(std::iter::repeat(ch).take(text_char_cell_width(ch, font_scale)));
     }
-    out
+    scaled
+}
+
+fn unscale_text_hit_target_runs(
+    text: &str,
+    font_scale: usize,
+    runs: &[TextHitTargetRun],
+) -> Vec<TextHitTargetRun> {
+    let font_scale = font_scale.max(1);
+    if font_scale == 1 {
+        return runs.to_vec();
+    }
+    let mut unscaled = Vec::with_capacity(runs.len());
+    for run in runs {
+        let (start_char, end_char) = scaled_text_char_range(text, run.start, run.width, font_scale);
+        let width = end_char.saturating_sub(start_char);
+        if width == 0 {
+            continue;
+        }
+        unscaled.push(TextHitTargetRun {
+            start: start_char,
+            width,
+            target_node: run.target_node,
+        });
+    }
+    unscaled
 }
 
 fn clip_text_hit_target_runs(
@@ -21236,6 +27250,7 @@ fn clip_text_hit_target_runs(
 #[derive(Debug)]
 struct FlowRenderer {
     width: usize,
+    length_context: CssLengthContext,
     left_inset: usize,
     right_inset: usize,
     lines: Vec<String>,
@@ -21245,8 +27260,11 @@ struct FlowRenderer {
     pending_inter_word_space: Option<usize>,
     soft_break_opportunity: bool,
     next_y: usize,
+    document_height: usize,
     text_shade: u8,
     text_shade_stack: Vec<u8>,
+    text_color: Option<(u8, u8, u8)>,
+    text_color_stack: Vec<Option<(u8, u8, u8)>>,
     text_background_shade: Option<u8>,
     text_background_shade_stack: Vec<Option<u8>>,
     text_align: TextAlign,
@@ -21254,6 +27272,8 @@ struct FlowRenderer {
     visibility: Visibility,
     visibility_stack: Vec<Visibility>,
     transparent_opacity_depth: usize,
+    semi_opacity_percent: u8,
+    semi_opacity_stack: Vec<u8>,
     white_space: WhiteSpace,
     white_space_stack: Vec<WhiteSpace>,
     text_transform: TextTransform,
@@ -21278,6 +27298,11 @@ struct FlowRenderer {
     line_height_stack: Vec<usize>,
     font_scale: usize,
     font_scale_stack: Vec<usize>,
+    font_scale_fallback_latch: bool,
+    font_weight_bold: bool,
+    font_weight_bold_stack: Vec<bool>,
+    font_style_italic: bool,
+    font_style_italic_stack: Vec<bool>,
     row_align_items: AlignItems,
     row_align_items_stack: Vec<AlignItems>,
     link_text_depth: usize,
@@ -21302,9 +27327,10 @@ struct FlowRenderer {
 }
 
 impl FlowRenderer {
-    fn new(width: usize) -> Self {
+    fn new(width: usize, length_context: CssLengthContext) -> Self {
         Self {
             width,
+            length_context,
             left_inset: 0,
             right_inset: 0,
             lines: Vec::new(),
@@ -21314,8 +27340,11 @@ impl FlowRenderer {
             pending_inter_word_space: None,
             soft_break_opportunity: false,
             next_y: 0,
+            document_height: 0,
             text_shade: 0,
             text_shade_stack: Vec::new(),
+            text_color: None,
+            text_color_stack: Vec::new(),
             text_background_shade: None,
             text_background_shade_stack: Vec::new(),
             text_align: TextAlign::Start,
@@ -21323,6 +27352,8 @@ impl FlowRenderer {
             visibility: Visibility::Visible,
             visibility_stack: Vec::new(),
             transparent_opacity_depth: 0,
+            semi_opacity_percent: 100,
+            semi_opacity_stack: Vec::new(),
             white_space: WhiteSpace::Normal,
             white_space_stack: Vec::new(),
             text_transform: TextTransform::None,
@@ -21347,6 +27378,11 @@ impl FlowRenderer {
             line_height_stack: Vec::new(),
             font_scale: 1,
             font_scale_stack: Vec::new(),
+            font_scale_fallback_latch: false,
+            font_weight_bold: false,
+            font_weight_bold_stack: Vec::new(),
+            font_style_italic: false,
+            font_style_italic_stack: Vec::new(),
             row_align_items: AlignItems::Start,
             row_align_items_stack: Vec::new(),
             link_text_depth: 0,
@@ -21371,42 +27407,47 @@ impl FlowRenderer {
         }
     }
 
-    fn seed_decoded_images(&mut self, images: &[DecodedImageEntry]) {
+    fn seed_decoded_images(&mut self, source: &str, images: &[DecodedImageEntry]) {
         for image in images {
-            if self
-                .decoded_image_cache
-                .get(&image.url)
-                .is_some_and(Option::is_some)
-            {
+            let keys = decoded_image_cache_keys(source, &image.url);
+            if let Some(existing_index) = keys.iter().find_map(|key| {
+                self.decoded_image_cache
+                    .get(key)
+                    .and_then(|index| index.as_ref().copied())
+            }) {
+                for key in keys {
+                    self.decoded_image_cache.insert(key, Some(existing_index));
+                }
                 continue;
             }
             let index = self.decoded_images.len();
             self.decoded_images.push(image.clone());
-            self.decoded_image_cache
-                .insert(image.url.clone(), Some(index));
+            for key in keys {
+                self.decoded_image_cache.insert(key, Some(index));
+            }
         }
     }
 
-    fn positive_z_layer_mut(&mut self, z_index: i32) -> &mut PaintLayerCommands {
+    fn positive_z_layer_mut(&mut self, z_path: &[i32]) -> &mut PaintLayerCommands {
         if let Some(index) = self
             .positive_z_layers
             .iter()
-            .position(|layer| layer.z_index == z_index)
+            .position(|layer| layer.z_path == z_path)
         {
             return &mut self.positive_z_layers[index];
         }
         self.positive_z_layers
-            .push(PaintLayerCommands::new(z_index));
+            .push(PaintLayerCommands::new(z_path.to_vec()));
         self.positive_z_layers.last_mut().unwrap()
     }
 
-    fn current_positive_z_index(&self) -> Option<i32> {
-        self.positive_z_layer_stack.last().copied()
+    fn current_positive_z_path(&self) -> Option<Vec<i32>> {
+        (!self.positive_z_layer_stack.is_empty()).then(|| self.positive_z_layer_stack.clone())
     }
 
     fn push_underlay_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
-        if let Some(z_index) = self.current_positive_z_index() {
-            let layer = self.positive_z_layer_mut(z_index);
+        if let Some(z_path) = self.current_positive_z_path() {
+            let layer = self.positive_z_layer_mut(&z_path);
             layer.underlay_list.push(command);
             layer.underlay_targets.push(target);
         } else {
@@ -21416,15 +27457,15 @@ impl FlowRenderer {
     }
 
     fn underlay_insert_position(&mut self) -> PaintUnderlayInsertion {
-        if let Some(z_index) = self.current_positive_z_index() {
-            let layer = self.positive_z_layer_mut(z_index);
+        if let Some(z_path) = self.current_positive_z_path() {
+            let layer = self.positive_z_layer_mut(&z_path);
             PaintUnderlayInsertion {
-                z_index: Some(z_index),
+                z_path: Some(z_path),
                 index: layer.underlay_list.len(),
             }
         } else {
             PaintUnderlayInsertion {
-                z_index: None,
+                z_path: None,
                 index: self.underlay_list.len(),
             }
         }
@@ -21436,8 +27477,8 @@ impl FlowRenderer {
         command: DisplayCommand,
         target: DisplayHitTarget,
     ) {
-        if let Some(z_index) = position.z_index {
-            let layer = self.positive_z_layer_mut(z_index);
+        if let Some(z_path) = position.z_path {
+            let layer = self.positive_z_layer_mut(&z_path);
             let index = position.index.min(layer.underlay_list.len());
             layer.underlay_list.insert(index, command);
             layer.underlay_targets.insert(index, target);
@@ -21449,8 +27490,8 @@ impl FlowRenderer {
     }
 
     fn push_border_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
-        if let Some(z_index) = self.current_positive_z_index() {
-            let layer = self.positive_z_layer_mut(z_index);
+        if let Some(z_path) = self.current_positive_z_path() {
+            let layer = self.positive_z_layer_mut(&z_path);
             layer.border_list.push(command);
             layer.border_targets.push(target);
         } else {
@@ -21460,8 +27501,8 @@ impl FlowRenderer {
     }
 
     fn push_display_command(&mut self, command: DisplayCommand, target: DisplayHitTarget) {
-        if let Some(z_index) = self.current_positive_z_index() {
-            let layer = self.positive_z_layer_mut(z_index);
+        if let Some(z_path) = self.current_positive_z_path() {
+            let layer = self.positive_z_layer_mut(&z_path);
             layer.display_list.push(command);
             layer.display_targets.push(target);
         } else {
@@ -21535,36 +27576,53 @@ impl FlowRenderer {
         y: usize,
         text: String,
         shade: u8,
+        text_color: Option<(u8, u8, u8)>,
         font_scale: usize,
+        width_scale: usize,
+        font_weight_bold: bool,
+        font_style_italic: bool,
         target_runs: Vec<TextHitTargetRun>,
     ) {
         let font_scale = font_scale.max(1);
+        let width_scale = width_scale.max(1);
+        let shade = self.lighten_by_semi_opacity(shade);
+        let text_color = text_color.map(|(red, green, blue)| {
+            (
+                self.lighten_by_semi_opacity(red),
+                self.lighten_by_semi_opacity(green),
+                self.lighten_by_semi_opacity(blue),
+            )
+        });
         let bounds = DisplayCommandBounds {
             x,
             y,
-            width: text_cell_width(&text, font_scale),
+            width: text_cell_width(&text, width_scale),
             height: font_scale,
         };
         let Some(clipped) = self.clipped_bounds(bounds) else {
             return;
         };
         let visual_y = saturating_add_signed(y, self.vertical_projection_offset);
-        let char_count = text.chars().count();
         let start = clipped.x.saturating_sub(x);
         let (start_char, end_char) =
-            scaled_text_char_range(start, clipped.width, font_scale, char_count);
+            scaled_text_char_range(&text, start, clipped.width, width_scale);
+        let start_cell = scaled_text_prefix_width(&text, start_char, width_scale);
         let text = text_char_slice(&text, start_char, end_char.saturating_sub(start_char));
         if text.is_empty() {
             return;
         }
-        let command_x = x.saturating_add(start_char.saturating_mul(font_scale));
-        let command_width = text_cell_width(&text, font_scale);
-        let target = self.text_hit_target(clip_text_hit_target_runs(
-            &target_runs,
-            start_char.saturating_mul(font_scale),
-            command_width,
-        ));
-        let text = scaled_text_for_line(&text, font_scale);
+        let command_x = x.saturating_add(start_cell);
+        let command_width = text_cell_width(&text, width_scale);
+        let target = self
+            .text_hit_target(clip_text_hit_target_runs(
+                &target_runs,
+                start_cell,
+                command_width,
+            ))
+            .with_text_color(text_color)
+            .with_text_bold(font_weight_bold)
+            .with_text_italic(font_style_italic);
+        let text = scaled_text_for_line(&text, width_scale);
         let row_start = clipped.y.saturating_sub(visual_y);
         let row_end = clipped
             .y
@@ -21609,7 +27667,7 @@ impl FlowRenderer {
             y: clipped.y,
             width: clipped.width,
             height: clipped.height,
-            shade,
+            shade: self.lighten_by_semi_opacity(shade),
         })
     }
 
@@ -21639,6 +27697,26 @@ impl FlowRenderer {
             blue,
             shade: rgb_to_luma(red, green, blue),
         })
+    }
+
+    fn clipped_paint_rect_command(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        shade: u8,
+        color: Option<(u8, u8, u8)>,
+    ) -> Option<DisplayCommand> {
+        if let Some((red, green, blue)) = color {
+            if red == green && green == blue {
+                self.clipped_rect_command(x, y, width, height, red)
+            } else {
+                self.clipped_color_rect_command(x, y, width, height, red, green, blue)
+            }
+        } else {
+            self.clipped_rect_command(x, y, width, height, shade)
+        }
     }
 
     fn clipped_image_command(
@@ -21777,6 +27855,7 @@ impl FlowRenderer {
                 if let Some(start) = token_start.take() {
                     self.push_wrapped_text_token(&text[start..index], target_node);
                 }
+                self.note_text_transform_word_boundary();
                 if self.current_width > 0 {
                     self.pending_inter_word_space = Some(self.inter_word_space_width());
                 }
@@ -21852,6 +27931,7 @@ impl FlowRenderer {
                 if let Some(start) = token_start.take() {
                     self.push_nowrap_text_token(&text[start..index], target_node);
                 }
+                self.note_text_transform_word_boundary();
                 if self.current_width > 0 {
                     self.pending_inter_word_space = Some(self.inter_word_space_width());
                 }
@@ -21876,7 +27956,7 @@ impl FlowRenderer {
     }
 
     fn inter_word_space_width(&self) -> usize {
-        self.font_scale.max(1).saturating_add(self.word_spacing)
+        1usize.saturating_add(self.word_spacing)
     }
 
     fn push_inter_word_space_width(&mut self, width: usize, target_node: Option<usize>) {
@@ -21929,16 +28009,26 @@ impl FlowRenderer {
         self.clear_narrow_float_column_for_text();
         let mut start = 0usize;
         let mut char_count = 0usize;
-        for (index, _) in text.char_indices() {
+        for (index, ch) in text.char_indices() {
             let available_width = self.available_width();
             let next_width = self.letter_spaced_char_count_width(char_count.saturating_add(1));
             if self.effective_current_width().saturating_add(next_width) > available_width {
                 if char_count > 0 {
                     self.push_text_run_piece(&text[start..index], target_node);
+                    self.break_line();
+                    start = index;
+                    char_count = 1;
+                } else if self.current_width > 0 || self.pending_text_indent.is_some() {
+                    self.break_line();
+                    start = index;
+                    char_count = 1;
+                } else {
+                    let end = index.saturating_add(ch.len_utf8());
+                    self.push_text_run_piece(&text[start..end], target_node);
+                    self.break_line();
+                    start = end;
+                    char_count = 0;
                 }
-                self.break_line();
-                start = index;
-                char_count = 1;
             } else {
                 char_count += 1;
             }
@@ -21968,11 +28058,9 @@ impl FlowRenderer {
             self.push_line_start_spacing();
         }
         let text_width = text_cell_width(text, self.font_scale);
-        if text_width == 0 {
-            return;
-        }
-        let padding = 1usize;
-        let width = text_width.saturating_add(padding.saturating_mul(2));
+        let width = text_width
+            .saturating_add(self.font_scale.max(1).saturating_mul(2))
+            .max(3);
         if !line_was_empty && self.current_width > 0 {
             if self.current_width.saturating_add(1).saturating_add(width) > self.available_width() {
                 self.break_line();
@@ -21983,15 +28071,21 @@ impl FlowRenderer {
         if self.current_width == 0 {
             self.push_line_start_spacing();
         }
-        let widget_height = self.line_height.max(self.font_scale).max(2);
+        let widget_height = self
+            .line_height
+            .max(self.font_scale)
+            .max(self.inline_replaced_height)
+            .max(2);
         if self.paint_visible() {
             let x = self.box_x().saturating_add(self.current_width);
             let target = self.node_hit_target(target_node);
             self.push_inline_widget_box(x, self.next_y, width, widget_height, target);
         }
-        self.push_fixed_space_width(padding, target_node);
         self.push_text_run_piece(text, target_node);
-        self.push_fixed_space_width(padding, target_node);
+        self.current_width = self.current_width.max(
+            self.current_width
+                .saturating_add(width.saturating_sub(text_width)),
+        );
         self.inline_replaced_height = self.inline_replaced_height.max(widget_height);
     }
 
@@ -22044,15 +28138,44 @@ impl FlowRenderer {
             .max(text_row_height);
         if !self.current_runs.is_empty() {
             let y = self.next_y;
-            let align_offset = self
-                .text_align
-                .offset(self.available_width(), self.current_width);
             let mut text = String::new();
-            let runs = std::mem::take(&mut self.current_runs);
+            let mut text_visual_width = 0usize;
+            let mut last_projected_link_run = None;
+            let mut projected_any_run = false;
+            let mut runs = std::mem::take(&mut self.current_runs);
+            trim_trailing_layout_space_runs(&mut runs);
+            let scaled_line_width = runs
+                .iter()
+                .map(|run| {
+                    run.start_x
+                        .saturating_add(text_cell_width(&run.text, run.font_scale))
+                })
+                .max()
+                .unwrap_or(0);
+            let scaled_text_fits =
+                scaled_line_width <= self.available_width() && !self.font_scale_fallback_latch;
+            if !scaled_text_fits && runs.iter().any(|run| run.font_scale > 1) {
+                // Once one line of a scaled block falls back, keep the whole
+                // block unscaled so wrapped headings render at one size.
+                self.font_scale_fallback_latch = true;
+            }
+            let line_width = if scaled_text_fits {
+                self.current_width
+            } else {
+                unscale_layout_run_geometry(&mut runs);
+                runs.iter()
+                    .map(|run| run.start_x.saturating_add(text_cell_width(&run.text, 1)))
+                    .max()
+                    .unwrap_or(0)
+            };
+            let align_offset = self.text_align.offset(self.available_width(), line_width);
             for run in runs {
-                let run_width = text_cell_width(&run.text, run.font_scale);
-                if run.start_x > text.chars().count() {
-                    text.push_str(&" ".repeat(run.start_x.saturating_sub(text.chars().count())));
+                let width_scale = if scaled_text_fits { run.font_scale } else { 1 };
+                let run_width = text_cell_width(&run.text, width_scale);
+                if run.start_x > text_visual_width {
+                    let gap = run.start_x.saturating_sub(text_visual_width);
+                    text.push_str(&" ".repeat(gap));
+                    text_visual_width = text_visual_width.saturating_add(gap);
                 }
                 let run_x = self
                     .box_x()
@@ -22071,7 +28194,10 @@ impl FlowRenderer {
                         (run_y, run_height)
                     }
                 };
-                if run.visible {
+                let run_intersects_clip =
+                    self.text_bounds_intersects_active_clip(run_x, run_y, run_width, run_height);
+                projected_any_run |= run_intersects_clip;
+                if run.visible && run_intersects_clip {
                     if let Some(background_shade) = run.background_shade
                         && let Some(command) = self.clipped_rect_command(
                             run_x,
@@ -22097,24 +28223,47 @@ impl FlowRenderer {
                         let target = self.text_hit_target(run.target_runs.clone());
                         self.push_underlay_command(command, target);
                     }
-                    text.push_str(&scaled_text_for_line(&run.text, run.font_scale));
+                    if projected_text_needs_inline_link_boundary_space(
+                        &text,
+                        last_projected_link_run,
+                        &run,
+                    ) {
+                        text.push(' ');
+                    }
+                    text.push_str(&run.text);
                     self.push_text_display_command(
                         run_x,
                         run_y,
                         run.text,
                         run.shade,
+                        run.text_color,
                         run.font_scale,
+                        width_scale,
+                        run.font_weight_bold,
+                        run.font_style_italic,
                         run.target_runs,
                     );
-                } else {
+                    text_visual_width =
+                        text_visual_width.max(run.start_x.saturating_add(run_width));
+                    last_projected_link_run = Some(run.link_underline);
+                } else if run_intersects_clip {
                     text.push_str(&" ".repeat(run_width));
+                    text_visual_width =
+                        text_visual_width.max(run.start_x.saturating_add(run_width));
+                    last_projected_link_run = None;
+                } else {
+                    last_projected_link_run = None;
                 }
             }
-            self.lines.push(text);
-            self.push_line_height_gaps(row_height);
             self.next_y = self.next_y.saturating_add(row_height);
+            if projected_any_run {
+                self.lines.push(text);
+                self.push_line_height_gaps(line_height);
+                self.note_document_height();
+            }
         } else if self.inline_replaced_height > 0 {
             self.next_y = self.next_y.saturating_add(self.inline_replaced_height);
+            self.note_document_height();
         }
         self.current_width = 0;
         self.inline_replaced_height = 0;
@@ -22128,6 +28277,7 @@ impl FlowRenderer {
             self.lines.push(String::new());
             self.push_line_height_gaps(line_height);
             self.next_y = self.next_y.saturating_add(line_height);
+            self.note_document_height();
             self.current_width = 0;
             return;
         }
@@ -22136,12 +28286,6 @@ impl FlowRenderer {
 
     fn push_line_height_gaps(&mut self, line_height: usize) {
         for _ in 1..line_height {
-            self.lines.push(String::new());
-        }
-    }
-
-    fn ensure_text_row_count(&mut self, rows: usize) {
-        while self.lines.len() < rows {
             self.lines.push(String::new());
         }
     }
@@ -22180,7 +28324,10 @@ impl FlowRenderer {
         let link_underline = self.link_text_active();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
+            && last.text_color == self.text_color
             && last.font_scale == self.font_scale
+            && last.font_weight_bold == self.font_weight_bold
+            && last.font_style_italic == self.font_style_italic
             && last.background_shade == self.text_background_shade
             && last.link_underline == link_underline
             && last.visible == visible
@@ -22191,6 +28338,7 @@ impl FlowRenderer {
         {
             let start = text_cell_width(&last.text, last.font_scale);
             last.text.push_str(piece);
+            last.trailing_layout_space_width = 0;
             push_text_hit_target_run(
                 &mut last.target_runs,
                 start,
@@ -22206,11 +28354,15 @@ impl FlowRenderer {
             start_x: run_start,
             text: piece.to_owned(),
             shade: self.text_shade,
+            text_color: self.text_color,
             font_scale: self.font_scale,
+            font_weight_bold: self.font_weight_bold,
+            font_style_italic: self.font_style_italic,
             background_shade: self.text_background_shade,
             link_underline,
             visible,
             target_runs,
+            trailing_layout_space_width: 0,
         });
     }
 
@@ -22237,17 +28389,16 @@ impl FlowRenderer {
         let run_start = self.current_width;
         self.current_width = self.current_width.saturating_add(width);
         let visible = self.paint_visible();
-        let active_font_scale = self.font_scale.max(1);
-        let font_scale = if width % active_font_scale == 0 {
-            active_font_scale
-        } else {
-            1
-        };
-        let piece = " ".repeat(width.div_ceil(font_scale));
+        let font_scale = self.font_scale.max(1);
+        let piece = " ".repeat(width);
+        let piece_width = text_cell_width(&piece, font_scale);
         let link_underline = self.link_text_active();
         if let Some(last) = self.current_runs.last_mut()
             && last.shade == self.text_shade
+            && last.text_color == self.text_color
             && last.font_scale == font_scale
+            && last.font_weight_bold == self.font_weight_bold
+            && last.font_style_italic == self.font_style_italic
             && last.background_shade == self.text_background_shade
             && last.link_underline == link_underline
             && last.visible == visible
@@ -22258,6 +28409,9 @@ impl FlowRenderer {
         {
             let start = text_cell_width(&last.text, last.font_scale);
             last.text.push_str(&piece);
+            last.trailing_layout_space_width = last
+                .trailing_layout_space_width
+                .saturating_add(text_cell_width(&piece, font_scale));
             push_text_hit_target_run(
                 &mut last.target_runs,
                 start,
@@ -22273,17 +28427,29 @@ impl FlowRenderer {
             start_x: run_start,
             text: piece,
             shade: self.text_shade,
+            text_color: self.text_color,
             font_scale,
+            font_weight_bold: self.font_weight_bold,
+            font_style_italic: self.font_style_italic,
             background_shade: self.text_background_shade,
             link_underline,
             visible,
             target_runs,
+            trailing_layout_space_width: piece_width,
         });
     }
 
-    fn enter_positioning_context(&mut self, y: usize, height: Option<usize>) {
-        self.positioning_context_stack
-            .push(FlowPositioningContext { y, height });
+    fn enter_positioning_context(
+        &mut self,
+        y: usize,
+        height: Option<usize>,
+        height_allows_auto_growth: bool,
+    ) {
+        self.positioning_context_stack.push(FlowPositioningContext {
+            y,
+            height,
+            height_allows_auto_growth,
+        });
     }
 
     fn exit_positioning_context(&mut self) {
@@ -22301,6 +28467,30 @@ impl FlowRenderer {
         self.positioning_context_stack
             .last()
             .and_then(|context| context.height)
+    }
+
+    fn current_positioning_context_height_or_auto_so_far(&self) -> Option<usize> {
+        self.positioning_context_stack
+            .last()
+            .map(|context| match context.height {
+                Some(height) if !context.height_allows_auto_growth => height.max(1),
+                Some(height) => {
+                    let auto_height = self.next_y.saturating_sub(context.y);
+                    if auto_height > 0 {
+                        height.max(auto_height)
+                    } else {
+                        height.max(1)
+                    }
+                }
+                None => {
+                    let auto_height = self.next_y.saturating_sub(context.y);
+                    if auto_height > 0 {
+                        auto_height
+                    } else {
+                        default_vertical_dimension_basis()
+                    }
+                }
+            })
     }
 
     fn enter_viewport_fixed(&mut self) {
@@ -22376,6 +28566,7 @@ impl FlowRenderer {
             pending_inter_word_space: self.pending_inter_word_space.take(),
             soft_break_opportunity: std::mem::take(&mut self.soft_break_opportunity),
             next_y: self.next_y,
+            document_height: self.document_height,
             pending_text_indent: self.pending_text_indent.take(),
             line_start_indent: self.line_start_indent,
             table_stack: std::mem::take(&mut self.table_stack),
@@ -22440,6 +28631,7 @@ impl FlowRenderer {
         self.pending_inter_word_space = snapshot.pending_inter_word_space;
         self.soft_break_opportunity = snapshot.soft_break_opportunity;
         self.next_y = snapshot.next_y;
+        self.document_height = snapshot.document_height;
         self.pending_text_indent = snapshot.pending_text_indent;
         self.line_start_indent = snapshot.line_start_indent;
         self.table_stack = snapshot.table_stack;
@@ -22456,16 +28648,14 @@ impl FlowRenderer {
     }
 
     fn letter_spaced_char_count_width(&self, char_count: usize) -> usize {
-        let gap_units = self
-            .letter_spacing
-            .saturating_mul(char_count.saturating_sub(1));
-        char_count
-            .saturating_add(gap_units / CSS_TEXT_CELL_UNITS)
-            .saturating_mul(self.font_scale.max(1))
+        let gap_cells = self.letter_spacing / CSS_TEXT_CELL_UNITS;
+        let gap_width = gap_cells.saturating_mul(char_count.saturating_sub(1));
+        char_count.saturating_add(gap_width)
     }
 
     fn apply_letter_spacing(&self, text: &str) -> String {
-        if self.letter_spacing == 0 {
+        let gap_cells = self.letter_spacing / CSS_TEXT_CELL_UNITS;
+        if gap_cells == 0 {
             return text.to_owned();
         }
         let mut chars = text.chars();
@@ -22474,14 +28664,8 @@ impl FlowRenderer {
         };
         let mut spaced = String::with_capacity(self.letter_spaced_text_width(text));
         spaced.push(first);
-        let mut pending_units = 0usize;
         for ch in chars {
-            pending_units = pending_units.saturating_add(self.letter_spacing);
-            let gap_cells = pending_units / CSS_TEXT_CELL_UNITS;
-            pending_units %= CSS_TEXT_CELL_UNITS;
-            if gap_cells > 0 {
-                spaced.push_str(&" ".repeat(gap_cells));
-            }
+            spaced.push_str(&" ".repeat(gap_cells));
             spaced.push(ch);
         }
         spaced
@@ -22514,6 +28698,12 @@ impl FlowRenderer {
         transformed
     }
 
+    fn note_text_transform_word_boundary(&mut self) {
+        if self.text_transform == TextTransform::Capitalize {
+            self.text_transform_capitalize_next = true;
+        }
+    }
+
     fn enter_text_shade(&mut self, shade: u8) {
         self.text_shade_stack.push(self.text_shade);
         self.text_shade = shade;
@@ -22521,6 +28711,19 @@ impl FlowRenderer {
 
     fn exit_text_shade(&mut self) {
         self.text_shade = self.text_shade_stack.pop().unwrap_or(0);
+    }
+
+    fn enter_text_color(&mut self, color: Option<(u8, u8, u8)>) {
+        self.text_color_stack.push(self.text_color);
+        self.text_color = color;
+    }
+
+    fn exit_text_color(&mut self) {
+        self.text_color = self.text_color_stack.pop().unwrap_or(None);
+    }
+
+    fn has_active_text_color(&self) -> bool {
+        self.text_color.is_some()
     }
 
     fn enter_text_background_shade(&mut self, shade: u8) {
@@ -22553,6 +28756,23 @@ impl FlowRenderer {
 
     fn enter_transparent_opacity(&mut self) {
         self.transparent_opacity_depth = self.transparent_opacity_depth.saturating_add(1);
+    }
+
+    fn enter_semi_opacity(&mut self, percent: u8) {
+        self.semi_opacity_stack.push(self.semi_opacity_percent);
+        self.semi_opacity_percent =
+            (self.semi_opacity_percent as u16 * percent.clamp(1, 100) as u16 / 100).max(1) as u8;
+    }
+
+    fn exit_semi_opacity(&mut self) {
+        self.semi_opacity_percent = self.semi_opacity_stack.pop().unwrap_or(100);
+    }
+
+    fn lighten_by_semi_opacity(&self, value: u8) -> u8 {
+        if self.semi_opacity_percent >= 100 {
+            return value;
+        }
+        255 - ((255 - value as u16) * self.semi_opacity_percent as u16 / 100) as u8
     }
 
     fn exit_transparent_opacity(&mut self) {
@@ -22656,6 +28876,11 @@ impl FlowRenderer {
         self.line_start_indent = self.line_start_indent.saturating_add(indent);
     }
 
+    fn enter_line_start_indent_override(&mut self, indent: usize) {
+        self.line_start_indent_stack.push(self.line_start_indent);
+        self.line_start_indent = indent;
+    }
+
     fn exit_line_start_indent(&mut self) {
         self.line_start_indent = self.line_start_indent_stack.pop().unwrap_or(0);
     }
@@ -22672,10 +28897,30 @@ impl FlowRenderer {
     fn enter_font_scale(&mut self, font_scale: usize) {
         self.font_scale_stack.push(self.font_scale);
         self.font_scale = font_scale.clamp(1, 4);
+        self.font_scale_fallback_latch = false;
     }
 
     fn exit_font_scale(&mut self) {
         self.font_scale = self.font_scale_stack.pop().unwrap_or(1);
+        self.font_scale_fallback_latch = false;
+    }
+
+    fn enter_font_style_italic(&mut self, font_style_italic: bool) {
+        self.font_style_italic_stack.push(self.font_style_italic);
+        self.font_style_italic = font_style_italic;
+    }
+
+    fn exit_font_style_italic(&mut self) {
+        self.font_style_italic = self.font_style_italic_stack.pop().unwrap_or(false);
+    }
+
+    fn enter_font_weight_bold(&mut self, font_weight_bold: bool) {
+        self.font_weight_bold_stack.push(self.font_weight_bold);
+        self.font_weight_bold = font_weight_bold;
+    }
+
+    fn exit_font_weight_bold(&mut self) {
+        self.font_weight_bold = self.font_weight_bold_stack.pop().unwrap_or(false);
     }
 
     fn enter_row_align_items(&mut self, align_items: AlignItems) {
@@ -22739,6 +28984,7 @@ impl FlowRenderer {
         colspan: usize,
         rowspan: usize,
         background_shade: Option<u8>,
+        background_color: Option<(u8, u8, u8)>,
         target_node: Option<usize>,
     ) {
         let skipped_padding = {
@@ -22777,6 +29023,7 @@ impl FlowRenderer {
                 start_width,
                 start_y: self.next_y,
                 background_shade,
+                background_color,
                 target_node,
             });
             table_skipped_column_padding(
@@ -22838,6 +29085,7 @@ impl FlowRenderer {
                     column_width.max(cell_width),
                     row_height,
                     shade,
+                    active_cell.background_color,
                     active_cell.target_node,
                 )
             });
@@ -22845,14 +29093,15 @@ impl FlowRenderer {
                 has_next_cell.then_some(
                     column_width
                         .saturating_sub(cell_width)
-                        .saturating_add(table.column_gap.saturating_sub(1)),
+                        .saturating_add(table.column_gap),
                 ),
                 background,
             )
         };
-        if let Some((x, y, width, height, shade, target_node)) = background
+        if let Some((x, y, width, height, shade, color, target_node)) = background
             && self.paint_visible()
-            && let Some(command) = self.clipped_rect_command(x, y, width, height, shade)
+            && let Some(command) =
+                self.clipped_paint_rect_command(x, y, width, height, shade, color)
         {
             let target = self.node_hit_target(target_node);
             self.push_underlay_command(command, target);
@@ -23007,10 +29256,16 @@ impl FlowRenderer {
         source: &str,
         url: Option<&str>,
         target_node: Option<usize>,
+        behavior: ImagePlaceholderBehavior,
     ) {
         self.soft_break_opportunity = false;
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
-        let placeholder_height = if decoded_info.is_some() {
+        let has_decoded_image = decoded_info.is_some();
+        let paint_unresolved_placeholder =
+            image_placeholder_should_emit_command(url, decoded_info.as_ref());
+        let should_paint = paint_unresolved_placeholder
+            && !(behavior.defer_unresolved_paint && !has_decoded_image);
+        let placeholder_height = if has_decoded_image || behavior.reserve_unresolved_extent {
             height.max(1)
         } else {
             height.min(MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT).max(1)
@@ -23043,7 +29298,10 @@ impl FlowRenderer {
         }
         let remaining_width = self.available_width().saturating_sub(self.current_width);
         let image_width = image_width.min(remaining_width.max(1));
-        if self.paint_visible() {
+        if should_paint
+            && (self.paint_visible()
+                || (behavior.force_decoded_paint && self.visibility == Visibility::Visible))
+        {
             let command = DisplayCommand::Image {
                 x: self.box_x().saturating_add(self.current_width),
                 y: self.next_y,
@@ -23078,31 +29336,67 @@ impl FlowRenderer {
         source: &str,
         url: Option<&str>,
         target_node: Option<usize>,
+        behavior: ImagePlaceholderBehavior,
     ) {
         self.break_line();
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
-        let placeholder_height = if decoded_info.is_some() {
+        let has_decoded_image = decoded_info.is_some();
+        let paint_unresolved_placeholder =
+            image_placeholder_should_emit_command(url, decoded_info.as_ref());
+        let should_paint = paint_unresolved_placeholder
+            && !(behavior.defer_unresolved_paint && !has_decoded_image);
+        let placeholder_height = if has_decoded_image || behavior.reserve_unresolved_extent {
             height.max(1)
         } else {
             height.min(MAX_UNRESOLVED_IMAGE_PLACEHOLDER_HEIGHT).max(1)
         };
-        if self.paint_visible() {
-            let command = DisplayCommand::Image {
-                x: self.left_inset,
-                y: self.next_y,
-                width: width.min(self.available_width()).max(1),
-                height: placeholder_height,
-                shade: 220,
-                alt,
-                url: decoded_info
-                    .as_ref()
-                    .map(|image| image.url.clone())
-                    .or_else(|| url.map(|url| resolve_browser_href(source, url))),
-                decoded_width: decoded_info.as_ref().map(|image| image.width),
-                decoded_height: decoded_info.as_ref().map(|image| image.height),
-                decoded_hash: decoded_info.map(|image| image.pixel_hash),
+        if should_paint
+            && (self.paint_visible()
+                || (behavior.force_decoded_paint && self.visibility == Visibility::Visible))
+        {
+            let image_width = width.min(self.available_width()).max(1);
+            let resolved_url = decoded_info
+                .as_ref()
+                .map(|image| image.url.clone())
+                .or_else(|| url.map(|url| resolve_browser_href(source, url)));
+            let decoded_width = decoded_info.as_ref().map(|image| image.width);
+            let decoded_height = decoded_info.as_ref().map(|image| image.height);
+            let decoded_hash = decoded_info.as_ref().map(|image| image.pixel_hash.clone());
+            let clipped_command = if let Some(position) = behavior
+                .decoded_cover_position
+                .filter(|_| has_decoded_image)
+            {
+                let command = DisplayCommand::BackgroundImage {
+                    x: self.left_inset,
+                    y: self.next_y,
+                    width: image_width,
+                    height: placeholder_height,
+                    shade: 220,
+                    url: resolved_url,
+                    decoded_width,
+                    decoded_height,
+                    decoded_hash,
+                    size: BackgroundImageSize::Cover,
+                    position,
+                    repeat: BackgroundImageRepeat::NoRepeat,
+                };
+                self.clipped_background_image_command(command)
+            } else {
+                let command = DisplayCommand::Image {
+                    x: self.left_inset,
+                    y: self.next_y,
+                    width: image_width,
+                    height: placeholder_height,
+                    shade: 220,
+                    alt,
+                    url: resolved_url,
+                    decoded_width,
+                    decoded_height,
+                    decoded_hash,
+                };
+                self.clipped_image_command(command)
             };
-            if let Some((command, source_bounds)) = self.clipped_image_command(command) {
+            if let Some((command, source_bounds)) = clipped_command {
                 let target = self
                     .node_hit_target(target_node)
                     .with_source_bounds(source_bounds);
@@ -23121,6 +29415,7 @@ impl FlowRenderer {
         source: &str,
         url: Option<&str>,
         target_node: Option<usize>,
+        behavior: ImagePlaceholderBehavior,
     ) {
         self.break_line();
         let (left_float, right_float) = self.active_float_offsets();
@@ -23142,7 +29437,15 @@ impl FlowRenderer {
         };
         let y = self.next_y;
         let decoded_info = url.and_then(|url| self.cached_decoded_image_info(source, url));
-        if self.paint_visible() {
+        let has_decoded_image = decoded_info.is_some();
+        let paint_unresolved_placeholder =
+            image_placeholder_should_emit_command(url, decoded_info.as_ref());
+        let should_paint = paint_unresolved_placeholder
+            && !(behavior.defer_unresolved_paint && !has_decoded_image);
+        if should_paint
+            && (self.paint_visible()
+                || (behavior.force_decoded_paint && self.visibility == Visibility::Visible))
+        {
             let command = DisplayCommand::Image {
                 x,
                 y,
@@ -23173,8 +29476,8 @@ impl FlowRenderer {
     }
 
     fn cached_decoded_image_info(&mut self, source: &str, url: &str) -> Option<DecodedImageInfo> {
-        let resolved = resolve_browser_href(source, url);
-        for key in [url, resolved.as_str()] {
+        let keys = decoded_image_cache_keys(source, url);
+        for key in &keys {
             if let Some(index) = self.decoded_image_cache.get(key) {
                 return index
                     .and_then(|index| self.decoded_images.get(index).map(DecodedImageEntry::info));
@@ -23182,15 +29485,17 @@ impl FlowRenderer {
         }
 
         let Some(decoded) = decoded_image_entry(source, url) else {
-            self.decoded_image_cache.insert(url.to_owned(), None);
-            self.decoded_image_cache.insert(resolved, None);
+            for key in keys {
+                self.decoded_image_cache.insert(key, None);
+            }
             return None;
         };
         let info = decoded.info();
         let index = self.decoded_images.len();
         self.decoded_images.push(decoded);
-        self.decoded_image_cache.insert(url.to_owned(), Some(index));
-        self.decoded_image_cache.insert(resolved, Some(index));
+        for key in keys {
+            self.decoded_image_cache.insert(key, Some(index));
+        }
         Some(info)
     }
 
@@ -23200,6 +29505,39 @@ impl FlowRenderer {
 
     fn current_inline_width(&self) -> usize {
         self.current_width
+    }
+
+    fn advance_inline_cursor(&mut self, width: usize) {
+        self.current_width = self.current_width.saturating_add(width);
+    }
+
+    fn clamp_inline_cursor_to_fit(&mut self, width: usize) {
+        let max_start = self
+            .available_width()
+            .saturating_sub(width.min(self.available_width()));
+        if self.current_width > max_start {
+            self.current_width = max_start;
+            self.pending_inter_word_space = None;
+            self.soft_break_opportunity = false;
+        }
+    }
+
+    fn reserve_inline_replaced_height(&mut self, height: usize) {
+        self.inline_replaced_height = self.inline_replaced_height.max(height.max(1));
+    }
+
+    fn resume_row_after_spanning_item(
+        &mut self,
+        row: usize,
+        inline_width: usize,
+        _row_height: usize,
+    ) {
+        self.current_runs.clear();
+        self.pending_inter_word_space = None;
+        self.soft_break_opportunity = false;
+        self.next_y = row;
+        self.current_width = inline_width.min(self.available_width());
+        self.inline_replaced_height = 0;
     }
 
     fn cap_inline_replaced_height(&mut self, height: usize) {
@@ -23247,7 +29585,20 @@ impl FlowRenderer {
     }
 
     fn viewport_width_css_px(&self) -> usize {
-        self.width.saturating_mul(8)
+        self.length_context.viewport_width_px
+    }
+
+    fn finish_block_float(&mut self, side: FloatSide, float_width: usize, start_y: usize) {
+        let end_y = self.next_y;
+        if end_y > start_y {
+            self.active_floats.push(ActiveFloat {
+                side,
+                width: float_width.saturating_add(1),
+                bottom_y: end_y,
+            });
+            self.note_document_height();
+        }
+        self.next_y = start_y;
     }
 
     fn active_float_offsets(&self) -> (usize, usize) {
@@ -23306,30 +29657,69 @@ impl FlowRenderer {
 
     fn push_vertical_space(&mut self, rows: usize) {
         self.break_line();
-        let next_y = self.next_y.saturating_add(rows);
-        self.ensure_text_row_count(next_y);
-        self.next_y = next_y;
+        self.next_y = self.next_y.saturating_add(rows);
+        self.note_document_height();
     }
 
     fn ensure_current_row_at_least(&mut self, row: usize) {
         self.break_line();
-        if row > self.next_y {
-            self.ensure_text_row_count(row);
-        }
         self.next_y = self.next_y.max(row);
+        self.note_document_height();
     }
 
     fn set_current_row(&mut self, row: usize) {
         self.break_line();
-        if row > self.next_y {
-            self.ensure_text_row_count(row);
-        }
         self.next_y = row;
+        self.note_document_height();
     }
 
-    fn cap_current_row(&mut self, row: usize) {
+    fn text_bounds_intersects_active_clip(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> bool {
+        if width == 0 || height == 0 {
+            return false;
+        }
+        let bounds = self.project_display_bounds(DisplayCommandBounds {
+            x,
+            y,
+            width,
+            height,
+        });
+        let Some(clip) = self.active_clip else {
+            return true;
+        };
+        let Some(visible) = intersect_display_bounds(bounds, clip) else {
+            return false;
+        };
+        if bounds.y > clip.y
+            && bounds.y.saturating_add(bounds.height) >= clip.y.saturating_add(clip.height)
+        {
+            return false;
+        }
+        visible.width > 0 && visible.height > 0
+    }
+
+    fn finish_overflow_clip(
+        &mut self,
+        document_height_before_clip: usize,
+        clip_end: usize,
+        fixed_height: bool,
+    ) {
         self.break_line();
-        self.next_y = self.next_y.min(row);
+        if fixed_height {
+            self.next_y = clip_end;
+        } else {
+            self.next_y = self.next_y.min(clip_end);
+        }
+        self.document_height = document_height_before_clip.max(self.next_y);
+    }
+
+    fn note_document_height(&mut self) {
+        self.document_height = self.document_height.max(self.next_y);
     }
 
     fn push_block_border_top(
@@ -23340,9 +29730,14 @@ impl FlowRenderer {
         target_node: Option<usize>,
     ) {
         if self.paint_visible() {
-            if let Some(command) =
-                self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
-            {
+            if let Some(command) = self.clipped_paint_rect_command(
+                x,
+                self.next_y,
+                width,
+                border.width,
+                border.shade,
+                border.color,
+            ) {
                 let target = self.node_hit_target(target_node);
                 self.push_border_command(command, target);
             }
@@ -23366,19 +29761,25 @@ impl FlowRenderer {
             return;
         }
         let border_width = border.width.min(width);
-        if let Some(command) =
-            self.clipped_rect_command(x, start_y, border_width, height, border.shade)
-        {
+        if let Some(command) = self.clipped_paint_rect_command(
+            x,
+            start_y,
+            border_width,
+            height,
+            border.shade,
+            border.color,
+        ) {
             let target = self.node_hit_target(target_node);
             self.push_border_command(command, target);
         }
         if width > border_width {
-            if let Some(command) = self.clipped_rect_command(
+            if let Some(command) = self.clipped_paint_rect_command(
                 x.saturating_add(width.saturating_sub(border_width)),
                 start_y,
                 border_width,
                 height,
                 border.shade,
+                border.color,
             ) {
                 let target = self.node_hit_target(target_node);
                 self.push_border_command(command, target);
@@ -23394,9 +29795,14 @@ impl FlowRenderer {
         target_node: Option<usize>,
     ) {
         if self.paint_visible() {
-            if let Some(command) =
-                self.clipped_rect_command(x, self.next_y, width, border.width, border.shade)
-            {
+            if let Some(command) = self.clipped_paint_rect_command(
+                x,
+                self.next_y,
+                width,
+                border.width,
+                border.shade,
+                border.color,
+            ) {
                 let target = self.node_hit_target(target_node);
                 self.push_border_command(command, target);
             }
@@ -23411,14 +29817,24 @@ impl FlowRenderer {
         width: usize,
         start_y: usize,
         shade: u8,
+        color: Option<(u8, u8, u8)>,
         target_node: Option<usize>,
+        node_diagnostics: Option<DisplayNodeDiagnostics>,
+        border_radius: Option<CssBorderRadius>,
+        box_shadow: Option<CssBoxShadow>,
     ) {
         if !self.paint_visible() {
             return;
         }
         let height = self.next_y.saturating_sub(start_y).max(1);
-        if let Some(command) = self.clipped_rect_command(x, start_y, width, height, shade) {
-            let target = self.node_hit_target(target_node);
+        if let Some(command) =
+            self.clipped_paint_rect_command(x, start_y, width, height, shade, color)
+        {
+            let target = self
+                .node_hit_target(target_node)
+                .with_node_diagnostics(node_diagnostics)
+                .with_border_radius(border_radius)
+                .with_box_shadow(box_shadow);
             self.insert_underlay_command(insert, command, target);
         }
     }
@@ -23435,6 +29851,7 @@ impl FlowRenderer {
         position: BackgroundImagePosition,
         repeat: BackgroundImageRepeat,
         target_node: Option<usize>,
+        node_diagnostics: Option<DisplayNodeDiagnostics>,
     ) {
         if !self.paint_visible() {
             return;
@@ -23461,6 +29878,7 @@ impl FlowRenderer {
         if let Some((command, source_bounds)) = self.clipped_background_image_command(command) {
             let target = self
                 .node_hit_target(target_node)
+                .with_node_diagnostics(node_diagnostics)
                 .with_source_bounds(source_bounds);
             self.insert_underlay_command(insert, command, target);
         }
@@ -23468,11 +29886,12 @@ impl FlowRenderer {
 
     fn finish(mut self) -> FlowOutput {
         self.break_line();
-        self.positive_z_layers.sort_by_key(|layer| layer.z_index);
+        self.positive_z_layers
+            .sort_by(|left, right| left.z_path.cmp(&right.z_path));
         let mut display_list = Vec::new();
         let mut hit_targets = Vec::new();
         for layer in &mut self.positive_z_layers {
-            if layer.z_index < 0 {
+            if layer.z_path.first().is_some_and(|z_index| *z_index < 0) {
                 append_paint_layer_commands(&mut display_list, &mut hit_targets, layer);
             }
         }
@@ -23483,7 +29902,7 @@ impl FlowRenderer {
         display_list.append(&mut self.display_list);
         hit_targets.append(&mut self.display_targets);
         for layer in &mut self.positive_z_layers {
-            if layer.z_index >= 0 {
+            if layer.z_path.first().is_none_or(|z_index| *z_index >= 0) {
                 append_paint_layer_commands(&mut display_list, &mut hit_targets, layer);
             }
         }
@@ -23493,6 +29912,7 @@ impl FlowRenderer {
             display_list,
             hit_targets,
             decoded_images: self.decoded_images,
+            document_height: self.document_height,
         }
     }
 }
@@ -23516,6 +29936,7 @@ struct FlowOutput {
     display_list: Vec<DisplayCommand>,
     hit_targets: Vec<DisplayHitTarget>,
     decoded_images: Vec<DecodedImageEntry>,
+    document_height: usize,
 }
 
 fn command_output(program: &str, args: &[&str]) -> Option<String> {

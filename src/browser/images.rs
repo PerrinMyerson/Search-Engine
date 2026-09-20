@@ -9,10 +9,10 @@ use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat as JpegPixelFormat};
 use memchr::memchr;
 use url::Url;
 
-use super::resources::BrowserResourceCache;
+use super::resources::{BrowserResource, BrowserResourceCache};
 use super::{
-    Dom, ElementData, NodeKind, TagKind, parse_attributes, parse_css_color_shade, parse_tag,
-    resolve_browser_href,
+    BrowserRender, DisplayCommand, Dom, ElementData, NodeKind, TagKind, parse_attributes,
+    parse_css_color_shade, parse_tag, resolve_browser_href,
 };
 
 const MAX_DECODED_IMAGE_SIDE: usize = 4096;
@@ -110,6 +110,19 @@ pub(super) fn decoded_image_entry(source: &str, url: &str) -> Option<DecodedImag
 pub(super) fn decoded_cached_images(cache: &BrowserResourceCache) -> Vec<DecodedImageEntry> {
     cache
         .cached_resources()
+        .filter_map(|(url, content_type, bytes)| {
+            decoded_cached_image_entry(url, content_type, bytes)
+        })
+        .collect()
+}
+
+pub(super) fn decoded_cached_images_for_urls(
+    cache: &BrowserResourceCache,
+    urls: &std::collections::HashSet<String>,
+) -> Vec<DecodedImageEntry> {
+    cache
+        .cached_resources()
+        .filter(|(url, _, _)| urls.contains(*url))
         .filter_map(|(url, content_type, bytes)| {
             decoded_cached_image_entry(url, content_type, bytes)
         })
@@ -3073,7 +3086,16 @@ fn parse_svg_transform(value: &str) -> Option<SvgTransform> {
 }
 
 fn svg_shape_fill_paint(attrs: &HashMap<String, String>) -> Option<SvgPaint> {
-    svg_shape_paint(attrs, "fill")
+    svg_shape_paint(attrs, "fill").or_else(|| {
+        (!svg_shape_declares_paint(attrs, "fill")).then(|| {
+            let rgb = [0, 0, 0];
+            SvgPaint {
+                shade: 0,
+                rgb,
+                alpha: svg_shape_paint_alpha(attrs, "fill"),
+            }
+        })
+    })
 }
 
 fn svg_shape_fill_linear_gradient(
@@ -3155,6 +3177,13 @@ fn svg_shape_paint_value<'a>(
         .map(String::as_str)
         .and_then(svg_paint_value)
         .or_else(|| svg_style_paint_value(attrs.get("style")?, property))
+}
+
+fn svg_shape_declares_paint(attrs: &HashMap<String, String>, property: &str) -> bool {
+    attrs.contains_key(property)
+        || attrs
+            .get("style")
+            .is_some_and(|style| svg_style_declares_property(style, property))
 }
 
 fn svg_style_paint_value<'a>(style: &'a str, property: &str) -> Option<&'a str> {
@@ -4632,7 +4661,7 @@ pub(super) fn image_render_source(
             element
                 .srcset
                 .as_deref()
-                .and_then(|srcset| choose_srcset_candidate(srcset, srcset_target_width))
+                .and_then(|srcset| choose_element_srcset_candidate(srcset, srcset_target_width))
         })
         .or_else(|| element.src.clone());
     if selected_source.as_deref().is_none_or(|source| {
@@ -4647,6 +4676,175 @@ pub(super) fn image_render_source(
         return Some(lazy_source);
     }
     selected_source
+}
+
+pub(super) fn apply_first_viewport_width_variants(
+    resources: &mut [BrowserResource],
+    viewport_width_css_px: usize,
+    render: &BrowserRender,
+) {
+    let fallback_width = viewport_image_variant_width(viewport_width_css_px);
+    let rendered_widths = rendered_image_variant_widths(render, viewport_width_css_px);
+    for resource in resources {
+        if !matches!(resource.kind.as_str(), "image" | "poster" | "background") {
+            continue;
+        }
+        let width = rendered_widths
+            .get(&resource.resolved)
+            .copied()
+            .unwrap_or(fallback_width);
+        if let Some(variant) = image_width_query_variant_url(&resource.resolved, width) {
+            resource.resolved = variant;
+        }
+    }
+}
+
+fn rendered_image_variant_widths(
+    render: &BrowserRender,
+    viewport_width_css_px: usize,
+) -> HashMap<String, usize> {
+    let cell_width_px = viewport_width_css_px
+        .checked_div(render.viewport_width.max(1))
+        .unwrap_or(1)
+        .max(1);
+    let mut widths = HashMap::new();
+    for command in &render.display_list {
+        let (url, width_cells) = match command {
+            DisplayCommand::Image {
+                url: Some(url),
+                width,
+                ..
+            }
+            | DisplayCommand::BackgroundImage {
+                url: Some(url),
+                width,
+                ..
+            } => (url, *width),
+            _ => continue,
+        };
+        let width = viewport_image_variant_width(width_cells.saturating_mul(cell_width_px));
+        let resolved = resolve_browser_href(&render.source, url);
+        widths
+            .entry(resolved)
+            .and_modify(|current: &mut usize| *current = (*current).max(width))
+            .or_insert(width);
+    }
+    widths
+}
+
+fn viewport_image_variant_width(viewport_width_css_px: usize) -> usize {
+    let width = viewport_width_css_px.clamp(320, 1200);
+    width.div_ceil(100).saturating_mul(100)
+}
+
+fn image_width_query_variant_url(url: &str, width: usize) -> Option<String> {
+    let mut parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if !host_supports_width_query_images(&host) || !path_is_raster_image(parsed.path()) {
+        return None;
+    }
+    if parsed
+        .query_pairs()
+        .any(|(name, _)| matches_ignore_ascii_case(&name, &["w", "width"]))
+    {
+        return None;
+    }
+    parsed
+        .query_pairs_mut()
+        .append_pair("w", &width.to_string());
+    Some(parsed.into())
+}
+
+pub(super) fn image_width_variant_canonical_url(url: &str) -> Option<String> {
+    let mut parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if !path_is_raster_image(parsed.path()) {
+        return None;
+    }
+
+    let mut changed = false;
+    let retained_pairs = parsed
+        .query_pairs()
+        .filter_map(|(name, value)| {
+            let is_width_query = matches_ignore_ascii_case(&name, &["w", "width"])
+                && host_supports_width_query_images(&host)
+                && parse_image_width_variant_value(&value).is_some();
+            let is_format_width = name.eq_ignore_ascii_case("format")
+                && host_supports_format_width_images(&host)
+                && parse_image_width_variant_value(&value).is_some();
+            if is_width_query || is_format_width {
+                changed = true;
+                None
+            } else {
+                Some((name.into_owned(), value.into_owned()))
+            }
+        })
+        .collect::<Vec<_>>();
+    if !changed {
+        return None;
+    }
+
+    parsed.set_query(None);
+    if !retained_pairs.is_empty() {
+        let mut pairs = parsed.query_pairs_mut();
+        for (name, value) in retained_pairs {
+            pairs.append_pair(&name, &value);
+        }
+    }
+    Some(parsed.into())
+}
+
+pub(super) fn image_width_variant_width(url: &str) -> Option<usize> {
+    let parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || !path_is_raster_image(parsed.path()) {
+        return None;
+    }
+    parsed.query_pairs().find_map(|(name, value)| {
+        if matches_ignore_ascii_case(&name, &["w", "width"]) || name.eq_ignore_ascii_case("format")
+        {
+            parse_image_width_variant_value(&value)
+        } else {
+            None
+        }
+    })
+}
+
+fn host_supports_width_query_images(host: &str) -> bool {
+    host == "i.natgeofe.com"
+        || host.ends_with(".imgix.net")
+        || host == "images.unsplash.com"
+        || host == "images.ctfassets.net"
+}
+
+fn host_supports_format_width_images(host: &str) -> bool {
+    host == "images.squarespace-cdn.com" || host.ends_with(".squarespace-cdn.com")
+}
+
+fn parse_image_width_variant_value(value: &str) -> Option<usize> {
+    let value = value.trim();
+    let width = value.strip_suffix(['w', 'W']).unwrap_or(value);
+    let width = width.parse::<usize>().ok()?;
+    (width > 0).then_some(width)
+}
+
+fn path_is_raster_image(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    matches!(
+        path.rsplit('.').next(),
+        Some("jpg" | "jpeg" | "png" | "webp")
+    )
+}
+
+fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 pub(super) fn background_image_render_source(
@@ -5367,6 +5565,7 @@ fn lazy_image_render_source(
                 )
             })
         })
+        .or_else(|| high_resolution_image_srcset_render_source(element, desired_width))
         .or_else(|| {
             first_non_empty_attr(
                 element,
@@ -5535,6 +5734,27 @@ fn lazy_image_render_source(
             )
             .map(str::to_owned)
         })
+}
+
+fn high_resolution_image_srcset_render_source(
+    element: &ElementData,
+    desired_width: Option<usize>,
+) -> Option<String> {
+    first_non_empty_attr(
+        element,
+        &[
+            "data-image-srcset",
+            "data-image-src-set",
+            "data-imagesrcset",
+        ],
+    )
+    .and_then(|srcset| {
+        choose_high_resolution_srcset_candidate_for_type(
+            srcset,
+            desired_width,
+            element.type_hint.as_deref(),
+        )
+    })
 }
 
 pub(super) fn lazy_width_template_render_source(
@@ -5926,6 +6146,44 @@ mod tests {
     }
 
     #[test]
+    fn first_viewport_width_variants_use_known_cdn_query_width_aliases() {
+        assert_eq!(
+            image_width_query_variant_url(
+                "https://i.natgeofe.com/k/id/jamaica-beach.jpg",
+                viewport_image_variant_width(767)
+            )
+            .as_deref(),
+            Some("https://i.natgeofe.com/k/id/jamaica-beach.jpg?w=800")
+        );
+        assert_eq!(
+            image_width_query_variant_url("https://i.natgeofe.com/k/id/already.jpg?w=640", 800),
+            None
+        );
+        assert_eq!(
+            image_width_query_variant_url("https://example.test/photo.jpg", 800),
+            None
+        );
+        assert_eq!(
+            image_width_variant_canonical_url(
+                "https://images.squarespace-cdn.com/content/logo.png?format=500w"
+            )
+            .as_deref(),
+            Some("https://images.squarespace-cdn.com/content/logo.png")
+        );
+        assert_eq!(
+            image_width_variant_canonical_url("https://i.natgeofe.com/k/id/beach.jpg?w=800")
+                .as_deref(),
+            Some("https://i.natgeofe.com/k/id/beach.jpg")
+        );
+        assert_eq!(
+            image_width_variant_width(
+                "https://images.squarespace-cdn.com/content/logo.png?format=500w"
+            ),
+            Some(500)
+        );
+    }
+
+    #[test]
     fn downscales_jpeg_before_decode_when_pixel_buffer_would_exceed_limit() {
         let decoded = decode_jpeg_with_max_side(&tiny_test_jpeg_bytes(), 1).unwrap();
 
@@ -6115,6 +6373,21 @@ mod tests {
         assert_eq!(decoded.width, 3);
         assert_eq!(decoded.height, 2);
         assert_eq!(decoded.pixels, vec![0; 6]);
+    }
+
+    #[test]
+    fn svg_paths_and_shapes_default_to_black_fill() {
+        let svg = br#"<svg width="4" height="2" viewBox="0 0 4 2" xmlns="http://www.w3.org/2000/svg"><path d="M0,0h4v2H0z"/></svg>"#;
+        let decoded = decode_cached_resource_image(
+            "https://cdn.example.test/default-fill.svg",
+            Some("image/svg+xml"),
+            svg,
+        )
+        .unwrap();
+
+        assert_eq!(decoded.width, 4);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels, vec![0; 8]);
     }
 
     #[test]
@@ -6666,7 +6939,33 @@ fn choose_srcset_candidate_for_type(
         return None;
     }
     let candidates = supported_srcset_candidates_for_type(&candidates, type_hint);
+    choose_srcset_candidate_from_candidates(candidates, desired_width)
+}
 
+fn choose_high_resolution_srcset_candidate_for_type(
+    srcset: &str,
+    desired_width: Option<usize>,
+    type_hint: Option<&str>,
+) -> Option<String> {
+    let candidates = parse_srcset_candidates(srcset);
+    if candidates.is_empty() {
+        return None;
+    }
+    let candidates = supported_srcset_candidates_for_type(&candidates, type_hint);
+    choose_srcset_candidate_from_candidates(
+        candidates,
+        high_resolution_srcset_target(desired_width),
+    )
+}
+
+fn high_resolution_srcset_target(desired_width: Option<usize>) -> Option<usize> {
+    desired_width.map(|width| width.saturating_mul(2).max(1))
+}
+
+fn choose_srcset_candidate_from_candidates(
+    candidates: Vec<&SrcsetCandidate>,
+    desired_width: Option<usize>,
+) -> Option<String> {
     let width_candidates = candidates
         .iter()
         .copied()
@@ -6723,6 +7022,17 @@ fn choose_srcset_candidate_for_type(
     candidates.first().map(|candidate| candidate.url.clone())
 }
 
+fn choose_element_srcset_candidate(srcset: &str, desired_width: Option<usize>) -> Option<String> {
+    let candidates = parse_srcset_candidates(srcset);
+    if candidates.is_empty() {
+        return None;
+    }
+    choose_srcset_candidate_from_candidates(
+        supported_srcset_candidates_preserving_data_urls(&candidates),
+        desired_width,
+    )
+}
+
 pub(super) fn selected_srcset_candidate(
     srcset: &str,
     sizes: Option<&str>,
@@ -6739,7 +7049,30 @@ pub(super) fn selected_supported_srcset_candidate(
     sizes: Option<&str>,
     viewport_width_css_px: usize,
 ) -> Option<String> {
-    let candidate = selected_srcset_candidate(srcset, sizes, viewport_width_css_px)?;
+    let candidates = parse_srcset_candidates(srcset);
+    if candidates.is_empty() {
+        return None;
+    }
+    let candidate = choose_srcset_candidate_from_candidates(
+        supported_srcset_candidates(&candidates),
+        srcset_target_width_from_sizes(sizes, viewport_width_css_px),
+    )?;
+    (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
+}
+
+pub(super) fn selected_supported_high_resolution_srcset_candidate(
+    srcset: &str,
+    sizes: Option<&str>,
+    viewport_width_css_px: usize,
+) -> Option<String> {
+    let candidates = parse_srcset_candidates(srcset);
+    if candidates.is_empty() {
+        return None;
+    }
+    let candidate = choose_srcset_candidate_from_candidates(
+        supported_srcset_candidates(&candidates),
+        high_resolution_srcset_target(srcset_target_width_from_sizes(sizes, viewport_width_css_px)),
+    )?;
     (!srcset_candidate_clearly_unsupported(&candidate)).then_some(candidate)
 }
 
@@ -6790,12 +7123,19 @@ fn supported_srcset_candidates_for_type<'a>(
     candidates: &'a [SrcsetCandidate],
     type_hint: Option<&str>,
 ) -> Vec<&'a SrcsetCandidate> {
-    let supported = candidates
+    let mut supported = candidates
         .iter()
         .filter(|candidate| {
             !srcset_candidate_clearly_unsupported_for_type(&candidate.url, type_hint)
         })
         .collect::<Vec<_>>();
+    if type_hint.is_some_and(image_mime_type_supported)
+        && supported
+            .iter()
+            .any(|candidate| !image_url_has_unsupported_extension(&candidate.url))
+    {
+        supported.retain(|candidate| !image_url_has_unsupported_extension(&candidate.url));
+    }
     if supported.is_empty() {
         candidates.iter().collect()
     } else if supported
@@ -6809,6 +7149,39 @@ fn supported_srcset_candidates_for_type<'a>(
     } else {
         supported
     }
+}
+
+fn supported_srcset_candidates_preserving_data_urls(
+    candidates: &[SrcsetCandidate],
+) -> Vec<&SrcsetCandidate> {
+    let supported = candidates
+        .iter()
+        .filter(|candidate| !srcset_candidate_clearly_unsupported(&candidate.url))
+        .collect::<Vec<_>>();
+    if supported.is_empty() {
+        candidates.iter().collect()
+    } else if supported
+        .iter()
+        .any(|candidate| !is_direct_srcset_placeholder_candidate(&candidate.url))
+    {
+        supported
+            .into_iter()
+            .filter(|candidate| !is_direct_srcset_placeholder_candidate(&candidate.url))
+            .collect()
+    } else {
+        supported
+    }
+}
+
+fn is_direct_srcset_placeholder_candidate(url: &str) -> bool {
+    let url = url.trim_start();
+    if url
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+        return false;
+    }
+    is_lazy_image_placeholder_src(url)
 }
 
 fn srcset_all_candidates_clearly_unsupported_for_type(
@@ -6847,6 +7220,12 @@ fn srcset_candidate_clearly_unsupported_for_type(url: &str, type_hint: Option<&s
         return false;
     };
     unsupported_image_extension(&extension)
+}
+
+fn image_url_has_unsupported_extension(url: &str) -> bool {
+    image_extension_from_url(url)
+        .as_deref()
+        .is_some_and(unsupported_image_extension)
 }
 
 fn parse_srcset_candidates(srcset: &str) -> Vec<SrcsetCandidate> {

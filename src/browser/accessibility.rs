@@ -92,7 +92,10 @@ pub fn accessibility_tree_from_html(source: &str, html: &[u8]) -> BrowserAccessi
     execute_scripts_with_runtime(&mut dom, &mut runtime, &parsed.inline_scripts);
     drain_timer_tasks(&mut dom, &mut runtime);
 
-    let css_cascade = parse_css(&parsed.style_text);
+    let css_cascade = parse_css(
+        &parsed.style_text,
+        BrowserRenderOptions::default().css_length_context(),
+    );
     let title = dom_title(&dom);
     let mut builder = AccessibilityTreeBuilder::default();
     let root_id = builder.add_node(

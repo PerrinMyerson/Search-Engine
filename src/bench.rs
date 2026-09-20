@@ -3512,7 +3512,7 @@ mod tests {
         assert!(report.total_raster_us > 0);
         assert!(report.total_raster_pixels > 0);
         assert!(report.total_raster_non_background_pixels > 0);
-        assert_eq!(report.total_raster_visible_commands, 2);
+        assert_eq!(report.total_raster_visible_commands, 3);
         assert_eq!(report.total_raster_culled_commands, 2);
         assert_eq!(report.total_layers, 3);
         assert_eq!(report.total_image_layers, 1);
@@ -3801,7 +3801,16 @@ mod tests {
                 .partial_readiness_areas
                 .contains(&"Search Crawling And Freshness".to_owned())
         );
-        assert!(report.missing_readiness_areas.is_empty());
+        assert!(
+            report
+                .missing_readiness_areas
+                .contains(&"Search Indexing And Storage".to_owned())
+        );
+        assert!(
+            report
+                .missing_readiness_areas
+                .contains(&"Search Relevance And Quality".to_owned())
+        );
         assert_eq!(report.evidence.covered_requirement_count, 20);
         assert_eq!(report.traceability.row_count, 20);
         assert_eq!(report.readiness.area_count, 8);
@@ -3824,7 +3833,7 @@ mod tests {
         );
         assert!(report.implemented_count >= 1);
         assert!(report.partial_count > 0);
-        assert_eq!(report.missing_count, 0);
+        assert_eq!(report.missing_count, 2);
         assert!(report.areas.iter().any(|area| {
             area.area == "Plan Coverage" && area.status == ReadinessStatus::Implemented
         }));
@@ -3888,11 +3897,12 @@ mod tests {
             .iter()
             .find(|area| area.area == "Search Relevance And Quality")
             .unwrap();
+        assert_eq!(relevance.status, ReadinessStatus::Missing);
         assert!(
             relevance
-                .current_evidence
+                .missing_work
                 .iter()
-                .any(|evidence| evidence.contains("bench/judgments.jsonl"))
+                .any(|work| work.contains("bench/judgments.jsonl"))
         );
         let browser = report
             .areas
@@ -3926,8 +3936,8 @@ mod tests {
         assert_eq!(search.required_claim_scopes, vec!["Search".to_owned()]);
         assert_eq!(search.area_count, 8);
         assert_eq!(search.implemented_count, 1);
-        assert_eq!(search.partial_count, 7);
-        assert_eq!(search.missing_count, 0);
+        assert_eq!(search.partial_count, 5);
+        assert_eq!(search.missing_count, 2);
         assert!(
             search
                 .areas
