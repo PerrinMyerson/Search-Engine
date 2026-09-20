@@ -16,17 +16,17 @@ struct FileSizeBudget {
 // or why the file owns a naturally large boundary.
 const EXPLICIT_LARGE_FILE_BUDGETS: &[FileSizeBudget] = &[
     FileSizeBudget {
-        path: "src/bin/brutal-browser.rs",
+        path: "src/bin/esoteric-browser.rs",
         max_lines: 2_600,
         rationale: "Browser CLI accumulates one subcommand per engine lane (render/styled/scripted/raster/session); split command families into modules once the lane set stabilizes.",
     },
     FileSizeBudget {
-        path: "src/bin/brutal-search.rs",
+        path: "src/bin/esoteric-search.rs",
         max_lines: 9_500,
         rationale: "Search CLI still centralizes storage audits, crawl/index commands, and command tests; keep growth visible while command families move into modules.",
     },
     FileSizeBudget {
-        path: "src/bin/brutal_browser_window/mod.rs",
+        path: "src/bin/esoteric_browser_window/mod.rs",
         max_lines: 5_700,
         rationale: "Native browser window prototype still owns event handling and view glue in one boundary; split once the browser session protocol stabilizes.",
     },

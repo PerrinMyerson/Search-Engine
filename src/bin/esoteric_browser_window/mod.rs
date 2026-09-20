@@ -3,17 +3,17 @@ use std::path::PathBuf;
 use anyhow::Result;
 #[cfg(any(test, feature = "native-window"))]
 use anyhow::ensure;
+use clap::Args;
 #[cfg(any(test, feature = "native-window"))]
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BROWSER_ABOUT_BLANK_TARGET, BrowserAppWindowFrameOptions, BrowserRasterOptions,
     BrowserRgbaRaster,
 };
 #[cfg(feature = "native-window")]
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BrowserApp, BrowserAppAction, BrowserAppOptions, BrowserAppWindowHit, BrowserCookieJar,
     BrowserLocalStorage, BrowserRenderOptions,
 };
-use clap::Args;
 
 #[cfg(feature = "native-window")]
 use crate::{
@@ -56,7 +56,7 @@ pub(crate) async fn run_browser_window_cli(args: BrowserWindowCli) -> Result<()>
     {
         let _ = args;
         anyhow::bail!(
-            "native browser window support is not enabled; rebuild with `cargo run --features native-window --bin brutal-browser -- window <target>`"
+            "native browser window support is not enabled; rebuild with `cargo run --features native-window --bin esoteric-browser -- window <target>`"
         );
     }
 }
@@ -355,7 +355,7 @@ mod native {
     use std::rc::Rc;
 
     use anyhow::{Context, Result};
-    use brutal_search::browser::BrowserAppWindowFrame;
+    use esoteric_search::browser::BrowserAppWindowFrame;
     use minifb::{
         InputCallback, Key, KeyRepeat, MouseButton, MouseMode, ScaleMode, Window, WindowOptions,
     };

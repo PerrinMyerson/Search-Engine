@@ -1,4 +1,4 @@
-# Brutal Browser Program Plan
+# Esoteric Internet Program Plan
 
 This is the execution plan for turning the current Rust scaffold into an
 independent browser engine and desktop browser product. Blackium Starium✴ remains a
@@ -179,7 +179,7 @@ Deliverables:
 
 Dependencies:
 
-- Current `brutal-searchd` remains the single-node prototype.
+- Current `esoteric-searchd` remains the single-node prototype.
 - Needs sharded index metadata from Workstream C.
 
 Acceptance gates:
@@ -219,7 +219,7 @@ Acceptance gates:
 
 Deliverables:
 
-- Seed implementation now exists as `brutal-browser`: local/HTTP(S) static HTML
+- Seed implementation now exists as `esoteric-browser`: local/HTTP(S) static HTML
   loading, independent DOM construction, simple CSS `display` and `color`
   matching, block text layout, deterministic text/styled-text display-list
   output, terminal render output,
@@ -251,9 +251,9 @@ Deliverables:
   external script fetch/application for that same tiny DOM mutation subset,
   inline `onclick` plus `addEventListener("click", ...)` dispatch for first
   interaction fixtures, local image-aware rerendering through
-  `brutal-browser render-images` for fetched image resources in the currently
+  `esoteric-browser render-images` for fetched image resources in the currently
   supported SVG/PNG/data-URL subset, local display-list hit-test reporting
-  through `brutal-browser hit-test`, an early `brutal-browser browse`
+  through `esoteric-browser hit-test`, an early `esoteric-browser browse`
   local CLI shell over the supported `BrowserSession` subset for
   open/back/forward, current-page reload/refresh, current-page link listing,
   resolved-link activation by zero-based index, exact text, or anchor selector,
@@ -345,7 +345,7 @@ Deliverables:
 
 Dependencies:
 
-- Can start with the tiny `brutal-browser browse` CLI shell independent of the
+- Can start with the tiny `esoteric-browser browse` CLI shell independent of the
   search index; GUI chrome remains a later product layer.
 - Needs JS strategy from Workstream G for modern sites.
 
@@ -510,31 +510,31 @@ Acceptance gates:
 P0:
 
 - Keep expanding the fixture corpus and smoke pipeline. Current
-  `brutal-bench smoke` builds `bench/fixtures/corpus`, searches, renders the top
+  `esoteric-bench smoke` builds `bench/fixtures/corpus`, searches, renders the top
   hit, and emits an in-process benchmark report from one command.
 - Keep hardening benchmark correctness and failure accounting. Current
-  `brutal-bench search
+  `esoteric-bench search
   --chromium-baseline --require-speedup 10` records p50/p95/p99, throughput,
   Rust/Chrome/OS/hardware metadata, corpus hash, index hash, optionally persists
   `bench-status.json`, and fails when the p95 speedup gate is unmet.
   Chromium baselines should be reserved for explicit claim or release gates
   while Stage 1 browser development focuses on local document rendering,
   interaction, memory, and correctness gates.
-- Add relevance evaluation coverage. Current `brutal-bench eval` reads JSONL
+- Add relevance evaluation coverage. Current `esoteric-bench eval` reads JSONL
   judgments and reports MRR, NDCG@K, recall@K, precision@K, unresolved
   judgments, and per-query diagnostics. It also supports threshold gates for
   MRR, NDCG, recall, precision, and unresolved judgments.
-- Add browser coverage gating. Current `brutal-browser coverage` reports
+- Add browser coverage gating. Current `esoteric-browser coverage` reports
   implemented, partial, and missing browser/runtime features and can fail when
   required feature IDs or implemented-ratio thresholds are unmet. Its unweighted
   ratios measure feature-fixture progress only; they are not browser-completion
   percentages and cannot justify Chromium-class claims by themselves.
-- Add top-level claim audit gating. Current `brutal-bench audit` composes
+- Add top-level claim audit gating. Current `esoteric-bench audit` composes
   traceability, evidence-registry coverage, and readiness for `--claim search`,
   `--claim browser`, or `--claim combined`, and fails with
   `--require-complete` until that exact claim has no partial requirements,
   uncovered evidence, or partial readiness areas. Current
-  `brutal-bench readiness` emits the machine-readable search plus browser
+  `esoteric-bench readiness` emits the machine-readable search plus browser
   readiness area audit across plan coverage,
   crawling/freshness, indexing/storage, relevance/quality, serving/product UX,
   browser engine, JavaScript/Web APIs, security/privacy, platform completeness,
@@ -578,7 +578,7 @@ P2:
 
 P3:
 
-- Split the current `brutal-browser` module into browser workspace crates and
+- Split the current `esoteric-browser` module into browser workspace crates and
   shell.
 - Expand DOM/CSS/layout and add paint/display-list MVP for static pages.
 - Integrate a JavaScript engine strategy.
@@ -617,6 +617,6 @@ evidence:
   style gates, multi-tab memory/power/startup reports, and real-page canaries.
 - Security, privacy, compliance, observability, and packaging have shipped
   gates, not just notes.
-- `brutal-bench audit --claim combined --require-complete` passes; until then
+- `esoteric-bench audit --claim combined --require-complete` passes; until then
   the project is explicitly a partial search/browser engine and must not claim
   full product completion.

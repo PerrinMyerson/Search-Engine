@@ -30,7 +30,7 @@ pub(super) struct DecodedImage {
 impl DecodedImage {
     pub(super) fn pixel_hash(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"brutal-browser-decoded-image-v1");
+        hasher.update(b"esoteric-browser-decoded-image-v1");
         hasher.update(&(self.width as u64).to_le_bytes());
         hasher.update(&(self.height as u64).to_le_bytes());
         hasher.update(&self.pixels);
@@ -40,7 +40,7 @@ impl DecodedImage {
     pub(super) fn color_pixel_hash(&self) -> Option<String> {
         let rgb_pixels = self.rgb_pixels.as_ref()?;
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"brutal-browser-decoded-image-rgb-v1");
+        hasher.update(b"esoteric-browser-decoded-image-rgb-v1");
         hasher.update(&(self.width as u64).to_le_bytes());
         hasher.update(&(self.height as u64).to_le_bytes());
         hasher.update(rgb_pixels);

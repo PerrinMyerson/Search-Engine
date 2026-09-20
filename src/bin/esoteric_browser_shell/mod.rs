@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BrowserCookie, BrowserCookieJar, BrowserFocusedControl, BrowserForm, BrowserFormOption,
     BrowserHistorySnapshot, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRenderOptions,
     BrowserRgbaRasterReport, BrowserSession, BrowserTextViewportOptions, BrowserTextViewportReport,

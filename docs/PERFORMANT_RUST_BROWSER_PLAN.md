@@ -127,12 +127,12 @@ benchmark pass.
   viewport-window culling for terminal/text raster output from whole-document
   scroll offsets, deterministic RGBA viewport frame surfaces with dirty pixel
   rectangles, a reusable `BrowserApp` state boundary for tab/navigation/input
-  actions over those frames, a scripted/stdin `brutal-browser app` command for
+  actions over those frames, a scripted/stdin `esoteric-browser app` command for
   JSON cookie/localStorage files, JSON visit history/bookmarks, find/find-next
   match state, visible viewport text, page PNG frame output, and deterministic
   browser-window PNG output with simple chrome and window-coordinate click
   routing through that state boundary, plus a feature-gated native CPU-backed
-  `brutal-browser window` shell with narrow location entry, focused text-control
+  `esoteric-browser window` shell with narrow location entry, focused text-control
   input routing, resize-aware viewport updates over the same state boundary,
   and
   `visual-verify` baseline and exact pixel-diff reports plus local retained
@@ -179,7 +179,7 @@ benchmark pass.
   WPT/testdriver/WebDriver runner metadata, reftest expectations, CI sharding,
   flake policy, Speedometer/JetStream/MotionMark-style suites or equivalents,
   multi-tab memory, power, startup, and real-page canary reports.
-- The current `brutal-bench browser-perf --chromium-baseline` path records a
+- The current `esoteric-bench browser-perf --chromium-baseline` path records a
   headless Chromium iframe fixture baseline and Rust-vs-Chromium p95 speedup for
   the checked-in fixture suite only. It inlines local fixture scripts for the
   `--dump-dom` baseline, steps fixtures through Chromium virtual-time callbacks
@@ -225,7 +225,7 @@ turning fixture progress into compatibility claims.
 
 | Milestone | Scope | Acceptance evidence |
 | --- | --- | --- |
-| B0 CLI scaffold baseline | Keep `brutal-browser browse`, fixture render, forms, click, raster, hit-test, layout-tree, layer-tree, coverage, and browser perf stable | `brutal-browser verify`, `brutal-browser coverage`, local WPT scaffold, and `brutal-bench browser-perf` pass for checked-in fixtures |
+| B0 CLI scaffold baseline | Keep `esoteric-browser browse`, fixture render, forms, click, raster, hit-test, layout-tree, layer-tree, coverage, and browser perf stable | `esoteric-browser verify`, `esoteric-browser coverage`, local WPT scaffold, and `esoteric-bench browser-perf` pass for checked-in fixtures |
 | B1 Module split | Extract loading/resources, forms, images, CSS/style, layout, display-list/paint, raster/compositor, runtime/Web APIs, input/events, session/navigation, storage/profile, shell, and gates into owned modules or crates | Boundary map, owner list, file-size budgets, focused unit tests, fuzz targets, and per-module perf counters |
 | B2 Input/events/session | Add keyboard, pointer, focus, editing basics, default actions, cancellation, form state, and session navigation semantics beyond the current CLI subset | Input/event fixtures, form/session tests, hit-test-to-event traces, and event-order compatibility expectations |
 | B3 Loading lifecycle | Implement navigation stages for URL parsing, redirects, TLS/cert reporting, referrer/CORS checks, cache, cookies, downloads, history, BFCache policy, and restore | Local fixture server suite, network/loading WPT subset, redirect/cache/cookie tests, failure-recovery tests, and per-phase timing |
@@ -235,8 +235,8 @@ turning fixture progress into compatibility claims.
 | B7 Storage/profile | Implement persistent profiles, cookies, localStorage, IndexedDB, Cache API, permissions, quota/eviction, private mode, clear-data, and partitioning | Storage WPT subset, quota/eviction tests, profile isolation tests, private-mode tests, and delete/export checks |
 | B8 Security sandbox | Split browser, renderer, GPU, network, and storage processes with site instances/OOPIF plan, broker/zygote, OS sandbox profiles, IPC schemas, origin policy, permissions, CSP, mixed content, and JIT/W^X policy | Threat model update, sandbox denial tests, IPC fuzzing, origin-policy fixtures, crash-containment reports, and signed-update review |
 | B9 WPT expansion | Replace the local scaffold-only WPT lane with imported upstream slices, expectations, skip manifests, reftests, testdriver/WebDriver where needed, CI sharding, and flake quarantine | WPT dashboard with pass/fail/skip/flake counts by subsystem, pinned expectations, and no unreviewed regressions |
-| B10 Perf/Chromium comparison | Compare startup, navigation, JS, layout, paint, raster, compositor, memory, power, input latency, and canary-page behavior against pinned Chromium | `brutal-bench browser-perf` extensions, pinned Chromium metadata, Speedometer/JetStream/MotionMark-style reports, real-page canary reports, and regression budgets |
-| B11 Release-ready browser | Package a signed browser with updater/rollback, crash reporting, release manifests, feature flags, known-limitations notes, support policy, and release dashboards | Signed artifacts, install/update/rollback drills, crash report smoke tests, release checklist, security/compat/perf signoff, and `brutal-bench audit --claim browser --require-complete` |
+| B10 Perf/Chromium comparison | Compare startup, navigation, JS, layout, paint, raster, compositor, memory, power, input latency, and canary-page behavior against pinned Chromium | `esoteric-bench browser-perf` extensions, pinned Chromium metadata, Speedometer/JetStream/MotionMark-style reports, real-page canary reports, and regression budgets |
+| B11 Release-ready browser | Package a signed browser with updater/rollback, crash reporting, release manifests, feature flags, known-limitations notes, support policy, and release dashboards | Signed artifacts, install/update/rollback drills, crash report smoke tests, release checklist, security/compat/perf signoff, and `esoteric-bench audit --claim browser --require-complete` |
 
 ## Implementation Sequence
 
@@ -246,9 +246,9 @@ turning fixture progress into compatibility claims.
    and session navigation.
 2. Split browser modules into crates once APIs stabilize enough to keep hot data
    paths explicit.
-3. Add phase timing and allocation counters to the current `brutal-browser`
+3. Add phase timing and allocation counters to the current `esoteric-browser`
    commands and fixture verifier.
-4. Extend the current `brutal-bench browser-perf --chromium-baseline`
+4. Extend the current `esoteric-bench browser-perf --chromium-baseline`
    fixture-suite report into deterministic local page suites, pinned Chromium
    comparison reports, and startup/frame/memory/power metrics.
 5. Implement CPU fixture raster output first, then full screenshot output and
@@ -267,19 +267,19 @@ turning fixture progress into compatibility claims.
 
 ## Acceptance Gates
 
-- `brutal-browser verify` passes all claimed capability fixtures.
-- `brutal-browser coverage` requires every claimed feature and reports bounded
+- `esoteric-browser verify` passes all claimed capability fixtures.
+- `esoteric-browser coverage` requires every claimed feature and reports bounded
   missing feature count for the milestone. Its unweighted implemented ratios are
   feature-fixture progress indicators, not browser-completion or market-parity
   percentages.
-- `brutal-bench browser-perf` reports current fixture render timings,
+- `esoteric-bench browser-perf` reports current fixture render timings,
   parser/script/style/collection/layout phase timings, throughput, suite hash,
   DOM/layout/paint/layer counts, and local scalar layer-tree shape metrics;
   milestone extensions must add memory, real frame/compositor metrics, and
   Chromium comparison on deterministic page suites.
 - Current deterministic grayscale PGM raster output, RGBA viewport-frame
   artifacts, `BrowserApp` frame presentation, window-frame, and find-state
-  reports, and `brutal-browser app` scripted profile/frame outputs, including fixed
+  reports, and `esoteric-browser app` scripted profile/frame outputs, including fixed
   viewport-window variants, count only as fixture/app-state evidence; full
   browser screenshot claims require color, fonts, images, browser-accurate
   viewport and scrolling behavior, compositor, and platform presentation gates.
@@ -309,12 +309,12 @@ turning fixture progress into compatibility claims.
   partition clearing, permissions UI, settings UI, or browser chrome evidence.
 - `browser-shell-cookie-jar-file` counts only as loading and saving the current
   in-memory cookie jar through a local JSON `--cookie-jar` file around a
-  `brutal-browser browse` run; it is not encrypted profile storage, cookie
+  `esoteric-browser browse` run; it is not encrypted profile storage, cookie
   expiration persistence, partitioning, cookie settings UI, or browser chrome
   evidence.
 - `browser-shell-local-storage-file` counts only as loading and saving
   origin-scoped localStorage through a local JSON `--local-storage` file around
-  a `brutal-browser browse` run; it is not IndexedDB, Cache API, quota
+  a `esoteric-browser browse` run; it is not IndexedDB, Cache API, quota
   management, private browsing, partitioning, settings UI, or browser chrome
   evidence.
 - `browser-shell-local-storage-inspection` counts only as read-only CLI
@@ -377,5 +377,5 @@ turning fixture progress into compatibility claims.
   BrowserSession/CLI reset-control click default action; it is not form event
   dispatch, validation, focus/input behavior, browser UI, or broad input/form
   compatibility.
-- `brutal-bench audit --claim browser --require-complete` passes before any
+- `esoteric-bench audit --claim browser --require-complete` passes before any
   public broad-browser or faster-than-Chromium browser claim.

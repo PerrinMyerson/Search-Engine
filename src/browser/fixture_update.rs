@@ -1,4 +1,4 @@
-//! Golden-expectation refresh for `brutal-browser verify --update`.
+//! Golden-expectation refresh for `esoteric-browser verify --update`.
 //!
 //! Re-renders every fixture in a manifest and rewrites the expectation fields
 //! that are already present (`expected_text`, `expected_display_list`,
@@ -76,7 +76,7 @@ pub fn update_browser_fixture_expectations(
 
     let fixture_count = typed.fixtures.len();
     let updated = updated_names.len();
-    let formatted = format_fixture_manifest(&raw);
+    let formatted = format_fixture_manifest_like(&raw, &manifest_text)?;
     let written = formatted != manifest_text;
     if written {
         fs::write(manifest_path, formatted).with_context(|| {
@@ -189,6 +189,33 @@ fn refresh_fixture_expectations(
         }
     }
     Ok(())
+}
+
+/// Serialize `manifest` in whichever style `original` was written in: the
+/// compact-entry layout of `bench/browser-fixtures` (see
+/// [`format_fixture_manifest`]) or plain pretty-printed JSON with the
+/// original's indent width (the compat corpus manifest uses one space).
+pub fn format_fixture_manifest_like(manifest: &Value, original: &str) -> Result<String> {
+    let uses_compact_entries = original
+        .lines()
+        .any(|line| line.starts_with("        {\"") || line.starts_with("        [\""));
+    if uses_compact_entries {
+        return Ok(format_fixture_manifest(manifest));
+    }
+    let indent = original
+        .lines()
+        .nth(1)
+        .map(|line| line.len() - line.trim_start().len())
+        .filter(|width| *width > 0)
+        .unwrap_or(2);
+    let indent = " ".repeat(indent);
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes());
+    let mut out = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
+    manifest.serialize(&mut serializer)?;
+    let mut text = String::from_utf8(out)?;
+    text.push('\n');
+    Ok(text)
 }
 
 /// Serialize a fixture manifest in the checked-in layout: the `fixtures`
@@ -310,7 +337,7 @@ fn write_compact(out: &mut String, value: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_fixture_manifest;
+    use super::{format_fixture_manifest, format_fixture_manifest_like};
     use serde_json::json;
 
     #[test]
@@ -338,14 +365,19 @@ mod tests {
     }
 
     #[test]
-    fn formatting_checked_in_manifest_is_a_fixed_point() {
+    fn formatting_checked_in_manifests_is_a_fixed_point() {
         for path in [
             "bench/browser-fixtures/manifest.json",
             "bench/document-pages/manifest.json",
+            "bench/wpt-subsets/manifest.json",
         ] {
             let text = std::fs::read_to_string(path).unwrap();
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(format_fixture_manifest(&value), text, "{path}");
+            assert_eq!(
+                format_fixture_manifest_like(&value, &text).unwrap(),
+                text,
+                "{path}"
+            );
         }
     }
 }

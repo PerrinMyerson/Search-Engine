@@ -1,5 +1,5 @@
 [package]
-name = "brutal-search"
+name = "esoteric-search"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
@@ -11,24 +11,24 @@ default = []
 native-window = ["dep:minifb"]
 
 [lib]
-name = "brutal_search"
+name = "esoteric_search"
 path = "src/lib.rs"
 
 [[bin]]
-name = "brutal-search"
-path = "src/bin/brutal-search.rs"
+name = "esoteric-search"
+path = "src/bin/esoteric-search.rs"
 
 [[bin]]
-name = "brutal-searchd"
-path = "src/bin/brutal-searchd.rs"
+name = "esoteric-searchd"
+path = "src/bin/esoteric-searchd.rs"
 
 [[bin]]
-name = "brutal-bench"
-path = "src/bin/brutal-bench.rs"
+name = "esoteric-bench"
+path = "src/bin/esoteric-bench.rs"
 
 [[bin]]
-name = "brutal-browser"
-path = "src/bin/brutal-browser.rs"
+name = "esoteric-browser"
+path = "src/bin/esoteric-browser.rs"
 
 [dependencies]
 anyhow = "1.0"

@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use brutal_search::daemon::{default_socket_path, run_daemon};
-use brutal_search::index::PreloadMode;
 use clap::Parser;
+use esoteric_search::daemon::{default_socket_path, run_daemon};
+use esoteric_search::index::PreloadMode;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Resident daemon for brutally fast warm search.")]
+#[command(version, about = "Resident daemon for esotericly fast warm search.")]
 struct Cli {
-    #[arg(long, default_value = ".brutal-index")]
+    #[arg(long, default_value = ".esoteric-index")]
     index: PathBuf,
     #[arg(long)]
     socket: Option<PathBuf>,
@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
         .socket
         .unwrap_or_else(|| default_socket_path(&cli.index));
     eprintln!(
-        "brutal-searchd: index={} socket={} preload={:?}",
+        "esoteric-searchd: index={} socket={} preload={:?}",
         cli.index.display(),
         socket.display(),
         cli.preload

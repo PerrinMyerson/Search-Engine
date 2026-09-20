@@ -935,7 +935,7 @@ pub struct BrowserRaster {
 impl BrowserRaster {
     pub fn pixel_hash(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"brutal-browser-raster-v1");
+        hasher.update(b"esoteric-browser-raster-v1");
         hasher.update(&(self.width as u64).to_le_bytes());
         hasher.update(&(self.height as u64).to_le_bytes());
         hasher.update(&[self.background, self.foreground]);
@@ -981,7 +981,7 @@ impl BrowserRgbaRaster {
 
     pub fn pixel_hash(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"brutal-browser-rgba-raster-v1");
+        hasher.update(b"esoteric-browser-rgba-raster-v1");
         hasher.update(&(self.width as u64).to_le_bytes());
         hasher.update(&(self.height as u64).to_le_bytes());
         hasher.update(&self.background);
@@ -1352,9 +1352,9 @@ pub struct BrowserChromiumParityComparison {
     pub path: String,
     pub title_match: bool,
     pub text_match: bool,
-    pub brutal_title: String,
+    pub esoteric_title: String,
     pub chromium_title: String,
-    pub brutal_text: String,
+    pub esoteric_text: String,
     pub chromium_text: String,
 }
 
@@ -5183,7 +5183,7 @@ fn render_page_state_with_timings(
             click_default_action,
         )
     });
-    if std::env::var_os("BRUTAL_DEBUG_RENDER").is_some() {
+    if std::env::var_os("ESOTERIC_DEBUG_RENDER").is_some() {
         eprintln!(
             "DBGRENDER source={source} options={options:?} css_len={} dom={} doubled={}",
             page_state.css_text.len(),
@@ -12687,19 +12687,19 @@ fn compare_browser_fixture_with_chromium(
     let (page_state, profiled) = render_browser_fixture_profiled_with_state(path, &bytes, fixture)?;
     let render = profiled.render;
     let chromium = chromium_static_render(chrome, path, &bytes, fixture.click_selector.as_deref())?;
-    let brutal_text = browser_fixture_parity_text(&render, &page_state, &bytes);
+    let esoteric_text = browser_fixture_parity_text(&render, &page_state, &bytes);
     let chromium_text = chromium_fixture_parity_text(&chromium.text, &bytes);
-    let brutal_title = render.title.trim().to_owned();
+    let esoteric_title = render.title.trim().to_owned();
     let chromium_title = chromium.title.trim().to_owned();
 
     Ok(BrowserChromiumParityComparison {
         name: name.to_owned(),
         path: path.display().to_string(),
-        title_match: brutal_title == chromium_title,
-        text_match: brutal_text == chromium_text,
-        brutal_title,
+        title_match: esoteric_title == chromium_title,
+        text_match: esoteric_text == chromium_text,
+        esoteric_title,
         chromium_title,
-        brutal_text,
+        esoteric_text,
         chromium_text,
     })
 }
@@ -12850,7 +12850,7 @@ fn chromium_static_render(
     let base_href = chromium_fixture_base_href(fixture_path);
     let wrapper = chromium_static_wrapper_html(&html, base_href.as_deref(), click_selector)?;
     let path = std::env::temp_dir().join(format!(
-        "brutal-browser-chromium-static-{}.html",
+        "esoteric-browser-chromium-static-{}.html",
         std::process::id()
     ));
     fs::write(&path, wrapper).with_context(|| format!("write {}", path.display()))?;
@@ -12919,7 +12919,7 @@ setTimeout(() => {{
   }};
   const out = document.createElement("script");
   out.type = "application/json";
-  out.id = "brutal-chromium-result";
+  out.id = "esoteric-chromium-result";
   out.textContent = JSON.stringify(result).replaceAll("</", "<\\/");
   document.documentElement.appendChild(out);
 }}, 0);
@@ -12928,7 +12928,7 @@ setTimeout(() => {{
 }
 
 fn extract_chromium_result_json(dump: &str) -> Option<&str> {
-    let marker = "id=\"brutal-chromium-result\"";
+    let marker = "id=\"esoteric-chromium-result\"";
     let marker_index = dump.find(marker)?;
     let after_marker = &dump[marker_index..];
     let start = after_marker.find('>')? + marker_index + 1;

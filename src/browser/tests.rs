@@ -24064,7 +24064,7 @@ fn extracts_forms_and_builds_get_submission_urls() {
 
 #[test]
 fn chromium_parity_helpers_extract_and_normalize_text() {
-    let dump = r#"<html><head><script id="brutal-chromium-result" type="application/json">{"title":"Fixture","text":"one   two\nthree"}</script></head></html>"#;
+    let dump = r#"<html><head><script id="esoteric-chromium-result" type="application/json">{"title":"Fixture","text":"one   two\nthree"}</script></head></html>"#;
     let json = extract_chromium_result_json(dump).unwrap();
     let parsed: ChromiumStaticRender = serde_json::from_str(json).unwrap();
     assert_eq!(parsed.title, "Fixture");
@@ -24085,7 +24085,7 @@ fn chromium_parity_helpers_extract_and_normalize_text() {
     );
     assert_eq!(
         normalize_browser_fixture_parity_text(
-            "file:///tmp/brutal-browser-chromium-static.html file:///tmp/brutal-browser-chromium-static.html /tmp/brutal-browser-chromium-static.html",
+            "file:///tmp/esoteric-browser-chromium-static.html file:///tmp/esoteric-browser-chromium-static.html /tmp/esoteric-browser-chromium-static.html",
             br#"<script>state.textContent = location.href + " " + document.URL + " " + document.location.pathname;</script>"#
         ),
         "<location-url> <location-url> <location-path>"
@@ -24145,9 +24145,9 @@ fn chromium_parity_helpers_extract_and_normalize_text() {
         path: "fixture.html".to_owned(),
         title_match: true,
         text_match: false,
-        brutal_title: "Fixture".to_owned(),
+        esoteric_title: "Fixture".to_owned(),
         chromium_title: "Fixture".to_owned(),
-        brutal_text: "one two".to_owned(),
+        esoteric_text: "one two".to_owned(),
         chromium_text: "one two three".to_owned(),
     });
     assert_eq!(reason, "text mismatch");

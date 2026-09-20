@@ -1,7 +1,7 @@
 # Browser Rendering And Compositor Plan
 
 This plan covers the paint, raster, compositor, animation, hit-testing, and
-visual-regression work required before Brutal Browser can credibly claim
+visual-regression work required before Esoteric Internet can credibly claim
 browser rendering progress. It is a gate plan, not proof of implementation.
 
 ## Rendering Standard
@@ -43,7 +43,7 @@ Evidence gates:
   iframe-like surfaces.
 - Layout-tree fixtures for block, inline, replaced, form-control, overflow,
   positioned, fragmented inline, and scrolling-box cases.
-- Current local scaffold: `brutal-browser hit-test <page> --x <n> --y <n>
+- Current local scaffold: `esoteric-browser hit-test <page> --x <n> --y <n>
   --json` reports the topmost supported display-list command for a point in
   local fixture coordinates. It does not cover transforms, clipping, overlapping
   stacking contexts, scrolling, iframe routing, pointer-event semantics,
@@ -53,7 +53,7 @@ Evidence gates:
   `pointerdown`/`mousedown`/`pointerup`/`mouseup`/click/default-action navigation
   path; it is not full browser pointer routing, full PointerEvent semantics, or
   full MouseEvent semantics.
-- Current local scaffold: `brutal-browser layout-tree <page> --json` reports a
+- Current local scaffold: `esoteric-browser layout-tree <page> --json` reports a
   deterministic retained layout-tree/debug snapshot for paint-backed element
   boxes in the implemented local layout/display-list subset, including
   parent/child box links, bounds, and source command indices. It does not prove
@@ -76,7 +76,7 @@ Required end state:
   metrics to deterministic RGBA pixels and dirty pixel rectangles so a native
   shell can consume one frame-surface contract. `BrowserApp` now consumes that
   contract for tab, navigation, scroll, input, and frame-presentation state,
-  and `brutal-browser app` exposes the same contract as a scripted/stdin
+  and `esoteric-browser app` exposes the same contract as a scripted/stdin
   profile-aware history/bookmark, find/find-next, visible-viewport, and
   PNG-producing app surface, including a deterministic browser-window PNG that
   composites simple tab/location/status chrome above the page viewport.
@@ -97,9 +97,9 @@ Required end state:
 
 Evidence gates:
 
-- Current text-raster gate: `brutal-browser verify
+- Current text-raster gate: `esoteric-browser verify
   bench/browser-fixtures/manifest.json --json` checks fixture raster hashes, and
-  `brutal-browser visual-verify bench/browser-fixtures/manifest.json --json
+  `esoteric-browser visual-verify bench/browser-fixtures/manifest.json --json
   --artifact-dir <dir>` reports expected/actual hashes and emits deterministic
   PGM raster artifacts. When passed `--baseline-dir <dir>`, the same command
   computes exact pixel-diff counts/ratios, writes `*-diff.pgm` artifacts, and
@@ -110,8 +110,8 @@ Evidence gates:
   document-column layout, image placeholder, tiny SVG decoded-image paint
   commands, and data URI PNG decoded-image paint commands with decoded pixels
   carried into rasterization.
-  `brutal-browser raster <page>` and
-  `brutal-browser raster-file <fixture> --json --output <pgm>` remain
+  `esoteric-browser raster <page>` and
+  `esoteric-browser raster-file <fixture> --json --output <pgm>` remain
   available for one-off raster inspection, including
   `--viewport-x` / `--viewport-y` (`--scroll-x` / `--scroll-y` aliases) and
   `--viewport-width` / `--viewport-height` for fixed terminal/text viewport
@@ -151,7 +151,7 @@ Evidence gates:
   transform animations, opacity animations, videos/canvas, and many-layer pages.
 - Layer-tree snapshot fixtures with expected layer counts, bounds, scroll state
   where supported, and explicit reasons for grouping/promotion. Current local
-  scaffold: `brutal-browser layer-tree <page> --json` reports a deterministic
+  scaffold: `esoteric-browser layer-tree <page> --json` reports a deterministic
   layer-tree/debug snapshot for the implemented local layout/display-list subset
   only. It does not prove compositor frame scheduling, GPU compositing, tile
   cache behavior, OS presentation, async scrolling, transform/clip correctness,
@@ -218,12 +218,12 @@ Evidence gates:
 4. Implement paint order for backgrounds, borders, text, replaced elements,
    focus, selection, positioned content, transforms, opacity, and clipping.
 5. Build retained layout-tree snapshots for the supported document layout path.
-   Initial `brutal-browser layout-tree <page> --json` scaffold may count only as
+   Initial `esoteric-browser layout-tree <page> --json` scaffold may count only as
    local paint-backed box/debug evidence until full CSS layout, scrolling boxes,
    anonymous boxes, inline fragmentation, and compositor-ready geometry exist.
 6. Add invalidation and damage tracking for DOM/style/layout changes.
 7. Add layer-tree construction and layer snapshot fixtures. Initial
-   `brutal-browser layer-tree <page> --json` scaffold may count only as local
+   `esoteric-browser layer-tree <page> --json` scaffold may count only as local
    snapshot/debug evidence until frame scheduling, compositing, scrolling, and
    presentation gates exist.
 8. Add compositor frame scheduler and input-latency benchmarks.

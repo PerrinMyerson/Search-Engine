@@ -5,8 +5,8 @@ use std::{
 
 use tempfile::tempdir;
 
-fn run_brutal_browser(args: &[&str]) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_brutal-browser"))
+fn run_esoteric_browser(args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_esoteric-browser"))
         .args(args)
         .output()
         .unwrap();
@@ -24,8 +24,8 @@ fn run_brutal_browser(args: &[&str]) -> String {
     stdout
 }
 
-fn run_brutal_browser_with_stdin(args: &[&str], stdin_text: &str) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_brutal-browser"))
+fn run_esoteric_browser_with_stdin(args: &[&str], stdin_text: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_esoteric-browser"))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -63,7 +63,7 @@ fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
 
 #[test]
 fn browse_cmd_forms_prints_none_for_formless_page() {
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         "bench/browser-fixtures/static-text.html",
         "--cmd",
@@ -75,7 +75,7 @@ fn browse_cmd_forms_prints_none_for_formless_page() {
 
 #[test]
 fn browse_cmd_click_then_render_shows_mutated_page() {
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         "bench/browser-fixtures/click-event.html",
         "--cmd",
@@ -107,7 +107,7 @@ fn click_at_cmd_applies_viewport_offsets_to_target_visible_point() {
     )
     .unwrap();
     let first_arg = first.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "click-at",
         &first_arg,
         "0",
@@ -123,7 +123,7 @@ fn click_at_cmd_applies_viewport_offsets_to_target_visible_point() {
 
 #[test]
 fn layout_tree_cmd_reports_retained_document_boxes() {
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "layout-tree",
         "bench/browser-fixtures/max-width-layout.html",
         "--width",
@@ -143,7 +143,7 @@ fn layout_tree_cmd_reports_retained_document_boxes() {
 
 #[test]
 fn viewport_cmd_reports_clamped_scroll_and_dirty_region() {
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "viewport",
         "bench/browser-fixtures/max-width-layout.html",
         "--width",
@@ -180,7 +180,7 @@ fn viewport_frame_cmd_reports_dirty_pixels_and_writes_png() {
     let temp = tempdir().unwrap();
     let png_path = temp.path().join("frame.png");
     let png_arg = png_path.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "viewport-frame",
         "bench/browser-fixtures/max-width-layout.html",
         "--width",
@@ -240,7 +240,7 @@ fn app_cmd_runs_browser_app_actions_and_writes_frame() {
     .unwrap();
     let first_arg = first.to_string_lossy().into_owned();
     let png_arg = png_path.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "app",
         &first_arg,
         "--viewport-width",
@@ -288,7 +288,7 @@ fn app_cmd_writes_browser_window_frame_with_chrome() {
     let page_arg = page.to_string_lossy().into_owned();
     let page_png_arg = page_png.to_string_lossy().into_owned();
     let window_png_arg = window_png.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "app",
         &page_arg,
         "--viewport-width",
@@ -331,7 +331,7 @@ fn app_cmd_window_click_routes_page_and_chrome_coordinates() {
     )
     .unwrap();
     let first_arg = first.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "app",
         &first_arg,
         "--viewport-width",
@@ -370,7 +370,7 @@ fn app_cmd_reads_stdin_commands_and_updates_frame() {
     .unwrap();
     let first_arg = first.to_string_lossy().into_owned();
     let png_arg = png_path.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser_with_stdin(
+    let stdout = run_esoteric_browser_with_stdin(
         &[
             "app",
             &first_arg,
@@ -408,7 +408,7 @@ fn app_cmd_find_scrolls_and_reports_match_state() {
     )
     .unwrap();
     let page_arg = page.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser_with_stdin(
+    let stdout = run_esoteric_browser_with_stdin(
         &[
             "app",
             &page_arg,
@@ -447,7 +447,7 @@ fn app_cmd_persists_profile_history_and_bookmarks() {
     let second_arg = second.to_string_lossy().into_owned();
     let profile_arg = profile_path.to_string_lossy().into_owned();
 
-    let stdout = run_brutal_browser_with_stdin(
+    let stdout = run_esoteric_browser_with_stdin(
         &[
             "app",
             &first_arg,
@@ -477,7 +477,7 @@ fn app_cmd_persists_profile_history_and_bookmarks() {
     assert!(profile_json.contains("First App"), "{profile_json}");
     assert!(profile_json.contains("Second App"), "{profile_json}");
 
-    let stdout = run_brutal_browser_with_stdin(
+    let stdout = run_esoteric_browser_with_stdin(
         &[
             "app",
             &second_arg,
@@ -514,7 +514,8 @@ fn app_cmd_loads_saves_and_clears_profile_storage() {
     let read_arg = read_page.to_string_lossy().into_owned();
     let storage_arg = storage_path.to_string_lossy().into_owned();
 
-    let stdout = run_brutal_browser(&["app", &set_arg, "--local-storage", &storage_arg, "--json"]);
+    let stdout =
+        run_esoteric_browser(&["app", &set_arg, "--local-storage", &storage_arg, "--json"]);
     assert!(stdout.contains("Saved profile state"), "stdout: {stdout}");
     assert!(
         std::fs::read_to_string(&storage_path)
@@ -522,13 +523,14 @@ fn app_cmd_loads_saves_and_clears_profile_storage() {
             .contains("Saved profile state")
     );
 
-    let stdout = run_brutal_browser(&["app", &read_arg, "--local-storage", &storage_arg, "--json"]);
+    let stdout =
+        run_esoteric_browser(&["app", &read_arg, "--local-storage", &storage_arg, "--json"]);
     assert!(
         stdout.contains("\"text\": \"Saved profile state\""),
         "stdout: {stdout}"
     );
 
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "app",
         &read_arg,
         "--local-storage",
@@ -550,7 +552,7 @@ fn screenshot_file_cmd_writes_rgba_png_artifact() {
     let temp = tempdir().unwrap();
     let png_path = temp.path().join("static-text.png");
     let png_arg = png_path.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "screenshot-file",
         "bench/browser-fixtures/static-text.html",
         "--output",
@@ -578,7 +580,7 @@ fn browse_cmd_json_reports_visual_frame_and_writes_screenshot() {
     let temp = tempdir().unwrap();
     let png_path = temp.path().join("profile").join("final-frame.png");
     let png_arg = png_path.to_string_lossy().into_owned();
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         "bench/document-pages/document-article.html",
         "--viewport-width",
@@ -610,7 +612,7 @@ fn browse_cmd_json_reports_visual_frame_and_writes_screenshot() {
 
 #[test]
 fn browse_cmd_scroll_clamps_to_document_viewport_bounds() {
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         "bench/browser-fixtures/max-width-layout.html",
         "--width",
@@ -649,7 +651,7 @@ fn browse_cmd_opens_switches_and_closes_tabs() {
     .unwrap();
     let first_arg = first.to_string_lossy().into_owned();
 
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         &first_arg,
         "--cmd",
@@ -662,7 +664,7 @@ fn browse_cmd_opens_switches_and_closes_tabs() {
     assert!(stdout.contains(" [0] First Tab"), "stdout: {stdout}");
     assert!(stdout.contains("*[1] Second Tab"), "stdout: {stdout}");
 
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         &first_arg,
         "--cmd",
@@ -677,7 +679,7 @@ fn browse_cmd_opens_switches_and_closes_tabs() {
     assert!(stdout.contains("# First Tab"), "stdout: {stdout}");
     assert!(stdout.contains("first tab"), "stdout: {stdout}");
 
-    let stdout = run_brutal_browser(&[
+    let stdout = run_esoteric_browser(&[
         "browse",
         &first_arg,
         "--cmd",

@@ -5,36 +5,36 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use brutal_search::crawler::{
+use clap::{Parser, Subcommand, ValueEnum};
+use esoteric_search::crawler::{
     CrawlBoundary, CrawlOptions, crawl_many, domain_to_seed, load_domain_file, load_seed_file,
 };
-use brutal_search::daemon::{default_socket_path, send_request};
-use brutal_search::frontier::{
+use esoteric_search::daemon::{default_socket_path, send_request};
+use esoteric_search::frontier::{
     DEFAULT_MAX_FAILED_FRONTIER_RECORDS, FrontierStats, FrontierStore, RecrawlPlanEntry, unix_now,
 };
-use brutal_search::index::{
+use esoteric_search::index::{
     IndexBuildOptions, IndexManifest, PreloadMode, SearchIndex, TermCorrection, TermSuggestion,
     build_from_corpus, build_from_fielded_documents,
 };
-use brutal_search::protocol::{DaemonRequest, DaemonResponse};
-use brutal_search::query::{SearchOptions, SearchResult};
-use brutal_search::recrawl::{RecrawlScheduleOptions, load_recrawl_manifest_with_options};
-use brutal_search::render::render_target;
-use brutal_search::scheduler::{
+use esoteric_search::protocol::{DaemonRequest, DaemonResponse};
+use esoteric_search::query::{SearchOptions, SearchResult};
+use esoteric_search::recrawl::{RecrawlScheduleOptions, load_recrawl_manifest_with_options};
+use esoteric_search::render::render_target;
+use esoteric_search::scheduler::{
     RecrawlCrawlOptions, RecrawlRoundReport, RecrawlSchedulerOptions, run_recrawl_round,
 };
-use brutal_search::server::run_search_server;
-use brutal_search::sitemap::{
+use esoteric_search::server::run_search_server;
+use esoteric_search::sitemap::{
     SitemapLoadOptions, discover_sitemap_sources_from_robots, load_sitemap_seeds,
 };
-use brutal_search::web_search::{
+use esoteric_search::web_search::{
     DEFAULT_CACHE_MAX_BYTES, DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_RESULT_LOG_MAX_BYTES,
     DEFAULT_RESULT_LOG_MAX_ENTRIES, WebSearchStorageArtifactState,
     WebSearchStorageCompactionOptions, WebSearchStorageCompactionReport,
     compact_web_search_storage_from_env, durable_web_result_commit_report_lines,
     web_search_storage_prune_boundary_lines,
 };
-use clap::{Parser, Subcommand, ValueEnum};
 
 const INDEX_STORAGE_ARTIFACTS: &[&str] = &[
     "manifest.json",
@@ -62,7 +62,7 @@ const TEMP_CLEANUP_OLD_TARGET_SECS: u64 = 24 * 60 * 60;
 const INDEX_ARTIFACT_HIGH_GROWTH_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Brutally fast static HTML text search.")]
+#[command(version, about = "Fast static HTML text search.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -90,7 +90,7 @@ enum Command {
         max_sitemap_urls: usize,
         #[arg(long, default_value_t = 1024)]
         max_sitemaps: usize,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value_t = 50_000)]
         max_pages: usize,
@@ -113,7 +113,7 @@ enum Command {
     },
     Index {
         corpus_dir: PathBuf,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         ignore_noindex: bool,
@@ -122,7 +122,7 @@ enum Command {
     },
     Search {
         query: String,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -133,7 +133,7 @@ enum Command {
     },
     Suggest {
         prefix: String,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value_t = 10)]
         limit: usize,
@@ -144,7 +144,7 @@ enum Command {
     },
     Spell {
         term: String,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value_t = 5)]
         limit: usize,
@@ -155,7 +155,7 @@ enum Command {
     },
     Render {
         target: String,
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         socket: Option<PathBuf>,
@@ -163,7 +163,7 @@ enum Command {
         no_daemon: bool,
     },
     Stats {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         socket: Option<PathBuf>,
@@ -175,7 +175,7 @@ enum Command {
         root: PathBuf,
     },
     CompactWebCache {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         dry_run: bool,
@@ -185,11 +185,11 @@ enum Command {
         min_entries: usize,
     },
     WebReplayBackfill {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
     },
     RecrawlPlan {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
@@ -199,7 +199,7 @@ enum Command {
         limit: usize,
     },
     RecrawlScheduler {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
         interval_secs: u64,
@@ -223,7 +223,7 @@ enum Command {
         max_fetching_per_host: usize,
     },
     Serve {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8765")]
         addr: SocketAddr,
@@ -843,7 +843,7 @@ fn print_results(results: &[SearchResult]) {
     }
 }
 
-fn print_build_stats(stats: &brutal_search::BuildStats) {
+fn print_build_stats(stats: &esoteric_search::BuildStats) {
     println!("docs: {}", stats.doc_count);
     println!("terms: {}", stats.term_count);
     println!("total_terms: {}", stats.total_terms);
@@ -1073,7 +1073,7 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut lines = vec![
-        "storage_temp_cleanup_audit: report_only=true deletes=false mutates_brutal_index=false"
+        "storage_temp_cleanup_audit: report_only=true deletes=false mutates_esoteric_index=false"
             .to_owned(),
         format!("storage_temp_cleanup_root: {}", root.display()),
     ];
@@ -1211,11 +1211,11 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         generated_newest_age_secs.unwrap_or(0),
     ));
     lines.push(format!(
-        "storage_generated_artifact_inventory_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={generated_retention_next_action}",
+        "storage_generated_artifact_inventory_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} oldest_age_secs={generated_oldest_age_secs} newest_age_secs={} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={generated_retention_next_action}",
         generated_newest_age_secs.unwrap_or(0),
     ));
     lines.push(format!(
-        "storage_generated_output_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} largest_path={generated_largest_path} largest_bytes={generated_largest_bytes} session_like_candidates={generated_session_like_count} cache_like_candidates={generated_cache_like_count} artifact_like_candidates={generated_artifact_like_count} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={}",
+        "storage_generated_output_boundary: report_only=true deletes=false candidates={generated_review_count} bytes={generated_review_bytes} largest_path={generated_largest_path} largest_bytes={generated_largest_bytes} session_like_candidates={generated_session_like_count} cache_like_candidates={generated_cache_like_count} artifact_like_candidates={generated_artifact_like_count} active_worktree_count={active_worktree_count} github_safe_artifacts=reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={}",
         temp_cleanup_generated_output_boundary_next_action(
             active_worktree_count,
             generated_review_count,
@@ -1225,7 +1225,7 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         )
     ));
     lines.push(format!(
-        "storage_operational_cleanup_ux: report_only=true deletes=false stops_server=false mutates_brutal_index=false safe_target_candidates={target_candidate_count} safe_target_bytes={target_candidate_bytes} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} active_worktree_count={active_worktree_count} preserve=.brutal-index,running-server,active-worktrees,indexed-documents review_required={review_required} next_action={}",
+        "storage_operational_cleanup_ux: report_only=true deletes=false stops_server=false mutates_esoteric_index=false safe_target_candidates={target_candidate_count} safe_target_bytes={target_candidate_bytes} generated_review_count={generated_review_count} generated_review_bytes={generated_review_bytes} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} active_worktree_count={active_worktree_count} preserve=.esoteric-index,running-server,active-worktrees,indexed-documents review_required={review_required} next_action={}",
         storage_operational_cleanup_next_action(
             target_candidate_count,
             generated_review_count,
@@ -1235,7 +1235,7 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         )
     ));
     lines.push(format!(
-        "storage_worktree_cleanup_review_matrix: report_only=true deletes=false source_worktrees={source_worktree_count} active_worktrees={active_worktree_count} dirty_worktrees={dirty_worktree_count} clean_review_worktrees={clean_worktree_review_count} unknown_review_count={unknown_review_count} safe_target_candidates={target_candidate_count} generated_review_count={generated_review_count} preserve=.brutal-index,running-server,active-worktrees,dirty-worktrees next_action={}",
+        "storage_worktree_cleanup_review_matrix: report_only=true deletes=false source_worktrees={source_worktree_count} active_worktrees={active_worktree_count} dirty_worktrees={dirty_worktree_count} clean_review_worktrees={clean_worktree_review_count} unknown_review_count={unknown_review_count} safe_target_candidates={target_candidate_count} generated_review_count={generated_review_count} preserve=.esoteric-index,running-server,active-worktrees,dirty-worktrees next_action={}",
         storage_worktree_cleanup_review_next_action(
             active_worktree_count,
             dirty_worktree_count,
@@ -1246,11 +1246,11 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         )
     ));
     lines.push(format!(
-        "storage_cleanup_coordination_boundary: report_only=true deletes=false rust_slot_lock_present={rust_slot_lock_present} rust_slot_lock_bytes={rust_slot_lock_bytes} preserve=rust-slot-lock,running-server,.brutal-index next_action={}",
+        "storage_cleanup_coordination_boundary: report_only=true deletes=false rust_slot_lock_present={rust_slot_lock_present} rust_slot_lock_bytes={rust_slot_lock_bytes} preserve=rust-slot-lock,running-server,.esoteric-index next_action={}",
         storage_cleanup_coordination_boundary_next_action(rust_slot_lock_present)
     ));
     lines.push(format!(
-        "storage_cleanup_inventory_detail: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} generated_candidates={generated_review_count} generated_bytes={generated_review_bytes} largest_generated_path={generated_largest_path} largest_generated_bytes={generated_largest_bytes} stale_generated_oldest_age_secs={generated_oldest_age_secs} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} safe_cleanup_scope=validation-targets-only review_scope=generated-output,dirty-worktrees,unknown-dirs preserve=.brutal-index,running-server,active-worktrees,indexed-documents next_action={}",
+        "storage_cleanup_inventory_detail: report_only=true deletes=false target_candidates={target_candidate_count} target_bytes={target_candidate_bytes} largest_target_path={target_largest_path} largest_target_bytes={target_largest_bytes} old_target_count={old_target_count} generated_candidates={generated_review_count} generated_bytes={generated_review_bytes} largest_generated_path={generated_largest_path} largest_generated_bytes={generated_largest_bytes} stale_generated_oldest_age_secs={generated_oldest_age_secs} dirty_worktree_count={dirty_worktree_count} unknown_review_count={unknown_review_count} safe_cleanup_scope=validation-targets-only review_scope=generated-output,dirty-worktrees,unknown-dirs preserve=.esoteric-index,running-server,active-worktrees,indexed-documents next_action={}",
         storage_cleanup_inventory_detail_next_action(
             target_candidate_count,
             old_target_count,
@@ -1260,7 +1260,7 @@ fn temp_cleanup_audit_lines(root: &Path) -> Result<Vec<String>> {
         )
     ));
     lines.push(
-        "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .brutal-index, or stop processes"
+        "storage_temp_cleanup_apply_guard: report-only; this command does not delete temp dirs, mutate .esoteric-index, or stop processes"
             .to_owned(),
     );
     Ok(lines)
@@ -1680,7 +1680,7 @@ fn index_artifact_storage_pressure_lines(stats: &IndexStorageStats) -> Vec<Strin
             "index_artifact_storage_pressure: report_only=true total_bytes={} largest_component={largest_component} largest_component_bytes={largest_component_bytes} high_growth_component_count={high_growth_component_count} high_growth_threshold_bytes={INDEX_ARTIFACT_HIGH_GROWTH_BYTES} next_action={next_action}",
             stats.total_bytes
         ),
-        "index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .brutal-index artifacts".to_owned(),
+        "index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .esoteric-index artifacts".to_owned(),
     ]
 }
 
@@ -1774,7 +1774,7 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
             frontier.total
         ));
         lines.push(
-            "crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .brutal-index"
+            "crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .esoteric-index"
                 .to_owned(),
         );
         lines.push(format!(
@@ -1845,7 +1845,7 @@ fn crawl_storage_pressure_summary_lines(stats: &IndexStorageStats) -> Vec<String
         stats.crawl_snapshot_duplicate_entries
     ));
     lines.push(
-        "storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .brutal-index"
+        "storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .esoteric-index"
             .to_owned(),
     );
     lines
@@ -1982,7 +1982,7 @@ fn browser_document_storage_pressure_summary_lines(stats: &IndexStorageStats) ->
             stats.browser_document_unique_row_bytes,
             stats.browser_document_duplicate_row_bytes
         ),
-        "browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index"
+        "browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index"
             .to_owned(),
     ];
     if zero_removal {
@@ -2050,7 +2050,7 @@ fn browser_session_snapshot_history_boundary_line(stats: &IndexStorageStats) -> 
     };
 
     format!(
-        "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count={history_candidate_count} sessions={} rows={} bytes={} snapshot_like_rows={snapshot_like_rows} history_like_rows={history_like_rows} largest_snapshot_bytes={} duplicate_rows={} duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action={next_action}",
+        "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count={history_candidate_count} sessions={} rows={} bytes={} snapshot_like_rows={snapshot_like_rows} history_like_rows={history_like_rows} largest_snapshot_bytes={} duplicate_rows={} duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action={next_action}",
         stats.browser_document_session_count,
         stats.browser_document_rows,
         stats.browser_document_bytes,
@@ -2165,7 +2165,7 @@ fn storage_pressure_rollup_lines(
     };
     vec![
         format!(
-            "storage_git_manifest_readiness: report_only=true status={} exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_rows={} browser_document_rows={} snapshot_entries={} frontier_records={}",
+            "storage_git_manifest_readiness: report_only=true status={} exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} web_rows={} browser_document_rows={} snapshot_entries={} frontier_records={}",
             if export_needs_review {
                 "needs-review"
             } else {
@@ -2180,8 +2180,8 @@ fn storage_pressure_rollup_lines(
             stats.crawl_snapshot_entries,
             frontier_records
         ),
-        "storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .brutal-index contents".to_owned(),
-        "storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned(),
+        "storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .esoteric-index contents".to_owned(),
+        "storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned(),
         live_index_web_artifact_inventory_line(
             stats,
             web_summary,
@@ -2206,7 +2206,7 @@ fn storage_pressure_rollup_lines(
         ),
         brave_archive_commit_boundary_line(stats, web_summary, brave_results_bytes),
         format!(
-            "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.brutal-index/raw-index-data",
+            "storage_git_export_size_class: report_only=true class={git_export_size_class} total_bytes={} budget_bytes={} core_index_bytes={core_bytes} web_bytes={} browser_document_bytes={} crawl_bytes={} excluded=.esoteric-index/raw-index-data",
             stats.total_bytes,
             index_storage_budget_bytes(),
             web_summary.bytes,
@@ -2302,7 +2302,7 @@ fn live_index_web_growth_boundary_line(
     };
 
     format!(
-        "live_index_web_growth_boundary: report_only=true deletes=false compacts=false total_bytes={} storage_budget_bytes={} web_bytes={} web_budget_bytes={web_budget_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} removable_rows={removable_rows} web_duplicate_rows={} browser_duplicate_rows={} snapshot_duplicate_rows={} over_web_budget={over_web_budget} over_storage_budget={over_storage_budget} preserve=.brutal-index,indexed-documents,running-server github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin next_action={next_action}",
+        "live_index_web_growth_boundary: report_only=true deletes=false compacts=false total_bytes={} storage_budget_bytes={} web_bytes={} web_budget_bytes={web_budget_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} removable_rows={removable_rows} web_duplicate_rows={} browser_duplicate_rows={} snapshot_duplicate_rows={} over_web_budget={over_web_budget} over_storage_budget={over_storage_budget} preserve=.esoteric-index,indexed-documents,running-server github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin next_action={next_action}",
         stats.total_bytes,
         index_storage_budget_bytes(),
         web_summary.bytes,
@@ -2351,7 +2351,7 @@ fn web_replay_github_safe_completeness_line(
     };
 
     format!(
-        "web_replay_github_safe_completeness: report_only=true mutates_files=false complete={complete} total_result_rows={} github_safe_rows={github_safe_rows} replayable_cache_rows={replayable_rows} archived_rows={archived_rows} archived_not_replayable_rows={archived_not_replayable_rows} runtime_only_rows={runtime_only_rows} incomplete_rows={} duplicate_rows={} github_safe_bytes={} runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=env-secrets,api-keys next_action={next_action}",
+        "web_replay_github_safe_completeness: report_only=true mutates_files=false complete={complete} total_result_rows={} github_safe_rows={github_safe_rows} replayable_cache_rows={replayable_rows} archived_rows={archived_rows} archived_not_replayable_rows={archived_not_replayable_rows} runtime_only_rows={runtime_only_rows} incomplete_rows={} duplicate_rows={} github_safe_bytes={} runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=env-secrets,api-keys next_action={next_action}",
         web_summary.result_rows,
         web_summary.incomplete_result_rows,
         web_summary.duplicate_entries,
@@ -2399,7 +2399,7 @@ fn web_replay_artifact_readiness_line(
     };
 
     format!(
-        "web_replay_artifact_readiness: report_only=true mutates_files=false replay_ready={replay_ready} replayable_cache_rows={replayable_cache_rows} replayable_query_buckets={replayable_query_buckets} durable_provider_rows={durable_provider_rows} durable_query_buckets={durable_query_buckets} durable_only_rows={durable_only_rows} missing_query_buckets={missing_query_buckets} incomplete_rows={} duplicate_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
+        "web_replay_artifact_readiness: report_only=true mutates_files=false replay_ready={replay_ready} replayable_cache_rows={replayable_cache_rows} replayable_query_buckets={replayable_query_buckets} durable_provider_rows={durable_provider_rows} durable_query_buckets={durable_query_buckets} durable_only_rows={durable_only_rows} missing_query_buckets={missing_query_buckets} incomplete_rows={} duplicate_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
         web_summary.incomplete_result_rows, web_summary.duplicate_entries,
     )
 }
@@ -2434,7 +2434,7 @@ fn live_index_web_artifact_inventory_line(
     };
 
     format!(
-        "live_index_web_artifact_inventory: report_only=true deletes=false compacts=false indexed_documents={indexed_documents} core_index_bytes={core_bytes} web_cache_rows={} brave_result_rows={} durable_web_rows={} incomplete_web_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_document_bytes={} crawl_artifact_bytes={crawl_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} replay_ready={replay_ready} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
+        "live_index_web_artifact_inventory: report_only=true deletes=false compacts=false indexed_documents={indexed_documents} core_index_bytes={core_bytes} web_cache_rows={} brave_result_rows={} durable_web_rows={} incomplete_web_rows={} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_document_bytes={} crawl_artifact_bytes={crawl_bytes} github_safe_bytes={github_safe_bytes} runtime_only_bytes={runtime_only_bytes} replay_ready={replay_ready} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin excluded=env-secrets,api-keys next_action={next_action}",
         web_summary.entries,
         stats
             .web_artifacts
@@ -2478,7 +2478,7 @@ fn storage_hygiene_bounds_inventory_line(
     };
 
     format!(
-        "storage_hygiene_bounds_inventory: report_only=true deletes=false compacts=false web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} web_cap_bytes={web_cap_bytes} snapshot_bytes={} snapshot_entries={} snapshot_duplicates={} frontier_bytes={} frontier_records={frontier_records} frontier_failed_records={frontier_failed_records} generated_artifact_inventory=temp-cleanup-audit preserve=.brutal-index,indexed-docs,crawl-snapshots github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        "storage_hygiene_bounds_inventory: report_only=true deletes=false compacts=false web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} web_cap_bytes={web_cap_bytes} snapshot_bytes={} snapshot_entries={} snapshot_duplicates={} frontier_bytes={} frontier_records={frontier_records} frontier_failed_records={frontier_failed_records} generated_artifact_inventory=temp-cleanup-audit preserve=.esoteric-index,indexed-docs,crawl-snapshots github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
         crawl_bytes,
         stats.crawl_snapshot_entries,
         stats.crawl_snapshot_duplicate_entries,
@@ -2586,7 +2586,7 @@ fn storage_budget_pressure_lines(
         ),
         format!("storage_budget_crawl_bytes: {crawl_bytes}"),
         "storage_budget_report_mode: report-only".to_owned(),
-        "storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
+        "storage_budget_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned(),
     ]
 }
 
@@ -2636,7 +2636,7 @@ fn storage_cache_growth_guardrail_lines(
         ),
         storage_runtime_cache_pressure_line(stats, web_summary),
         storage_cache_session_output_hygiene_line(stats, web_summary),
-        "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index"
+        "storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .esoteric-index"
             .to_owned(),
     ]
 }
@@ -2736,7 +2736,7 @@ fn storage_cache_session_output_hygiene_line(
     };
 
     format!(
-        "storage_cache_session_output_hygiene: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={cache_session_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_session_bytes={browser_session_bytes} generated_output_inventory=temp-cleanup-audit generated_output_status=report-only-scan duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cap_bytes={cap_bytes} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}"
+        "storage_cache_session_output_hygiene: report_only=true deletes=false compacts=false candidates={candidate_count} bytes={cache_session_bytes} web_cache_bytes={web_cache_bytes} brave_results_bytes={brave_results_bytes} browser_session_bytes={browser_session_bytes} generated_output_inventory=temp-cleanup-audit generated_output_status=report-only-scan duplicate_bytes={duplicate_bytes} largest_artifact={largest_artifact} largest_artifact_bytes={largest_artifact_bytes} cap_bytes={cap_bytes} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}"
     )
 }
 
@@ -2815,9 +2815,9 @@ fn search_index_retention_audit_lines(
             "brave_web_replay_index_gap: report_only=true replayable_rows={cache_rows} durable_provider_rows={result_log_rows} durable_not_replayable_rows={result_log_only_rows} missing_query_buckets={missing_query_buckets} indexed_documents={indexed_documents} durable_not_indexed_rows={durable_not_indexed_rows} web_cache_bytes={cache_bytes} brave_result_bytes={result_log_bytes} next_action={index_gap_next_action}"
         ),
         format!(
-            "local_web_index_persistence_boundary: report_only=true durable_provider_rows={result_log_rows} replayable_cache_rows={cache_rows} indexed_documents={indexed_documents} missing_replay_rows={result_log_only_rows} missing_index_rows={durable_not_indexed_rows} persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action={index_gap_next_action}"
+            "local_web_index_persistence_boundary: report_only=true durable_provider_rows={result_log_rows} replayable_cache_rows={cache_rows} indexed_documents={indexed_documents} missing_replay_rows={result_log_only_rows} missing_index_rows={durable_not_indexed_rows} persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.esoteric-index/raw-index-data next_action={index_gap_next_action}"
         ),
-        "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned(),
+        "search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .esoteric-index data".to_owned(),
     ]
 }
 
@@ -2954,7 +2954,7 @@ fn storage_cleanup_readiness_lines(
             "storage_cleanup_byte_source_next_action: report_only=true action={byte_source_next_action} web_cleanup_useful={web_cleanup_useful} browser_document_cleanup_useful={browser_document_cleanup_useful} crawl_cleanup_useful={crawl_cleanup_useful}"
         ),
         format!("storage_cleanup_next_action: report-only; {next_action}"),
-        "storage_cleanup_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned(),
+        "storage_cleanup_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned(),
     ];
     if safe_to_clean {
         lines.push(
@@ -2991,7 +2991,7 @@ fn frontier_failed_projected_removed(frontier: &FrontierStats) -> usize {
 }
 
 fn index_storage_budget_bytes() -> u64 {
-    web_storage_env_u64("BRUTAL_INDEX_STORAGE_BUDGET_BYTES")
+    web_storage_env_u64("ESOTERIC_INDEX_STORAGE_BUDGET_BYTES")
         .unwrap_or(DEFAULT_INDEX_STORAGE_BUDGET_BYTES)
 }
 
@@ -3073,11 +3073,11 @@ fn storage_snapshot_readiness_lines(
             stats.browser_document_duplicate_rows,
             stats.crawl_snapshot_duplicate_entries
         ),
-        "storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .brutal-index contents".to_owned(),
+        "storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .esoteric-index contents".to_owned(),
     ];
     if web_summary.suggested_dry_runs > 0 {
         lines.push(format!(
-            "storage_snapshot_cleanup_hint: brutal-search compact-web-cache --dry-run --min-entries {}",
+            "storage_snapshot_cleanup_hint: esoteric-search compact-web-cache --dry-run --min-entries {}",
             web_summary.entries.max(1)
         ));
     }
@@ -3443,7 +3443,7 @@ fn web_storage_pressure_summary_lines(
     ];
     if summary.suggested_dry_runs > 0 {
         lines.push(format!(
-            "web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries {}",
+            "web_storage_pressure_suggestion: esoteric-search compact-web-cache --dry-run --min-entries {}",
             summary.entries.max(1)
         ));
     }
@@ -3485,7 +3485,7 @@ fn saved_result_file_growth_boundary_line(
     };
 
     format!(
-        "saved_result_file_growth_boundary: report_only=true mutates_files=false saved_result_rows={} saved_result_bytes={saved_result_bytes} cache_bytes={cache_bytes} result_log_bytes={result_log_bytes} duplicate_rows={} duplicate_row_bytes={} malformed_rows={} cap_bytes={cap_bytes} generated_artifact_inventory=temp-cleanup-audit github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        "saved_result_file_growth_boundary: report_only=true mutates_files=false saved_result_rows={} saved_result_bytes={saved_result_bytes} cache_bytes={cache_bytes} result_log_bytes={result_log_bytes} duplicate_rows={} duplicate_row_bytes={} malformed_rows={} cap_bytes={cap_bytes} generated_artifact_inventory=temp-cleanup-audit github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
         summary.durable_result_rows,
         summary.duplicate_entries,
         summary.duplicate_row_bytes,
@@ -3548,7 +3548,7 @@ fn brave_archive_commit_boundary_line(
     };
 
     format!(
-        "brave_archive_commit_boundary: report_only=true deletes=false compacts=false commit_safe={commit_safe} archive_entries={archive_entries} archive_rows={archive_rows} archive_bytes={brave_results_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} malformed_rows={malformed_rows} incomplete_rows={incomplete_rows} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} result_log_max_bytes={} result_log_max_entries_per_query={} over_byte_cap={over_byte_cap} over_query_cap={over_query_cap} runtime_only_bytes={runtime_only_bytes} github_safe_artifacts=brave-results.jsonl,web-cache.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+        "brave_archive_commit_boundary: report_only=true deletes=false compacts=false commit_safe={commit_safe} archive_entries={archive_entries} archive_rows={archive_rows} archive_bytes={brave_results_bytes} duplicate_rows={duplicate_rows} duplicate_row_bytes={duplicate_row_bytes} malformed_rows={malformed_rows} incomplete_rows={incomplete_rows} query_buckets={query_buckets} max_entries_per_query={max_entries_per_query} result_log_max_bytes={} result_log_max_entries_per_query={} over_byte_cap={over_byte_cap} over_query_cap={over_query_cap} runtime_only_bytes={runtime_only_bytes} github_safe_artifacts=brave-results.jsonl,web-cache.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
         config.result_log_max_bytes, config.result_log_max_entries_per_query,
     )
 }
@@ -3819,7 +3819,7 @@ fn web_storage_export_readiness_lines(
             summary.duplicate_row_bytes
         ),
         format!(
-            "durable_brave_restart_retention: report_only=true survives_restart={restart_survives} durable_result_log_rows={result_log_durable_result_rows} replayable_cache_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} retained_bytes={} duplicate_rows={} duplicate_row_bytes={} durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={restart_next_action}",
+            "durable_brave_restart_retention: report_only=true survives_restart={restart_survives} durable_result_log_rows={result_log_durable_result_rows} replayable_cache_rows={cache_replayable_result_rows} result_log_only_rows={result_log_only_rows} missing_query_buckets={replay_missing_query_buckets} retained_bytes={} duplicate_rows={} duplicate_row_bytes={} durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.esoteric-index/raw-index-data prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={restart_next_action}",
             summary.unique_row_bytes,
             summary.duplicate_entries,
             summary.duplicate_row_bytes
@@ -3899,7 +3899,7 @@ fn web_storage_export_readiness_lines(
             "web_storage_export_duplicate_rows: {}",
             summary.duplicate_entries
         ),
-        "web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned(),
+        "web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned(),
     ]
 }
 
@@ -4056,7 +4056,7 @@ fn web_replay_backfill_dry_run_lines(artifacts: &[WebStorageArtifactStats]) -> V
             "web_replay_backfill_missing_query_examples: report_only=true limit={WEB_STORAGE_QUERY_EXAMPLE_LIMIT} examples={}",
             web_storage_format_query_examples(&missing_examples)
         ),
-        "web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .brutal-index".to_owned(),
+        "web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned(),
     ]
 }
 
@@ -4151,20 +4151,20 @@ fn web_storage_compaction_suggestion(
 ) -> Option<String> {
     if artifact.duplicate_entries >= WEB_STORAGE_COMPACT_SUGGEST_DUPLICATES {
         return Some(format!(
-            "brutal-search compact-web-cache --dry-run --min-entries {}",
+            "esoteric-search compact-web-cache --dry-run --min-entries {}",
             artifact.entries.max(artifact.duplicate_entries)
         ));
     }
     if artifact.entries >= WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES {
         return Some(format!(
-            "brutal-search compact-web-cache --dry-run --min-entries {}",
+            "esoteric-search compact-web-cache --dry-run --min-entries {}",
             WEB_STORAGE_COMPACT_SUGGEST_MIN_ENTRIES
         ));
     }
     if stale_secs > 0
         && web_storage_oldest_age_secs(artifact, now).is_some_and(|age_secs| age_secs > stale_secs)
     {
-        return Some("brutal-search compact-web-cache --dry-run --min-entries 1".to_owned());
+        return Some("esoteric-search compact-web-cache --dry-run --min-entries 1".to_owned());
     }
     None
 }
@@ -4176,7 +4176,7 @@ fn web_storage_oldest_age_secs(artifact: &WebStorageArtifactStats, now: u64) -> 
 }
 
 fn web_storage_stale_threshold_secs() -> u64 {
-    env::var("BRUTAL_WEB_CACHE_TTL_SECS")
+    env::var("ESOTERIC_WEB_CACHE_TTL_SECS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_WEB_STORAGE_STALE_SECS)
@@ -4512,7 +4512,7 @@ fn web_storage_compaction_artifact_lines(
 }
 
 fn web_storage_result_log_query_cap() -> usize {
-    web_storage_env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0)
+    web_storage_env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4526,13 +4526,13 @@ struct WebStorageRetentionConfig {
 
 fn web_storage_retention_config() -> WebStorageRetentionConfig {
     WebStorageRetentionConfig {
-        cache_max_entries: web_storage_env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES")
+        cache_max_entries: web_storage_env_usize("ESOTERIC_WEB_CACHE_MAX_ENTRIES")
             .unwrap_or(DEFAULT_CACHE_MAX_ENTRIES),
-        cache_max_bytes: web_storage_env_u64("BRUTAL_WEB_CACHE_MAX_BYTES")
+        cache_max_bytes: web_storage_env_u64("ESOTERIC_WEB_CACHE_MAX_BYTES")
             .unwrap_or(DEFAULT_CACHE_MAX_BYTES),
-        result_log_max_entries: web_storage_env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES")
+        result_log_max_entries: web_storage_env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES")
             .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES),
-        result_log_max_bytes: web_storage_env_u64("BRUTAL_WEB_RESULT_LOG_MAX_BYTES")
+        result_log_max_bytes: web_storage_env_u64("ESOTERIC_WEB_RESULT_LOG_MAX_BYTES")
             .unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES),
         result_log_max_entries_per_query: web_storage_result_log_query_cap(),
     }
@@ -4880,7 +4880,7 @@ fn write_recrawl_plan_file(
         .fold(0u64, |total, line| total.saturating_add(line.len() as u64));
     if max_bytes > 0 && total_bytes > max_bytes {
         bail!(
-            "recrawl plan output {} is {} bytes, above BRUTAL_RECRAWL_PLAN_OUTPUT_MAX_BYTES={}",
+            "recrawl plan output {} is {} bytes, above ESOTERIC_RECRAWL_PLAN_OUTPUT_MAX_BYTES={}",
             path.display(),
             total_bytes,
             max_bytes
@@ -4939,7 +4939,7 @@ fn recrawl_plan_entry_lines(plan: &[RecrawlPlanEntry]) -> Result<Vec<Vec<u8>>> {
 }
 
 fn recrawl_plan_output_max_bytes() -> u64 {
-    web_storage_env_u64("BRUTAL_RECRAWL_PLAN_OUTPUT_MAX_BYTES")
+    web_storage_env_u64("ESOTERIC_RECRAWL_PLAN_OUTPUT_MAX_BYTES")
         .unwrap_or(DEFAULT_RECRAWL_PLAN_OUTPUT_MAX_BYTES)
 }
 
@@ -5245,7 +5245,7 @@ mod tests {
                 && line.contains(" safe_target_candidates=1 ")
                 && line.contains(" generated_review_count=1 ")
                 && line.contains(
-                    " preserve=.brutal-index,running-server,active-worktrees,dirty-worktrees ",
+                    " preserve=.esoteric-index,running-server,active-worktrees,dirty-worktrees ",
                 )
                 && line.contains(" next_action=review-worktree-state-before-cleanup")
         }));
@@ -5254,7 +5254,7 @@ mod tests {
                 "storage_cleanup_coordination_boundary: report_only=true deletes=false",
             ) && line.contains(" rust_slot_lock_present=true ")
                 && line.contains(" rust_slot_lock_bytes=4 ")
-                && line.contains(" preserve=rust-slot-lock,running-server,.brutal-index ")
+                && line.contains(" preserve=rust-slot-lock,running-server,.esoteric-index ")
                 && line.contains(" next_action=wait-for-validation-slot")
         }));
         assert_eq!(
@@ -5395,7 +5395,7 @@ mod tests {
                 ))
                 && line.contains("duplicate_rows=1")
                 && line.contains("github_safe_artifacts=browser-documents-metadata-only")
-                && line.contains("excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys")
                 && line.contains("next_action=review-snapshot-history-dedup-dry-run")
         }));
         assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
@@ -5425,7 +5425,7 @@ mod tests {
                 && line.contains(" cache_like_candidates=1 ")
                 && line.contains(" artifact_like_candidates=2 ")
                 && line.contains(" github_safe_artifacts=reports-metadata-only ")
-                && line.contains(" excluded=.brutal-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" excluded=.esoteric-index/raw-index-data,env-secrets,api-keys ")
                 && line.contains(" next_action=review-browser-generated-output-boundary")
         }));
         assert_eq!(std::fs::read(&report_path).unwrap(), b"report");
@@ -5470,7 +5470,7 @@ mod tests {
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES
         )));
-        assert!(lines.contains(&"index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .brutal-index artifacts".to_owned()));
+        assert!(lines.contains(&"index_artifact_storage_apply_guard: report-only; stats does not compact, delete, or mutate .esoteric-index artifacts".to_owned()));
 
         let clean_stats = IndexStorageStats {
             total_bytes: 4,
@@ -5550,7 +5550,7 @@ mod tests {
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES,
             INDEX_ARTIFACT_HIGH_GROWTH_BYTES
         )));
-        assert!(lines.contains(&"storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .brutal-index".to_owned()));
+        assert!(lines.contains(&"storage_cache_growth_guardrail_apply_guard: report-only; does not delete, compact, mutate cache files, or touch .esoteric-index".to_owned()));
     }
 
     #[test]
@@ -5617,7 +5617,7 @@ mod tests {
                 && line.contains(&format!(" duplicate_bytes={duplicate_bytes} "))
                 && line.contains(&format!(" largest_artifact={largest_artifact} "))
                 && line.contains(" github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,reports-metadata-only ")
-                && line.contains(" excluded=.brutal-index/raw-index-data,env-secrets,api-keys ")
+                && line.contains(" excluded=.esoteric-index/raw-index-data,env-secrets,api-keys ")
                 && line.contains(" next_action=dry-run-cache-session-dedup")
         }));
         assert_eq!(std::fs::read(&web_cache_path).unwrap(), web_cache);
@@ -5774,7 +5774,7 @@ mod tests {
 
         let both_lines = crawl_storage_pressure_summary_lines(&stats);
         assert!(both_lines.contains(&"storage_crawl_cleanup_next_action: report_only=true action=inspect-crawl-snapshot-and-frontier-dry-runs snapshot_cleanup_useful=true frontier_cleanup_useful=true snapshot_duplicate_rows=1 frontier_failed_removable_records=2".to_owned()));
-        assert!(both_lines.contains(&"storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .brutal-index".to_owned()));
+        assert!(both_lines.contains(&"storage_crawl_cleanup_apply_guard: report-only; stats does not mutate frontier.bin, crawl-docs.jsonl, or .esoteric-index".to_owned()));
 
         stats.crawl_frontier_stats = Some(FrontierStats {
             queued: 1,
@@ -5847,7 +5847,7 @@ mod tests {
             "crawl_storage_frontier_queue_pressure: report_only=true action=inspect-frontier-growth total_bytes=50 frontier_bytes=50 queued=2 fetching=0 deferred=0 failed={DEFAULT_MAX_FAILED_FRONTIER_RECORDS} active_records=2 failed_removable_records=0 total_records={}",
             DEFAULT_MAX_FAILED_FRONTIER_RECORDS + 5
         )));
-        assert!(growth_lines.contains(&"crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .brutal-index".to_owned()));
+        assert!(growth_lines.contains(&"crawl_storage_frontier_queue_apply_guard: report-only; stats does not mutate frontier.bin or .esoteric-index".to_owned()));
 
         stats.crawl_frontier_stats = Some(FrontierStats {
             queued: 0,
@@ -5988,7 +5988,7 @@ mod tests {
                 && line.contains("runtime_only_bytes=50")
                 && line.contains("replay_ready=true")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
-                && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("next_action=live-index-web-inventory-ready")
         }));
         assert!(rollup_lines.iter().any(|line| {
@@ -6023,9 +6023,9 @@ mod tests {
                 && line.contains("removable_rows=0")
                 && line.contains("over_web_budget=false")
                 && line.contains("over_storage_budget=false")
-                && line.contains("preserve=.brutal-index,indexed-documents,running-server")
+                && line.contains("preserve=.esoteric-index,indexed-documents,running-server")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
-                && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("next_action=growth-boundary-monitor")
         }));
         assert!(rollup_lines.iter().any(|line| {
@@ -6045,20 +6045,20 @@ mod tests {
                 && line.contains("over_query_cap=false")
                 && line.contains("runtime_only_bytes=50")
                 && line.contains("github_safe_artifacts=brave-results.jsonl,web-cache.jsonl")
-                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
                 && line.contains("next_action=commit-safe-brave-archive-ready")
         }));
         assert!(cleanup_lines.iter().any(|line| {
             line.starts_with("storage_operational_cleanup_ux: report_only=true")
                 && line.contains("deletes=false")
                 && line.contains("stops_server=false")
-                && line.contains("mutates_brutal_index=false")
+                && line.contains("mutates_esoteric_index=false")
                 && line.contains("safe_target_candidates=1")
                 && line.contains("safe_target_bytes=6")
                 && line.contains("generated_review_count=1")
                 && line.contains("generated_review_bytes=7")
                 && line.contains(
-                    "preserve=.brutal-index,running-server,active-worktrees,indexed-documents",
+                    "preserve=.esoteric-index,running-server,active-worktrees,indexed-documents",
                 )
                 && line.contains("next_action=review-generated-output-before-cleanup")
         }));
@@ -6075,7 +6075,7 @@ mod tests {
                 && line.contains("safe_cleanup_scope=validation-targets-only")
                 && line.contains("review_scope=generated-output,dirty-worktrees,unknown-dirs")
                 && line.contains(
-                    "preserve=.brutal-index,running-server,active-worktrees,indexed-documents",
+                    "preserve=.esoteric-index,running-server,active-worktrees,indexed-documents",
                 )
                 && line.contains("next_action=review-generated-output-inventory")
         }));
@@ -6148,7 +6148,7 @@ mod tests {
                 && line.contains("incomplete_rows=5")
                 && line.contains("duplicate_rows=4")
                 && line.contains("github_safe_bytes=0")
-                && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl")
                 && line.contains("excluded=env-secrets,api-keys")
                 && line.contains("next_action=repair-incomplete-github-safe-replay-rows")
@@ -6168,7 +6168,7 @@ mod tests {
                 && line.contains("web_cache_bytes=0")
                 && line.contains("brave_results_bytes=0")
                 && line.contains("github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl")
-                && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("excluded=env-secrets,api-keys")
                 && line.contains("next_action=inspect-incomplete-web-replay-artifacts")
         }));
@@ -6190,7 +6190,7 @@ mod tests {
                 && line.contains("runtime_only_bytes=350")
                 && line.contains("replay_ready=false")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin")
-                && line.contains("runtime_only_artifacts=.brutal-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
+                && line.contains("runtime_only_artifacts=.esoteric-index/raw-index-data,docs.bin,terms.bin,postings.bin,texts.bin")
                 && line.contains("excluded=env-secrets,api-keys")
                 && line.contains("next_action=inspect-incomplete-web-result-artifacts")
         }));
@@ -6209,9 +6209,9 @@ mod tests {
                 && line.contains("frontier_bytes=100")
                 && line.contains("frontier_records=10")
                 && line.contains("generated_artifact_inventory=temp-cleanup-audit")
-                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
-                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
                 && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
         }));
     }
@@ -6275,7 +6275,7 @@ mod tests {
                 && line.contains("snapshot_duplicates=1")
                 && line.contains("frontier_bytes=0")
                 && line.contains("generated_artifact_inventory=temp-cleanup-audit")
-                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
                 && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
         }));
         assert!(lines.iter().any(|line| {
@@ -6345,9 +6345,9 @@ mod tests {
 
         let lines = storage_pressure_rollup_lines(&stats, &web_summary);
 
-        assert!(lines.contains(&"storage_git_manifest_readiness: report_only=true status=needs-review exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_rows=30 browser_document_rows=3 snapshot_entries=5 frontier_records=10".to_owned()));
-        assert!(lines.contains(&"storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .brutal-index contents".to_owned()));
-        assert!(lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
+        assert!(lines.contains(&"storage_git_manifest_readiness: report_only=true status=needs-review exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes=1000 core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 web_rows=30 browser_document_rows=3 snapshot_entries=5 frontier_records=10".to_owned()));
+        assert!(lines.contains(&"storage_git_manifest_note: report-only; export metadata and byte/row counts only, never raw .esoteric-index contents".to_owned()));
+        assert!(lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
 
         let clean_stats = IndexStorageStats {
             total_bytes: 700,
@@ -6387,7 +6387,7 @@ mod tests {
         };
         let clean_lines = storage_pressure_rollup_lines(&clean_stats, &clean_web_summary);
 
-        assert!(clean_lines.contains(&"storage_git_manifest_readiness: report_only=true status=ready exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.brutal-index/raw-index-data total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_rows=10 browser_document_rows=1 snapshot_entries=2 frontier_records=0".to_owned()));
+        assert!(clean_lines.contains(&"storage_git_manifest_readiness: report_only=true status=ready exportable_artifacts=core-index,web-cache,brave-results,browser-documents,crawl-frontier,crawl-snapshots excluded=.esoteric-index/raw-index-data total_bytes=700 core_index_bytes=475 web_bytes=100 browser_document_bytes=25 crawl_bytes=100 web_rows=10 browser_document_rows=1 snapshot_entries=2 frontier_records=0".to_owned()));
     }
 
     #[test]
@@ -6438,7 +6438,7 @@ mod tests {
 
         let review_lines = storage_pressure_rollup_lines(&review_stats, &review_web_summary);
         assert!(review_lines.contains(&format!(
-            "storage_git_export_size_class: report_only=true class=review-before-export total_bytes=1000 budget_bytes={} core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.brutal-index/raw-index-data",
+            "storage_git_export_size_class: report_only=true class=review-before-export total_bytes=1000 budget_bytes={} core_index_bytes=350 web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.esoteric-index/raw-index-data",
             DEFAULT_INDEX_STORAGE_BUDGET_BYTES
         )));
         assert!(review_lines.contains(&"storage_git_export_next_action: report_only=true action=review-removable-rows-before-export class=review-before-export removable_web_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_records=10".to_owned()));
@@ -6522,7 +6522,7 @@ mod tests {
 
         let large_lines = storage_pressure_rollup_lines(&large_stats, &large_web_summary);
         assert!(large_lines.contains(&format!(
-            "storage_git_export_size_class: report_only=true class=too-large-for-git-snapshot total_bytes={} budget_bytes={} core_index_bytes={} web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.brutal-index/raw-index-data",
+            "storage_git_export_size_class: report_only=true class=too-large-for-git-snapshot total_bytes={} budget_bytes={} core_index_bytes={} web_bytes=300 browser_document_bytes=50 crawl_bytes=300 excluded=.esoteric-index/raw-index-data",
             DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1,
             DEFAULT_INDEX_STORAGE_BUDGET_BYTES,
             DEFAULT_INDEX_STORAGE_BUDGET_BYTES + 1 - 650
@@ -6597,7 +6597,7 @@ mod tests {
         assert!(lines.contains(&"storage_budget_browser_document_bytes: 50".to_owned()));
         assert!(lines.contains(&"storage_budget_crawl_bytes: 300".to_owned()));
         assert!(lines.contains(&"storage_budget_report_mode: report-only".to_owned()));
-        assert!(lines.contains(&"storage_budget_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned()));
+        assert!(lines.contains(&"storage_budget_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run compaction commands only when removable bytes are nonzero".to_owned()));
     }
 
     #[test]
@@ -6655,7 +6655,7 @@ mod tests {
         assert!(lines.contains(&"storage_cleanup_browser_document_removable_rows: 1".to_owned()));
         assert!(lines.contains(&"storage_cleanup_snapshot_removable_rows: 1".to_owned()));
         assert!(lines.contains(&"storage_cleanup_frontier_failed_removable_records: 2".to_owned()));
-        assert!(lines.contains(&"storage_cleanup_apply_guard: report-only; stats does not mutate .brutal-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned()));
+        assert!(lines.contains(&"storage_cleanup_apply_guard: report-only; stats does not mutate .esoteric-index, run dry-run/apply cleanup only when storage_cleanup_safe_to_clean is true".to_owned()));
 
         let clean_stats = IndexStorageStats {
             total_bytes: 700,
@@ -6958,7 +6958,7 @@ mod tests {
         assert!(lines.contains(&"storage_snapshot_web_suggested_dry_runs: 1".to_owned()));
         assert!(lines.contains(&"storage_snapshot_frontier_records: 10".to_owned()));
         assert!(lines.contains(
-            &"storage_snapshot_cleanup_hint: brutal-search compact-web-cache --dry-run --min-entries 30".to_owned()
+            &"storage_snapshot_cleanup_hint: esoteric-search compact-web-cache --dry-run --min-entries 30".to_owned()
         ));
     }
 
@@ -7040,7 +7040,7 @@ mod tests {
         let lines = storage_snapshot_readiness_lines(&stats, &web_summary);
 
         assert!(lines.contains(&"storage_index_export_readiness: report_only=true status=needs-review total_bytes=1000 core_index_bytes=450 web_bytes=300 browser_document_bytes=50 crawl_bytes=200 web_removable_rows=4 browser_document_duplicates=1 snapshot_duplicates=1 frontier_failed_removable_records=2".to_owned()));
-        assert!(lines.contains(&"storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .brutal-index contents".to_owned()));
+        assert!(lines.contains(&"storage_index_export_note: report-only; inspect retained/removable component rows before committing exported artifacts and never commit live .esoteric-index contents".to_owned()));
 
         let clean_stats = IndexStorageStats {
             total_bytes: 700,
@@ -7210,7 +7210,7 @@ mod tests {
             index_storage_budget_bytes()
         )));
         assert!(lines.contains(&format!(
-            "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count=1 sessions=2 rows=3 bytes={} snapshot_like_rows=2 history_like_rows=1 largest_snapshot_bytes={} duplicate_rows=1 duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.brutal-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action=review-snapshot-history-dedup-dry-run",
+            "browser_session_snapshot_history_boundary: report_only=true deletes=false compacts=false metadata_artifacts=browser-documents.jsonl local_runtime_payloads=excluded history_candidate_count=1 sessions=2 rows=3 bytes={} snapshot_like_rows=2 history_like_rows=1 largest_snapshot_bytes={} duplicate_rows=1 duplicate_row_bytes={} github_safe_artifacts=browser-documents-metadata-only excluded=.esoteric-index/raw-index-data,session-raster-payloads,env-secrets,api-keys next_action=review-snapshot-history-dedup-dry-run",
             stats.browser_document_bytes,
             stats.browser_document_max_row_bytes,
             stats.browser_document_duplicate_row_bytes
@@ -7266,14 +7266,14 @@ mod tests {
                 && line.contains("suggested_session_payload_cap_bytes=65536")
                 && line.contains("next_action=inspect-duplicate-large-browser-runtime-rows")
         }));
-        assert!(rollup_lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.brutal-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
+        assert!(rollup_lines.contains(&"storage_persistence_boundary: report_only=true github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,browser-documents.jsonl,crawl-docs.jsonl,frontier.bin excluded=.esoteric-index/raw-index-data,env-secrets,api-keys secret_bytes=0 next_action=commit-metadata-and-jsonl-artifacts-only".to_owned()));
         assert!(retention_lines.iter().any(|line| {
             line.starts_with("local_web_index_persistence_boundary: report_only=true")
                 && line.contains("durable_provider_rows=2")
                 && line.contains("replayable_cache_rows=1")
                 && line.contains("missing_replay_rows=1")
                 && line.contains("persists=brave-results.jsonl,web-cache.jsonl")
-                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
         }));
     }
 
@@ -7307,7 +7307,7 @@ mod tests {
             "browser_document_storage_cleanup_next_action: report_only=true action=cleanup-pointless retained_rows=2 removable_rows=0 retained_row_bytes={} removable_row_bytes=0 zero_removal=true",
             stats.browser_document_unique_row_bytes
         )));
-        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index".to_owned()));
         assert!(lines.contains(&"browser_document_storage_dry_run_note: all browser document rows are retained; cleanup would remove nothing".to_owned()));
     }
 
@@ -7336,7 +7336,7 @@ mod tests {
         )));
         assert!(stats.browser_document_unique_row_bytes > 0);
         assert!(stats.browser_document_duplicate_row_bytes > 0);
-        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .brutal-index".to_owned()));
+        assert!(lines.contains(&"browser_document_storage_apply_guard: report-only; stats does not mutate browser-documents.jsonl or .esoteric-index".to_owned()));
         assert!(lines.contains(&"browser_document_storage_dry_run_note: duplicate browser document rows are removable by a future browser-document compaction without rewriting live index data".to_owned()));
     }
 
@@ -7411,7 +7411,7 @@ mod tests {
                 && line.contains("durable_result_log_rows=2")
                 && line.contains("result_log_only_rows=1")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
-                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
                 && line.contains("next_action=backfill-web-cache-replay-before-prune")
         }));
         assert!(lines.iter().any(|line| {
@@ -7541,12 +7541,12 @@ mod tests {
                 DEFAULT_WEB_STORAGE_STALE_SECS
             )
             .as_deref(),
-            Some("brutal-search compact-web-cache --dry-run --min-entries 3")
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 3")
         );
         assert_eq!(
             web_storage_compaction_suggestion(&large_artifact, 200, DEFAULT_WEB_STORAGE_STALE_SECS)
                 .as_deref(),
-            Some("brutal-search compact-web-cache --dry-run --min-entries 1024")
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 1024")
         );
         assert!(
             web_storage_compaction_suggestion(
@@ -7604,7 +7604,7 @@ mod tests {
         assert_eq!(web_storage_oldest_age_secs(&stale_artifact, 200), Some(100));
         assert_eq!(
             web_storage_compaction_suggestion(&stale_artifact, 200, 60).as_deref(),
-            Some("brutal-search compact-web-cache --dry-run --min-entries 1")
+            Some("esoteric-search compact-web-cache --dry-run --min-entries 1")
         );
         assert!(web_storage_compaction_suggestion(&fresh_artifact, 200, 60).is_none());
     }
@@ -7759,7 +7759,7 @@ mod tests {
                 && line.contains("duplicate_rows=1")
                 && line.contains("generated_artifact_inventory=temp-cleanup-audit")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
-                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
                 && line.contains("next_action=dry-run-prune-saved-result-duplicates")
         }));
         assert!(temp_lines.iter().any(|line| {
@@ -7768,7 +7768,7 @@ mod tests {
                 && line.contains("candidates=1")
                 && line.contains(&format!("bytes={}", generated_contents.len()))
                 && line.contains("github_safe_artifacts=reports-metadata-only")
-                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
                 && line.contains("next_action=review-generated-reports-before-cleanup")
         }));
         assert!(rollup_lines.iter().any(|line| {
@@ -7784,9 +7784,9 @@ mod tests {
                 && line.contains("snapshot_entries=2")
                 && line.contains("snapshot_duplicates=1")
                 && line.contains("generated_artifact_inventory=temp-cleanup-audit")
-                && line.contains("preserve=.brutal-index,indexed-docs,crawl-snapshots")
+                && line.contains("preserve=.esoteric-index,indexed-docs,crawl-snapshots")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl,crawl-docs.jsonl,frontier.bin")
-                && line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+                && line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
                 && line.contains("next_action=dry-run-prune-duplicate-storage-rows")
         }));
     }
@@ -7912,7 +7912,7 @@ mod tests {
         assert!(lines.contains(&"web_storage_export_duplicate_rows: 1".to_owned()));
         assert!(lines.contains(&"web_storage_export_git_readiness: report_only=true status=needs-review retained_bytes=170 removable_bytes=40 retained_rows=4 removable_rows=1 replayable_result_rows=4 result_log_only_rows=0 stale_artifacts=1 suggested_dry_runs=1".to_owned()));
         assert!(lines.contains(
-            &"web_storage_pressure_suggestion: brutal-search compact-web-cache --dry-run --min-entries 5".to_owned()
+            &"web_storage_pressure_suggestion: esoteric-search compact-web-cache --dry-run --min-entries 5".to_owned()
         ));
     }
 
@@ -8011,7 +8011,7 @@ mod tests {
         assert!(ready_lines.contains(&"web_storage_replay_missing_query_buckets: 0".to_owned()));
         assert!(ready_lines.contains(&"web_storage_replayable_result_rows: 4".to_owned()));
         assert!(ready_lines.contains(
-            &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
+            &"web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned()
         ));
 
         let mut partial_summary = ready_summary.clone();
@@ -8118,8 +8118,8 @@ mod tests {
 
         assert!(lines.contains(&"search_index_retention_audit: report_only=true status=needs-review web_cache_rows=0 brave_result_rows=2 durable_web_rows=2 incomplete_web_rows=0 result_log_only_rows=2 missing_query_buckets=2 indexed_documents=3 indexed_document_bytes=100 web_cache_bytes=0 brave_result_bytes=90 drift_rows=2 next_action=rebuild-web-cache-replay".to_owned()));
         assert!(lines.contains(&"brave_web_replay_index_gap: report_only=true replayable_rows=0 durable_provider_rows=2 durable_not_replayable_rows=2 missing_query_buckets=2 indexed_documents=3 durable_not_indexed_rows=0 web_cache_bytes=0 brave_result_bytes=90 next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
-        assert!(lines.contains(&"local_web_index_persistence_boundary: report_only=true durable_provider_rows=2 replayable_cache_rows=0 indexed_documents=3 missing_replay_rows=2 missing_index_rows=0 persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
-        assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .brutal-index data".to_owned()));
+        assert!(lines.contains(&"local_web_index_persistence_boundary: report_only=true durable_provider_rows=2 replayable_cache_rows=0 indexed_documents=3 missing_replay_rows=2 missing_index_rows=0 persists=brave-results.jsonl,web-cache.jsonl excludes=api-keys,.esoteric-index/raw-index-data next_action=backfill-web-cache-replay-from-brave-results".to_owned()));
+        assert!(lines.contains(&"search_index_retention_note: report-only; compares web-cache, brave-results, and index manifest/artifact bytes without deleting or compacting .esoteric-index data".to_owned()));
     }
 
     #[test]
@@ -8294,7 +8294,7 @@ mod tests {
                 && line.contains("missing_query_buckets=1")
                 && line.contains("durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet")
                 && line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
-                && line.contains("excludes=api-keys,.brutal-index/raw-index-data")
+                && line.contains("excludes=api-keys,.esoteric-index/raw-index-data")
                 && line.contains("prune_safe_after_dry_run=true")
                 && line.contains("next_action=backfill-web-cache-replay-before-prune")
         }));
@@ -8572,7 +8572,7 @@ mod tests {
                 && line.contains("next_action=inspect-duplicate-web-result-rows")
         }));
         assert!(lines.contains(
-            &"web_storage_export_note: report-only; does not rewrite .brutal-index or cached web artifacts".to_owned()
+            &"web_storage_export_note: report-only; does not rewrite .esoteric-index or cached web artifacts".to_owned()
         ));
     }
 
@@ -8659,7 +8659,7 @@ mod tests {
         }));
         assert!(lines.contains(&"web_replay_backfill_skip_reasons: report_only=true already_replayable_rows=1 duplicate_provider_rows=1 incomplete_provider_rows=0 missing_query_buckets=1".to_owned()));
         assert!(lines.contains(&"web_replay_backfill_missing_query_examples: report_only=true limit=3 examples=result_only".to_owned()));
-        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .brutal-index".to_owned()));
+        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned()));
     }
 
     #[test]
@@ -8697,7 +8697,7 @@ mod tests {
                 && line.contains("missing_query_buckets=1")
                 && line.contains("next_action=inspect-duplicate-provider-rows-before-backfill")
         }));
-        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .brutal-index".to_owned()));
+        assert!(lines.contains(&"web_replay_backfill_apply_guard: dry-run-only; does not rewrite web-cache.jsonl, brave-results.jsonl, or .esoteric-index".to_owned()));
     }
 
     #[test]
@@ -8859,7 +8859,7 @@ mod tests {
         assert!(boundary.contains("deferred_rows=3"));
         assert!(boundary.contains("skipped_rows=0"));
         assert!(boundary.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
-        assert!(boundary.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(boundary.contains("excludes=api-keys,.esoteric-index/raw-index-data"));
         assert!(boundary.contains("next_action=review-dry-run-before-apply"));
     }
 

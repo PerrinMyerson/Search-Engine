@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use brutal_search::bench::{
+use clap::{Parser, Subcommand, ValueEnum};
+use esoteric_search::bench::{
     BenchOptions, BenchStatusReport, BrowserPerfGate, BrowserPerfOptions, BrowserPerfReport,
     CompetitorAuditReport, CompetitorReadinessReport, EvalGate, EvalOptions, EvalReport,
     EvidenceRegistryReport, GateOptions, GateReport, ReadinessClaim, ReadinessStatus, SmokeOptions,
@@ -10,13 +11,12 @@ use brutal_search::bench::{
     run_search_bench, run_search_comparison, run_smoke, run_traceability_report,
     write_bench_status, write_bench_status_path,
 };
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BrowserChromiumParityReport, BrowserCoverageGate, BrowserCoverageReport,
 };
-use brutal_search::browser_compat::{
+use esoteric_search::browser_compat::{
     BrowserCompatGate, BrowserCompatOptions, BrowserCompatReport, run_browser_compat,
 };
-use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Benchmark harness for Blackium Starium✴.")]
@@ -32,7 +32,7 @@ enum Command {
     Smoke {
         #[arg(long, default_value = "bench/fixtures/corpus")]
         corpus: PathBuf,
-        #[arg(long, default_value = "target/brutal-smoke-index")]
+        #[arg(long, default_value = "target/esoteric-smoke-index")]
         index: PathBuf,
         #[arg(long, default_value = "bench/queries.txt")]
         queries: PathBuf,
@@ -48,7 +48,7 @@ enum Command {
         report_output: Option<PathBuf>,
     },
     Search {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long)]
         queries: PathBuf,
@@ -72,7 +72,7 @@ enum Command {
         report_output: Option<PathBuf>,
     },
     Eval {
-        #[arg(long, default_value = ".brutal-index")]
+        #[arg(long, default_value = ".esoteric-index")]
         index: PathBuf,
         #[arg(long, default_value = "bench/judgments.jsonl")]
         judgments: PathBuf,
@@ -98,7 +98,7 @@ enum Command {
     Gate {
         #[arg(long, default_value = "bench/fixtures/corpus")]
         corpus: PathBuf,
-        #[arg(long, default_value = "target/brutal-gate-index")]
+        #[arg(long, default_value = "target/esoteric-gate-index")]
         index: PathBuf,
         #[arg(long, default_value = "bench/queries.txt")]
         queries: PathBuf,
@@ -206,7 +206,7 @@ enum Command {
         json: bool,
         #[arg(long)]
         save_report: bool,
-        #[arg(long, default_value = "target/brutal-browser-perf")]
+        #[arg(long, default_value = "target/esoteric-browser-perf")]
         report_dir: PathBuf,
         #[arg(long)]
         report_output: Option<PathBuf>,
@@ -246,7 +246,7 @@ enum Command {
         json: bool,
         #[arg(long)]
         save_report: bool,
-        #[arg(long, default_value = "target/brutal-browser-compat")]
+        #[arg(long, default_value = "target/esoteric-browser-compat")]
         report_dir: PathBuf,
         #[arg(long)]
         report_output: Option<PathBuf>,
@@ -1629,7 +1629,7 @@ fn print_browser_perf_report(report: &BrowserPerfReport) {
 
 fn print_browser_phase_timings(
     label: &str,
-    timings: &brutal_search::browser::BrowserRenderTimings,
+    timings: &esoteric_search::browser::BrowserRenderTimings,
 ) {
     println!("{label}_parse_us: {}", timings.parse_us);
     println!("{label}_script_us: {}", timings.script_us);
@@ -1645,7 +1645,7 @@ fn option_f64(value: Option<f64>) -> String {
         .unwrap_or_else(|| "none".to_owned())
 }
 
-fn print_report(label: &str, report: &brutal_search::bench::BenchReport) {
+fn print_report(label: &str, report: &esoteric_search::bench::BenchReport) {
     println!("{label}_engine: {}", report.engine);
     println!("{label}_queries: {}", report.query_count);
     println!("{label}_limit: {}", report.limit);

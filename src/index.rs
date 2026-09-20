@@ -235,7 +235,7 @@ impl SearchIndex {
         let manifest_path = root.join(MANIFEST);
         let manifest_bytes = fs::read(&manifest_path).with_context(|| {
             format!(
-                "index manifest not found at {}. Build the index first, for example: brutal-search crawl https://example.com --index {}",
+                "index manifest not found at {}. Build the index first, for example: esoteric-search crawl https://example.com --index {}",
                 manifest_path.display(),
                 root.display()
             )
@@ -532,7 +532,7 @@ pub fn build_from_corpus(
     paths.sort();
     anyhow::ensure!(
         !paths.is_empty(),
-        "no .html, .htm, .xhtml, or .txt files found in {}. If you want to crawl the web instead, run: brutal-search crawl https://example.com --index .brutal-index",
+        "no .html, .htm, .xhtml, or .txt files found in {}. If you want to crawl the web instead, run: esoteric-search crawl https://example.com --index .esoteric-index",
         corpus_dir.display()
     );
 
@@ -599,7 +599,7 @@ fn build_index_documents(
 ) -> Result<BuildStats> {
     anyhow::ensure!(
         !docs.is_empty(),
-        "no documents to index. Try a crawl command such as: brutal-search crawl https://example.com --index .brutal-index --max-pages 1000"
+        "no documents to index. Try a crawl command such as: esoteric-search crawl https://example.com --index .esoteric-index --max-pages 1000"
     );
 
     let index_dir = index_dir.as_ref();
@@ -1799,7 +1799,7 @@ mod tests {
                     language: None,
                     quality: DocumentQuality::default(),
                     headings: Vec::new(),
-                    body: "alpha brutal search beta".to_owned(),
+                    body: "alpha esoteric search beta".to_owned(),
                     anchor_text: Vec::new(),
                     outbound_links: Vec::new(),
                     content_hash: None,
@@ -1814,7 +1814,7 @@ mod tests {
                     language: None,
                     quality: DocumentQuality::default(),
                     headings: Vec::new(),
-                    body: "alpha search brutal beta".to_owned(),
+                    body: "alpha search esoteric beta".to_owned(),
                     anchor_text: Vec::new(),
                     outbound_links: Vec::new(),
                     content_hash: None,
@@ -1824,7 +1824,7 @@ mod tests {
                 FieldedDocument {
                     url: "https://example.com/title".to_owned(),
                     canonical_url: None,
-                    title: "Brutal Search".to_owned(),
+                    title: "Esoteric Search".to_owned(),
                     meta_description: None,
                     language: None,
                     quality: DocumentQuality::default(),
@@ -1844,7 +1844,7 @@ mod tests {
                     language: None,
                     quality: DocumentQuality::default(),
                     headings: Vec::new(),
-                    body: "alpha brutal search old page beta".to_owned(),
+                    body: "alpha esoteric search old page beta".to_owned(),
                     anchor_text: Vec::new(),
                     outbound_links: Vec::new(),
                     content_hash: None,
@@ -1860,7 +1860,7 @@ mod tests {
         let index = SearchIndex::open(dir.path(), PreloadMode::Lazy).unwrap();
         let results = index
             .search(
-                r#""brutal search" -"old page""#,
+                r#""esoteric search" -"old page""#,
                 SearchOptions { limit: 10 },
             )
             .unwrap();

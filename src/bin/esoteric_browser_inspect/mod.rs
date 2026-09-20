@@ -1,5 +1,5 @@
 use anyhow::Result;
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BrowserAccessibilityTreeReport, BrowserHitTestReport, BrowserLayerTreeReport,
     BrowserLayoutTreeReport,
 };

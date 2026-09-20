@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn browser_cli_parser_handles_coordinate_click_aliases() {
-    let cli = Cli::try_parse_from(["brutal-browser", "click-at", "page.html", "12", "4"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["esoteric-browser", "click-at", "page.html", "12", "4"]).unwrap();
     match cli.command {
         Command::ClickAt {
             target,
@@ -28,7 +29,7 @@ fn browser_cli_parser_handles_coordinate_click_aliases() {
         other => panic!("expected coordinate click command, got {other:?}"),
     }
 
-    let cli = Cli::try_parse_from(["brutal-browser", "tap", "page.html", "7", "8"]).unwrap();
+    let cli = Cli::try_parse_from(["esoteric-browser", "tap", "page.html", "7", "8"]).unwrap();
     match cli.command {
         Command::ClickAt { x, y, .. } => {
             assert_eq!(x, 7);
@@ -38,7 +39,7 @@ fn browser_cli_parser_handles_coordinate_click_aliases() {
     }
 
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "click-at",
         "page.html",
         "1",
@@ -68,8 +69,14 @@ fn browser_cli_parser_handles_coordinate_click_aliases() {
 
 #[test]
 fn browser_cli_parser_handles_form_submit_command_names() {
-    let cli = Cli::try_parse_from(["brutal-browser", "submit", "page.html", "--field", "q=rust"])
-        .unwrap();
+    let cli = Cli::try_parse_from([
+        "esoteric-browser",
+        "submit",
+        "page.html",
+        "--field",
+        "q=rust",
+    ])
+    .unwrap();
     match cli.command {
         Command::Submit { target, fields, .. } => {
             assert_eq!(target, "page.html");
@@ -79,7 +86,7 @@ fn browser_cli_parser_handles_form_submit_command_names() {
     }
 
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "submit-get",
         "page.html",
         "--field",
@@ -95,7 +102,7 @@ fn browser_cli_parser_handles_form_submit_command_names() {
     }
 
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "submit-post",
         "page.html",
         "--field",
@@ -110,7 +117,7 @@ fn browser_cli_parser_handles_form_submit_command_names() {
         other => panic!("expected submit-post command, got {other:?}"),
     }
 
-    let cli = Cli::try_parse_from(["brutal-browser", "get-form-url", "page.html"]).unwrap();
+    let cli = Cli::try_parse_from(["esoteric-browser", "get-form-url", "page.html"]).unwrap();
     match cli.command {
         Command::FormUrl { target, .. } => assert_eq!(target, "page.html"),
         other => panic!("expected form-url command, got {other:?}"),
@@ -120,7 +127,7 @@ fn browser_cli_parser_handles_form_submit_command_names() {
 #[test]
 fn browser_cli_parser_handles_browse_cookie_jar() {
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "browse",
         "http://example.test",
         "--cookie-jar",
@@ -160,7 +167,7 @@ fn browser_cli_parser_handles_browse_cookie_jar() {
 #[test]
 fn browser_cli_parser_handles_app_command() {
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "app",
         "page.html",
         "--viewport-width",
@@ -224,7 +231,7 @@ fn browser_cli_parser_handles_app_command() {
 #[test]
 fn browser_cli_parser_handles_window_command() {
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "window",
         "page.html",
         "--viewport-width",
@@ -265,7 +272,7 @@ fn browser_cli_parser_handles_window_command() {
 #[test]
 fn browser_cli_parser_handles_screenshot_commands() {
     let cli = Cli::try_parse_from([
-        "brutal-browser",
+        "esoteric-browser",
         "screenshot",
         "page.html",
         "--output",
@@ -292,7 +299,7 @@ fn browser_cli_parser_handles_screenshot_commands() {
         other => panic!("expected screenshot command, got {other:?}"),
     }
 
-    let cli = Cli::try_parse_from(["brutal-browser", "screenshot-file", "page.html"]).unwrap();
+    let cli = Cli::try_parse_from(["esoteric-browser", "screenshot-file", "page.html"]).unwrap();
     match cli.command {
         Command::ScreenshotFile { path, .. } => assert_eq!(path, PathBuf::from("page.html")),
         other => panic!("expected screenshot-file command, got {other:?}"),

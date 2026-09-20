@@ -16729,7 +16729,7 @@ async fn browser_page_completes_data_html_initial_render_without_pending_shell()
     assert!(!html.contains(r#"data-browser-pending-load="true""#));
     assert!(!html.contains("Continue loading"));
     assert!(!html.contains("about:blank"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
     assert!(html.contains(
         r#"<span class="viewport-state-chip" data-browser-visual-flow-status>visual page ready</span>"#
     ));
@@ -16854,7 +16854,7 @@ async fn browser_page_displays_original_data_source_when_materialized_page_is_un
     assert_eq!(payload.title, expected_title);
     assert_eq!(payload.source, data_url);
     assert_eq!(payload.pending_source, None);
-    assert!(!payload.title.contains("brutal-browser-data-url"));
+    assert!(!payload.title.contains("esoteric-browser-data-url"));
     let current_tab = payload
         .sessions
         .iter()
@@ -16870,7 +16870,7 @@ async fn browser_page_displays_original_data_source_when_materialized_page_is_un
         html_escape::encode_text(&expected_title)
     )));
     assert!(html.contains("data:text/html"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
     assert!(html.contains(r#"data-browser-primary-raster"#));
     assert!(html.contains("Browser view ready:"));
     assert!(html.contains(
@@ -16943,7 +16943,7 @@ async fn browser_page_preserves_data_source_display_and_visual_actions_for_mater
         html_escape::encode_text(&browser_session_feedback_excerpt(&data_url)).into_owned();
     assert!(html.contains(&data_url_excerpt));
     assert!(html.contains("data:text/html"));
-    assert!(!html.contains("brutal-browser-data-url"));
+    assert!(!html.contains("esoteric-browser-data-url"));
 
     let state_export = RequestTarget {
         path: "/api/browser-session".to_owned(),

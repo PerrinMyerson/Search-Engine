@@ -40,7 +40,7 @@ pub async fn run_search_server(
     let web = WebSearchService::from_env(local.root())?;
     if let Some(web) = &web {
         eprintln!(
-            "brutal-search web fallback: provider={} cache={}",
+            "esoteric-search web fallback: provider={} cache={}",
             web.provider_name(),
             web.cache_path().display()
         );
@@ -49,7 +49,7 @@ pub async fn run_search_server(
         .as_ref()
         .and_then(|_| BackgroundIndexer::from_env(index_dir, local.clone()));
     if background.is_some() {
-        eprintln!("brutal-search background crawl/index: enabled");
+        eprintln!("esoteric-search background crawl/index: enabled");
     }
     let state = Arc::new(ServerState {
         local,
@@ -60,7 +60,7 @@ pub async fn run_search_server(
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind HTTP search server at {addr}"))?;
-    eprintln!("brutal-search serve: http://{addr}");
+    eprintln!("esoteric-search serve: http://{addr}");
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -303,7 +303,7 @@ async fn api_chrome_search_timing(target: &RequestTarget) -> HttpResponse {
 
 async fn chrome_search_timing(query: &str) -> ChromeSearchTimingPayload {
     let normalized_query = query.trim();
-    let endpoint = std::env::var("BRUTAL_CHROME_SEARCH_TIMING_URL")
+    let endpoint = std::env::var("ESOTERIC_CHROME_SEARCH_TIMING_URL")
         .unwrap_or_else(|_| DEFAULT_CHROME_SEARCH_TIMING_ENDPOINT.to_owned());
     let url = chrome_search_timing_url(&endpoint, normalized_query);
     if normalized_query.is_empty() {
@@ -1428,7 +1428,7 @@ fn render_bench_status_page(payload: &BenchStatusPayload) -> String {
             report_html.push_str(
                 r#"<section class="empty-state">
 <h2>No Benchmark Report</h2>
-<p>Run brutal-bench with --save-report to persist the latest benchmark beside this index.</p>
+<p>Run esoteric-bench with --save-report to persist the latest benchmark beside this index.</p>
 </section>"#,
             );
         }

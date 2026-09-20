@@ -4,14 +4,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use brutal_search::browser::{
+use clap::Args;
+use esoteric_search::browser::{
     BrowserApp, BrowserAppAction, BrowserAppOptions, BrowserAppReport, BrowserCookieJar,
     BrowserLocalStorage, BrowserRasterOptions, BrowserRenderOptions,
 };
-use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use crate::brutal_browser_shell::{
+use crate::esoteric_browser_shell::{
     BrowserShellCommand, BrowserShellLinkTarget, parse_browser_shell_command,
 };
 use crate::{
@@ -196,7 +196,7 @@ async fn run_interactive_browser_app_shell(
     )?;
     let stdin = io::stdin();
     loop {
-        print!("brutal-browser-app> ");
+        print!("esoteric-browser-app> ");
         io::stdout().flush()?;
         let mut input = String::new();
         if stdin.read_line(&mut input)? == 0 {
@@ -934,7 +934,7 @@ fn print_browser_app_history(report: &BrowserAppReport) {
 
 fn print_browser_app_storage(
     label: &str,
-    entries: &[brutal_search::browser::BrowserLocalStorageEntry],
+    entries: &[esoteric_search::browser::BrowserLocalStorageEntry],
 ) {
     if entries.is_empty() {
         println!("{label}: none");

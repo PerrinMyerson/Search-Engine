@@ -2,7 +2,8 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use brutal_search::browser::{
+use clap::{Parser, Subcommand};
+use esoteric_search::browser::{
     BrowserChromiumParityReport, BrowserCookie, BrowserCookieJar, BrowserCoverageGate,
     BrowserCoverageReport, BrowserFeatureState, BrowserHistorySnapshot, BrowserImageRenderReport,
     BrowserLocalStorage, BrowserLocalStorageEntry, BrowserRasterOptions, BrowserRender,
@@ -15,31 +16,30 @@ use brutal_search::browser::{
     unsupported_feature_summary, update_browser_fixture_expectations, verify_browser_fixtures,
     verify_browser_visuals,
 };
-use brutal_search::browser_compat::{
+use esoteric_search::browser_compat::{
     BrowserCompatGate, BrowserCompatOptions, BrowserCompatReport, run_browser_compat,
 };
-use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-mod brutal_browser_app;
-mod brutal_browser_inspect;
-mod brutal_browser_shell;
-mod brutal_browser_viewport;
-mod brutal_browser_window;
-use brutal_browser_app::{BrowserAppCli, run_browser_app_cli};
-use brutal_browser_inspect::{
+mod esoteric_browser_app;
+mod esoteric_browser_inspect;
+mod esoteric_browser_shell;
+mod esoteric_browser_viewport;
+mod esoteric_browser_window;
+use esoteric_browser_app::{BrowserAppCli, run_browser_app_cli};
+use esoteric_browser_inspect::{
     print_accessibility_tree, print_hit_test, print_layer_tree, print_layout_tree,
 };
-use brutal_browser_shell::{
+use esoteric_browser_shell::{
     BrowserFormSubmitMode, BrowserShellCommand, BrowserShellLinkTarget, BrowserShellState,
     BrowserShellTabs, browser_shell_forms, browser_shell_links, browser_shell_report,
     clamp_browser_shell_viewport, current_browser_shell_viewport, parse_browser_shell_command,
     reset_browser_shell_viewport_to_current_location, write_browser_shell_screenshot,
 };
-use brutal_browser_viewport::{
+use esoteric_browser_viewport::{
     parse_previous_viewport_state, print_document_viewport, print_viewport_frame,
 };
-use brutal_browser_window::{BrowserWindowCli, run_browser_window_cli};
+use esoteric_browser_window::{BrowserWindowCli, run_browser_window_cli};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1584,7 +1584,7 @@ async fn run_interactive_browser_shell(
     print_browser_shell(tabs, false)?;
     let stdin = io::stdin();
     loop {
-        print!("brutal-browser> ");
+        print!("esoteric-browser> ");
         io::stdout().flush()?;
         let mut input = String::new();
         if stdin.read_line(&mut input)? == 0 {
@@ -2372,7 +2372,7 @@ fn option_f64(value: Option<f64>) -> String {
 }
 
 fn print_render(
-    render: brutal_search::browser::BrowserRender,
+    render: esoteric_search::browser::BrowserRender,
     json: bool,
     display_list: bool,
 ) -> Result<()> {
@@ -2381,13 +2381,13 @@ fn print_render(
     } else if display_list {
         for command in &render.display_list {
             match command {
-                brutal_search::browser::DisplayCommand::Text { x, y, text } => {
+                esoteric_search::browser::DisplayCommand::Text { x, y, text } => {
                     println!("text x={x} y={y} {text}");
                 }
-                brutal_search::browser::DisplayCommand::StyledText { x, y, text, shade } => {
+                esoteric_search::browser::DisplayCommand::StyledText { x, y, text, shade } => {
                     println!("text x={x} y={y} shade={shade} {text}");
                 }
-                brutal_search::browser::DisplayCommand::Rect {
+                esoteric_search::browser::DisplayCommand::Rect {
                     x,
                     y,
                     width,
@@ -2396,7 +2396,7 @@ fn print_render(
                 } => {
                     println!("rect x={x} y={y} width={width} height={height} shade={shade}");
                 }
-                brutal_search::browser::DisplayCommand::ColorRect {
+                esoteric_search::browser::DisplayCommand::ColorRect {
                     x,
                     y,
                     width,
@@ -2410,7 +2410,7 @@ fn print_render(
                         "color-rect x={x} y={y} width={width} height={height} shade={shade} rgb={red},{green},{blue}"
                     );
                 }
-                brutal_search::browser::DisplayCommand::Image {
+                esoteric_search::browser::DisplayCommand::Image {
                     x,
                     y,
                     width,
@@ -2436,7 +2436,7 @@ fn print_render(
                         decoded_hash.as_deref().unwrap_or("")
                     );
                 }
-                brutal_search::browser::DisplayCommand::BackgroundImage {
+                esoteric_search::browser::DisplayCommand::BackgroundImage {
                     x,
                     y,
                     width,
@@ -2538,4 +2538,4 @@ fn print_screenshot(
 }
 
 #[cfg(test)]
-mod brutal_browser_tests;
+mod esoteric_browser_tests;

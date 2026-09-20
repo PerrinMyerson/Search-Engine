@@ -37,10 +37,10 @@ jobs:
         run: cargo test --release
 
       - name: Browser fixture gate
-        run: ./target/release/brutal-browser verify bench/browser-fixtures/manifest.json
+        run: ./target/release/esoteric-browser verify bench/browser-fixtures/manifest.json
 
       - name: Document page gate
-        run: ./target/release/brutal-browser verify bench/document-pages/manifest.json
+        run: ./target/release/esoteric-browser verify bench/document-pages/manifest.json
 
       - name: Local WPT-subset compatibility gate
-        run: ./target/release/brutal-bench browser-compat --min-pass-rate 1.0 --max-failures 0 --max-crashes 0 --max-timeouts 0
+        run: ./target/release/esoteric-bench browser-compat --min-pass-rate 1.0 --max-failures 0 --max-crashes 0 --max-timeouts 0

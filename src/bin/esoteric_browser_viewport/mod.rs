@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
-use brutal_search::browser::{
+use esoteric_search::browser::{
     BrowserDocumentViewportReport, BrowserViewportFrame, BrowserViewportState,
 };
 

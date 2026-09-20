@@ -166,7 +166,7 @@ struct BraveSearchItem {
 
 impl WebSearchService {
     pub fn from_env(index_dir: &Path) -> Result<Option<Self>> {
-        if env_flag_disabled("BRUTAL_WEB_FALLBACK") {
+        if env_flag_disabled("ESOTERIC_WEB_FALLBACK") {
             return Ok(None);
         }
 
@@ -175,29 +175,30 @@ impl WebSearchService {
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
 
-        let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
+        let cache_path = env::var_os("ESOTERIC_WEB_CACHE_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| index_dir.join("web-cache.jsonl"));
-        let result_log_path = env::var_os("BRUTAL_WEB_RESULT_LOG_PATH")
+        let result_log_path = env::var_os("ESOTERIC_WEB_RESULT_LOG_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
-        let result_log_max_entries = env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES")
+        let result_log_max_entries = env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES")
             .unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
         let result_log_max_bytes =
-            env_u64("BRUTAL_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
+            env_u64("ESOTERIC_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
         let provider = match api_key {
             Some(api_key) => ThirdPartySearchProvider::Brave { api_key },
             None if cache_path.exists() => ThirdPartySearchProvider::CacheOnly,
             None => return Ok(None),
         };
-        let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
+        let cache_ttl_secs =
+            env_u64("ESOTERIC_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
         let cache_max_entries =
-            env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
+            env_usize("ESOTERIC_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
         let cache_max_bytes =
-            env_u64("BRUTAL_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
-        let min_local_results =
-            env_usize("BRUTAL_WEB_FALLBACK_MIN_LOCAL_RESULTS").unwrap_or(DEFAULT_MIN_LOCAL_RESULTS);
-        let max_results = env_usize("BRUTAL_WEB_FALLBACK_COUNT")
+            env_u64("ESOTERIC_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
+        let min_local_results = env_usize("ESOTERIC_WEB_FALLBACK_MIN_LOCAL_RESULTS")
+            .unwrap_or(DEFAULT_MIN_LOCAL_RESULTS);
+        let max_results = env_usize("ESOTERIC_WEB_FALLBACK_COUNT")
             .unwrap_or(DEFAULT_MAX_WEB_RESULTS)
             .clamp(1, BRAVE_MAX_COUNT);
         let country = env::var("BRAVE_SEARCH_COUNTRY").unwrap_or_else(|_| "us".to_owned());
@@ -210,7 +211,7 @@ impl WebSearchService {
             cache_max_bytes,
         )?;
         let client = reqwest::Client::builder()
-            .user_agent("brutal-search/0.1 web-search-provider")
+            .user_agent("esoteric-search/0.1 web-search-provider")
             .timeout(Duration::from_secs(8))
             .pool_max_idle_per_host(16)
             .tcp_nodelay(true)
@@ -471,22 +472,23 @@ pub fn compact_web_search_storage_from_env(
     index_dir: &Path,
     options: WebSearchStorageCompactionOptions,
 ) -> Result<WebSearchStorageCompactionReport> {
-    let cache_path = env::var_os("BRUTAL_WEB_CACHE_PATH")
+    let cache_path = env::var_os("ESOTERIC_WEB_CACHE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| index_dir.join("web-cache.jsonl"));
-    let result_log_path = env::var_os("BRUTAL_WEB_RESULT_LOG_PATH")
+    let result_log_path = env::var_os("ESOTERIC_WEB_RESULT_LOG_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| index_dir.join("brave-results.jsonl"));
-    let cache_ttl_secs = env_u64("BRUTAL_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
+    let cache_ttl_secs = env_u64("ESOTERIC_WEB_CACHE_TTL_SECS").unwrap_or(DEFAULT_CACHE_TTL_SECS);
     let cache_max_entries =
-        env_usize("BRUTAL_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
-    let cache_max_bytes = env_u64("BRUTAL_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
+        env_usize("ESOTERIC_WEB_CACHE_MAX_ENTRIES").unwrap_or(DEFAULT_CACHE_MAX_ENTRIES);
+    let cache_max_bytes =
+        env_u64("ESOTERIC_WEB_CACHE_MAX_BYTES").unwrap_or(DEFAULT_CACHE_MAX_BYTES);
     let result_log_max_entries =
-        env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
+        env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES").unwrap_or(DEFAULT_RESULT_LOG_MAX_ENTRIES);
     let result_log_max_bytes =
-        env_u64("BRUTAL_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
+        env_u64("ESOTERIC_WEB_RESULT_LOG_MAX_BYTES").unwrap_or(DEFAULT_RESULT_LOG_MAX_BYTES);
     let result_log_max_entries_per_query =
-        env_usize("BRUTAL_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0);
+        env_usize("ESOTERIC_WEB_RESULT_LOG_MAX_ENTRIES_PER_QUERY").unwrap_or(0);
 
     compact_web_search_storage(
         cache_path,
@@ -629,7 +631,7 @@ pub fn web_search_storage_prune_boundary_lines(
 
     vec![
         format!(
-            "web_search_storage_prune_boundary: report_only=true dry_run={} mutates_files={} skipped={} cache_entries_before={} cache_entries_after={} result_log_entries_before={} result_log_entries_after={} cache_reclaimable_rows={} result_log_reclaimable_rows={} total_reclaimable_rows={} cache_reclaimable_bytes={} result_log_reclaimable_bytes={} total_reclaimable_bytes={} cache_duplicate_rows={} result_log_duplicate_rows={} saved_rows={} pruned_rows={} deferred_rows={} skipped_rows={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data restart_safe=true next_action={next_action}",
+            "web_search_storage_prune_boundary: report_only=true dry_run={} mutates_files={} skipped={} cache_entries_before={} cache_entries_after={} result_log_entries_before={} result_log_entries_after={} cache_reclaimable_rows={} result_log_reclaimable_rows={} total_reclaimable_rows={} cache_reclaimable_bytes={} result_log_reclaimable_bytes={} total_reclaimable_bytes={} cache_duplicate_rows={} result_log_duplicate_rows={} saved_rows={} pruned_rows={} deferred_rows={} skipped_rows={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.esoteric-index/raw-index-data restart_safe=true next_action={next_action}",
             report.dry_run,
             !report.dry_run,
             report.skipped,
@@ -727,7 +729,7 @@ impl WebStorageProjectionTempDir {
             .unwrap_or_default()
             .as_nanos();
         let path = env::temp_dir().join(format!(
-            "brutal-web-storage-projection-{}-{nonce}",
+            "esoteric-web-storage-projection-{}-{nonce}",
             std::process::id()
         ));
         fs::create_dir(&path)
@@ -1162,7 +1164,7 @@ pub fn durable_web_result_provider_commit_line(
     };
 
     format!(
-        "durable_web_result_provider_commit: report_only=true provider_result_rows={provider_result_rows} displayed_result_rows={displayed_result_rows} display_limited_rows={display_limited_rows} durable_result_rows={durable_result_rows} replayable_cache_rows={replayable_cache_rows} durable_result_log_rows={durable_result_log_rows} persistence_gap_rows={persistence_gap_rows} survives_restart={survives_restart} commit_order=before-display github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data next_action={next_action}"
+        "durable_web_result_provider_commit: report_only=true provider_result_rows={provider_result_rows} displayed_result_rows={displayed_result_rows} display_limited_rows={display_limited_rows} durable_result_rows={durable_result_rows} replayable_cache_rows={replayable_cache_rows} durable_result_log_rows={durable_result_log_rows} persistence_gap_rows={persistence_gap_rows} survives_restart={survives_restart} commit_order=before-display github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.esoteric-index/raw-index-data next_action={next_action}"
     )
 }
 
@@ -1257,7 +1259,7 @@ pub fn web_search_lookup_persistence_path_line(
     let next_action = web_search_lookup_persistence_next_action(lookup);
 
     format!(
-        "web_search_lookup_persistence_paths: report_only=true mutates_files=false provider={} cache_status={} persistence_status={} fetched={} cache_hit={} provider_result_rows={} returned_results={} retained_cache_results={} cache_replay_result_rows={} result_log_replay_result_rows={} durable_result_rows={} persistence_gap_rows={} cache_path={} result_log_path={} persisted_paths={} skipped_paths={} replay_paths={} failed_paths={} missing_hook={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={}",
+        "web_search_lookup_persistence_paths: report_only=true mutates_files=false provider={} cache_status={} persistence_status={} fetched={} cache_hit={} provider_result_rows={} returned_results={} retained_cache_results={} cache_replay_result_rows={} result_log_replay_result_rows={} durable_result_rows={} persistence_gap_rows={} cache_path={} result_log_path={} persisted_paths={} skipped_paths={} replay_paths={} failed_paths={} missing_hook={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={}",
         lookup.provider,
         lookup.cache_status,
         lookup.persistence_status,
@@ -1341,7 +1343,7 @@ pub fn durable_web_result_commit_report_lines(
     };
     Ok(vec![
         format!(
-            "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.brutal-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
+            "durable_web_result_commit_report: report_only=true mutates_files=false survives_restart={survives_restart} cache_entries={} cache_bytes={} replayable_cache_rows={} result_log_entries={} result_log_bytes={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} duplicate_rows={duplicate_rows} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excludes=api-keys,.esoteric-index/raw-index-data durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet prune_safe_after_dry_run={prune_safe_after_dry_run} next_action={next_action}",
             cache.entries,
             cache.bytes,
             cache.durable_rows,
@@ -1356,7 +1358,7 @@ pub fn durable_web_result_commit_report_lines(
             cache.duplicate_rows, result_log.duplicate_rows,
         ),
         format!(
-            "durable_web_result_archive_manifest: report_only=true mutates_files=false artifact_count={archive_artifact_count} durable_rows={archive_durable_rows} archive_bytes={archive_bytes} cache_oldest_fetched_at_unix={} cache_newest_fetched_at_unix={} result_log_oldest_fetched_at_unix={} result_log_newest_fetched_at_unix={} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
+            "durable_web_result_archive_manifest: report_only=true mutates_files=false artifact_count={archive_artifact_count} durable_rows={archive_durable_rows} archive_bytes={archive_bytes} cache_oldest_fetched_at_unix={} cache_newest_fetched_at_unix={} result_log_oldest_fetched_at_unix={} result_log_newest_fetched_at_unix={} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} cache_query_buckets={} result_log_query_buckets={} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={next_action}",
             cache.oldest_fetched_at_unix.unwrap_or(0),
             cache.newest_fetched_at_unix.unwrap_or(0),
             result_log.oldest_fetched_at_unix.unwrap_or(0),
@@ -1365,14 +1367,14 @@ pub fn durable_web_result_commit_report_lines(
             result_log.query_buckets,
         ),
         format!(
-            "durable_web_result_restart_replay_readiness: report_only=true mutates_files=false replay_ready_after_restart={replay_ready_after_restart} replayable_cache_rows={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} cache_query_buckets={} result_log_query_buckets={} missing_query_buckets={missing_query_buckets} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys next_action={replay_next_action}",
+            "durable_web_result_restart_replay_readiness: report_only=true mutates_files=false replay_ready_after_restart={replay_ready_after_restart} replayable_cache_rows={} durable_result_log_rows={} result_log_only_rows={result_log_only_rows} cache_query_buckets={} result_log_query_buckets={} missing_query_buckets={missing_query_buckets} invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} archive_oldest_fetched_at_unix={archive_oldest_fetched_at_unix} archive_newest_fetched_at_unix={archive_newest_fetched_at_unix} github_safe_replay_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys next_action={replay_next_action}",
             cache.durable_rows,
             result_log.durable_rows,
             cache.query_buckets,
             result_log.query_buckets,
         ),
         format!(
-            "durable_web_result_index_artifact_boundary: report_only=true mutates_files=false saved_rows={} indexed_rows=not-scanned invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} duplicate_rows={duplicate_rows} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.brutal-index/raw-index-data,env-secrets,api-keys cleanup_inventory=temp-cleanup-audit next_action={next_action}",
+            "durable_web_result_index_artifact_boundary: report_only=true mutates_files=false saved_rows={} indexed_rows=not-scanned invalid_rows={invalid_rows} incomplete_rows={incomplete_rows} duplicate_rows={duplicate_rows} github_safe_artifacts=web-cache.jsonl,brave-results.jsonl excluded=.esoteric-index/raw-index-data,env-secrets,api-keys cleanup_inventory=temp-cleanup-audit next_action={next_action}",
             archive_durable_rows,
         ),
     ])
@@ -2438,7 +2440,7 @@ mod tests {
         assert!(boundary.contains("deferred_rows=2"));
         assert!(boundary.contains("skipped_rows=0"));
         assert!(boundary.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
-        assert!(boundary.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(boundary.contains("excludes=api-keys,.esoteric-index/raw-index-data"));
         assert!(boundary.contains("restart_safe=true"));
         assert!(boundary.contains("next_action=review-dry-run-before-apply"));
         assert!(lines.iter().any(|line| {
@@ -2579,7 +2581,7 @@ mod tests {
         assert!(line.contains("cache_query_buckets=1"));
         assert!(line.contains("result_log_query_buckets=1"));
         assert!(line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
-        assert!(line.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(line.contains("excludes=api-keys,.esoteric-index/raw-index-data"));
         assert!(line.contains(
             "durable_metadata=normalized_query,provider,fetched_at_unix,rank,url,title,snippet"
         ));
@@ -2611,7 +2613,7 @@ mod tests {
             manifest_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
         );
         assert!(
-            manifest_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+            manifest_line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
         );
         let replay_line = &lines[3];
         assert!(
@@ -2648,7 +2650,7 @@ mod tests {
             boundary_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
         );
         assert!(
-            boundary_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+            boundary_line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
         );
         assert!(boundary_line.contains("cleanup_inventory=temp-cleanup-audit"));
     }
@@ -2737,7 +2739,7 @@ mod tests {
             boundary_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
         );
         assert!(
-            boundary_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+            boundary_line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
         );
         assert!(boundary_line.contains("cleanup_inventory=temp-cleanup-audit"));
     }
@@ -2789,7 +2791,7 @@ mod tests {
         assert!(commit_line.contains("survives_restart=true"));
         assert!(commit_line.contains("commit_order=before-display"));
         assert!(commit_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl"));
-        assert!(commit_line.contains("excludes=api-keys,.brutal-index/raw-index-data"));
+        assert!(commit_line.contains("excludes=api-keys,.esoteric-index/raw-index-data"));
         assert!(commit_line.contains("next_action=provider-results-durable-before-display-limit"));
     }
 
@@ -2831,7 +2833,7 @@ mod tests {
             persisted_line.contains("github_safe_artifacts=web-cache.jsonl,brave-results.jsonl")
         );
         assert!(
-            persisted_line.contains("excluded=.brutal-index/raw-index-data,env-secrets,api-keys")
+            persisted_line.contains("excluded=.esoteric-index/raw-index-data,env-secrets,api-keys")
         );
         assert!(
             persisted_line.contains("next_action=provider-results-persisted-before-display-limit")

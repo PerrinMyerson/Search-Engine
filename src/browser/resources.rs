@@ -1307,7 +1307,7 @@ fn report_page_source_label(source: &str) -> String {
 
     let preview: String = source.chars().take(REPORT_PAGE_SOURCE_MAX_CHARS).collect();
     format!(
-        "{preview}\n<!-- brutal-report-page-source-truncated source_chars={source_chars} retained_chars={REPORT_PAGE_SOURCE_MAX_CHARS} -->"
+        "{preview}\n<!-- esoteric-report-page-source-truncated source_chars={source_chars} retained_chars={REPORT_PAGE_SOURCE_MAX_CHARS} -->"
     )
 }
 
@@ -1319,7 +1319,7 @@ fn report_error_label(error: &str) -> String {
 
     let preview: String = error.chars().take(REPORT_ERROR_MAX_CHARS).collect();
     format!(
-        "{preview}\n[brutal-report-error-truncated error_chars={error_chars} retained_chars={REPORT_ERROR_MAX_CHARS}]"
+        "{preview}\n[esoteric-report-error-truncated error_chars={error_chars} retained_chars={REPORT_ERROR_MAX_CHARS}]"
     )
 }
 
@@ -1693,7 +1693,7 @@ fn browser_http_client() -> &'static reqwest::Client {
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 BrutalBrowser/0.1",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 EsotericInternet/0.1",
             ),
         );
         headers.insert(
@@ -3707,7 +3707,7 @@ mod tests {
         assert_eq!(report.page_source, page_source);
         assert_ne!(serialized_source, page_source);
         assert!(serialized_source.starts_with("<html><body>"));
-        assert!(serialized_source.contains("brutal-report-page-source-truncated"));
+        assert!(serialized_source.contains("esoteric-report-page-source-truncated"));
         assert!(
             serialized_source.contains(&format!("source_chars={}", page_source.chars().count()))
         );
@@ -3771,7 +3771,7 @@ mod tests {
         assert_ne!(serialized_error, error);
         assert_eq!(serialized_error, serialized_decode_error);
         assert!(serialized_error.starts_with("operation timed out:"));
-        assert!(serialized_error.contains("brutal-report-error-truncated"));
+        assert!(serialized_error.contains("esoteric-report-error-truncated"));
         assert!(serialized_error.contains(&format!("error_chars={}", error.chars().count())));
         assert!(serialized_error.chars().count() <= REPORT_ERROR_MAX_CHARS + 128);
     }
@@ -4182,7 +4182,7 @@ mod tests {
     #[tokio::test]
     async fn document_load_report_records_elapsed_bytes_and_error_kind() {
         let path = std::env::temp_dir().join(format!(
-            "brutal-document-load-report-{}-{}.html",
+            "esoteric-document-load-report-{}-{}.html",
             std::process::id(),
             "byte-cap"
         ));

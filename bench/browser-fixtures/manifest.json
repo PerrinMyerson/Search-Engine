@@ -13,7 +13,7 @@
         {"command": "text", "x": 0, "y": 4, "text": "Visible words render plainly."},
         {"command": "styled_text", "x": 0, "y": 5, "text": "Next page", "shade": 28}
       ],
-      "expected_raster_hash": "c6d752db7b39fea82ecbb1f926a0314f87dc2f79329e98420351fdc91dbe35ad"
+      "expected_raster_hash": "33623397e241093d0b8526cb26625edb5b47e92cebbc2d3c14989f622ca1e66f"
     },
     {
       "name": "inline JavaScript DOM text mutation",
@@ -26,7 +26,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "HHyyddrraatteedd ffrroomm iinnlliinnee ssccrriipptt"},
         {"command": "text", "x": 0, "y": 4, "text": "Static sibling"}
       ],
-      "expected_raster_hash": "de2d902de7ae4927c4b55ece6bd345097d543b88bef8b134b98c816ffb068934"
+      "expected_raster_hash": "5c1c6bc2b29c30d92e943a8e47e5e8d5f80e41d2743f14162392320ec53f0792"
     },
     {
       "name": "inline JavaScript create and append",
@@ -39,7 +39,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "CCrreeaatteedd hheeaaddiinngg"},
         {"command": "text", "x": 0, "y": 4, "text": "Created paragraph"}
       ],
-      "expected_raster_hash": "0163b26df4ff0b143d7caedf72cf209025afb66809d4f9130fa838da3f529227"
+      "expected_raster_hash": "d89f3cc6a76eacd594e8398257f6876c5c79d6c5950daa701063c995c2c1846f"
     },
     {
       "name": "DOM tree mutation methods",
@@ -53,7 +53,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "- Tail"},
         {"command": "text", "x": 0, "y": 3, "text": "3"}
       ],
-      "expected_raster_hash": "54a54fcaf621c64af069f15b6d77e2948339be4628974bfcce352e1295e4f0d1"
+      "expected_raster_hash": "d3d0cc6f1f0d6114783e55d586bb55fe9144a42a2c0ea8bd99f2c2814ab779ae"
     },
     {
       "name": "ordered and unordered list marker layout",
@@ -69,7 +69,7 @@
         {"command": "text", "x": 0, "y": 4, "text": "1. Second"},
         {"command": "text", "x": 0, "y": 5, "text": "- Plain bullet"}
       ],
-      "expected_raster_hash": "de4be98afa8bf2901bc4c5e825930721348161fafa595dc3e094c1c1636c51fb"
+      "expected_raster_hash": "04c60b0275ce67403f771eee3036616e994f441c5ab243a92b646a5646f30d8a"
     },
     {
       "name": "typed ordered and unordered list marker layout",
@@ -87,7 +87,7 @@
         {"command": "text", "x": 0, "y": 6, "text": "* Square item"},
         {"command": "text", "x": 0, "y": 7, "text": "- Disc item"}
       ],
-      "expected_raster_hash": "45803992d99358f0c38344f557dcff283707fa8442fd0eeaffc567ffe4dee82f"
+      "expected_raster_hash": "10a213dd651117c86b5819a0481c14fc7f60c8a27806c8e2c9aaf2ad396e07be"
     },
     {
       "name": "nested list indentation layout",
@@ -101,7 +101,7 @@
         {"command": "text", "x": 4, "y": 2, "text": "2. Grandchild"},
         {"command": "text", "x": 0, "y": 3, "text": "- Sibling"}
       ],
-      "expected_raster_hash": "89c7b826ceae18dd06df23a9bf47ab13c963afd45468750ab72349420c7bdb60"
+      "expected_raster_hash": "85f6515d4808e20af32091ec7f1ded04ab1285242112301492bd82b6595ba466"
     },
     {
       "name": "mixed ordered unordered list marker depth",
@@ -115,7 +115,7 @@
         {"command": "text", "x": 4, "y": 2, "text": "1. Ordered grandchild"},
         {"command": "text", "x": 6, "y": 3, "text": "* Deep unordered"}
       ],
-      "expected_raster_hash": "3390bcfd24960213f8167280bf31d28bd5e6fc3a1cf916f0529a55023ee49cee"
+      "expected_raster_hash": "6ce31d001f235e353f22f623134fc907043a6b02b5a132ce6bf8c4b1eb1538f9"
     },
     {
       "name": "text align display-list offsets",
@@ -129,7 +129,7 @@
         {"command": "text", "x": 17, "y": 2, "text": "End"},
         {"command": "text", "x": 5, "y": 3, "text": "Child text"}
       ],
-      "expected_raster_hash": "f27b8ccd390386cce87584303e40cec7abd42c9e069dcf558d2b5612a2de468e"
+      "expected_raster_hash": "93377869b0c3cf916a4151d0aae12de56b6c1239fac2466c5ef020f038e4d13a"
     },
     {
       "name": "preformatted text layout",
@@ -144,7 +144,7 @@
         {"command": "text", "x": 0, "y": 4, "text": "A  B"},
         {"command": "text", "x": 0, "y": 5, "text": "C"}
       ],
-      "expected_raster_hash": "ee94e1ee9788a47548b8e2e8814b279185bdcc3970253d5700ee05b0d410010a"
+      "expected_raster_hash": "2beef9007df8075dd92c90a89179abd79b791cc3541305fb617adb959b1a5515"
     },
     {
       "name": "simple table row layout",
@@ -157,7 +157,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Parser  running"},
         {"command": "text", "x": 0, "y": 2, "text": "Layout  next"}
       ],
-      "expected_raster_hash": "2a62a97db50030e782936360a835190babbd93bb8795d6947a9b39072ff300c5"
+      "expected_raster_hash": "486033c64f2e6ec3f4d7dac2dc763ef7bf0416c1cc1ad6cc79302e3f3589a637"
     },
     {
       "name": "prose indentation layout",
@@ -170,7 +170,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Engine"},
         {"command": "text", "x": 4, "y": 2, "text": "Rust layout pipeline"}
       ],
-      "expected_raster_hash": "83c28c3cc30272e1b6ec088cffd146155d794d71ff0090e325e066780c230a21"
+      "expected_raster_hash": "e2e49d16a4418c59822ae1f1bc6fe3466f73f171544aeb57cf8f923223deb24d"
     },
     {
       "name": "inline form control layout",
@@ -222,7 +222,7 @@
         {"command": "text", "x": 42, "y": 0, "text": " [ship it]"},
         {"command": "text", "x": 54, "y": 0, "text": " Go"}
       ],
-      "expected_raster_hash": "440720d8158cded9bc72443e4ffb677a7d0416d6ed310abbcf8b16b8b21cca07"
+      "expected_raster_hash": "3d944f9698b3544c21bc9df7fc6952b49fc4325df9d7d086150e1cec2dadc334"
     },
     {
       "name": "DOM node traversal properties",
@@ -236,7 +236,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "Gamma three"},
         {"command": "text", "x": 0, "y": 3, "text": "3 3 Beta two Alpha one second 1"}
       ],
-      "expected_raster_hash": "5d7a44b6f122d846c536c05303fc74bf0f584cd63f3908e37f8d7b87fb89ebc6"
+      "expected_raster_hash": "5d9af6614facbb6e3c7f9a5c8d9ec4f5f3b0a8e3d556c9ef901aae2799374478"
     },
     {
       "name": "DOM insertion convenience methods",
@@ -253,7 +253,7 @@
         {"command": "text", "x": 0, "y": 5, "text": "Extra"},
         {"command": "text", "x": 0, "y": 6, "text": "Children reset"}
       ],
-      "expected_raster_hash": "a1e246e9baf993885314f9f30fe1a88d65487d3172edb2ee4dfc919953d2e132"
+      "expected_raster_hash": "9657245cb7e81c4a6c624e473b920fb2fef0b927b30e1744aa5443a95c54b781"
     },
     {
       "name": "DocumentFragment insertion",
@@ -266,7 +266,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Second"},
         {"command": "text", "x": 0, "y": 2, "text": "0 11 2 P"}
       ],
-      "expected_raster_hash": "09012ffa08ecb5f3621b232b3f88b3f8bb64282b48c41a17b2544cb986032097"
+      "expected_raster_hash": "c6644491cf9a6567935b876bca9ee85121895231d365130222a43c76abd5a02b"
     },
     {
       "name": "Selector element methods",
@@ -278,7 +278,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Before"},
         {"command": "text", "x": 0, "y": 1, "text": "true false MAIN result"}
       ],
-      "expected_raster_hash": "3b5c2cbed638b1b151ca83537d283993bdae279c61971ae8a704e3462665e082"
+      "expected_raster_hash": "77493626c83daae68eb9b0a4366bd1ca523f6f98da7641eae2bd7606bce934d1"
     },
     {
       "name": "innerHTML DOM mutation",
@@ -291,7 +291,7 @@
         {"command": "text", "x": 0, "y": 1, "text": "Tail"},
         {"command": "text", "x": 0, "y": 2, "text": "2 true root HEAD <section data-kind=\"card\"><p class=\"title\">Hello</p></section><p class=\"tail\">Tail</p>"}
       ],
-      "expected_raster_hash": "45c684ca5a8808869dc2cf3ea6899026c9a9cac9f501e97531f0db127e3de6a1"
+      "expected_raster_hash": "59034cdbf5da1b6e6fbaff4487474e17397f8aa9c71e9a53d970b5a57d428100"
     },
     {
       "name": "form control DOM properties",
@@ -320,7 +320,7 @@
         {"command": "text", "x": 20, "y": 0, "text": " Go"},
         {"command": "text", "x": 0, "y": 2, "text": "post file:///find query rust browser search true false submit"}
       ],
-      "expected_raster_hash": "6276f5a8118fa72809bb71960efc0b83ac6dd6ea9e4866fac13a4cb16e1748cf"
+      "expected_raster_hash": "ec1daa8223ba94ab9d1cb1e61c0263a5737831cb2c400a93ae7a9262be22a353"
     },
     {
       "name": "location readback DOM properties",
@@ -332,7 +332,7 @@
       "expected_display_list": [
         {"command": "text", "x": 0, "y": 0, "text": "file:///fixtures/location-readback.html file:///fixtures/location-readback.html /fixtures/location-readback.html"}
       ],
-      "expected_raster_hash": "605e7de15fd01f1ef39b71272f72f90bd9070e9b9a5814e0524e48c6d0d339a0"
+      "expected_raster_hash": "38919c07f0365a9ebacc84681b0f40e126d70ab38f5bc542d9037cebc6aedf6a"
     },
     {
       "name": "setAttribute DOM mutation",
@@ -344,7 +344,7 @@
         {"command": "rect", "x": 0, "y": 0, "width": 22, "height": 1, "shade": 144},
         {"command": "styled_text", "x": 0, "y": 0, "text": "Runtime Attribute Link", "shade": 28}
       ],
-      "expected_raster_hash": "03ca9a12d3de6eb5a41c1f7d80c8c94b93e2106666512af63222a2026537a9c6"
+      "expected_raster_hash": "a6b2fc15fd5989c1358090a4fff28e51fd9d4587906c1b47dde59b8664b5a0b1"
     },
     {
       "name": "getAttribute string binding mutation",
@@ -356,7 +356,7 @@
         {"command": "rect", "x": 0, "y": 0, "width": 28, "height": 1, "shade": 144},
         {"command": "styled_text", "x": 0, "y": 0, "text": "initial.html primary primary", "shade": 28}
       ],
-      "expected_raster_hash": "492a612bef199725ce5c7a44cd6688be28b3b35021520272c0aa5bd7a4b00bab"
+      "expected_raster_hash": "bcafbb0f66f9ef1e0eecb2b5d69a5c9b4d58470c97f6d01cf76f5fdae2aaf5bd"
     },
     {
       "name": "style property DOM mutation",
@@ -369,7 +369,7 @@
         {"command": "styled_text", "x": 0, "y": 0, "text": "Runtime styled", "shade": 128},
         {"command": "text", "x": 0, "y": 1, "text": "rgb(128, 128, 128)"}
       ],
-      "expected_raster_hash": "ed81df1804e1b1075353753dc85e302a825e43852a72a7719278e5e944b9facf"
+      "expected_raster_hash": "35ae792b2454643926d80902680aca3e8cadf402f5e7422ad3ea40e922db9aa2"
     },
     {
       "name": "classList DOM mutation",
@@ -382,7 +382,7 @@
         {"command": "styled_text", "x": 0, "y": 0, "text": "Class list visible", "shade": 128},
         {"command": "text", "x": 0, "y": 1, "text": "true 3"}
       ],
-      "expected_raster_hash": "95e942187b5b1b17ae5d5580111221e1e77e7bb9d004ee45f14b4c56cac3297a"
+      "expected_raster_hash": "56db225b3fde21278c9f8ec40005186ce986998095ec331c616e490177cbfa79"
     },
     {
       "name": "DOM query collections",
@@ -397,7 +397,7 @@
         {"command": "text", "x": 0, "y": 3, "text": "Beta"},
         {"command": "text", "x": 0, "y": 4, "text": "2 2 Second"}
       ],
-      "expected_raster_hash": "38e64e180561ea66a9ae0e9998b56d058c7a1b2378539af116ca11dea3e85616"
+      "expected_raster_hash": "c5c8133dd373f8c54fa9dd0612ae378d97c77bfa0e6548e73799294c7ce4ec08"
     },
     {
       "name": "localStorage DOM mutation",
@@ -410,7 +410,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "SSttoorreedd llooccaallllyy"},
         {"command": "text", "x": 0, "y": 4, "text": "2"}
       ],
-      "expected_raster_hash": "e07077bd9e48a2350f4c74ddf5c9caab69ade17476e56d876028bba25ecc5d99"
+      "expected_raster_hash": "912ca40e7b9d39cec69a73c7b1718d48673e8003651f322176c057f7e951fb8d"
     },
     {
       "name": "sessionStorage DOM mutation",
@@ -423,7 +423,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "SSttoorreedd ffoorr sseessssiioonn"},
         {"command": "text", "x": 0, "y": 4, "text": "2"}
       ],
-      "expected_raster_hash": "655826638e69f142eb3e2bfc99addcfc1a317e0bd14c862d13a16403bb714899"
+      "expected_raster_hash": "69d35edb24283f69932f990d5fbd7b01150d8b1b3f6b952bb811c7e819bdd61c"
     },
     {
       "name": "timer task queue mutation",
@@ -436,7 +436,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "TTiimmeerr ffiirreedd"},
         {"command": "text", "x": 0, "y": 4, "text": "start sync timer"}
       ],
-      "expected_raster_hash": "894b894653ab59b1fd14bf5e090026210417023162dd0622635c73b8df6105f6"
+      "expected_raster_hash": "9ea08c3490c0b0a9b3632f06d824bfbddac0943fab42b607342eabbb4c5092d8"
     },
     {
       "name": "document and window lifecycle events",
@@ -449,7 +449,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "DDOOMM rreeaaddyy"},
         {"command": "text", "x": 0, "y": 4, "text": "start script dom load timer"}
       ],
-      "expected_raster_hash": "f0debb4116c2a842b5ff85e50bb2c94088607dcff842d4a6a9b1e4663bb02356"
+      "expected_raster_hash": "837d59ea52f3f71a1a53750e7e2845af065707a87767f84802216c6711f4f9d2"
     },
     {
       "name": "external JavaScript create and append",
@@ -463,7 +463,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "EExxtteerrnnaall ssccrriipptt hheeaaddiinngg"},
         {"command": "text", "x": 0, "y": 4, "text": "External script paragraph"}
       ],
-      "expected_raster_hash": "4d648ab8ba2473d7ee01cc0e944651f853ce98da0f39e7ede60068df65172a73"
+      "expected_raster_hash": "6ed77c497a074f6b8c7e13c508d8fed81ac3b949609d9c0e52fd7cfbe512c516"
     },
     {
       "name": "inline onclick event mutation",
@@ -481,7 +481,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Done"},
         {"command": "text", "x": 0, "y": 2, "text": "Clicked by handler"}
       ],
-      "expected_raster_hash": "67dca52e69812e7b18b4f4a991d7712822c8ad54beb6363e718f5a3bf45af1f5"
+      "expected_raster_hash": "14547305f60622457e546c687493e7158001740ed68bf07350f9860836e75d66"
     },
     {
       "name": "addEventListener click mutation",
@@ -499,7 +499,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Listened"},
         {"command": "text", "x": 0, "y": 2, "text": "Clicked by listener"}
       ],
-      "expected_raster_hash": "1280dd598e41a27535d821f1f582cc42e8bae9fa057f3943468315e1fefc8c9f"
+      "expected_raster_hash": "94319b498af00bc922c85e7f02fbb6f38892132d40c302031e6cbb331a0ee276"
     },
     {
       "name": "compound CSS selector display",
@@ -514,7 +514,7 @@
         {"command": "text", "x": 0, "y": 5, "text": "Visible nav link"},
         {"command": "text", "x": 0, "y": 6, "text": "Visible descendant sibling"}
       ],
-      "expected_raster_hash": "7ff4463a4f416696beaf174699fcdceffc545d4a4b46b9f25cd1035be9863a40"
+      "expected_raster_hash": "d6b19ee454bc3e900c05dc7b4ec2231c6d10ba8a9b94725052858609bd56ea3b"
     },
     {
       "name": "attribute CSS selector display",
@@ -527,7 +527,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "AAttttrriibbuuttee CCSSSS VViissiibbllee"},
         {"command": "text", "x": 0, "y": 4, "text": "Visible open state"}
       ],
-      "expected_raster_hash": "7d44a4b87d0804c8f5638df73621f9e74181acc4c273f664d170a6dd3964a204"
+      "expected_raster_hash": "55897891f0d6ec1a29835ade2274c8942b5e6e9c0407ded2e2d8736e9b53d8f0"
     },
     {
       "name": "complex selector query and click",
@@ -546,7 +546,7 @@
         {"command": "text", "x": 0, "y": 2, "text": "Found by query selector"},
         {"command": "text", "x": 0, "y": 3, "text": "Clicked"}
       ],
-      "expected_raster_hash": "e969bfa7af547431867112a31fee93849c15c422119cf051f8098cae63d27f3f"
+      "expected_raster_hash": "4e6465cad29c26bae891123dd4af8825205ca306e77f98df2eafcde51d54249a"
     },
     {
       "name": "rect paint command",
@@ -559,7 +559,7 @@
         {"command": "rect", "x": 0, "y": 1, "width": 40, "height": 1, "shade": 96},
         {"command": "text", "x": 0, "y": 2, "text": "Below rule"}
       ],
-      "expected_raster_hash": "23a91ffce7ca7db3748be4cde4e415df7b45e31c70063c29e9d194e293193946"
+      "expected_raster_hash": "840c47ceedbb6466e1d2cfccd70adbc3139f6c550a5db3d5e15f37456fa2daf0"
     },
     {
       "name": "viewport raster culling",
@@ -578,7 +578,7 @@
       "raster_viewport_height": 2,
       "expected_visible_command_count": 2,
       "expected_culled_command_count": 3,
-      "expected_raster_hash": "0fd9daf501ea4d5ac3a5aa31c808449deee49303ad89a0fd133e32dc29f176ae"
+      "expected_raster_hash": "60c3cf8625ad82577e935b757a20166a5a49cb519a6038455d68400d025af2d5"
     },
     {
       "name": "background paint command",
@@ -596,7 +596,7 @@
         {"x": 30, "y": 0, "expected": {"kind": "rect", "shade": 208}},
         {"x": 40, "y": 0, "expected": null}
       ],
-      "expected_raster_hash": "ecbb4fc6f3e5e7dbe11fdf903ff5a0ce39d0681461a3d1d3914e600fd73df877"
+      "expected_raster_hash": "355b03224805de2e4709b19a6205153b8b8f43f340c27bebc350debc912487e9"
     },
     {
       "name": "border paint command",
@@ -618,7 +618,7 @@
         {"x": 0, "y": 1, "expected": {"kind": "rect", "shade": 64}},
         {"x": 39, "y": 2, "expected": {"kind": "rect", "shade": 64}}
       ],
-      "expected_raster_hash": "1fa151145c9561333f5a205b8be9c4d0b430b694fee4bed7d738e5e9638c3e20"
+      "expected_raster_hash": "a93b4345de8d82b9108a8de674a0d65c8a053ee291ca5a29cb3fed80726ea4f9"
     },
     {
       "name": "padding layout command",
@@ -630,7 +630,7 @@
         {"command": "rect", "x": 0, "y": 0, "width": 40, "height": 3, "shade": 208},
         {"command": "text", "x": 2, "y": 1, "text": "Padded text"}
       ],
-      "expected_raster_hash": "aa7dc2055fc197218e7dac6d3f0fe6f6c75ccf5d1901fc23991664e8010c820f"
+      "expected_raster_hash": "57dd8129314b77b4405619b11a4e5b9c38bd77b81b94c211a9bd9130a35ee6e4"
     },
     {
       "name": "margin layout command",
@@ -644,7 +644,7 @@
         {"command": "text", "x": 2, "y": 2, "text": "Margin text"},
         {"command": "text", "x": 0, "y": 4, "text": "After"}
       ],
-      "expected_raster_hash": "7a60ba879b0f697d01eda289cd7f027275739b9cf286702d00d0065b338de273"
+      "expected_raster_hash": "62718af76fd26d44cb8912d1fac3f97152a353c977061c83c21812bf0b7e1d6d"
     },
     {
       "name": "block size layout command",
@@ -657,7 +657,7 @@
         {"command": "text", "x": 0, "y": 0, "text": "Width constrained"},
         {"command": "text", "x": 0, "y": 1, "text": "box"}
       ],
-      "expected_raster_hash": "c84975fa0fbf5f66e826a4fc4aab55493a86ba02ad27a03aa1e2d48e2477d3cb"
+      "expected_raster_hash": "3bc026c2255b1388fd952a534bf76c30a5684da717b76f4bc82bc2bf276ecd0e"
     },
     {
       "name": "max-width auto-margin layout command",
@@ -671,7 +671,7 @@
         {"command": "text", "x": 10, "y": 1, "text": "column wraps words"},
         {"command": "text", "x": 10, "y": 2, "text": "cleanly"}
       ],
-      "expected_raster_hash": "d73878d54d164d30bcbaa7eb430b70207b60fafe95a49e8cfbbe004668d4c85b"
+      "expected_raster_hash": "ab0a384a66f8a7ffbb9b9b39719e61bdbffef133bd2ce5f3c027cbb492b0f4e6"
     },
     {
       "name": "text color paint command",
@@ -682,7 +682,7 @@
       "expected_display_list": [
         {"command": "styled_text", "x": 0, "y": 0, "text": "Muted text", "shade": 128}
       ],
-      "expected_raster_hash": "97156e81e77afc42d72cac3cc625ddba5523ec26a7740a2f5af3583d5d05e081"
+      "expected_raster_hash": "af0b54214249933fde0a7b3e12d0da15df8ec181a3f20598616c2c9373b13aa2"
     },
     {
       "name": "image placeholder paint command",
@@ -703,7 +703,7 @@
         {"id": 0, "parent": null, "kind": "root", "reason": "document-root", "x": 0, "y": 0, "width": 40, "height": 4, "paint_order": 0, "command_indices": [0, 2]},
         {"id": 1, "parent": 0, "kind": "image", "reason": "image-replaced-element", "x": 0, "y": 1, "width": 10, "height": 2, "paint_order": 1, "command_indices": [1]}
       ],
-      "expected_raster_hash": "d2cb442521bac5352155324b24639f4935f118d17de39d9a0548dddaeb9a0acb"
+      "expected_raster_hash": "a391629d3bfe8a0a2e08f8c07e019542e2fc8662507694131e3ac4ce9425f7f2"
     },
     {
       "name": "svg image decode paint command",
@@ -713,10 +713,10 @@
       "expected_text": "Before svg\nAfter svg",
       "expected_display_list": [
         {"command": "text", "x": 0, "y": 0, "text": "Before svg"},
-        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "SVG tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
+        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "SVG tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "519f4e9d8857b511a0a98e4f7e9a908d24ca1f361f32eefee8d0fe2648ec696d"},
         {"command": "text", "x": 0, "y": 3, "text": "After svg"}
       ],
-      "expected_raster_hash": "1e47083963471c902c01a36916c9d4079190eaa4f0e8bb9923548b69d9c407a6"
+      "expected_raster_hash": "244d6827904d2eb3d99dcad7a764376a003d2dd5f8a438b55c311c0acbba3910"
     },
     {
       "name": "responsive image selection paint command",
@@ -726,10 +726,10 @@
       "expected_text": "Before responsive\nAfter responsive",
       "expected_display_list": [
         {"command": "text", "x": 0, "y": 0, "text": "Before responsive"},
-        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Responsive tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "e92e40a42aaaa7bb2077c280793f24adbce31741ac63ea41246ba311da58a31a"},
+        {"command": "image", "x": 0, "y": 1, "width": 10, "height": 2, "shade": 220, "alt": "Responsive tile", "url": "simple-image.svg", "decoded_width": 80, "decoded_height": 24, "decoded_hash": "519f4e9d8857b511a0a98e4f7e9a908d24ca1f361f32eefee8d0fe2648ec696d"},
         {"command": "text", "x": 0, "y": 3, "text": "After responsive"}
       ],
-      "expected_raster_hash": "53a52c6293c9442ae00fb7cb97a69e5d5d10fc0f63b4292a6576c368002c1bc7"
+      "expected_raster_hash": "dbd80af11b97e42d2d3d62ebe3704b4da08032f5253916c415458e3e887a5025"
     },
     {
       "name": "data URI PNG decode paint command",
@@ -737,7 +737,7 @@
       "width": 40,
       "expected_title": "PNG Data Fixture",
       "expected_text": "Before png data\nAfter png data",
-      "expected_raster_hash": "910a297f971a8a10e06027b8a9c4f3ad314d1a604bd0a4b05c51c6385e2689ad"
+      "expected_raster_hash": "a9511d066cb43d2e83b25e277ee6e4425296e7bf151227a359a0c12cf897e58a"
     }
   ]
 }

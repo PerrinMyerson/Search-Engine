@@ -1,7 +1,7 @@
 # Operations And Reliability Plan
 
 This plan covers the infrastructure, observability, reliability, rollout, and
-incident-response work required before Brutal Browser can credibly operate as a
+incident-response work required before Esoteric Internet can credibly operate as a
 desktop browser product, and before its search mode can credibly operate as a
 public web-search product. It is a gate plan, not proof of production
 readiness.
@@ -155,5 +155,5 @@ readiness.
 7. Add dashboards and alert rules from the SLO list.
 8. Add deploy/rollback runbooks and typed release manifests.
 9. Add signed browser/CLI package pipeline and update rollback drills.
-10. Promote `Operations And Reliability` in `brutal-bench readiness` only when
+10. Promote `Operations And Reliability` in `esoteric-bench readiness` only when
     the gates above have direct passing evidence.

@@ -55,7 +55,7 @@ fn load_first_font(candidates: impl IntoIterator<Item = String>) -> Option<FontV
 pub(super) fn vector_font() -> Option<&'static FontVec> {
     VECTOR_FONT
         .get_or_init(|| {
-            let override_path = std::env::var("BRUTAL_VECTOR_FONT").ok();
+            let override_path = std::env::var("ESOTERIC_VECTOR_FONT").ok();
             load_first_font(
                 override_path.into_iter().chain(
                     [
@@ -74,7 +74,7 @@ pub(super) fn vector_font() -> Option<&'static FontVec> {
 fn vector_font_bold() -> Option<&'static FontVec> {
     VECTOR_FONT_BOLD
         .get_or_init(|| {
-            let override_path = std::env::var("BRUTAL_VECTOR_FONT_BOLD").ok();
+            let override_path = std::env::var("ESOTERIC_VECTOR_FONT_BOLD").ok();
             load_first_font(
                 override_path.into_iter().chain(
                     [
@@ -93,7 +93,7 @@ fn vector_font_bold() -> Option<&'static FontVec> {
 fn vector_font_italic() -> Option<&'static FontVec> {
     VECTOR_FONT_ITALIC
         .get_or_init(|| {
-            let override_path = std::env::var("BRUTAL_VECTOR_FONT_ITALIC").ok();
+            let override_path = std::env::var("ESOTERIC_VECTOR_FONT_ITALIC").ok();
             load_first_font(
                 override_path.into_iter().chain(
                     [
@@ -112,7 +112,7 @@ fn vector_font_italic() -> Option<&'static FontVec> {
 fn vector_font_bold_italic() -> Option<&'static FontVec> {
     VECTOR_FONT_BOLD_ITALIC
         .get_or_init(|| {
-            let override_path = std::env::var("BRUTAL_VECTOR_FONT_BOLD_ITALIC").ok();
+            let override_path = std::env::var("ESOTERIC_VECTOR_FONT_BOLD_ITALIC").ok();
             load_first_font(
                 override_path.into_iter().chain(
                     [

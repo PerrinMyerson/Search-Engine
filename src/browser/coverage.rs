@@ -693,7 +693,7 @@ fn browser_feature_catalog() -> Vec<BrowserFeatureCoverage> {
             "browser-app-cli-surface",
             "platform",
             Implemented,
-            "Adds a brutal-browser app command over BrowserApp for scripted tab/navigation/input actions, JSON cookie/localStorage profile files, and PNG frame output; this is still a deterministic CLI-driven app surface, not native OS windowing, browser chrome widgets, encrypted profile storage, or a GPU compositor.",
+            "Adds a esoteric-browser app command over BrowserApp for scripted tab/navigation/input actions, JSON cookie/localStorage profile files, and PNG frame output; this is still a deterministic CLI-driven app surface, not native OS windowing, browser chrome widgets, encrypted profile storage, or a GPU compositor.",
         ),
         feature(
             "browser-app-interactive-shell",
@@ -903,7 +903,7 @@ fn browser_feature_catalog() -> Vec<BrowserFeatureCoverage> {
             "browser-cli-click-at-viewport-offset",
             "platform",
             Implemented,
-            "Applies explicit --viewport-x/--viewport-y offsets to one-shot brutal-browser click-at/tap coordinates before display-list hit testing and supported default actions; this is scripted viewport-coordinate routing only, not browser-accurate scrolling, transformed hit testing, or platform pointer integration.",
+            "Applies explicit --viewport-x/--viewport-y offsets to one-shot esoteric-browser click-at/tap coordinates before display-list hit testing and supported default actions; this is scripted viewport-coordinate routing only, not browser-accurate scrolling, transformed hit testing, or platform pointer integration.",
         ),
         feature(
             "browser-shell-wheel-events",

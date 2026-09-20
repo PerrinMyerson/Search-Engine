@@ -438,7 +438,7 @@ pub fn write_bench_status_path(path: impl AsRef<Path>, report: &BenchStatusRepor
     write_bench_status_path_with_max_bytes(
         path,
         report,
-        env_usize("BRUTAL_BENCH_STATUS_MAX_BYTES").unwrap_or(DEFAULT_BENCH_STATUS_MAX_BYTES),
+        env_usize("ESOTERIC_BENCH_STATUS_MAX_BYTES").unwrap_or(DEFAULT_BENCH_STATUS_MAX_BYTES),
     )
 }
 
@@ -454,7 +454,7 @@ fn write_bench_status_path_with_max_bytes(
     let json = serde_json::to_string_pretty(report)?;
     if max_bytes > 0 && json.len() > max_bytes {
         anyhow::bail!(
-            "bench status report {} is {} bytes, above BRUTAL_BENCH_STATUS_MAX_BYTES={}",
+            "bench status report {} is {} bytes, above ESOTERIC_BENCH_STATUS_MAX_BYTES={}",
             path.display(),
             json.len(),
             max_bytes
@@ -842,7 +842,7 @@ fn build_competitor_readiness_report() -> CompetitorReadinessReport {
                 "## Performance Instrumentation",
                 "## Implementation Sequence",
                 "## Acceptance Gates",
-                "brutal-bench browser-perf",
+                "esoteric-bench browser-perf",
             ],
         },
         ReadinessFileSpec {
@@ -1124,8 +1124,8 @@ fn build_competitor_readiness_report() -> CompetitorReadinessReport {
             ],
         },
         ReadinessFileSpec {
-            path: "src/bin/brutal-bench.rs",
-            summary: "src/bin/brutal-bench.rs wires benchmark commands that can run the Chromium search baseline, require p95 speedup, verify browser parity, run browser performance fixture suites, and persist reports.",
+            path: "src/bin/esoteric-bench.rs",
+            summary: "src/bin/esoteric-bench.rs wires benchmark commands that can run the Chromium search baseline, require p95 speedup, verify browser parity, run browser performance fixture suites, and persist reports.",
             required_markers: &[
                 "run_search_comparison",
                 "run_browser_perf",
@@ -1230,8 +1230,8 @@ fn build_competitor_readiness_report() -> CompetitorReadinessReport {
             ],
         },
         ReadinessFileSpec {
-            path: "src/bin/brutal_browser_app/mod.rs",
-            summary: "src/bin/brutal_browser_app/mod.rs wires the scripted and interactive/stdin brutal-browser app command over BrowserApp so future native shells can reuse the same tab, navigation, input, find-state, profile-state, viewport, and frame-output contract.",
+            path: "src/bin/esoteric_browser_app/mod.rs",
+            summary: "src/bin/esoteric_browser_app/mod.rs wires the scripted and interactive/stdin esoteric-browser app command over BrowserApp so future native shells can reuse the same tab, navigation, input, find-state, profile-state, viewport, and frame-output contract.",
             required_markers: &[
                 "pub(crate) struct BrowserAppCli",
                 "pub(crate) async fn run_browser_app_cli",
@@ -1258,8 +1258,8 @@ fn build_competitor_readiness_report() -> CompetitorReadinessReport {
             ],
         },
         ReadinessFileSpec {
-            path: "src/bin/brutal_browser_window/mod.rs",
-            summary: "src/bin/brutal_browser_window/mod.rs wires the feature-gated native window shell over BrowserApp so the Rust browser can present its own RGBA window frame and route local mouse, wheel, and keyboard input through the app state boundary.",
+            path: "src/bin/esoteric_browser_window/mod.rs",
+            summary: "src/bin/esoteric_browser_window/mod.rs wires the feature-gated native window shell over BrowserApp so the Rust browser can present its own RGBA window frame and route local mouse, wheel, and keyboard input through the app state boundary.",
             required_markers: &[
                 "pub(crate) struct BrowserWindowCli",
                 "pub(crate) async fn run_browser_window_cli",
@@ -1773,7 +1773,7 @@ fn build_competitor_readiness_report() -> CompetitorReadinessReport {
             current_evidence: merge_current_evidence(
                 vec![
                 format!(
-                    "brutal-browser coverage reports {}/{} implemented features.",
+                    "esoteric-browser coverage reports {}/{} implemented features.",
                     browser_coverage.implemented_count, browser_coverage.feature_count
                 ),
                 ],
@@ -2670,7 +2670,7 @@ pub fn run_chromium_search_bench(options: &BenchOptions) -> Result<BenchReport> 
     let data = build_chromium_data(&index, &queries, options.limit, options.warmup)?;
     let html = chromium_baseline_html(&data)?;
     let path = std::env::temp_dir().join(format!(
-        "brutal-search-chromium-baseline-{}.html",
+        "esoteric-search-chromium-baseline-{}.html",
         std::process::id()
     ));
     fs::write(&path, html)?;
@@ -2738,7 +2738,7 @@ async fn run_daemon_bench(options: BenchOptions, queries: Vec<String>) -> Result
     };
 
     Ok(report(
-        "brutal-searchd",
+        "esoteric-searchd",
         &options.index,
         options.limit,
         timings,
@@ -2775,7 +2775,7 @@ fn run_in_process_bench(options: BenchOptions, queries: Vec<String>) -> Result<B
     let elapsed = started.elapsed();
 
     Ok(report(
-        "brutal-search-in-process",
+        "esoteric-search-in-process",
         index.root(),
         options.limit,
         timings,
@@ -4051,7 +4051,7 @@ mod tests {
         fs::create_dir_all(&corpus).unwrap();
         fs::write(
             corpus.join("one.html"),
-            "<!doctype html><title>Brutal Smoke</title><h1>Brutal smoke search</h1><p>rust benchmark fixture</p>",
+            "<!doctype html><title>Esoteric Smoke</title><h1>Esoteric smoke search</h1><p>rust benchmark fixture</p>",
         )
         .unwrap();
         fs::write(
@@ -4062,8 +4062,8 @@ mod tests {
         let index = dir.path().join("index");
         build_from_corpus(&corpus, &index, IndexBuildOptions::default()).unwrap();
         let search_index = SearchIndex::open(&index, PreloadMode::Lazy).unwrap();
-        let brutal_doc = search_index
-            .search("brutal smoke", SearchOptions { limit: 2 })
+        let esoteric_doc = search_index
+            .search("esoteric smoke", SearchOptions { limit: 2 })
             .unwrap()
             .first()
             .unwrap()
@@ -4080,7 +4080,7 @@ mod tests {
         fs::write(
             &judgments,
             format!(
-                "{{\"query\":\"brutal smoke\",\"relevant\":[{{\"doc_id\":{brutal_doc},\"grade\":3}}]}}\n\
+                "{{\"query\":\"esoteric smoke\",\"relevant\":[{{\"doc_id\":{esoteric_doc},\"grade\":3}}]}}\n\
                  {{\"query\":\"browser runtime\",\"relevant\":[{{\"doc_id\":{browser_doc},\"grade\":2}}]}}\n\
                  {{\"query\":\"missing\",\"relevant\":[{{\"url\":\"https://missing.example/\",\"grade\":1}}]}}\n"
             ),
@@ -4111,7 +4111,7 @@ mod tests {
         fs::create_dir_all(&corpus).unwrap();
         fs::write(
             corpus.join("one.html"),
-            "<!doctype html><title>Brutal Smoke</title><h1>Brutal smoke search</h1><p>rust benchmark fixture</p>",
+            "<!doctype html><title>Esoteric Smoke</title><h1>Esoteric smoke search</h1><p>rust benchmark fixture</p>",
         )
         .unwrap();
         fs::write(
@@ -4120,7 +4120,7 @@ mod tests {
         )
         .unwrap();
         let queries = dir.path().join("queries.txt");
-        fs::write(&queries, "brutal smoke\nbrowser runtime\n").unwrap();
+        fs::write(&queries, "esoteric smoke\nbrowser runtime\n").unwrap();
         let index = dir.path().join("index");
 
         let report = run_smoke(SmokeOptions {
@@ -4133,7 +4133,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.build.doc_count, 2);
-        assert_eq!(report.query, "brutal smoke");
+        assert_eq!(report.query, "esoteric smoke");
         assert!(report.result_count > 0);
         assert!(report.rendered_bytes > 0);
         assert_eq!(report.bench.query_count, 2);

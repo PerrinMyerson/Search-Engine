@@ -55,7 +55,7 @@ const MAX_VISIBLE_BROWSER_PROFILE_HISTORY: usize = 40;
 const DEFAULT_BULK_BACKGROUND_LINKS: usize = 16;
 const MAX_BULK_BACKGROUND_LINKS: usize = 80;
 const MAX_BROWSER_SESSION_RESOURCES: usize = 120;
-const BROWSER_PROFILE_ENV: &str = "BRUTAL_BROWSER_PROFILE";
+const BROWSER_PROFILE_ENV: &str = "ESOTERIC_BROWSER_PROFILE";
 static NEXT_DATA_URL_MATERIALIZATION_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_VIEWPORT_RASTER_ID: AtomicU64 = AtomicU64::new(1);
 const BROWSER_CREATE_TARGET_TIMEOUT: Duration =
@@ -8714,7 +8714,7 @@ fn browser_session_navigation_target(
         .unwrap_or(0);
     let sequence = NEXT_DATA_URL_MATERIALIZATION_ID.fetch_add(1, AtomicOrdering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "brutal-browser-data-url-{}-{now}-{sequence}.{extension}",
+        "esoteric-browser-data-url-{}-{now}-{sequence}.{extension}",
         std::process::id(),
     ));
     fs::write(&path, bytes).map_err(|error| {
@@ -10366,13 +10366,13 @@ fn browser_session_viewport_raster_options() -> BrowserRasterOptions {
     }
 }
 
-/// Hosted sessions render vector glyphs when BRUTAL_VECTOR_TEXT is set
+/// Hosted sessions render vector glyphs when ESOTERIC_VECTOR_TEXT is set
 /// (opt-in: system-font availability varies by machine, and the default
 /// bitmap glyphs keep raster tests deterministic).
 fn browser_session_vector_text_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("BRUTAL_VECTOR_TEXT").is_ok_and(|value| {
+        std::env::var("ESOTERIC_VECTOR_TEXT").is_ok_and(|value| {
             !value.trim().is_empty() && value.trim() != "0" && !value.eq_ignore_ascii_case("false")
         })
     })
@@ -11394,7 +11394,7 @@ fn render_browser_session_auto_visual_bootstrap(payload: &BrowserSessionPayload)
         ""
     };
     let state_key = format!(
-        "brutal:auto-visual:{}:{}:{}:{}",
+        "esoteric:auto-visual:{}:{}:{}:{}",
         payload.id, payload.source, payload.viewport_x, payload.viewport_y
     );
     let background_first_viewport_request_timeout_ms =
@@ -11685,7 +11685,7 @@ fn render_browser_session_pending_load_retry_script(payload: &BrowserSessionPayl
         payload,
     );
     let state_key = format!(
-        "brutal:pending-open:{}:{}:{}:{}:{}:{}",
+        "esoteric:pending-open:{}:{}:{}:{}:{}:{}",
         payload.id,
         pending_source,
         payload.width,
