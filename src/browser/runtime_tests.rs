@@ -617,6 +617,136 @@ start click micro timer"
 }
 
 #[test]
+fn string_concatenation_evaluates_literals_and_bindings() {
+    let render = render_html(
+        "mem://page",
+        br#"
+        <html><body>
+          <p id="a">p</p><p id="b">p</p><p id="c">p</p>
+          <p id="d">p</p><p id="e">p</p><p id="f">p</p>
+          <script>
+            const t = "x";
+            let n = 0; n += 3;
+            document.getElementById("a").textContent = "again: " + t;
+            document.getElementById("b").textContent = t + " tail" + "!";
+            document.getElementById("c").textContent = "lit " + "lit2";
+            document.getElementById("d").textContent = n + 1;
+            document.getElementById("e").textContent = n + 1 + "x";
+            document.getElementById("f").textContent = "x" + n + 1;
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+    );
+
+    // Same values Chromium produces: numbers add until a string enters.
+    assert_eq!(render.text, "again: x\nx tail!\nlit lit2\n4\n4x\nx31");
+}
+
+#[test]
+fn fetch_chains_park_until_a_response_is_available() {
+    let html = br#"
+        <html><body>
+          <p id="order">start</p>
+          <p id="body">pending</p>
+          <script>
+            const order = document.getElementById("order");
+            setTimeout(() => { order.textContent += " timer"; }, 0);
+            fetch("data.txt")
+              .then((response) => response.text())
+              .then(function (text) {
+                document.getElementById("body").textContent = text;
+                order.textContent += " fetched";
+              })
+              .catch(() => { order.textContent += " failed"; });
+            order.textContent += " sync";
+          </script>
+        </body></html>
+        "#;
+
+    // No response known: the chain stays parked and the page renders as if
+    // the request were still in flight.
+    let (state, pass) = render_html_prepared_with_state(
+        "mem://page",
+        html,
+        BrowserRenderOptions::default(),
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+            fetch_bodies: &[],
+        },
+    )
+    .unwrap();
+    assert_eq!(pass.render.text, "start sync timer\npending");
+    assert_eq!(
+        pending_fetch_urls(&state.runtime),
+        vec!["mem://page/data.txt".to_owned()]
+    );
+
+    // With the body supplied, the response settles after the timer that was
+    // already queued, and each `.then` runs as its own microtask.
+    let (_, pass) = render_html_prepared_with_state(
+        "mem://page",
+        html,
+        BrowserRenderOptions::default(),
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+            fetch_bodies: &[(
+                "mem://page/data.txt".to_owned(),
+                FetchOutcome::success("hello from fetch".to_owned()),
+            )],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        pass.render.text,
+        "start sync timer fetched\nhello from fetch"
+    );
+}
+
+#[test]
+fn failed_fetch_never_runs_its_then_chain() {
+    let (_, pass) = render_html_prepared_with_state(
+        "mem://page",
+        br#"
+        <html><body>
+          <p id="out">start</p>
+          <script>
+            fetch("missing.txt").then(r => r.text()).then(text => {
+              document.getElementById("out").textContent = text;
+            });
+          </script>
+        </body></html>
+        "#,
+        BrowserRenderOptions::default(),
+        RenderPreparation {
+            external_css: &[],
+            external_scripts: &[],
+            click_target: None,
+            local_storage: None,
+            session_storage: None,
+            cached_images: &[],
+            fetch_bodies: &[(
+                "mem://page/missing.txt".to_owned(),
+                FetchOutcome::failure(404),
+            )],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(pass.render.text, "start");
+}
+
+#[test]
 fn clear_timeout_cancels_pending_timer_and_assignment_ids() {
     let render = render_html(
         "mem://page",

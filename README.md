@@ -297,7 +297,7 @@ insertion, `Element.matches`/`Element.closest`, `innerHTML`, form-control DOM pr
 location readback properties, `setAttribute`/`getAttribute`
 plus tiny `element.classList` and `element.style` mutations over the supported
 CSS selector/property subset, DOM query collections, plus origin-scoped `localStorage` and in-memory `sessionStorage`, dispatch
-document/window lifecycle listeners, drain a deterministic `setTimeout` task queue, fetch external scripts into that same tiny runtime, dispatch inline `onclick` and
+document/window lifecycle listeners, drain a deterministic `setTimeout` task queue with `queueMicrotask` / `Promise.resolve().then` checkpoints between tasks, settle `fetch(url).then(r => r.text()).then(...)` chains as later tasks (local files in the fixture lane, real HTTP in `render-scripted` and hosted sessions; `.catch` is parsed but a failed response simply never runs its chain), fetch external scripts into that same tiny runtime, dispatch inline `onclick` and
 `addEventListener("click", ...)` handlers for a first click path, let shell
 `click <selector>` follow anchor hrefs as a narrow default action, route shell
 coordinate clicks through display-list hit testing into that same supported

@@ -831,6 +831,7 @@ fn css_gap_row_flow_preserves_image_text_in_scrolled_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render flex row gap with decoded image");
@@ -969,6 +970,7 @@ fn css_flex_row_reverse_keeps_media_link_hit_geometry_after_adjacent_scroll() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render row-reverse flex card");
@@ -1145,6 +1147,7 @@ fn css_flex_column_reverse_keeps_media_link_hit_geometry_after_adjacent_scroll()
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render column-reverse flex card");
@@ -1310,6 +1313,7 @@ fn css_grid_template_columns_wraps_mixed_content_in_scrolled_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render grid card flow with decoded image");
@@ -1452,6 +1456,7 @@ fn css_grid_auto_fit_minmax_keeps_card_rows_readable_after_scroll() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render auto-fit grid card flow with decoded image");
@@ -1621,6 +1626,7 @@ fn css_flex_wrap_basis_keeps_mixed_cards_stable_in_scrolled_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render flex-wrap card flow with decoded image");
@@ -1753,6 +1759,7 @@ fn css_multi_keyword_display_flex_keeps_mixed_cards_readable_after_scroll() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render multi-keyword display flex flow");
@@ -2718,6 +2725,7 @@ fn css_align_items_center_keeps_flex_media_text_aligned_after_adjacent_scroll() 
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render align-items center flex row");
@@ -3083,6 +3091,7 @@ fn css_align_items_flex_end_keeps_flex_media_link_hit_after_adjacent_scroll() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render align-items flex-end flex row");
@@ -3258,6 +3267,7 @@ fn css_align_items_baseline_keeps_media_link_hit_geometry_after_adjacent_scroll(
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render align-items baseline flex row");
@@ -4457,6 +4467,7 @@ fn scrolled_viewport_reports_fixed_layout_and_mixed_image_text_slice() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render scrolled fixed/image/text page");
@@ -4607,6 +4618,7 @@ fn readable_page_section_keeps_text_form_and_image_in_large_scrolled_viewport() 
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render readable page section");
@@ -4806,6 +4818,7 @@ fn large_viewport_raster_text_uses_readable_span_with_form_and_image() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render large viewport readable raster scale");
@@ -6576,6 +6589,7 @@ fn session_lane_rerender_matches_first_render_text() {
             local_storage: Some(&mut BrowserLocalStorage::default()),
             session_storage: Some(&mut BrowserLocalStorage::default()),
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render fixture");
@@ -7051,6 +7065,7 @@ fn static_ancillary_header_elements_move_to_body_declared_container() {
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render static ancillary header relocation");
@@ -7649,6 +7664,7 @@ fn decoded_image_viewports_preserve_following_body_context() {
             local_storage: None,
             session_storage: None,
             cached_images: &[cached_image],
+            fetch_bodies: &[],
         },
     )
     .expect("render with decoded image fixture");
@@ -9410,6 +9426,7 @@ fn css_absolute_bottom_uses_positioned_context_in_scrolled_rgba_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render absolute bottom positioned fixture");
@@ -9733,6 +9750,7 @@ fn overflow_clipped_image_samples_original_source_in_scrolled_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render overflow clipped source fixture");
@@ -9846,6 +9864,7 @@ fn decoded_intrinsic_image_width_clamp_preserves_aspect_and_scroll_hits() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render wide intrinsic decoded image fixture");
@@ -10032,6 +10051,7 @@ fn overflow_clip_uses_padding_box_for_scrolled_media_and_hit_geometry() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render overflow padding-box fixture");
@@ -10192,6 +10212,7 @@ fn overflow_block_clip_keeps_adjacent_scroll_slices_and_hit_geometry_stable() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render overflow-block clip fixture");
@@ -10354,6 +10375,7 @@ fn css_overflow_y_hidden_preserves_horizontal_scrolled_link_media_hit_geometry()
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render overflow-y axis card fixture");
@@ -10566,6 +10588,7 @@ fn overflow_hidden_flex_item_clips_media_and_hit_geometry_after_adjacent_scroll(
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render overflow-hidden flex item fixture");
@@ -10857,6 +10880,7 @@ fn sticky_zero_z_index_background_paints_above_later_image_in_scrolled_rgba_view
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render sticky zero z-index overlap fixture");
@@ -10956,6 +10980,7 @@ fn fixed_auto_layer_paints_above_later_media_and_keeps_scrolled_hit_geometry() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render fixed auto layer overlap fixture");
@@ -11123,6 +11148,7 @@ fn fixed_descendant_escapes_overflow_clip_and_keeps_scrolled_hit_geometry() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render fixed overflow escape fixture");
@@ -11281,6 +11307,7 @@ fn viewport_hit_testing_prefers_topmost_fixed_background_over_scrolled_text() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render fixed topmost hit fixture");
@@ -11423,6 +11450,7 @@ fn viewport_hit_testing_blocks_scrolled_link_under_topmost_fixed_background() {
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render fixed blocking hit fixture");
@@ -12742,6 +12770,7 @@ fn stylesheet_media_class_background_image_paints_visible_raster_and_hit_box() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render stylesheet media class background fixture");
@@ -16948,6 +16977,7 @@ fn flow_only_trailing_height_extends_scroll_bounds_and_keeps_fixed_hit_geometry(
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render flow-only trailing height fixture");
@@ -18091,6 +18121,7 @@ fn inline_svg_fill_preserves_mixed_scrolled_viewport_geometry() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render inline svg mixed content fixture");
@@ -18240,6 +18271,7 @@ fn inline_svg_vector_color_shapes_share_scrolled_viewport_with_image_and_text() 
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render inline svg vector fixture");
@@ -18367,6 +18399,7 @@ fn inline_svg_current_color_survives_hosted_visible_png_raster() {
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render currentColor SVG fixture");
@@ -18477,6 +18510,7 @@ fn flex_column_keeps_image_and_text_stable_in_scrolled_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render flex column mixed content fixture");
@@ -18707,6 +18741,7 @@ fn render_fidelity_scrolled_viewport_keeps_rgb_css_text_and_decoded_image() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render mixed rgb css and decoded image fixture");
@@ -18800,6 +18835,7 @@ async fn viewport_scroll_normal_rerender_attaches_decoded_resource_cache_images(
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("prepare page without cached images");
@@ -20479,6 +20515,7 @@ fn scrolled_inline_form_control_and_link_raster_hits_stay_aligned() {
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("render scrolled inline form control fixture");
@@ -20688,6 +20725,7 @@ fn repeated_scroll_mixed_image_form_link_rows_keep_raster_hits_and_dirty_regions
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render mixed scroll form continuity fixture");
@@ -20912,6 +20950,7 @@ fn successive_scroll_delta_frames_canonicalize_mixed_dirty_rows_and_hits() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render scroll delta reuse fixture");
@@ -21949,6 +21988,7 @@ fn link_underlines_expand_visual_hit_box_in_scrolled_mixed_viewport() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render underlined link fixture");
@@ -22115,6 +22155,7 @@ fn inline_decoded_image_text_and_link_share_scrolled_raster_and_hits() {
             local_storage: None,
             session_storage: None,
             cached_images: &[decoded_entry],
+            fetch_bodies: &[],
         },
     )
     .expect("render inline decoded image and link flow fixture");

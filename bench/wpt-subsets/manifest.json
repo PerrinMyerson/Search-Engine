@@ -495,6 +495,15 @@
    "width": 40,
    "expected_title": "JS Event Loop Order Fixture",
    "expected_text": "start sync micro then timer\nstart t1 t1-micro nested t2"
+  },
+  {
+   "id": "js-fetch-then",
+   "name": "JS: fetch().then chains settle after queued timers with response.text() passthrough",
+   "subsystem": "dom",
+   "path": "../browser-fixtures/js-fetch-then.html",
+   "width": 40,
+   "expected_title": "JS Fetch Then Fixture",
+   "expected_text": "start sync timer fetched\nhello from fetch\nagain: hello from fetch"
   }
  ]
 }

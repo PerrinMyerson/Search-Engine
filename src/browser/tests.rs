@@ -24127,6 +24127,7 @@ fn chromium_parity_helpers_extract_and_normalize_text() {
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .unwrap();

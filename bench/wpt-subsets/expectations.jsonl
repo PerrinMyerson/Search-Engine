@@ -13,3 +13,4 @@
 {"id": "js-control-flow", "expected_status": "pass"}
 {"id": "css-sizing-suite", "expected_status": "pass"}
 {"id": "js-event-loop-order", "expected_status": "pass"}
+{"id": "js-fetch-then", "expected_status": "pass"}

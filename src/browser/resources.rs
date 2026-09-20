@@ -177,6 +177,10 @@ pub struct BrowserScriptRenderReport {
     #[serde(default)]
     pub cached_resource_bytes: usize,
     pub fetches: Vec<BrowserResourceFetch>,
+    /// `fetch()` requests issued by page scripts and settled during this
+    /// render, in the order their chains were parked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_fetches: Vec<BrowserResourceFetch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

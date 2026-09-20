@@ -21,6 +21,11 @@ mod coverage;
 mod coverage_tests;
 mod css_lengths;
 mod events;
+mod fetch_chains;
+use fetch_chains::{
+    FetchChain, execute_js_fetch, execute_js_fetch_chain_step, pending_fetch_urls,
+    resolve_pending_fetch_chains,
+};
 mod fixture_update;
 mod focus;
 mod forms;
@@ -64,6 +69,7 @@ pub use coverage::{
     BrowserCoverageGate, BrowserCoverageReport, BrowserFeatureCoverage, BrowserFeatureState,
     browser_coverage_report, unsupported_feature_summary,
 };
+pub use fetch_chains::FetchOutcome;
 pub use fixture_update::{BrowserFixtureUpdateReport, update_browser_fixture_expectations};
 pub use forms::{
     BrowserForm, BrowserFormControl, BrowserFormOption, build_get_form_url, build_post_form_body,
@@ -2432,6 +2438,7 @@ async fn load_session_document(
             local_storage: Some(local_storage),
             session_storage: Some(session_storage),
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("session render without interaction should not fail");
@@ -2459,6 +2466,7 @@ async fn load_session_post_form_document(
             local_storage: Some(local_storage),
             session_storage: Some(session_storage),
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
     .expect("session POST render without interaction should not fail");
@@ -4227,6 +4235,11 @@ impl BrowserSession {
                 &mut page_state.runtime,
                 &script_text,
             );
+        }
+        let data_fetches = self
+            .settle_pending_fetches(current_index, max_resource_bytes)
+            .await;
+        if applied > 0 || !data_fetches.is_empty() {
             self.persist_entry_runtime_storage(current_index);
         }
         let render = self.render_entry_page_state(current_index);
@@ -4240,7 +4253,63 @@ impl BrowserSession {
             cached_resource_count: self.resource_cache.len(),
             cached_resource_bytes: self.resource_cache.total_bytes(),
             fetches,
+            data_fetches,
         })
+    }
+
+    /// Fetch every URL that script `fetch()` chains are parked on, hand the
+    /// bodies to the runtime, and run the chains as microtasks. Repeats for
+    /// chains that fetch again from inside a callback, bounded like the
+    /// fixture lane.
+    async fn settle_pending_fetches(
+        &mut self,
+        current_index: usize,
+        max_resource_bytes: usize,
+    ) -> Vec<BrowserResourceFetch> {
+        let mut all_fetches = Vec::new();
+        for _ in 0..MAX_FIXTURE_FETCH_PASSES {
+            let pending = pending_fetch_urls(&self.entries[current_index].page_state.runtime);
+            if pending.is_empty() {
+                break;
+            }
+            let resources = pending
+                .iter()
+                .map(|url| BrowserResource {
+                    kind: "fetch".to_owned(),
+                    initiator: "script".to_owned(),
+                    url: url.clone(),
+                    resolved: url.clone(),
+                    rel: None,
+                    media: None,
+                    alt: None,
+                    type_hint: None,
+                })
+                .collect();
+            let fetches = fetch_resources_with_cache(
+                resources,
+                max_resource_bytes,
+                &mut self.cookie_jar,
+                &mut self.resource_cache,
+            )
+            .await;
+            let page_state = &mut self.entries[current_index].page_state;
+            for fetch in &fetches {
+                let outcome = match self.resource_cache.cached_bytes(&fetch.resource.resolved) {
+                    Some(bytes) if matches!(fetch.status.as_str(), "fetched" | "cached") => {
+                        FetchOutcome::success(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                    _ => FetchOutcome::failure(0),
+                };
+                page_state
+                    .runtime
+                    .fetch_results
+                    .insert(fetch.resource.resolved.clone(), outcome);
+            }
+            resolve_pending_fetch_chains(&mut page_state.runtime);
+            drain_timer_tasks(&mut page_state.dom, &mut page_state.runtime);
+            all_fetches.extend(fetches);
+        }
+        all_fetches
     }
 
     pub async fn render_current_with_images(
@@ -4998,6 +5067,7 @@ fn render_html_prepared(
             local_storage,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies: &[],
         },
     )
 }
@@ -5009,6 +5079,9 @@ struct RenderPreparation<'a> {
     local_storage: Option<&'a mut BrowserLocalStorage>,
     session_storage: Option<&'a mut BrowserLocalStorage>,
     cached_images: &'a [DecodedImageEntry],
+    /// Bodies for `fetch(url)` calls resolved by an earlier pass, keyed by
+    /// resolved URL, so `.then` chains can settle inside a synchronous render.
+    fetch_bodies: &'a [(String, FetchOutcome)],
 }
 
 enum RenderClickTarget<'a> {
@@ -5076,6 +5149,9 @@ fn render_html_prepared_with_state(
     let mut runtime =
         TinyJsRuntime::with_web_storage(initial_local_storage, initial_session_storage);
     runtime.page_source = source.to_owned();
+    for (url, outcome) in preparation.fetch_bodies {
+        runtime.fetch_results.insert(url.clone(), outcome.clone());
+    }
     execute_scripts_with_runtime(&mut dom, &mut runtime, &scripts);
     apply_static_ancillary_header_layout(&mut dom);
     let had_click_target = preparation.click_target.is_some();
@@ -12733,69 +12809,100 @@ fn render_browser_fixture_profiled_with_state(
         width: fixture.width,
         ..BrowserRenderOptions::default()
     };
-    if !fixture.external_scripts {
-        if let Some(selector) = fixture.click_selector.as_deref() {
-            return render_html_prepared_with_state(
-                &source,
-                bytes,
-                options,
-                RenderPreparation {
-                    external_css: &[],
-                    external_scripts: &[],
-                    click_target: Some(RenderClickTarget::Selector(selector)),
-                    local_storage: None,
-                    session_storage: None,
-                    cached_images: &[],
-                },
-            );
-        }
-        return render_html_prepared_with_state(
+    let click_target = fixture
+        .click_selector
+        .as_deref()
+        .map(RenderClickTarget::Selector);
+
+    let mut script_text: Vec<String> = Vec::new();
+    let mut timings: Option<BrowserRenderTimings> = None;
+    if fixture.external_scripts {
+        let (_, first_pass) = render_fixture_pass(&source, bytes, options, &[], None, &[])?;
+        script_text = local_external_script_texts(&first_pass.render)?;
+        timings = Some(first_pass.timings);
+    }
+
+    // Each pass may park `fetch()` chains on URLs it has not seen settled;
+    // read those local files and re-render with the bodies until the page
+    // settles. Bounded so a script that fetches endlessly cannot loop.
+    let mut fetch_bodies: Vec<(String, FetchOutcome)> = Vec::new();
+    for _ in 0..MAX_FIXTURE_FETCH_PASSES {
+        let (state, mut pass) = render_fixture_pass(
             &source,
             bytes,
             options,
-            RenderPreparation {
-                external_css: &[],
-                external_scripts: &[],
-                click_target: None,
-                local_storage: None,
-                session_storage: None,
-                cached_images: &[],
-            },
-        );
+            &script_text,
+            click_target.as_ref().map(|target| match target {
+                RenderClickTarget::Selector(selector) => RenderClickTarget::Selector(selector),
+                RenderClickTarget::Point { node_id, x, y } => RenderClickTarget::Point {
+                    node_id: *node_id,
+                    x: *x,
+                    y: *y,
+                },
+            }),
+            &fetch_bodies,
+        )?;
+        pass.timings = match timings.take() {
+            Some(previous) => previous.add(pass.timings),
+            None => pass.timings,
+        };
+        let pending = pending_fetch_urls(&state.runtime);
+        if pending.is_empty() {
+            return Ok((state, pass));
+        }
+        timings = Some(pass.timings);
+        for url in pending {
+            let outcome = match read_local_fetch_resource(&url) {
+                Ok(body) => FetchOutcome::success(body),
+                Err(_) => FetchOutcome::failure(404),
+            };
+            fetch_bodies.push((url, outcome));
+        }
     }
+    bail!(
+        "fixture {source} did not settle its fetch() chains within {MAX_FIXTURE_FETCH_PASSES} passes"
+    );
+}
 
-    let (_, first_pass) = render_html_prepared_with_state(
-        &source,
+const MAX_FIXTURE_FETCH_PASSES: usize = 4;
+
+fn render_fixture_pass(
+    source: &str,
+    bytes: &[u8],
+    options: BrowserRenderOptions,
+    external_scripts: &[String],
+    click_target: Option<RenderClickTarget<'_>>,
+    fetch_bodies: &[(String, FetchOutcome)],
+) -> Result<(BrowserPageState, BrowserProfiledRender)> {
+    render_html_prepared_with_state(
+        source,
         bytes,
         options,
         RenderPreparation {
             external_css: &[],
-            external_scripts: &[],
-            click_target: None,
+            external_scripts,
+            click_target,
             local_storage: None,
             session_storage: None,
             cached_images: &[],
+            fetch_bodies,
         },
-    )?;
-    let script_text = local_external_script_texts(&first_pass.render)?;
-    let (second_state, mut second_pass) = render_html_prepared_with_state(
-        &source,
-        bytes,
-        options,
-        RenderPreparation {
-            external_css: &[],
-            external_scripts: &script_text,
-            click_target: fixture
-                .click_selector
-                .as_deref()
-                .map(RenderClickTarget::Selector),
-            local_storage: None,
-            session_storage: None,
-            cached_images: &[],
-        },
-    )?;
-    second_pass.timings = first_pass.timings.add(second_pass.timings);
-    Ok((second_state, second_pass))
+    )
+}
+
+/// Fixture `fetch()` targets must be local files, like fixture scripts.
+fn read_local_fetch_resource(resolved: &str) -> Result<String> {
+    let resource = BrowserResource {
+        kind: "fetch".to_owned(),
+        initiator: "script".to_owned(),
+        url: resolved.to_owned(),
+        resolved: resolved.to_owned(),
+        rel: None,
+        media: None,
+        alt: None,
+        type_hint: None,
+    };
+    read_local_script_resource(&resource)
 }
 
 fn local_external_script_texts(render: &BrowserRender) -> Result<Vec<String>> {
@@ -13884,6 +13991,14 @@ struct TinyJsRuntime {
     /// Pending `queueMicrotask` / `Promise.resolve().then` callbacks. Drained
     /// at every task boundary before the next timer task runs.
     microtask_queue: VecDeque<String>,
+    /// Settled `fetch()` responses keyed by resolved URL.
+    fetch_results: HashMap<String, FetchOutcome>,
+    /// `fetch().then(...)` chains whose URL has no settled response yet. An
+    /// async lane fetches them and calls [`resolve_pending_fetch_chains`].
+    pending_fetch_chains: Vec<FetchChain>,
+    /// Chains in flight through the microtask queue, keyed by chain id.
+    fetch_chains: HashMap<u64, FetchChain>,
+    next_fetch_chain_id: u64,
     this_node: Option<usize>,
     this_target: Option<BrowserEventTarget>,
     active_element: Option<usize>,
@@ -13920,6 +14035,10 @@ impl Default for TinyJsRuntime {
             cancelled_timer_ids: HashSet::new(),
             next_timer_id: 1,
             microtask_queue: VecDeque::new(),
+            fetch_results: HashMap::new(),
+            pending_fetch_chains: Vec::new(),
+            fetch_chains: HashMap::new(),
+            next_fetch_chain_id: 1,
             this_node: None,
             this_target: None,
             active_element: None,
@@ -15111,6 +15230,14 @@ fn execute_js_statement(dom: &mut Dom, runtime: &mut TinyJsRuntime, statement: &
         return;
     }
 
+    if execute_js_fetch(dom, runtime, statement) {
+        return;
+    }
+
+    if execute_js_fetch_chain_step(dom, runtime, statement) {
+        return;
+    }
+
     if execute_js_remove_event_listener(dom, runtime, statement) {
         return;
     }
@@ -15834,24 +15961,32 @@ fn drain_microtasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
 /// ran fire first, then each timer task runs followed by its own microtask
 /// checkpoint, matching the HTML event loop ordering.
 fn drain_timer_tasks(dom: &mut Dom, runtime: &mut TinyJsRuntime) {
-    drain_microtasks(dom, runtime);
     let mut executed = 0usize;
-    while let Some(task) = runtime.timer_tasks.pop_front() {
-        if runtime.cancelled_timer_ids.remove(&task.id) {
-            continue;
-        }
-        let previous_this = runtime.this_node.take();
-        let previous_this_target = runtime.this_target.take();
-        for statement in split_js_statements(&task.handler) {
-            execute_js_statement(dom, runtime, statement);
-        }
-        runtime.this_node = previous_this;
-        runtime.this_target = previous_this_target;
+    loop {
         drain_microtasks(dom, runtime);
-        executed += 1;
-        if executed >= MAX_TIMER_TASKS_PER_RENDER {
-            runtime.timer_tasks.clear();
-            break;
+        while let Some(task) = runtime.timer_tasks.pop_front() {
+            if runtime.cancelled_timer_ids.remove(&task.id) {
+                continue;
+            }
+            let previous_this = runtime.this_node.take();
+            let previous_this_target = runtime.this_target.take();
+            for statement in split_js_statements(&task.handler) {
+                execute_js_statement(dom, runtime, statement);
+            }
+            runtime.this_node = previous_this;
+            runtime.this_target = previous_this_target;
+            drain_microtasks(dom, runtime);
+            executed += 1;
+            if executed >= MAX_TIMER_TASKS_PER_RENDER {
+                runtime.timer_tasks.clear();
+                return;
+            }
+        }
+        // Responses "arrive" once the timers ahead of them have run; their
+        // chains then get their own microtask checkpoints and may queue
+        // further timers, so go around again.
+        if resolve_pending_fetch_chains(runtime) == 0 {
+            return;
         }
     }
 }
@@ -16173,7 +16308,7 @@ fn parse_js_string_value(expression: &str) -> Option<String> {
 
     let mut out = String::new();
     let mut escaped = false;
-    for ch in expression[quote.len_utf8()..].chars() {
+    for (index, ch) in expression[quote.len_utf8()..].char_indices() {
         if escaped {
             match ch {
                 'n' => out.push('\n'),
@@ -16189,7 +16324,10 @@ fn parse_js_string_value(expression: &str) -> Option<String> {
         } else if ch == '\\' {
             escaped = true;
         } else if ch == quote {
-            return Some(out);
+            // A literal followed by more code (`"a" + b`) is an expression,
+            // not a bare string; leave it to the expression evaluator.
+            let rest = expression[quote.len_utf8() + index + ch.len_utf8()..].trim();
+            return (rest.is_empty() || rest == ";").then_some(out);
         } else {
             out.push(ch);
         }
@@ -16211,6 +16349,9 @@ fn evaluate_js_string_expression(
     }
     if let Some(value) = runtime.string_bindings.get(expression) {
         return Some(value.clone());
+    }
+    if let Some(value) = evaluate_js_concatenation(dom, runtime, expression) {
+        return Some(value);
     }
     if let Some(value) = evaluate_js_event_expression(runtime, expression) {
         return Some(value);
@@ -16316,6 +16457,62 @@ fn evaluate_js_string_expression(
         return get_element_style_property(dom, node_id, property);
     }
     None
+}
+
+/// `a + b + c` folded left to right with JS's `+` rule: once a string
+/// literal has entered the chain the rest concatenates; before that, two
+/// numeric operands add. Only top-level `+` is split, so `x + (y)` and
+/// `"a+b"` stay intact. The runtime keeps numbers as text, so a quoted
+/// literal is the only string-vs-number signal it has.
+fn evaluate_js_concatenation(
+    dom: &Dom,
+    runtime: &TinyJsRuntime,
+    expression: &str,
+) -> Option<String> {
+    let operands = js_plus_operands(expression);
+    if operands.len() < 2 || operands.iter().any(|operand| operand.is_empty()) {
+        return None;
+    }
+    let mut accumulator = evaluate_js_string_expression(dom, runtime, operands[0])?;
+    let mut is_string = parse_js_string_value(operands[0]).is_some();
+    for operand in &operands[1..] {
+        let value = evaluate_js_string_expression(dom, runtime, operand)?;
+        let operand_is_string = parse_js_string_value(operand).is_some();
+        if !is_string
+            && !operand_is_string
+            && let (Ok(left), Ok(right)) = (
+                accumulator.trim().parse::<f64>(),
+                value.trim().parse::<f64>(),
+            )
+        {
+            let sum = left + right;
+            accumulator = if sum.fract() == 0.0 && sum.abs() < 1e15 {
+                format!("{}", sum as i64)
+            } else {
+                sum.to_string()
+            };
+            continue;
+        }
+        accumulator.push_str(&value);
+        is_string = true;
+    }
+    Some(accumulator)
+}
+
+/// Top-level `+` operands of an expression, left to right. Rejects `++`
+/// and `+=` so increments and compound assignments are left alone.
+fn js_plus_operands(expression: &str) -> Vec<&str> {
+    let mut operands = Vec::new();
+    let mut rest = expression;
+    while let Some((left, right)) = split_js_top_level(rest, "+") {
+        if right.starts_with('+') || right.starts_with('=') {
+            return vec![expression];
+        }
+        operands.push(left.trim());
+        rest = right;
+    }
+    operands.push(rest.trim());
+    operands
 }
 
 fn evaluate_js_event_expression(runtime: &TinyJsRuntime, expression: &str) -> Option<String> {

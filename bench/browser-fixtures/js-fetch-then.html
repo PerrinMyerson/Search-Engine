@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head><title>JS Fetch Then Fixture</title></head>
+  <body>
+    <p id="order">start</p>
+    <p id="body">pending</p>
+    <p id="chained">pending</p>
+    <script>
+      const order = document.getElementById("order");
+      setTimeout(() => { order.textContent += " timer"; }, 0);
+      fetch("fetch-data.txt")
+        .then((response) => response.text())
+        .then(function (text) {
+          document.getElementById("body").textContent = text;
+          order.textContent += " fetched";
+        })
+        .catch(() => { order.textContent += " failed"; });
+      fetch("fetch-data.txt").then(r => r.text()).then(text => {
+        document.getElementById("chained").textContent = "again: " + text;
+      });
+      order.textContent += " sync";
+    </script>
+  </body>
+</html>
